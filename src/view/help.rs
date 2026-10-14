@@ -264,6 +264,10 @@ fn build_lines(
     
     let mut detail_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "Close commit details".into()),
+        (vec![UserEvent::FocusPanel(1)], "Show commit info".into()),
+        (vec![UserEvent::FocusPanel(2)], "Show changed files and their diff".into()),
+        (vec![UserEvent::FocusPanel(3)], "Show all files of the commit with a preview".into()),
+        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory (changes, files)".into()),
         (vec![UserEvent::NavigateDown], "Scroll down".into()),
         (vec![UserEvent::NavigateUp], "Scroll up".into()),
         (vec![UserEvent::PageDown], "Scroll page down".into()),
@@ -295,6 +299,29 @@ fn build_lines(
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
     ];
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
+
+    let local_changes_helps = vec![
+        (vec![UserEvent::Cancel, UserEvent::Close], "Back (editing > commit, lines > hunks > files) / Close".into()),
+        (vec![UserEvent::RefList], "Open refs list on branches".into()),
+        (vec![UserEvent::FocusPanel(1)], "Focus unstaged files".into()),
+        (vec![UserEvent::FocusPanel(2)], "Focus staged files".into()),
+        (vec![UserEvent::FocusPanel(3)], "Focus commit message, amend and commit".into()),
+        (vec![UserEvent::Confirm], "Select hunks / lines; Edit message / Toggle amend / Commit".into()),
+        (vec![UserEvent::ToggleStage], "Stage/Unstage file, directory, hunk or line".into()),
+        (vec![UserEvent::Discard], "Discard unstaged file, directory, hunk or line".into()),
+        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Select next file/hunk/line".into()),
+        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Select previous file/hunk/line".into()),
+        (vec![UserEvent::GoToTop], "Select first file/hunk/line".into()),
+        (vec![UserEvent::GoToBottom], "Select last file/hunk/line".into()),
+        (vec![UserEvent::PageDown], "Scroll diff page down".into()),
+        (vec![UserEvent::PageUp], "Scroll diff page up".into()),
+        (vec![UserEvent::HalfPageDown], "Scroll diff half page down".into()),
+        (vec![UserEvent::HalfPageUp], "Scroll diff half page up".into()),
+        (vec![UserEvent::ScrollDown], "Scroll diff down".into()),
+        (vec![UserEvent::ScrollUp], "Scroll diff up".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
+    ];
+    let (local_changes_key_lines, local_changes_value_lines) = build_block_lines("Local Changes:", local_changes_helps, color_theme, keybind);
     
     let mut user_command_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Close user command".into()),
@@ -322,6 +349,7 @@ fn build_lines(
         list_key_lines,
         detail_key_lines,
         refs_key_lines,
+        local_changes_key_lines,
         user_command_key_lines,
     ]);
     let value_lines = join_line_groups_with_empty(vec![
@@ -330,6 +358,7 @@ fn build_lines(
         list_value_lines,
         detail_value_lines,
         refs_value_lines,
+        local_changes_value_lines,
         user_command_value_lines,
     ]);
 

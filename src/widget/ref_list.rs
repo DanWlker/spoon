@@ -10,6 +10,7 @@ use semver::Version;
 
 use crate::{app::AppContext, git::Ref};
 
+const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
 const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
 const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
 const TREE_TAG_ROOT_IDENT: &str = "__tags__";
@@ -31,11 +32,11 @@ pub struct RefListState {
 }
 
 impl RefListState {
-    pub fn new(refs: &[&Ref]) -> Self {
-        let selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
-        let opened = HashSet::from([selected.clone()]);
+    pub fn new(refs: &[&Ref], local_change_count: usize) -> Self {
+        let selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
+        let opened = HashSet::from([vec![TREE_BRANCH_ROOT_IDENT.into()]]);
         let mut state = Self {
-            roots: build_ref_tree_nodes(refs),
+            roots: build_ref_tree_nodes(refs, local_change_count),
             visible_rows: Vec::new(),
             selected,
             opened,
@@ -47,19 +48,26 @@ impl RefListState {
     }
 
     pub fn select_next(&mut self) {
-        let next = self
+        let last = self.visible_rows.len().saturating_sub(1);
+        let mut next = self
             .selected_index()
             .map_or(0, |index| index.saturating_add(1))
-            .min(self.visible_rows.len().saturating_sub(1));
+            .min(last);
+        if self.visible_rows[next].separator {
+            next = (next + 1).min(last);
+        }
         self.select_visible_index(next);
     }
 
     pub fn select_prev(&mut self) {
-        let prev = self
+        let mut prev = self
             .selected_index()
             .map_or(self.visible_rows.len().saturating_sub(1), |index| {
                 index.saturating_sub(1)
             });
+        if self.visible_rows[prev].separator {
+            prev = prev.saturating_sub(1);
+        }
         self.select_visible_index(prev);
     }
 
@@ -89,12 +97,27 @@ impl RefListState {
         } else if self.selected.len() > 1 {
             self.selected.pop();
         }
-        // The four category roots always remain selectable.
+        // The category roots always remain selectable.
         self.scroll_to_selection = true;
     }
 
     pub fn selected_ref_name(&self) -> Option<String> {
-        self.selected.last().cloned()
+        if self.is_local_changes_selected() {
+            None
+        } else {
+            self.selected.last().cloned()
+        }
+    }
+
+    pub fn select_branches(&mut self) {
+        self.selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
+        self.opened.insert(self.selected.clone());
+        self.rebuild_visible_rows();
+        self.scroll_to_selection = true;
+    }
+
+    pub fn is_local_changes_selected(&self) -> bool {
+        self.selected.len() == 1 && self.selected[0] == TREE_LOCAL_CHANGES_ROOT_IDENT
     }
 
     pub fn selected_branch(&self) -> Option<String> {
@@ -128,7 +151,7 @@ impl RefListState {
             self.selected.pop();
         }
         if self.selected.is_empty() {
-            self.selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
+            self.selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
         }
         self.scroll_to_selection = true;
     }
@@ -140,7 +163,7 @@ impl RefListState {
     }
 
     fn select_visible_index(&mut self, index: usize) {
-        if let Some(row) = self.visible_rows.get(index) {
+        if let Some(row) = self.visible_rows.get(index).filter(|row| !row.separator) {
             self.selected.clone_from(&row.identifier);
             self.scroll_to_selection = true;
         }
@@ -158,6 +181,7 @@ struct VisibleRefRow {
     name: String,
     depth: usize,
     has_children: bool,
+    separator: bool,
 }
 
 fn collect_visible_rows(
@@ -174,7 +198,18 @@ fn collect_visible_rows(
             name: node.name.clone(),
             depth: parent.len(),
             has_children: !node.children.is_empty(),
+            separator: false,
         });
+        if parent.is_empty() && node.identifier == TREE_LOCAL_CHANGES_ROOT_IDENT {
+            // divides the working tree from the refs, and is skipped when moving the selection
+            rows.push(VisibleRefRow {
+                identifier: Vec::new(),
+                name: String::new(),
+                depth: 0,
+                has_children: false,
+                separator: true,
+            });
+        }
         if opened.contains(&identifier) {
             collect_visible_rows(&node.children, opened, &identifier, rows);
         }
@@ -231,6 +266,12 @@ impl StatefulWidget for RefList {
             .enumerate()
         {
             let y = inner.y + line as u16;
+            if row.separator {
+                let divider_style = Style::default().fg(self.ctx.color_theme.divider_fg);
+                let line = "─".repeat(inner.width as usize);
+                buf.set_stringn(inner.x, y, line, inner.width as usize, divider_style);
+                continue;
+            }
             let symbol = if !row.has_children {
                 "  "
             } else if state.opened.contains(&row.identifier) {
@@ -249,7 +290,7 @@ impl StatefulWidget for RefList {
     }
 }
 
-fn build_ref_tree_nodes(refs: &[&Ref]) -> Vec<RefTreeNode> {
+fn build_ref_tree_nodes(refs: &[&Ref], local_change_count: usize) -> Vec<RefTreeNode> {
     let mut branch_refs = Vec::new();
     let mut remote_refs = Vec::new();
     let mut tag_refs = Vec::new();
@@ -275,6 +316,11 @@ fn build_ref_tree_nodes(refs: &[&Ref]) -> Vec<RefTreeNode> {
     sort_stash_tree_nodes(&mut stash_nodes);
 
     vec![
+        RefTreeNode::new(
+            TREE_LOCAL_CHANGES_ROOT_IDENT.into(),
+            format!("Local Changes ({local_change_count})"),
+            Vec::new(),
+        ),
         RefTreeNode::new(
             TREE_BRANCH_ROOT_IDENT.into(),
             TREE_BRANCH_ROOT_TEXT.into(),

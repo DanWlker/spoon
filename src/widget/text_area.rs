@@ -23,8 +23,6 @@ impl TextArea {
         Self { lines, row, col }
     }
 
-    // read by the commit action, which is not implemented yet
-    #[cfg_attr(not(test), expect(dead_code))]
     pub fn text(&self) -> String {
         self.lines.join("\n")
     }

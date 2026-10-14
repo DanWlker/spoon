@@ -30,7 +30,10 @@ use crate::{
     protocol::ImageProtocol,
     search::SearchOptions,
     view::{RefreshViewContext, View},
-    widget::commit_list::{CommitInfo, CommitListState},
+    widget::{
+        commit_list::{CommitInfo, CommitListState},
+        local_changes::LocalChangesState,
+    },
 };
 
 #[derive(Debug, Default)]
@@ -165,8 +168,10 @@ impl<'a> App<'a> {
             app.warn_notification(warning.clone());
         }
 
-        if let Some(context) = refresh_view_context {
-            app.init_with_context(context);
+        match refresh_view_context {
+            Some(context) => app.init_with_context(context),
+            // start on the local changes page; the graph is one Esc away
+            None => app.open_local_changes(),
         }
 
         app
@@ -203,7 +208,20 @@ impl App<'_> {
                         }
                     }
 
-                    let user_event = self.ctx.keybind.get(&key);
+                    if self.view.is_capturing_keys() {
+                        if let Some(UserEvent::ForceQuit) = self.ctx.keybind.get(&key) {
+                            self.ec.send(AppEvent::Quit);
+                        } else {
+                            let event = UserEventWithCount::from_event(UserEvent::Unknown);
+                            self.view.handle_event(event, key);
+                        }
+                        continue;
+                    }
+
+                    let user_event = self.ctx.keybind.get(&key).filter(|ue| {
+                        // without panels to focus, digits fall through to the numeric prefix (or search input)
+                        !matches!(ue, UserEvent::FocusPanel(_)) || self.view.has_panels()
+                    });
 
                     if let Some(UserEvent::Cancel) = user_event {
                         if !self.app_status.numeric_prefix.is_empty() {
@@ -269,8 +287,12 @@ impl App<'_> {
                 AppEvent::OpenRefs => {
                     self.open_refs();
                 }
-                AppEvent::CloseRefs => {
-                    self.close_refs();
+                AppEvent::CloseRefs { to_local_changes } => {
+                    self.close_refs(to_local_changes);
+                }
+                AppEvent::CloseLocalChanges => {
+                    self.close_local_changes();
+                    self.app_status.pending_clear = PendingClear::Screen;
                 }
                 AppEvent::OpenHelp => {
                     self.open_help();
@@ -296,6 +318,12 @@ impl App<'_> {
                     self.cleanup_graph_images()?;
                     let request = RefreshRequest { context };
                     return Ok(Ret::Refresh(request));
+                }
+                AppEvent::ClearViewImages => {
+                    self.app_status.pending_clear = PendingClear::ViewImages;
+                }
+                AppEvent::ClearScreen => {
+                    self.app_status.pending_clear = PendingClear::Screen;
                 }
                 AppEvent::ClearStatusLine => {
                     self.clear_status_line();
@@ -519,6 +547,7 @@ impl App<'_> {
             commit,
             changes,
             refs,
+            self.repository,
             self.ctx.clone(),
             self.ec.sender(),
         );
@@ -662,15 +691,72 @@ impl App<'_> {
     }
 
     fn open_refs(&mut self) {
-        if let View::List(ref mut view) = self.view {
-            let commit_list_state = view.take_list_state();
-            let refs = self.repository.all_refs();
-            self.view = View::of_refs(commit_list_state, &refs, self.ctx.clone(), self.ec.sender());
+        let (commit_list_state, local_changes_state, from_local_changes) = match self.view {
+            View::List(ref mut view) => (
+                view.take_list_state(),
+                LocalChangesState::load(self.repository),
+                false,
+            ),
+            View::LocalChanges(ref mut view) => (
+                view.take_list_state(),
+                view.take_local_changes_state(),
+                true,
+            ),
+            _ => return,
+        };
+        let refs = self.repository.all_refs();
+        self.view = View::of_refs(
+            commit_list_state,
+            &refs,
+            local_changes_state,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
+        if from_local_changes {
+            // tab cycles from the local changes page to the branches
+            if let View::Refs(ref mut view) = self.view {
+                view.select_branches();
+            }
         }
     }
 
-    fn close_refs(&mut self) {
+    fn close_refs(&mut self, to_local_changes: bool) {
         if let View::Refs(ref mut view) = self.view {
+            let commit_list_state = view.take_list_state();
+            if to_local_changes {
+                if !view.is_showing_local_changes() {
+                    // the graph is shown until now
+                    self.app_status.pending_clear = PendingClear::ViewImages;
+                }
+                let local_changes_state = view.take_local_changes_state();
+                self.view = View::of_local_changes(
+                    commit_list_state,
+                    local_changes_state,
+                    self.ctx.clone(),
+                    self.ec.sender(),
+                );
+            } else {
+                self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+            }
+        }
+    }
+
+    fn open_local_changes(&mut self) {
+        if let View::List(ref mut view) = self.view {
+            let commit_list_state = view.take_list_state();
+            let local_changes_state = LocalChangesState::load(self.repository);
+            self.view = View::of_local_changes(
+                commit_list_state,
+                local_changes_state,
+                self.ctx.clone(),
+                self.ec.sender(),
+            );
+            self.app_status.pending_clear = PendingClear::ViewImages;
+        }
+    }
+
+    fn close_local_changes(&mut self) {
+        if let View::LocalChanges(ref mut view) = self.view {
             let commit_list_state = view.take_list_state();
             self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
         }
@@ -737,6 +823,15 @@ impl App<'_> {
                 ..
             } => {
                 self.open_user_command(user_command_context.n);
+            }
+            RefreshViewContext::LocalChanges {
+                local_changes_context,
+                ..
+            } => {
+                self.open_local_changes();
+                if let View::LocalChanges(ref mut view) = self.view {
+                    view.reset_local_changes_with(local_changes_context);
+                }
             }
             RefreshViewContext::Refs { refs_context, .. } => {
                 self.open_refs();

@@ -14,6 +14,11 @@ use crate::{
     widget::{
         commit_detail::{CommitDetail, CommitDetailState},
         commit_list::{CommitList, CommitListState},
+        commit_tabs::{
+            render_tab_titles, CommitChanges, CommitChangesState, CommitFiles, CommitFilesState,
+            DetailTab,
+        },
+        file_tree::FileTreeState,
     },
 };
 
@@ -21,6 +26,9 @@ use crate::{
 pub struct DetailView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     commit_detail_state: CommitDetailState,
+    tab: DetailTab,
+    changes_state: CommitChangesState<'a>,
+    files_state: CommitFilesState<'a>,
 
     commit: Commit,
     changes: Vec<FileChange>,
@@ -36,12 +44,17 @@ impl<'a> DetailView<'a> {
         commit: Commit,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
+        repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DetailView<'a> {
+        let hash = commit.commit_hash.clone();
         DetailView {
             commit_list_state: Some(commit_list_state),
             commit_detail_state: CommitDetailState::default(),
+            tab: DetailTab::default(),
+            changes_state: CommitChangesState::new(repository, hash.clone(), &changes),
+            files_state: CommitFilesState::new(repository, hash),
             commit,
             changes,
             refs,
@@ -53,6 +66,22 @@ impl<'a> DetailView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
+
+        if let UserEvent::FocusPanel(n) = event {
+            if let Some(tab) = DetailTab::from_number(n) {
+                self.tab = tab;
+                self.load_tab();
+            }
+            return;
+        }
+        let handled = match self.tab {
+            DetailTab::Info => false,
+            DetailTab::Changes => self.handle_changes_event(event, count),
+            DetailTab::Files => self.handle_files_event(event, count),
+        };
+        if handled {
+            return;
+        }
 
         match event {
             UserEvent::NavigateDown => {
@@ -131,9 +160,23 @@ impl<'a> DetailView<'a> {
         let commit_list = CommitList::new(self.ctx.clone());
         f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
 
-        let commit_detail =
-            CommitDetail::new(&self.commit, &self.changes, &self.refs, self.ctx.clone());
-        f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
+        match self.tab {
+            DetailTab::Info => {
+                let commit_detail =
+                    CommitDetail::new(&self.commit, &self.changes, &self.refs, self.ctx.clone());
+                f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
+            }
+            DetailTab::Changes => {
+                let commit_changes = CommitChanges::new(self.ctx.clone());
+                f.render_stateful_widget(commit_changes, detail_area, &mut self.changes_state);
+            }
+            DetailTab::Files => {
+                let commit_files = CommitFiles::new(self.ctx.clone());
+                f.render_stateful_widget(commit_files, detail_area, &mut self.files_state);
+            }
+        }
+        // each tab draws a top border, the titles go over it
+        render_tab_titles(self.tab, &self.ctx.color_theme, detail_area, f.buffer_mut());
     }
 
     pub fn update_layout(&mut self, area: Rect) {
@@ -148,6 +191,47 @@ impl<'a> DetailView<'a> {
 }
 
 impl<'a> DetailView<'a> {
+    // Returns whether the event was handled by the changes tab.
+    fn handle_changes_event(&mut self, event: UserEvent, count: usize) -> bool {
+        let state = &mut self.changes_state;
+        let page = state.diff_page_height();
+        match event {
+            UserEvent::ScrollDown => state.scroll_diff_down(count),
+            UserEvent::ScrollUp => state.scroll_diff_up(count),
+            UserEvent::PageDown => state.scroll_diff_down(page * count),
+            UserEvent::PageUp => state.scroll_diff_up(page * count),
+            UserEvent::HalfPageDown => state.scroll_diff_down(page / 2 * count),
+            UserEvent::HalfPageUp => state.scroll_diff_up(page / 2 * count),
+            _ => return handle_tree_event(event, count, |f| state.update_tree(f)),
+        }
+        true
+    }
+
+    // Returns whether the event was handled by the files tab.
+    fn handle_files_event(&mut self, event: UserEvent, count: usize) -> bool {
+        let state = &mut self.files_state;
+        let page = state.preview_page_height();
+        match event {
+            UserEvent::ScrollDown => state.scroll_preview_down(count),
+            UserEvent::ScrollUp => state.scroll_preview_up(count),
+            UserEvent::PageDown => state.scroll_preview_down(page * count),
+            UserEvent::PageUp => state.scroll_preview_up(page * count),
+            UserEvent::HalfPageDown => state.scroll_preview_down(page / 2 * count),
+            UserEvent::HalfPageUp => state.scroll_preview_up(page / 2 * count),
+            _ => return handle_tree_event(event, count, |f| state.update_tree(f)),
+        }
+        true
+    }
+
+    // The changes and files of a commit are only loaded once their tab is shown.
+    fn load_tab(&mut self) {
+        match self.tab {
+            DetailTab::Info => {}
+            DetailTab::Changes => self.changes_state.ensure_loaded(),
+            DetailTab::Files => self.files_state.ensure_loaded(),
+        }
+    }
+
     pub fn take_list_state(&mut self) -> CommitListState<'a> {
         self.commit_list_state.take().unwrap()
     }
@@ -178,19 +262,19 @@ impl<'a> DetailView<'a> {
         Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area)
     }
 
-    pub fn select_older_commit(&mut self, repository: &Repository) {
+    pub fn select_older_commit(&mut self, repository: &'a Repository) {
         self.update_selected_commit(repository, |state| state.select_next());
     }
 
-    pub fn select_newer_commit(&mut self, repository: &Repository) {
+    pub fn select_newer_commit(&mut self, repository: &'a Repository) {
         self.update_selected_commit(repository, |state| state.select_prev());
     }
 
-    pub fn select_parent_commit(&mut self, repository: &Repository) {
+    pub fn select_parent_commit(&mut self, repository: &'a Repository) {
         self.update_selected_commit(repository, |state| state.select_parent());
     }
 
-    fn update_selected_commit<F>(&mut self, repository: &Repository, update_commit_list_state: F)
+    fn update_selected_commit<F>(&mut self, repository: &'a Repository, update_commit_list_state: F)
     where
         F: FnOnce(&mut CommitListState<'a>),
     {
@@ -199,11 +283,14 @@ impl<'a> DetailView<'a> {
         let selected = commit_list_state.selected_commit_hash().clone();
         let (commit, changes) = repository.commit_detail(&selected);
         let refs = repository.refs(&selected).into_iter().cloned().collect();
+        self.changes_state = CommitChangesState::new(repository, selected.clone(), &changes);
+        self.files_state.set_commit(selected);
         self.commit = commit;
         self.changes = changes;
         self.refs = refs;
 
         self.commit_detail_state.select_first();
+        self.load_tab();
     }
 
     fn copy_commit_short_hash(&self) {
@@ -226,4 +313,24 @@ impl<'a> DetailView<'a> {
         let context = RefreshViewContext::Detail { list_context };
         self.tx.send(AppEvent::Refresh(context));
     }
+}
+
+// Moves in or expands and collapses a file tree; returns whether the event was handled.
+fn handle_tree_event(
+    event: UserEvent,
+    count: usize,
+    mut update: impl FnMut(&dyn Fn(&mut FileTreeState)),
+) -> bool {
+    match event {
+        UserEvent::NavigateDown => (0..count).for_each(|_| update(&FileTreeState::select_next)),
+        UserEvent::NavigateUp => (0..count).for_each(|_| update(&FileTreeState::select_prev)),
+        UserEvent::GoToTop => update(&FileTreeState::select_first),
+        UserEvent::GoToBottom => update(&FileTreeState::select_last),
+        UserEvent::NavigateRight => update(&FileTreeState::expand),
+        UserEvent::NavigateLeft => update(&FileTreeState::collapse),
+        // enter expands and collapses directories instead of closing the details
+        UserEvent::Confirm => update(&FileTreeState::toggle),
+        _ => return false,
+    }
+    true
 }

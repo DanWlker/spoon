@@ -35,7 +35,7 @@ fuzzy_toggle = ["ctrl-x"]
 mark_toggle = ["m"]
 refresh = ["shift-r"]
 
-user_command_1 = ["d"]
+user_command_1 = ["shift-d"]
 
 # switch between panels, ex: unstaged/staged in local changes
 # digits are used as a count prefix in views without panels
@@ -45,6 +45,8 @@ focus_panel_3 = ["3"]
 
 # stage/unstage the selected file, directory or hunk in local changes
 toggle_stage = ["space"]
+# discard the selected unstaged changes in local changes, after confirming
+discard = ["d"]
 
 # copy part of information, ex: copy the short commit hash not all
 short_copy = ["c"]

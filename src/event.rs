@@ -25,7 +25,11 @@ pub enum AppEvent {
     OpenUserCommand(usize),
     CloseUserCommand,
     OpenRefs,
-    CloseRefs,
+    CloseRefs {
+        // go to the local changes page instead of the commit list
+        to_local_changes: bool,
+    },
+    CloseLocalChanges,
     OpenHelp,
     CloseHelp,
     SelectNewerCommit,
@@ -36,6 +40,8 @@ pub enum AppEvent {
         value: String,
     },
     Refresh(RefreshViewContext),
+    ClearViewImages,
+    ClearScreen,
     ClearStatusLine,
     UpdateStatusInput {
         message: String,
@@ -229,6 +235,9 @@ pub enum UserEvent {
     RefList,
     Search,
     UserCommand(usize),
+    FocusPanel(usize),
+    ToggleStage,
+    Discard,
     SearchTargetToggle,
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -263,6 +272,14 @@ impl<'de> Deserialize<'de> for UserEvent {
                     } else {
                         let msg = format!("Invalid user_command_n format: {value}",);
                         Err(de::Error::custom(msg))
+                    }
+                } else if let Some(num) = value.strip_prefix("focus_panel_") {
+                    match num.parse::<usize>() {
+                        Ok(n) => Ok(UserEvent::FocusPanel(n)),
+                        Err(_) => {
+                            let msg = format!("Invalid focus_panel_n format: {value}");
+                            Err(de::Error::custom(msg))
+                        }
                     }
                 } else {
                     match value {
@@ -301,6 +318,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "refresh" => Ok(UserEvent::Refresh),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
+                        "toggle_stage" => Ok(UserEvent::ToggleStage),
+                        "discard" => Ok(UserEvent::Discard),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

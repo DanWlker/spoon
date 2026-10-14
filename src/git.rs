@@ -222,6 +222,174 @@ impl Repository {
         };
         (commit, changes)
     }
+
+    pub fn local_changes(&self) -> LocalChanges {
+        load_local_changes(&self.path)
+    }
+
+    // `staged_base` is the tree staged changes are compared to, HEAD when None (see `amend_base`)
+    pub fn local_change_diff(
+        &self,
+        path: &str,
+        untracked: bool,
+        staged: bool,
+        staged_base: Option<&str>,
+    ) -> String {
+        load_local_change_diff(&self.path, path, untracked, staged, staged_base)
+    }
+
+    // The tree to compare the index to while amending: the parent of HEAD, or the empty tree for a root commit.
+    pub fn amend_base(&self) -> std::result::Result<String, String> {
+        git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD^"])
+            .map(|s| s.trim().to_string())
+            .or_else(|_| empty_tree(&self.path))
+    }
+
+    // The diff of `paths` (all files when empty) made by a commit, against its first parent.
+    pub fn commit_diff(&self, commit_hash: &CommitHash, paths: &[&str]) -> String {
+        let base = match self.parents_hash(commit_hash).first() {
+            Some(parent) => parent.as_str().to_string(),
+            None => match empty_tree(&self.path) {
+                Ok(tree) => tree,
+                Err(_) => return String::new(),
+            },
+        };
+        let mut args = vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "-M",
+            &base,
+            commit_hash.as_str(),
+            "--",
+        ];
+        args.extend_from_slice(paths);
+        git_output(&self.path, &args).unwrap_or_default()
+    }
+
+    // The contents of a file at a commit.
+    pub fn commit_file_content(
+        &self,
+        commit_hash: &CommitHash,
+        path: &str,
+    ) -> std::result::Result<Vec<u8>, String> {
+        let object = format!("{}:{path}", commit_hash.as_str());
+        let output = Command::new("git")
+            .args(["cat-file", "blob", &object])
+            .current_dir(&self.path)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("failed to run git cat-file: {e}"))?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("git cat-file failed: {}", stderr.trim()))
+        }
+    }
+
+    // All file paths in the tree of a commit.
+    pub fn commit_tree_paths(&self, commit_hash: &CommitHash) -> Vec<String> {
+        let args = ["ls-tree", "-r", "-z", "--name-only", commit_hash.as_str()];
+        git_output(&self.path, &args)
+            .map(|out| {
+                out.split('\0')
+                    .filter(|p| !p.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // Changes between `base` and the index, i.e. what would be committed when amending.
+    pub fn staged_changes_against(&self, base: &str) -> Vec<LocalChangeFile> {
+        let args = ["diff", "--cached", "--name-status", "-z", "-M", base];
+        git_output(&self.path, &args)
+            .map(|out| parse_name_status(out.as_bytes()))
+            .unwrap_or_default()
+    }
+
+    pub fn head_commit_message(&self) -> std::result::Result<String, String> {
+        git_output(&self.path, &["log", "-1", "--format=%B", "HEAD"])
+            .map(|s| s.trim_end().to_string())
+    }
+
+    pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {
+        let mut args = vec!["add", "--all", "--"];
+        args.extend_from_slice(paths);
+        run_git(&self.path, &args, None)
+    }
+
+    // Resets the index entries of `paths` to `staged_base`, HEAD when None.
+    pub fn unstage_paths(
+        &self,
+        paths: &[&str],
+        staged_base: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        let mut args = vec!["reset", "--quiet"];
+        args.extend(staged_base);
+        args.push("--");
+        args.extend_from_slice(paths);
+        run_git(&self.path, &args, None)
+    }
+
+    // Discards the unstaged changes of `tracked` files (restoring them from the index) and deletes `untracked` files.
+    pub fn discard_paths(
+        &self,
+        tracked: &[&str],
+        untracked: &[&str],
+    ) -> std::result::Result<(), String> {
+        if !tracked.is_empty() {
+            let mut args = vec!["checkout", "--quiet", "--"];
+            args.extend_from_slice(tracked);
+            run_git(&self.path, &args, None)?;
+        }
+        if !untracked.is_empty() {
+            let mut args = vec!["clean", "--force", "--quiet", "--"];
+            args.extend_from_slice(untracked);
+            run_git(&self.path, &args, None)?;
+        }
+        Ok(())
+    }
+
+    // Applies `patch` to the working tree, `reverse` to undo the changes in it.
+    pub fn apply_patch_to_worktree(
+        &self,
+        patch: &str,
+        reverse: bool,
+    ) -> std::result::Result<(), String> {
+        let mut args = vec!["apply"];
+        if reverse {
+            args.push("--reverse");
+        }
+        args.push("-");
+        run_git(&self.path, &args, Some(patch))
+    }
+
+    pub fn commit_staged(&self, message: &str, amend: bool) -> std::result::Result<(), String> {
+        // the message is read from stdin so no editor is opened
+        let mut args = vec!["commit", "--quiet", "--file=-"];
+        if amend {
+            args.push("--amend");
+        }
+        run_git(&self.path, &args, Some(message))
+    }
+
+    // Stages (or unstages, with `reverse`) the changes in `patch`, a diff produced by `local_change_diff`.
+    pub fn apply_patch_to_index(
+        &self,
+        patch: &str,
+        reverse: bool,
+    ) -> std::result::Result<(), String> {
+        let mut args = vec!["apply", "--cached"];
+        if reverse {
+            args.push("--reverse");
+        }
+        args.push("-");
+        run_git(&self.path, &args, Some(patch))
+    }
 }
 
 fn check_git_repository(path: &Path) -> Result<()> {
@@ -696,4 +864,302 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
     cmd.wait().unwrap();
 
     changes
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalChangeStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Conflicted,
+}
+
+impl LocalChangeStatus {
+    fn from_status_char(c: u8) -> Option<Self> {
+        match c {
+            b'A' => Some(LocalChangeStatus::Added),
+            b'M' => Some(LocalChangeStatus::Modified),
+            b'D' => Some(LocalChangeStatus::Deleted),
+            b'R' => Some(LocalChangeStatus::Renamed),
+            b'C' => Some(LocalChangeStatus::Copied),
+            b'T' => Some(LocalChangeStatus::TypeChanged),
+            b'?' => Some(LocalChangeStatus::Untracked),
+            b'U' => Some(LocalChangeStatus::Conflicted),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalChangeFile {
+    pub path: String,
+    // the source path of a rename or copy
+    pub orig_path: Option<String>,
+    pub status: LocalChangeStatus,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LocalChanges {
+    pub unstaged: Vec<LocalChangeFile>,
+    pub staged: Vec<LocalChangeFile>,
+}
+
+impl LocalChanges {
+    // Number of distinct paths with uncommitted changes, counting a path that is both staged and unstaged once.
+    pub fn count(&self) -> usize {
+        let mut paths: Vec<&str> = self
+            .unstaged
+            .iter()
+            .chain(self.staged.iter())
+            .map(|f| f.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths.len()
+    }
+}
+
+fn load_local_changes(path: &Path) -> LocalChanges {
+    let output = Command::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("--untracked-files=all")
+        .arg("-z")
+        .current_dir(path)
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        // fails in bare repositories, which have no working tree
+        Ok(output) if output.status.success() => parse_status_porcelain(&output.stdout),
+        _ => LocalChanges::default(),
+    }
+}
+
+fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
+    let mut changes = LocalChanges::default();
+    let mut entries = bytes.split(|b| *b == b'\0').filter(|e| !e.is_empty());
+
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let (x, y) = (entry[0], entry[1]);
+        let path = String::from_utf8_lossy(&entry[3..]).into_owned();
+        // renames and copies are followed by the original path
+        let orig_path = if x == b'R' || x == b'C' {
+            entries
+                .next()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+        } else {
+            None
+        };
+
+        if x == b'?' {
+            changes.unstaged.push(LocalChangeFile {
+                path,
+                orig_path: None,
+                status: LocalChangeStatus::Untracked,
+            });
+            continue;
+        }
+        if x == b'U' || y == b'U' || (x == b'A' && y == b'A') || (x == b'D' && y == b'D') {
+            changes.unstaged.push(LocalChangeFile {
+                path,
+                orig_path: None,
+                status: LocalChangeStatus::Conflicted,
+            });
+            continue;
+        }
+        if let Some(status) = LocalChangeStatus::from_status_char(x) {
+            changes.staged.push(LocalChangeFile {
+                path: path.clone(),
+                orig_path,
+                status,
+            });
+        }
+        if let Some(status) = LocalChangeStatus::from_status_char(y) {
+            changes.unstaged.push(LocalChangeFile {
+                path,
+                orig_path: None,
+                status,
+            });
+        }
+    }
+
+    changes
+}
+
+fn load_local_change_diff(
+    path: &Path,
+    target: &str,
+    untracked: bool,
+    staged: bool,
+    staged_base: Option<&str>,
+) -> String {
+    let mut cmd = Command::new("git");
+    // the output is applied back as a patch, so ignore user config that changes its format
+    cmd.arg("diff")
+        .arg("--no-color")
+        .arg("--no-ext-diff")
+        .arg("--src-prefix=a/")
+        .arg("--dst-prefix=b/");
+    if staged {
+        cmd.arg("--cached").args(staged_base).arg("--").arg(target);
+    } else if untracked {
+        cmd.arg("--no-index").arg("--").arg("/dev/null").arg(target);
+    } else {
+        cmd.arg("--").arg(target);
+    }
+    // `--no-index` exits with 1 when the files differ, so the exit status is not checked
+    cmd.current_dir(path)
+        .stderr(Stdio::null())
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+// `git diff --name-status -z` output: a status, then one path or two for renames and copies.
+fn parse_name_status(bytes: &[u8]) -> Vec<LocalChangeFile> {
+    let mut files = Vec::new();
+    let mut tokens = bytes
+        .split(|b| *b == b'\0')
+        .filter(|t| !t.is_empty())
+        .map(|t| String::from_utf8_lossy(t).into_owned());
+
+    while let Some(status) = tokens.next() {
+        let Some(status) = LocalChangeStatus::from_status_char(status.as_bytes()[0]) else {
+            tokens.next();
+            continue;
+        };
+        let first = tokens.next().unwrap_or_default();
+        let (path, orig_path) = match status {
+            LocalChangeStatus::Renamed | LocalChangeStatus::Copied => {
+                (tokens.next().unwrap_or_default(), Some(first))
+            }
+            _ => (first, None),
+        };
+        files.push(LocalChangeFile {
+            path,
+            orig_path,
+            status,
+        });
+    }
+    files
+}
+
+// The empty tree, as the base of a root commit.
+fn empty_tree(path: &Path) -> std::result::Result<String, String> {
+    git_output(path, &["hash-object", "-t", "tree", "/dev/null"]).map(|s| s.trim().to_string())
+}
+
+fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git {} failed: {}", args[0], stderr.trim()))
+    }
+}
+
+fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
+    let command_error = |e: std::io::Error| format!("failed to run git {}: {e}", args.join(" "));
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(command_error)?;
+
+    if let Some(input) = stdin {
+        use std::io::Write;
+        // dropped at the end of this block, closing stdin so git can finish
+        let mut child_stdin = child.stdin.take().expect("failed to open stdin");
+        child_stdin
+            .write_all(input.as_bytes())
+            .map_err(command_error)?;
+    }
+
+    let output = child.wait_with_output().map_err(command_error)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git {} failed: {}", args[0], stderr.trim()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_name_status() {
+        let input = b"M\0a.rs\0R087\0old.rs\0new.rs\0A\0b.rs\0";
+        let actual = parse_name_status(input);
+        let expected = vec![
+            LocalChangeFile {
+                path: "a.rs".into(),
+                orig_path: None,
+                status: LocalChangeStatus::Modified,
+            },
+            LocalChangeFile {
+                path: "new.rs".into(),
+                orig_path: Some("old.rs".into()),
+                status: LocalChangeStatus::Renamed,
+            },
+            LocalChangeFile {
+                path: "b.rs".into(),
+                orig_path: None,
+                status: LocalChangeStatus::Added,
+            },
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_parse_status_porcelain() {
+        let input = b"M  staged.rs\0 M unstaged.rs\0MM both.rs\0?? new.txt\0R  new_name.rs\0old_name.rs\0UU conflict.rs\0";
+        let actual = parse_status_porcelain(input);
+
+        let file = |path: &str, status| LocalChangeFile {
+            path: path.into(),
+            orig_path: None,
+            status,
+        };
+        let expected = LocalChanges {
+            unstaged: vec![
+                file("unstaged.rs", LocalChangeStatus::Modified),
+                file("both.rs", LocalChangeStatus::Modified),
+                file("new.txt", LocalChangeStatus::Untracked),
+                file("conflict.rs", LocalChangeStatus::Conflicted),
+            ],
+            staged: vec![
+                file("staged.rs", LocalChangeStatus::Modified),
+                file("both.rs", LocalChangeStatus::Modified),
+                LocalChangeFile {
+                    path: "new_name.rs".into(),
+                    orig_path: Some("old_name.rs".into()),
+                    status: LocalChangeStatus::Renamed,
+                },
+            ],
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(actual.count(), 6);
+    }
 }

@@ -44,6 +44,12 @@ impl<'a> GitRepository<'a> {
         self.run(&["commit", "--allow-empty", "-m", message], &datetime_str);
     }
 
+    pub fn add(&self, paths: &[&str]) {
+        let mut args = vec!["add", "--"];
+        args.extend_from_slice(paths);
+        self.run(&args, "");
+    }
+
     pub fn checkout(&self, branch_name: &str) {
         self.run(&["checkout", branch_name], "");
     }

@@ -1,0 +1,218 @@
+use std::rc::Rc;
+
+use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
+
+use crate::{
+    app::AppContext,
+    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    view::{ListRefreshViewContext, LocalChangesRefreshViewContext, RefreshViewContext},
+    widget::{
+        commit_list::CommitListState,
+        local_changes::{LocalChangesPanel, LocalChangesSection, LocalChangesState},
+    },
+};
+
+#[derive(Debug)]
+pub struct LocalChangesView<'a> {
+    commit_list_state: Option<CommitListState<'a>>,
+    local_changes_state: Option<LocalChangesState<'a>>,
+
+    ctx: Rc<AppContext>,
+    tx: Sender,
+}
+
+impl<'a> LocalChangesView<'a> {
+    pub fn new(
+        commit_list_state: CommitListState<'a>,
+        mut local_changes_state: LocalChangesState<'a>,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> LocalChangesView<'a> {
+        local_changes_state.set_focused(true);
+        local_changes_state.focus_section(LocalChangesSection::Unstaged);
+        LocalChangesView {
+            commit_list_state: Some(commit_list_state),
+            local_changes_state: Some(local_changes_state),
+            ctx,
+            tx,
+        }
+    }
+
+    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+        // while confirming or typing, keys arrive unmapped, see App::run
+        if self.as_state().is_confirming() {
+            if let Err(err) = self.as_mut_state().handle_confirm_key(key) {
+                self.tx.send(AppEvent::NotifyError(err));
+            }
+            return;
+        }
+        if self.as_state().is_editing() {
+            self.as_mut_state().handle_text_key(key);
+            return;
+        }
+
+        let event = event_with_count.event;
+        let count = event_with_count.count;
+
+        if self.as_state().is_commit_focused() {
+            // directions cycle through the message, the amend checkbox and the commit button
+            match event {
+                UserEvent::NavigateDown | UserEvent::NavigateRight | UserEvent::SelectDown => {
+                    self.as_mut_state().cycle_commit_item(true);
+                    return;
+                }
+                UserEvent::NavigateUp | UserEvent::NavigateLeft | UserEvent::SelectUp => {
+                    self.as_mut_state().cycle_commit_item(false);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        match event {
+            UserEvent::Quit => {
+                self.tx.send(AppEvent::Quit);
+            }
+            UserEvent::Cancel | UserEvent::Close => {
+                // lines -> hunks -> files -> close, or commit section -> files -> close
+                if !self.as_mut_state().back() {
+                    self.tx.send(AppEvent::CloseLocalChanges);
+                }
+            }
+            UserEvent::Confirm => {
+                let result = self.as_mut_state().enter();
+                self.after_action(result);
+            }
+            UserEvent::ToggleStage => {
+                let result = self.as_mut_state().toggle_stage();
+                self.after_action(result);
+            }
+            UserEvent::Discard => {
+                self.as_mut_state().request_discard();
+            }
+            UserEvent::RefList => {
+                self.tx.send(AppEvent::OpenRefs);
+            }
+            UserEvent::FocusPanel(1) => {
+                self.as_mut_state()
+                    .focus_section(LocalChangesSection::Unstaged);
+            }
+            UserEvent::FocusPanel(2) => {
+                self.as_mut_state()
+                    .focus_section(LocalChangesSection::Staged);
+            }
+            UserEvent::FocusPanel(3) => {
+                self.as_mut_state().focus_commit();
+            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                for _ in 0..count {
+                    self.as_mut_state().select_next();
+                }
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                for _ in 0..count {
+                    self.as_mut_state().select_prev();
+                }
+            }
+            UserEvent::GoToTop => {
+                self.as_mut_state().select_first();
+            }
+            UserEvent::GoToBottom => {
+                self.as_mut_state().select_last();
+            }
+            UserEvent::ScrollDown => {
+                self.as_mut_state().scroll_diff_down(count);
+            }
+            UserEvent::ScrollUp => {
+                self.as_mut_state().scroll_diff_up(count);
+            }
+            UserEvent::PageDown => {
+                let n = self.as_state().diff_page_height() * count;
+                self.as_mut_state().scroll_diff_down(n);
+            }
+            UserEvent::PageUp => {
+                let n = self.as_state().diff_page_height() * count;
+                self.as_mut_state().scroll_diff_up(n);
+            }
+            UserEvent::HalfPageDown => {
+                let n = self.as_state().diff_page_height() / 2 * count;
+                self.as_mut_state().scroll_diff_down(n);
+            }
+            UserEvent::HalfPageUp => {
+                let n = self.as_state().diff_page_height() / 2 * count;
+                self.as_mut_state().scroll_diff_up(n);
+            }
+            UserEvent::HelpToggle => {
+                self.tx.send(AppEvent::OpenHelp);
+            }
+            UserEvent::Refresh => {
+                self.refresh();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        let panel = LocalChangesPanel::new(self.ctx.clone());
+        f.render_stateful_widget(panel, area, self.as_mut_state());
+    }
+}
+
+impl<'a> LocalChangesView<'a> {
+    pub fn take_list_state(&mut self) -> CommitListState<'a> {
+        self.commit_list_state.take().unwrap()
+    }
+
+    pub fn take_local_changes_state(&mut self) -> LocalChangesState<'a> {
+        self.local_changes_state.take().unwrap()
+    }
+
+    fn as_list_state(&self) -> &CommitListState<'a> {
+        self.commit_list_state.as_ref().unwrap()
+    }
+
+    fn as_state(&self) -> &LocalChangesState<'a> {
+        self.local_changes_state.as_ref().unwrap()
+    }
+
+    fn as_mut_state(&mut self) -> &mut LocalChangesState<'a> {
+        self.local_changes_state.as_mut().unwrap()
+    }
+
+    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
+        self.as_list_state().graph_image_ids_sorted()
+    }
+
+    pub fn is_capturing_keys(&self) -> bool {
+        self.as_state().is_editing() || self.as_state().is_confirming()
+    }
+
+    fn after_action(&mut self, result: Result<(), String>) {
+        if let Err(err) = result {
+            self.tx.send(AppEvent::NotifyError(err));
+        } else if self.as_mut_state().take_committed() {
+            // reload the repository so the new commit appears in the graph
+            self.refresh();
+        }
+    }
+
+    pub fn reset_local_changes_with(&mut self, context: LocalChangesRefreshViewContext) {
+        let state = self.as_mut_state();
+        state.restore_commit_draft(*context.commit_draft);
+        state.reset_selection(context.section, context.selected_path);
+    }
+
+    pub fn refresh(&self) {
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
+        let local_changes_context = LocalChangesRefreshViewContext {
+            section: self.as_state().section(),
+            selected_path: self.as_state().selected_path(),
+            commit_draft: Box::new(self.as_state().commit_draft()),
+        };
+        let context = RefreshViewContext::LocalChanges {
+            list_context,
+            local_changes_context,
+        };
+        self.tx.send(AppEvent::Refresh(context));
+    }
+}
