@@ -35,7 +35,7 @@ The default key bindings can be overridden.
 | <kbd>Ctrl-g</kbd>                    | Toggle ignore case                                 | `ignore_case_toggle`                         |
 | <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match                                 | `fuzzy_toggle`                               |
 | <kbd>R</kbd>                         | Refresh                                            | `refresh`                                    |
-| <kbd>c/C</kbd>                       | Copy commit short/full hash                        | `short_copy` `full_copy`                     |
+| <kbd>y/Y</kbd>                       | Copy commit short/full hash                        | `short_copy` `full_copy`                     |
 
 #### Commit Detail
 
@@ -49,7 +49,7 @@ The default key bindings can be overridden.
 | <kbd>J/K</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>Alt-Down</kbd> <kbd>Alt-j</kbd> | Select parent commit            | `go_to_parent`                  |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
-| <kbd>c/C</kbd>                       | Copy commit short/full hash     | `short_copy` `full_copy`        |
+| <kbd>y/Y</kbd>                       | Copy commit short/full hash     | `short_copy` `full_copy`        |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>f</kbd>            | Search/Filter files (changes and files tabs) | `search` `filter` |
@@ -90,7 +90,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
-| <kbd>c</kbd>                                       | Copy ref name    | `short_copy`                     |
+| <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
 
 The refs list opens with `Local Changes` selected from the commit list, and with `Branches` selected from the local changes page.
 Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local changes → branches → commit list → local changes.
@@ -102,8 +102,11 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter<br>Close local changes | `close` `cancel` |
 | <kbd>Tab</kbd>                       | Open refs list on branches                                   | `ref_list`                      |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
-| <kbd>3</kbd>                         | Focus commit message, amend checkbox and commit button       | `focus_panel_3`                 |
-| <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message / Toggle amend / Commit | `confirm` |
+| <kbd>3</kbd>                         | Focus commit message                                         | `focus_panel_3`                 |
+| <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message | `confirm`    |
+| <kbd>c</kbd>                         | Commit (or amend), or continue the rebase in progress        | `commit`                        |
+| <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
+| <kbd>C</kbd>                         | Abort the rebase in progress (asks first)                    | `abort_rebase`                  |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |
 | <kbd>m</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
@@ -120,12 +123,13 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
-In the commit section, direction keys move between the message, the amend checkbox and the commit button.
-The commit button amends the last commit while amend is checked.
+<kbd>c</kbd> commits the staged changes with the message, or starts typing the message when it is empty.
+While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits, and <kbd>C</kbd> aborts it.
+The commit section title shows when amending or rebasing.
 While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>.
 
-Checking amend shows the changes of the last commit in the staged files, combined with what is already staged, and its message in the message box.
-Unstaging while amending removes changes from the commit being amended. Unchecking it restores the previous message.
+<kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
+Unstaging while amending removes changes from the commit being amended. Turning it off restores the previous message.
 
 #### User Command
 

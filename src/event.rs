@@ -240,6 +240,9 @@ pub enum UserEvent {
     ToggleStage,
     ToggleSelect,
     Stash,
+    Commit,
+    AbortRebase,
+    ToggleAmend,
     Discard,
     SearchTargetToggle,
     IgnoreCaseToggle,
@@ -323,6 +326,9 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
                         "toggle_select" => Ok(UserEvent::ToggleSelect),
                         "stash" => Ok(UserEvent::Stash),
+                        "commit" => Ok(UserEvent::Commit),
+                        "abort_rebase" => Ok(UserEvent::AbortRebase),
+                        "toggle_amend" => Ok(UserEvent::ToggleAmend),
                         "discard" => Ok(UserEvent::Discard),
                         _ => {
                             let msg = format!("Unknown user event: {value}");

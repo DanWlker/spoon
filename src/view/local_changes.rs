@@ -67,17 +67,15 @@ impl<'a> LocalChangesView<'a> {
         let count = event_with_count.count;
 
         if self.as_state().is_commit_focused() {
-            // directions cycle through the message, the amend checkbox and the commit button
-            match event {
-                UserEvent::NavigateDown | UserEvent::NavigateRight | UserEvent::SelectDown => {
-                    self.as_mut_state().cycle_commit_item(true);
-                    return;
-                }
-                UserEvent::NavigateUp | UserEvent::NavigateLeft | UserEvent::SelectUp => {
-                    self.as_mut_state().cycle_commit_item(false);
-                    return;
-                }
-                _ => {}
+            // the commit section only has the message, there is nothing to move to
+            if let UserEvent::NavigateDown
+            | UserEvent::NavigateUp
+            | UserEvent::NavigateLeft
+            | UserEvent::NavigateRight
+            | UserEvent::SelectDown
+            | UserEvent::SelectUp = event
+            {
+                return;
             }
         }
 
@@ -95,6 +93,20 @@ impl<'a> LocalChangesView<'a> {
             }
             UserEvent::ToggleSelect => {
                 self.as_mut_state().toggle_pick();
+            }
+            UserEvent::Commit => {
+                let result = self.as_mut_state().commit_or_continue();
+                self.after_action(result);
+            }
+            UserEvent::AbortRebase => {
+                if let Err(err) = self.as_mut_state().request_abort_rebase() {
+                    self.tx.send(AppEvent::NotifyError(err));
+                }
+            }
+            UserEvent::ToggleAmend => {
+                if let Err(err) = self.as_mut_state().toggle_amend() {
+                    self.tx.send(AppEvent::NotifyError(err));
+                }
             }
             UserEvent::Stash => match self.as_mut_state().start_stash() {
                 Ok(()) => self.update_stash_status(),

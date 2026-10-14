@@ -748,6 +748,15 @@
         "stash": {
           "$ref": "#/definitions/keybindArray"
         },
+        "commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "abort_rebase": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_amend": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "discard": {
           "$ref": "#/definitions/keybindArray"
         }

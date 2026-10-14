@@ -385,6 +385,46 @@ impl Repository {
         run_git(&self.path, &args, None)
     }
 
+    // Whether a rebase stopped (on a conflict, or to edit a commit) and waits to be continued.
+    pub fn rebase_in_progress(&self) -> bool {
+        let git_path = |name: &str| {
+            git_output(&self.path, &["rev-parse", "--git-path", name])
+                .map(|p| self.path.join(p.trim()))
+                .ok()
+        };
+        // rebase-apply is also used by `git am`, which does not leave the "rebasing" file
+        git_path("rebase-merge").is_some_and(|p| p.is_dir())
+            || git_path("rebase-apply/rebasing").is_some_and(|p| p.exists())
+    }
+
+    pub fn rebase_continue(&self) -> std::result::Result<(), String> {
+        let output = Command::new("git")
+            .args(["rebase", "--continue"])
+            // keep the messages of the rebased commits instead of opening an editor
+            .env("GIT_EDITOR", "true")
+            .current_dir(&self.path)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("failed to run git rebase --continue: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            // git explains conflicts left to resolve on stdout
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let reason = [stderr.trim(), stdout.trim()]
+                .into_iter()
+                .find(|s| !s.is_empty())
+                .unwrap_or_default()
+                .to_string();
+            Err(format!("git rebase --continue failed: {reason}"))
+        }
+    }
+
+    pub fn rebase_abort(&self) -> std::result::Result<(), String> {
+        run_git(&self.path, &["rebase", "--abort"], None)
+    }
+
     pub fn commit_staged(&self, message: &str, amend: bool) -> std::result::Result<(), String> {
         // the message is read from stdin so no editor is opened
         let mut args = vec!["commit", "--quiet", "--file=-"];

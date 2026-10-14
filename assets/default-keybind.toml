@@ -48,9 +48,15 @@ toggle_stage = ["space"]
 toggle_select = ["m"]
 # stash local changes, or only the selected files
 stash = ["s"]
+# commit (or amend), or continue the rebase in progress
+commit = ["c"]
+# abort the rebase in progress, after confirming
+abort_rebase = ["shift-c"]
+# amend the last commit instead of making a new one
+toggle_amend = ["shift-a"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]
 
 # copy part of information, ex: copy the short commit hash not all
-short_copy = ["c"]
-full_copy = ["shift-c"]
+short_copy = ["y"]
+full_copy = ["shift-y"]

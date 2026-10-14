@@ -35,11 +35,11 @@ pub enum LocalChangesSection {
     Staged,
 }
 
+// An action waiting for the user to confirm it in a popup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommitItem {
-    Message,
-    Amend,
-    Commit,
+enum ConfirmAction {
+    Discard,
+    AbortRebase,
 }
 
 // The commit section's contents, kept across refreshes.
@@ -83,7 +83,6 @@ pub struct LocalChangesState<'a> {
     diff_height: usize,
 
     commit_focused: bool,
-    commit_item: CommitItem,
     // true while typing the commit message
     editing: bool,
     message: TextArea,
@@ -97,8 +96,10 @@ pub struct LocalChangesState<'a> {
     // the message typed before stashing, see `start_stash`
     stash_input: Option<Input>,
 
-    // the question shown in a popup while waiting for the user to confirm discarding
-    discard_prompt: Option<String>,
+    // the action and question shown in a popup while waiting for the user to confirm
+    confirm: Option<(ConfirmAction, String)>,
+    // a rebase stopped and waits to be continued (or aborted)
+    rebasing: bool,
 }
 
 impl<'a> LocalChangesState<'a> {
@@ -135,14 +136,14 @@ impl<'a> LocalChangesState<'a> {
             diff_offset: 0,
             diff_height: 0,
             commit_focused: false,
-            commit_item: CommitItem::Message,
             editing: false,
             message: TextArea::default(),
             amend_base: None,
             message_before_amend: None,
             needs_refresh: false,
             stash_input: None,
-            discard_prompt: None,
+            confirm: None,
+            rebasing: repository.rebase_in_progress(),
         };
         state.load_diff();
         state
@@ -212,12 +213,33 @@ impl<'a> LocalChangesState<'a> {
         self.commit_focused
     }
 
-    pub fn cycle_commit_item(&mut self, forward: bool) {
-        self.commit_item = match (self.commit_item, forward) {
-            (CommitItem::Message, true) | (CommitItem::Commit, false) => CommitItem::Amend,
-            (CommitItem::Amend, true) | (CommitItem::Message, false) => CommitItem::Commit,
-            (CommitItem::Commit, true) | (CommitItem::Amend, false) => CommitItem::Message,
-        };
+    // Continues the rebase when one is in progress; otherwise commits, or starts typing the message
+    // when there is none yet.
+    pub fn commit_or_continue(&mut self) -> Result<(), String> {
+        if self.rebasing {
+            let result = self.repository.rebase_continue();
+            if result.is_ok() {
+                self.needs_refresh = true;
+            }
+            self.reload();
+            return result;
+        }
+        if self.message.text().trim().is_empty() {
+            self.focus_commit();
+            self.editing = true;
+            return Ok(());
+        }
+        self.commit()
+    }
+
+    // Asks for confirmation to abort the rebase in progress.
+    pub fn request_abort_rebase(&mut self) -> Result<(), String> {
+        if !self.rebasing {
+            return Err("No rebase in progress".into());
+        }
+        let prompt = "Abort the rebase and go back to where it started?".to_string();
+        self.confirm = Some((ConfirmAction::AbortRebase, prompt));
+        Ok(())
     }
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked.
@@ -235,7 +257,6 @@ impl<'a> LocalChangesState<'a> {
         self.message = TextArea::default();
         self.amend_base = None;
         self.message_before_amend = None;
-        self.commit_item = CommitItem::Message;
         self.needs_refresh = true;
         self.reload();
         Ok(())
@@ -388,28 +409,47 @@ impl<'a> LocalChangesState<'a> {
         } else {
             "all changes to"
         };
-        self.discard_prompt = Some(format!("Discard {target} {path}?"));
+        self.confirm = Some((ConfirmAction::Discard, format!("Discard {target} {path}?")));
     }
 
     pub fn is_confirming(&self) -> bool {
-        self.discard_prompt.is_some()
+        self.confirm.is_some()
     }
 
-    // y or Enter discards, n or Esc cancels; other keys are ignored.
+    #[cfg(test)]
+    fn confirm_prompt(&self) -> Option<&str> {
+        self.confirm.as_ref().map(|(_, prompt)| prompt.as_str())
+    }
+
+    // y or Enter confirms, n or Esc cancels; other keys are ignored.
     pub fn handle_confirm_key(&mut self, key: KeyEvent) -> Result<(), String> {
         match key.code {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
-                self.discard_prompt = None;
-                let picked_files = !self.diff_focused;
-                let result = self.discard();
-                if picked_files && result.is_ok() {
-                    self.clear_picks();
-                }
+                let Some((action, _)) = self.confirm.take() else {
+                    return Ok(());
+                };
+                let result = match action {
+                    ConfirmAction::Discard => {
+                        let picked_files = !self.diff_focused;
+                        let result = self.discard();
+                        if picked_files && result.is_ok() {
+                            self.clear_picks();
+                        }
+                        result
+                    }
+                    ConfirmAction::AbortRebase => {
+                        let result = self.repository.rebase_abort();
+                        if result.is_ok() {
+                            self.needs_refresh = true;
+                        }
+                        result
+                    }
+                };
                 self.reload();
                 result
             }
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                self.discard_prompt = None;
+                self.confirm = None;
                 Ok(())
             }
             _ => Ok(()),
@@ -480,11 +520,7 @@ impl<'a> LocalChangesState<'a> {
     // In the commit section, starts editing the message or toggles amend.
     pub fn enter(&mut self) -> Result<(), String> {
         if self.commit_focused {
-            match self.commit_item {
-                CommitItem::Message => self.editing = true,
-                CommitItem::Amend => self.toggle_amend()?,
-                CommitItem::Commit => self.commit()?,
-            }
+            self.editing = true;
         } else if !self.diff_focused {
             // with picked rows, the diff shows all their files to stage hunks and lines from
             if !self.picked().is_empty() {
@@ -606,12 +642,7 @@ impl<'a> LocalChangesState<'a> {
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
     pub fn toggle_stage(&mut self) -> Result<(), String> {
         if self.commit_focused {
-            // space on the checkbox toggles it like enter, and does nothing on the message
-            return match self.commit_item {
-                CommitItem::Amend => self.toggle_amend(),
-                CommitItem::Commit => self.commit(),
-                CommitItem::Message => Ok(()),
-            };
+            return Ok(());
         }
         let result = if self.line_mode {
             self.toggle_stage_line()
@@ -687,6 +718,7 @@ impl<'a> LocalChangesState<'a> {
         let selected_path = self.selected_path();
 
         self.changes = self.load_changes();
+        self.rebasing = self.repository.rebase_in_progress();
         let filter = self.query.filter();
         self.unstaged_rows = build_rows(&self.changes.unstaged, &self.unstaged_collapsed, filter);
         self.staged_rows = build_rows(&self.changes.staged, &self.staged_collapsed, filter);
@@ -1106,14 +1138,14 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         self.render_file_section(state, LocalChangesSection::Staged, staged_area, buf);
         self.render_diff(state, diff_area, buf);
         self.render_commit(state, commit_area, buf);
-        if let Some(prompt) = &state.discard_prompt {
-            self.render_discard_popup(prompt, area, buf);
+        if let Some((action, prompt)) = &state.confirm {
+            self.render_confirm_popup(*action, prompt, area, buf);
         }
     }
 }
 
-// top border, message box with 3 lines and its borders, amend checkbox
-const COMMIT_AREA_HEIGHT: u16 = 1 + 5 + 1;
+// top border, message box with 3 lines and its borders
+const COMMIT_AREA_HEIGHT: u16 = 1 + 5;
 
 impl LocalChangesPanel<'_> {
     fn render_file_section(
@@ -1322,19 +1354,23 @@ impl LocalChangesPanel<'_> {
         } else {
             theme.fg
         };
+        // amending and rebasing have no controls of their own, the title shows them
+        let mut title = vec![Span::raw(" [3] Commit ").fg(title_fg).bold()];
+        if state.amend_base.is_some() {
+            title.push(Span::raw("· amending ").fg(theme.status_warn_fg));
+        }
+        if state.rebasing {
+            title.push(Span::raw("· rebasing (c continue, C abort) ").fg(theme.status_warn_fg));
+        }
         let block = Block::default()
             .borders(Borders::TOP)
             .style(Style::default().fg(theme.divider_fg))
-            .title(Span::raw(" [3] Commit ").fg(title_fg).bold())
+            .title(Line::from(title))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let [message_area, amend_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
-
-        let message_selected = focused && state.commit_item == CommitItem::Message;
-        let border_fg = if message_selected {
+        let border_fg = if focused {
             theme.status_info_fg
         } else {
             theme.divider_fg
@@ -1345,46 +1381,25 @@ impl LocalChangesPanel<'_> {
         if state.editing {
             message_block = message_block.title(Span::raw(" editing · Esc to stop ").fg(border_fg));
         }
-        let text_area = message_block.inner(message_area);
-        message_block.render(message_area, buf);
+        let text_area = message_block.inner(inner);
+        message_block.render(inner, buf);
         self.render_message(state, text_area, buf);
-
-        // the checkbox on the left and the button on the right of the same line
-        let checkbox = if state.amend_base.is_some() {
-            "[x] Amend"
-        } else {
-            "[ ] Amend"
-        };
-        let button = if state.amend_base.is_some() {
-            "[ Amend Commit ]"
-        } else {
-            "[ Commit ]"
-        };
-        let [checkbox_area, _, button_area] = Layout::horizontal([
-            Constraint::Length(checkbox.chars().count() as u16),
-            Constraint::Min(0),
-            Constraint::Length(button.chars().count() as u16),
-        ])
-        .areas(amend_area);
-        Paragraph::new(Line::raw(checkbox).fg(theme.fg)).render(checkbox_area, buf);
-        Paragraph::new(Line::raw(button).fg(theme.fg).bold()).render(button_area, buf);
-
-        let highlighted = match state.commit_item {
-            CommitItem::Amend => Some(checkbox_area),
-            CommitItem::Commit => Some(button_area),
-            CommitItem::Message => None,
-        };
-        if let Some(highlighted) = highlighted.filter(|_| focused) {
-            let highlight_style = Style::default()
-                .bg(theme.ref_selected_bg)
-                .fg(theme.ref_selected_fg);
-            buf.set_style(highlighted, highlight_style);
-        }
     }
 
-    fn render_discard_popup(&self, prompt: &str, area: Rect, buf: &mut Buffer) {
+    fn render_confirm_popup(
+        &self,
+        action: ConfirmAction,
+        prompt: &str,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         let theme = &self.ctx.color_theme;
-        let hint = "y / Enter: discard    n / Esc: cancel";
+        let (title, hint) = match action {
+            ConfirmAction::Discard => {
+                (" Discard changes ", "y / Enter: discard    n / Esc: cancel")
+            }
+            ConfirmAction::AbortRebase => (" Abort rebase ", "y / Enter: abort    n / Esc: cancel"),
+        };
         // text plus padding and borders
         let width = (prompt.chars().count().max(hint.len()) as u16 + 4).min(area.width);
         let height = 6.min(area.height);
@@ -1398,7 +1413,7 @@ impl LocalChangesPanel<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .style(Style::default().fg(theme.status_warn_fg).bg(theme.bg))
-            .title(Span::raw(" Discard changes ").bold())
+            .title(Span::raw(title).bold())
             .padding(Padding::horizontal(1));
         let lines = vec![
             Line::raw(prompt.to_string()).fg(theme.fg),
@@ -1694,9 +1709,7 @@ mod tests {
         assert_eq!(paths(&state.changes.staged), vec!["c.txt"]);
 
         // 3, down to the checkbox, enter: the last commit is combined with the staged changes
-        state.focus_commit();
-        state.cycle_commit_item(true);
-        state.enter()?;
+        state.toggle_amend()?;
         assert_eq!(
             paths(&state.changes.staged),
             vec!["a.txt", "b.txt", "c.txt"]
@@ -1721,8 +1734,7 @@ mod tests {
         assert_eq!(paths(&reloaded.changes.staged), vec!["a.txt", "c.txt"]);
 
         // turning amend off restores the staged section and the typed message
-        state.focus_commit();
-        state.toggle_stage()?;
+        state.toggle_amend()?;
         assert_eq!(state.message.text(), "draft");
         assert_eq!(paths(&state.changes.staged), vec!["b.txt", "c.txt"]);
         assert_eq!(state.changes.staged[0].status, LocalChangeStatus::Deleted);
@@ -1791,11 +1803,16 @@ mod tests {
         state.message = TextArea::new("  \n");
         assert!(state.commit().is_err());
 
-        // message, amend checkbox, commit button
+        // c with an empty message starts typing it instead
+        state.message = TextArea::default();
+        state.commit_or_continue()?;
+        assert!(state.is_editing());
+        state.back();
+        state.back();
+
+        // c with a message commits
         state.message = TextArea::new("first change\n\nbody");
-        state.focus_commit();
-        state.cycle_commit_item(false);
-        state.enter()?;
+        state.commit_or_continue()?;
         assert!(state.take_needs_refresh());
         assert!(!state.take_needs_refresh());
         assert_eq!(
@@ -1929,7 +1946,7 @@ mod tests {
         select_row(&mut state, ROOT_PATH);
         state.request_discard();
         assert_eq!(
-            state.discard_prompt.as_deref(),
+            state.confirm_prompt(),
             Some("Discard all changes to all files?")
         );
         state.handle_confirm_key(key(KeyCode::Char('y')))?;
@@ -2145,7 +2162,7 @@ mod tests {
         state.toggle_pick();
         state.request_discard();
         assert_eq!(
-            state.discard_prompt.as_deref(),
+            state.confirm_prompt(),
             Some("Discard all changes to 1 picked file?")
         );
         state.handle_confirm_key(key(KeyCode::Char('y')))?;
@@ -2224,6 +2241,101 @@ mod tests {
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(git_stdout(repo_path, &["stash", "list"]).lines().count(), 2);
 
+        Ok(())
+    }
+
+    // A repository stopped on a conflict while rebasing "feature" onto "master".
+    fn conflicting_rebase(repo_path: &std::path::Path) -> GitRepository<'_> {
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for (key, value) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.com"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            git_stdout(repo_path, &["config", key, value]);
+        }
+        fs::write(repo_path.join("a.txt"), "base\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("base", "2024-01-01");
+        git.checkout_b("feature");
+        fs::write(repo_path.join("a.txt"), "feature\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("feature change", "2024-01-02");
+        git.checkout("master");
+        fs::write(repo_path.join("a.txt"), "master\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("master change", "2024-01-03");
+        git.checkout("feature");
+        git_stdout(repo_path, &["rebase", "master"]);
+        git
+    }
+
+    #[test]
+    fn test_rebase_continue() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = conflicting_rebase(repo_path);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert!(state.rebasing);
+        assert_eq!(
+            state.changes.unstaged[0].status,
+            LocalChangeStatus::Conflicted
+        );
+
+        // continuing with the conflict unresolved fails and keeps rebasing
+        assert!(state.commit_or_continue().is_err());
+        assert!(state.rebasing);
+
+        // resolve, stage, then c continues instead of committing
+        fs::write(repo_path.join("a.txt"), "resolved\n")?;
+        state.reload();
+        select_row(&mut state, "a.txt");
+        state.toggle_stage()?;
+        state.commit_or_continue()?;
+        assert!(state.take_needs_refresh());
+        assert!(!state.rebasing);
+        assert_eq!(
+            git_stdout(repo_path, &["log", "--format=%s", "-2"]),
+            "feature change\nmaster change"
+        );
+
+        // abort only exists while rebasing
+        assert!(state.request_abort_rebase().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_rebase_abort() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = conflicting_rebase(repo_path);
+        let feature_before = git_stdout(repo_path, &["rev-parse", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+
+        state.request_abort_rebase()?;
+        assert_eq!(
+            state.confirm_prompt(),
+            Some("Abort the rebase and go back to where it started?")
+        );
+        // cancelling keeps rebasing
+        state.handle_confirm_key(key(KeyCode::Char('n')))?;
+        assert!(state.rebasing);
+
+        state.request_abort_rebase()?;
+        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        assert!(state.take_needs_refresh());
+        assert!(!state.rebasing);
+        assert!(state.changes.unstaged.is_empty());
+        assert_eq!(
+            git_stdout(repo_path, &["rev-parse", "HEAD"]),
+            feature_before
+        );
         Ok(())
     }
 }
