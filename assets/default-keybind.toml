@@ -46,6 +46,9 @@ focus_panel_3 = ["3"]
 toggle_stage = ["space"]
 # select several items: commits in the commit list, files in local changes
 toggle_select = ["m"]
+# go to the next/previous picked commit or file; keys separated by a space are pressed one after another
+next_picked = ["] m"]
+previous_picked = ["[ m"]
 # stash local changes, or only the selected files
 stash = ["s"]
 # commit (or amend), or continue the rebase in progress

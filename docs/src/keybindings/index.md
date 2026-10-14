@@ -28,6 +28,7 @@ The default key bindings can be overridden.
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>Tab</kbd>                       | Open refs list                                     | `ref_list`                                   |
 | <kbd>m</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
+| <kbd>]m</kbd> <kbd>[m</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -110,7 +111,7 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter<br>Close local changes | `close` `cancel` |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter | `close` `cancel` |
 | <kbd>Tab</kbd>                       | Open refs list on branches                                   | `ref_list`                      |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus commit message                                         | `focus_panel_3`                 |
@@ -121,6 +122,7 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |
 | <kbd>m</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
+| <kbd>]m</kbd> <kbd>[m</kbd>          | Go to next/previous picked file                              | `next_picked` `previous_picked` |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |

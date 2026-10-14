@@ -8,21 +8,35 @@ use crate::event::UserEvent;
 
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
+// Single keys, and sequences of keys pressed one after another (written separated by spaces, like "] m").
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct KeyBind(FxHashMap<KeyEvent, UserEvent>);
+pub struct KeyBind {
+    keys: FxHashMap<KeyEvent, UserEvent>,
+    sequences: FxHashMap<Vec<KeyEvent>, UserEvent>,
+}
 
 impl Deref for KeyBind {
     type Target = FxHashMap<KeyEvent, UserEvent>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.keys
     }
 }
 
 impl DerefMut for KeyBind {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.keys
     }
+}
+
+// How the keys pressed so far match the key sequences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceMatch {
+    // no sequence starts with them
+    None,
+    // they start a sequence, waiting for the next key
+    Partial,
+    Complete(UserEvent),
 }
 
 impl KeyBind {
@@ -30,13 +44,36 @@ impl KeyBind {
         let mut keybind: KeyBind =
             toml::from_str(DEFAULT_KEY_BIND).expect("default key bind should be correct");
 
-        if let Some(mut custom_keybind_patch) = custom_keybind_patch {
-            for (key_event, user_event) in custom_keybind_patch.drain() {
-                keybind.insert(key_event, user_event);
-            }
+        if let Some(custom_keybind_patch) = custom_keybind_patch {
+            keybind.merge(custom_keybind_patch);
         }
 
         keybind
+    }
+
+    // Overrides the keys and sequences of `patch`; a key of its own takes over the sequences
+    // starting with it, and a sequence takes over the key it starts with.
+    fn merge(&mut self, patch: KeyBind) {
+        for (key_event, user_event) in patch.keys {
+            self.sequences.retain(|keys, _| keys[0] != key_event);
+            self.keys.insert(key_event, user_event);
+        }
+        for (key_events, user_event) in patch.sequences {
+            self.keys.remove(&key_events[0]);
+            self.sequences.insert(key_events, user_event);
+        }
+    }
+
+    // Matches the keys pressed so far against the key sequences.
+    pub fn match_sequence(&self, pressed: &[KeyEvent]) -> SequenceMatch {
+        if let Some(user_event) = self.sequences.get(pressed) {
+            return SequenceMatch::Complete(*user_event);
+        }
+        if self.sequences.keys().any(|keys| keys.starts_with(pressed)) {
+            SequenceMatch::Partial
+        } else {
+            SequenceMatch::None
+        }
     }
 
     pub fn keys_for_event(&self, user_event: UserEvent) -> Vec<String> {
@@ -46,7 +83,18 @@ impl KeyBind {
             .map(|(ke, _)| *ke)
             .collect();
         key_events.sort_by(|a, b| a.partial_cmp(b).unwrap()); // At least when used for key bindings, it doesn't seem to be a problem...
-        key_events.into_iter().map(key_event_to_string).collect()
+        let mut sequences: Vec<&Vec<KeyEvent>> = self
+            .sequences
+            .iter()
+            .filter(|(_, ue)| **ue == user_event)
+            .map(|(keys, _)| keys)
+            .collect();
+        sequences.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        key_events
+            .into_iter()
+            .map(key_event_to_string)
+            .chain(sequences.into_iter().map(|keys| keys_to_string(keys)))
+            .collect()
     }
 
     pub fn user_command_event_numbers(&self) -> Vec<usize> {
@@ -71,26 +119,51 @@ impl<'de> Deserialize<'de> for KeyBind {
         D: Deserializer<'de>,
     {
         let parsed_map = FxHashMap::<UserEvent, Vec<String>>::deserialize(deserializer)?;
-        let mut key_map = FxHashMap::<KeyEvent, UserEvent>::default();
+        let mut keybind = KeyBind::default();
         for (user_event, key_events) in parsed_map {
             for key_event_str in key_events {
-                let key_event = match parse_key_event(&key_event_str) {
-                    Ok(e) => e,
+                // keys separated by whitespace are a sequence
+                let parsed: Result<Vec<KeyEvent>, String> = key_event_str
+                    .split_whitespace()
+                    .map(parse_key_event)
+                    .collect();
+                let mut keys = match parsed {
+                    Ok(keys) if !keys.is_empty() => keys,
+                    Ok(_) => {
+                        let msg = format!("{key_event_str:?} is not a valid key event: empty");
+                        return Err(serde::de::Error::custom(msg));
+                    }
                     Err(s) => {
                         let msg = format!("{key_event_str:?} is not a valid key event: {s:}");
                         return Err(serde::de::Error::custom(msg));
                     }
                 };
-                if let Some(conflict_user_event) = key_map.insert(key_event, user_event) {
+                let conflict = if keys.len() == 1 {
+                    keybind.keys.insert(keys.remove(0), user_event)
+                } else {
+                    keybind.sequences.insert(keys, user_event)
+                };
+                if let Some(conflict_user_event) = conflict {
                     let msg = format!(
-                        "{key_event:?} map to multiple events: {user_event:?}, {conflict_user_event:?}"
+                        "{key_event_str:?} map to multiple events: {user_event:?}, {conflict_user_event:?}"
                     );
                     return Err(serde::de::Error::custom(msg));
                 }
             }
         }
 
-        Ok(KeyBind(key_map))
+        // a key starting a sequence cannot do something on its own, the sequence could not be typed
+        for (keys, user_event) in &keybind.sequences {
+            if let Some(key_user_event) = keybind.keys.get(&keys[0]) {
+                let msg = format!(
+                    "{} starts the key sequence of {user_event:?}, so it cannot map to {key_user_event:?}",
+                    key_event_to_string(keys[0])
+                );
+                return Err(serde::de::Error::custom(msg));
+            }
+        }
+
+        Ok(keybind)
     }
 }
 
@@ -173,6 +246,11 @@ fn parse_key_code_with_modifiers(
         _ => return Err(format!("Unable to parse {raw}")),
     };
     Ok(KeyEvent::new(c, modifiers))
+}
+
+// A sequence is displayed with its keys one after another, like "]m".
+pub fn keys_to_string(keys: &[KeyEvent]) -> String {
+    keys.iter().map(|key| key_event_to_string(*key)).collect()
 }
 
 fn key_event_to_string(key_event: KeyEvent) -> String {
@@ -261,8 +339,8 @@ mod tests {
             user_command_view_toggle_10 = ["e"]
         "#;
 
-        let expected = KeyBind(
-            [
+        let expected = KeyBind {
+            keys: [
                 (
                     KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
                     UserEvent::NavigateUp,
@@ -314,11 +392,68 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-        );
+            sequences: FxHashMap::default(),
+        };
 
         let actual: KeyBind = toml::from_str(toml).unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_key_sequences() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+        let keybind: KeyBind = toml::from_str(
+            r#"
+            go_to_next = ["] m", "g n"]
+            quit = ["q"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(keybind.match_sequence(&[key(']')]), SequenceMatch::Partial);
+        assert_eq!(
+            keybind.match_sequence(&[key(']'), key('m')]),
+            SequenceMatch::Complete(UserEvent::GoToNext)
+        );
+        assert_eq!(
+            keybind.match_sequence(&[key(']'), key('x')]),
+            SequenceMatch::None
+        );
+        assert_eq!(keybind.match_sequence(&[key('q')]), SequenceMatch::None);
+        assert_eq!(
+            keybind.keys_for_event(UserEvent::GoToNext),
+            vec!["]m", "gn"]
+        );
+
+        // a key cannot both start a sequence and do something on its own
+        let err = toml::from_str::<KeyBind>(
+            r#"
+            go_to_next = ["] m"]
+            quit = ["]"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("starts the key sequence"));
+
+        // a custom key of its own replaces the default sequences starting with it, and the other way around
+        let custom: KeyBind = toml::from_str(
+            r#"quit = ["]"]
+            go_to_top = ["g g"]"#,
+        )
+        .unwrap();
+        let mut defaults: KeyBind = toml::from_str(
+            r#"go_to_next = ["] m"]
+            go_to_top = ["g"]"#,
+        )
+        .unwrap();
+        defaults.merge(custom);
+        assert_eq!(defaults.match_sequence(&[key(']')]), SequenceMatch::None);
+        assert_eq!(defaults.get(&key(']')), Some(&UserEvent::Quit));
+        assert_eq!(defaults.get(&key('g')), None);
+        assert_eq!(
+            defaults.match_sequence(&[key('g'), key('g')]),
+            SequenceMatch::Complete(UserEvent::GoToTop)
+        );
     }
 
     #[rustfmt::skip]

@@ -27,7 +27,7 @@ use crate::{
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, Repository},
     graph::GraphImageManager,
-    keybind::KeyBind,
+    keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
     search::SearchOptions,
     view::{RefreshViewContext, View},
@@ -94,6 +94,8 @@ enum PendingClear {
 struct AppStatus {
     status_line: StatusLine,
     numeric_prefix: String,
+    // the keys pressed so far of a key sequence, like "]" of "]m"
+    pending_keys: Vec<KeyEvent>,
     view_area: Rect,
     pending_clear: PendingClear,
 }
@@ -219,6 +221,41 @@ impl App<'_> {
                         continue;
                     }
 
+                    // key sequences wait for their next key; typed text (the search input) is no sequence
+                    if !matches!(self.app_status.status_line, StatusLine::Input { .. }) {
+                        let had_pending = !self.app_status.pending_keys.is_empty();
+                        self.app_status.pending_keys.push(key);
+                        match self
+                            .ctx
+                            .keybind
+                            .match_sequence(&self.app_status.pending_keys)
+                        {
+                            SequenceMatch::Partial => continue,
+                            SequenceMatch::Complete(ue) => {
+                                self.app_status.pending_keys.clear();
+                                let event_with_count = process_numeric_prefix(
+                                    &self.app_status.numeric_prefix,
+                                    ue,
+                                    key,
+                                );
+                                self.view.handle_event(event_with_count, key);
+                                self.app_status.numeric_prefix.clear();
+                                continue;
+                            }
+                            SequenceMatch::None => {
+                                self.app_status.pending_keys.clear();
+                                // Esc only cancels the started sequence
+                                if had_pending
+                                    && self.ctx.keybind.get(&key) == Some(&UserEvent::Cancel)
+                                {
+                                    self.app_status.numeric_prefix.clear();
+                                    continue;
+                                }
+                                // otherwise the key goes on as usual
+                            }
+                        }
+                    }
+
                     let user_event = self.ctx.keybind.get(&key).filter(|ue| {
                         // without panels to focus, digits fall through to the numeric prefix (or search input)
                         !matches!(ue, UserEvent::FocusPanel(_)) || self.view.has_panels()
@@ -293,10 +330,6 @@ impl App<'_> {
                 }
                 AppEvent::RunExternal(command) => {
                     self.run_external(&command);
-                }
-                AppEvent::CloseLocalChanges => {
-                    self.close_local_changes();
-                    self.app_status.pending_clear = PendingClear::Screen;
                 }
                 AppEvent::OpenHelp => {
                     self.open_help();
@@ -427,7 +460,13 @@ impl App<'_> {
         let text: Line = match &self.app_status.status_line {
             StatusLine::None => {
                 let picked = self.view.picked_commit_count();
-                if self.app_status.numeric_prefix.is_empty() && picked > 0 {
+                // the count and the keys of a key sequence typed so far
+                let prefix = format!(
+                    "{}{}",
+                    self.app_status.numeric_prefix,
+                    keys_to_string(&self.app_status.pending_keys)
+                );
+                if prefix.is_empty() && picked > 0 {
                     let commits = if picked == 1 { "commit" } else { "commits" };
                     let msg = format!("{picked} {commits} picked  (Esc to clear)");
                     let msg_w = console::measure_text_width(&msg);
@@ -436,11 +475,8 @@ impl App<'_> {
                         " ".repeat(pad_w).into(),
                         msg.fg(self.ctx.color_theme.status_info_fg),
                     ])
-                } else if self.app_status.numeric_prefix.is_empty() {
-                    Line::raw("")
                 } else {
-                    Line::raw(self.app_status.numeric_prefix.as_str())
-                        .fg(self.ctx.color_theme.status_input_transient_fg)
+                    Line::raw(prefix).fg(self.ctx.color_theme.status_input_transient_fg)
                 }
             }
             StatusLine::Input {
@@ -778,13 +814,6 @@ impl App<'_> {
                 self.ec.sender(),
             );
             self.app_status.pending_clear = PendingClear::ViewImages;
-        }
-    }
-
-    fn close_local_changes(&mut self) {
-        if let View::LocalChanges(ref mut view) = self.view {
-            let commit_list_state = view.take_list_state();
-            self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
         }
     }
 

@@ -250,6 +250,7 @@ fn build_lines(
         (vec![UserEvent::Search], "Start search".into()),
         (vec![UserEvent::Cancel], "Cancel search / Clear picked commits".into()),
         (vec![UserEvent::ToggleSelect], "Pick/Unpick commit".into()),
+        (vec![UserEvent::NextPicked, UserEvent::PreviousPicked], "Go to next/previous picked commit".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::SearchTargetToggle], "Toggle search target".into()),
@@ -303,7 +304,7 @@ fn build_lines(
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
 
     let local_changes_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Back, then clear picked files, search, filter / Close".into()),
+        (vec![UserEvent::Cancel, UserEvent::Close], "Back, then clear picked files, search, filter".into()),
         (vec![UserEvent::RefList], "Open refs list on branches".into()),
         (vec![UserEvent::FocusPanel(1)], "Focus unstaged files".into()),
         (vec![UserEvent::FocusPanel(2)], "Focus staged files".into()),
@@ -315,6 +316,7 @@ fn build_lines(
         (vec![UserEvent::Abort], "Abort the rebase, merge, cherry-pick or revert in progress".into()),
         (vec![UserEvent::ToggleStage], "Stage/Unstage file, directory, hunk or line, or the picked files".into()),
         (vec![UserEvent::ToggleSelect], "Pick/Unpick file or directory".into()),
+        (vec![UserEvent::NextPicked, UserEvent::PreviousPicked], "Go to next/previous picked file".into()),
         (vec![UserEvent::Stash], "Stash all changes, or the picked files".into()),
         (vec![UserEvent::Discard], "Discard unstaged file, directory, hunk or line".into()),
         (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory".into()),

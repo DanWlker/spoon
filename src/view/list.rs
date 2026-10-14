@@ -170,6 +170,12 @@ impl<'a> ListView<'a> {
                 UserEvent::ToggleSelect => {
                     self.as_mut_list_state().toggle_pick();
                 }
+                UserEvent::NextPicked => {
+                    self.as_mut_list_state().select_next_pick(true);
+                }
+                UserEvent::PreviousPicked => {
+                    self.as_mut_list_state().select_next_pick(false);
+                }
                 UserEvent::Confirm => {
                     self.tx.send(AppEvent::OpenDetail);
                 }

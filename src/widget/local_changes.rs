@@ -23,8 +23,8 @@ use crate::{
         conflict::ConflictView,
         diff::{diff_lines, parse_diff, ParsedDiff},
         file_tree::{
-            ancestors, build_rooted_file_tree_rows, find_match, FileTreeRow, SearchDirection,
-            ROOT_PATH,
+            ancestors, build_rooted_file_tree_rows, find_match, find_next, FileTreeRow,
+            SearchDirection, ROOT_PATH,
         },
         text_area::TextArea,
         tree_query::{highlighted_name, path_matches, QueryChange, QueryKind, TreeQuery},
@@ -989,7 +989,32 @@ impl<'a> LocalChangesState<'a> {
         };
         let all_rows = build_rows(self.files(), &HashSet::new(), self.query.filter());
         let current = self.selected_path();
-        let Some(path) = find_match(&all_rows, current.as_deref(), &query, direction) else {
+        let path = find_match(&all_rows, current.as_deref(), &query, direction);
+        self.reveal(path);
+    }
+
+    // Moves the cursor to the next (or previous) picked row, wrapping around.
+    pub fn select_next_pick(&mut self, forward: bool) {
+        if self.diff_focused || self.commit_focused || self.conflict_focused {
+            return;
+        }
+        let direction = if forward {
+            SearchDirection::Next
+        } else {
+            SearchDirection::Previous
+        };
+        let all_rows = build_rows(self.files(), &HashSet::new(), self.query.filter());
+        let current = self.selected_path();
+        let picked = self.picked();
+        let path = find_next(&all_rows, current.as_deref(), direction, |row| {
+            picked.contains(&row.path)
+        });
+        self.reveal(path);
+    }
+
+    // Selects `path`, expanding the directories hiding it.
+    fn reveal(&mut self, path: Option<String>) {
+        let Some(path) = path else {
             return;
         };
         for dir in ancestors(&path) {
@@ -2835,6 +2860,41 @@ mod tests {
         state.enter()?;
         assert!(!repo_path.join("a.txt").exists());
         assert!(state.changes.unstaged.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_select_next_pick() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::create_dir(repo_path.join("dir"))?;
+        for name in ["a.txt", "b.txt", "dir/c.txt"] {
+            fs::write(repo_path.join(name), "x\n")?;
+        }
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.set_focused(true);
+        for path in ["dir/c.txt", "b.txt"] {
+            select_row(&mut state, path);
+            state.toggle_pick();
+        }
+
+        // jumping to a pick hidden in a collapsed directory expands it
+        select_row(&mut state, "dir");
+        state.collapse();
+        select_row(&mut state, ROOT_PATH);
+        state.select_next_pick(true);
+        assert_eq!(state.selected_path().as_deref(), Some("dir/c.txt"));
+        state.select_next_pick(true);
+        assert_eq!(state.selected_path().as_deref(), Some("b.txt"));
+        state.select_next_pick(true);
+        assert_eq!(state.selected_path().as_deref(), Some("dir/c.txt"));
+        state.select_next_pick(false);
+        assert_eq!(state.selected_path().as_deref(), Some("b.txt"));
         Ok(())
     }
 }

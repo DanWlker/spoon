@@ -256,10 +256,23 @@ pub fn find_match(
     query: &str,
     direction: SearchDirection,
 ) -> Option<String> {
+    find_next(rows, current, direction, |row| {
+        path_matches(&row.path, query)
+    })
+}
+
+// The path of the next row in `rows` for which `wanted` is true, from `current` in `direction`,
+// wrapping around. The root row is never one.
+pub fn find_next(
+    rows: &[FileTreeRow],
+    current: Option<&str>,
+    direction: SearchDirection,
+    wanted: impl Fn(&FileTreeRow) -> bool,
+) -> Option<String> {
     let matches: Vec<usize> = rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| !r.is_root() && path_matches(&r.path, query))
+        .filter(|(_, r)| !r.is_root() && wanted(r))
         .map(|(i, _)| i)
         .collect();
     let cur = current

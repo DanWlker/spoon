@@ -108,14 +108,19 @@ impl<'a> LocalChangesView<'a> {
             }
             UserEvent::Cancel | UserEvent::Close => {
                 // lines -> hunks -> files, or commit section -> files,
-                // then clear the picked files, then the search, then the filter, then close
+                // then clear the picked files, then the search, then the filter;
+                // the page itself is left with tab, not closed
                 let state = self.as_mut_state();
-                if !state.back() && !state.clear_picks() && !state.clear_query() {
-                    self.tx.send(AppEvent::CloseLocalChanges);
-                }
+                let _ = state.back() || state.clear_picks() || state.clear_query();
             }
             UserEvent::ToggleSelect => {
                 self.as_mut_state().toggle_pick();
+            }
+            UserEvent::NextPicked => {
+                self.as_mut_state().select_next_pick(true);
+            }
+            UserEvent::PreviousPicked => {
+                self.as_mut_state().select_next_pick(false);
             }
             UserEvent::Edit => {
                 if let Err(err) = self.as_mut_state().request_edit() {

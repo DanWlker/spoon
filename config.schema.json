@@ -749,6 +749,12 @@
         "toggle_select": {
           "$ref": "#/definitions/keybindArray"
         },
+        "next_picked": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_picked": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "stash": {
           "$ref": "#/definitions/keybindArray"
         },

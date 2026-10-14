@@ -29,7 +29,6 @@ pub enum AppEvent {
         // go to the local changes page instead of the commit list
         to_local_changes: bool,
     },
-    CloseLocalChanges,
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),
     OpenHelp,
@@ -241,6 +240,8 @@ pub enum UserEvent {
     FocusPanel(usize),
     ToggleStage,
     ToggleSelect,
+    NextPicked,
+    PreviousPicked,
     Stash,
     Commit,
     Abort,
@@ -328,6 +329,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
                         "toggle_select" => Ok(UserEvent::ToggleSelect),
+                        "next_picked" => Ok(UserEvent::NextPicked),
+                        "previous_picked" => Ok(UserEvent::PreviousPicked),
                         "stash" => Ok(UserEvent::Stash),
                         "commit" => Ok(UserEvent::Commit),
                         "edit" => Ok(UserEvent::Edit),

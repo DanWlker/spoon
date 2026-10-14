@@ -482,6 +482,30 @@ impl<'a> CommitListState<'a> {
         self.selected = index - self.offset;
     }
 
+    // Selects the next (or previous) picked commit, wrapping around.
+    pub fn select_next_pick(&mut self, forward: bool) {
+        let picked: Vec<usize> = self
+            .commits
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| self.is_picked(&c.commit.commit_hash))
+            .map(|(i, _)| i)
+            .collect();
+        let current = self.current_selected_index();
+        let target = if forward {
+            picked.iter().find(|&&i| i > current).or(picked.first())
+        } else {
+            picked
+                .iter()
+                .rev()
+                .find(|&&i| i < current)
+                .or(picked.last())
+        };
+        if let Some(&index) = target {
+            self.select_visible_index(index);
+        }
+    }
+
     pub fn select_next_match(&mut self) {
         self.select_next_match_index(self.current_selected_index());
     }
@@ -1389,6 +1413,26 @@ mod tests {
 
             state.clear_picks();
             assert!(state.picked_commit_hashes().is_empty());
+        });
+    }
+
+    #[test]
+    fn test_select_next_pick_wraps_around() {
+        with_commit_list_state(&["c0", "c1", "c2", "c3", "c4"], |state| {
+            state.reset_height(5);
+            for index in [1, 3] {
+                state.select_index(index);
+                state.toggle_pick();
+            }
+            state.select_index(0);
+            state.select_next_pick(true);
+            assert_eq!(state.current_selected_index(), 1);
+            state.select_next_pick(true);
+            assert_eq!(state.current_selected_index(), 3);
+            state.select_next_pick(true);
+            assert_eq!(state.current_selected_index(), 1);
+            state.select_next_pick(false);
+            assert_eq!(state.current_selected_index(), 3);
         });
     }
 

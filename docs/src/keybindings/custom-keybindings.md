@@ -49,3 +49,11 @@ Modifiers can be combined, for example: `ctrl-shift-a`.
 ### Character Keys
 
 Any single character not listed above (e.g., `a`, `b`, `1`, `!`) can be used as a key.
+
+### Key Sequences
+
+Keys separated by spaces are a sequence, pressed one after another, for example `"] m"` (the default of `next_picked`).
+After the first keys, the status line shows them while waiting for the next one; <kbd>Esc</kbd> cancels, and a key that does not continue the sequence acts as usual.
+
+A key cannot both start a sequence and be bound on its own, since the sequence could not be typed.
+Binding a key on its own in your config replaces the default sequences starting with it, and binding a sequence replaces the default binding of its first key.
