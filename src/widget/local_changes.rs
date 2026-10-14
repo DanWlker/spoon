@@ -17,7 +17,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
-    git::{LocalChangeFile, LocalChangeStatus, LocalChanges, Repository},
+    git::{LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository},
     widget::{
         diff::{diff_lines, parse_diff, ParsedDiff},
         file_tree::{
@@ -39,7 +39,7 @@ pub enum LocalChangesSection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfirmAction {
     Discard,
-    AbortRebase,
+    Abort(Operation),
 }
 
 // The commit section's contents, kept across refreshes.
@@ -98,8 +98,10 @@ pub struct LocalChangesState<'a> {
 
     // the action and question shown in a popup while waiting for the user to confirm
     confirm: Option<(ConfirmAction, String)>,
-    // a rebase stopped and waits to be continued (or aborted)
-    rebasing: bool,
+    // a rebase, merge, cherry-pick or revert stopped and waits to be finished (or aborted)
+    operation: Option<Operation>,
+    // whether git's prepared message was put in the message box for the operation in progress
+    message_prepared: bool,
 }
 
 impl<'a> LocalChangesState<'a> {
@@ -143,9 +145,11 @@ impl<'a> LocalChangesState<'a> {
             needs_refresh: false,
             stash_input: None,
             confirm: None,
-            rebasing: repository.rebase_in_progress(),
+            operation: repository.operation_in_progress(),
+            message_prepared: false,
         };
         state.load_diff();
+        state.prepare_message();
         state
     }
 
@@ -213,11 +217,11 @@ impl<'a> LocalChangesState<'a> {
         self.commit_focused
     }
 
-    // Continues the rebase when one is in progress; otherwise commits, or starts typing the message
-    // when there is none yet.
+    // Continues the rebase when one is in progress; otherwise commits (which also finishes a merge,
+    // cherry-pick or revert), or starts typing the message when there is none yet.
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
-        if self.rebasing {
-            let result = self.repository.rebase_continue();
+        if let Some(operation) = self.operation.filter(|o| o.continues_without_commit()) {
+            let result = self.repository.continue_operation(operation);
             if result.is_ok() {
                 self.needs_refresh = true;
             }
@@ -232,14 +236,34 @@ impl<'a> LocalChangesState<'a> {
         self.commit()
     }
 
-    // Asks for confirmation to abort the rebase in progress.
-    pub fn request_abort_rebase(&mut self) -> Result<(), String> {
-        if !self.rebasing {
-            return Err("No rebase in progress".into());
-        }
-        let prompt = "Abort the rebase and go back to where it started?".to_string();
-        self.confirm = Some((ConfirmAction::AbortRebase, prompt));
+    // Asks for confirmation to abort the operation in progress.
+    pub fn request_abort(&mut self) -> Result<(), String> {
+        let Some(operation) = self.operation else {
+            return Err("No rebase, merge, cherry-pick or revert in progress".into());
+        };
+        let prompt = format!(
+            "Abort the {} and go back to where it started?",
+            operation.name()
+        );
+        self.confirm = Some((ConfirmAction::Abort(operation), prompt));
         Ok(())
+    }
+
+    // Fills the empty message box with git's message for the merge, cherry-pick or revert in progress,
+    // once, so it can still be cleared.
+    fn prepare_message(&mut self) {
+        let Some(operation) = self.operation else {
+            self.message_prepared = false;
+            return;
+        };
+        if operation.continues_without_commit() || self.message_prepared || !self.message.is_empty()
+        {
+            return;
+        }
+        if let Some(message) = self.repository.prepared_message() {
+            self.message = TextArea::new(&message);
+            self.message_prepared = true;
+        }
     }
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked.
@@ -249,17 +273,24 @@ impl<'a> LocalChangesState<'a> {
             return Err("Commit message is empty".into());
         }
         let amend = self.amend_base.is_some();
-        if !amend && self.changes.staged.is_empty() {
+        // a merge can be committed without changes, when its resolution keeps one side
+        if !amend && self.changes.staged.is_empty() && self.operation.is_none() {
             return Err("Nothing staged to commit".into());
         }
         self.repository.commit_staged(&message, amend)?;
+        // the next commits of a cherry-pick or revert of several commits
+        let continued = match self.operation {
+            Some(operation) => self.repository.continue_operation(operation),
+            None => Ok(()),
+        };
 
         self.message = TextArea::default();
         self.amend_base = None;
         self.message_before_amend = None;
+        self.message_prepared = false;
         self.needs_refresh = true;
         self.reload();
-        Ok(())
+        continued
     }
 
     // Returns true once after a commit or stash was made.
@@ -437,8 +468,8 @@ impl<'a> LocalChangesState<'a> {
                         }
                         result
                     }
-                    ConfirmAction::AbortRebase => {
-                        let result = self.repository.rebase_abort();
+                    ConfirmAction::Abort(operation) => {
+                        let result = self.repository.abort_operation(operation);
                         if result.is_ok() {
                             self.needs_refresh = true;
                         }
@@ -500,6 +531,10 @@ impl<'a> LocalChangesState<'a> {
     // Turning amend on shows the changes of HEAD in the staged section, combined with what is staged,
     // and the HEAD message in place of the typed one. Turning it off restores both.
     pub fn toggle_amend(&mut self) -> Result<(), String> {
+        if let Some(operation) = self.operation.filter(|_| self.amend_base.is_none()) {
+            // HEAD is the commit before the operation, amending it would mix the two up
+            return Err(format!("Cannot amend during a {}", operation.name()));
+        }
         if self.amend_base.take().is_some() {
             self.message = self.message_before_amend.take().unwrap_or_default();
         } else {
@@ -718,7 +753,8 @@ impl<'a> LocalChangesState<'a> {
         let selected_path = self.selected_path();
 
         self.changes = self.load_changes();
-        self.rebasing = self.repository.rebase_in_progress();
+        self.operation = self.repository.operation_in_progress();
+        self.prepare_message();
         let filter = self.query.filter();
         self.unstaged_rows = build_rows(&self.changes.unstaged, &self.unstaged_collapsed, filter);
         self.staged_rows = build_rows(&self.changes.staged, &self.staged_collapsed, filter);
@@ -1359,8 +1395,15 @@ impl LocalChangesPanel<'_> {
         if state.amend_base.is_some() {
             title.push(Span::raw("· amending ").fg(theme.status_warn_fg));
         }
-        if state.rebasing {
-            title.push(Span::raw("· rebasing (c continue, C abort) ").fg(theme.status_warn_fg));
+        if let Some(operation) = state.operation {
+            let (doing, c) = match operation {
+                Operation::Rebase => ("rebasing", "continue"),
+                Operation::Merge => ("merging", "commit"),
+                Operation::CherryPick => ("cherry-picking", "commit"),
+                Operation::Revert => ("reverting", "commit"),
+            };
+            let text = format!("· {doing} (c {c}, C abort) ");
+            title.push(Span::raw(text).fg(theme.status_warn_fg));
         }
         let block = Block::default()
             .borders(Borders::TOP)
@@ -1398,7 +1441,7 @@ impl LocalChangesPanel<'_> {
             ConfirmAction::Discard => {
                 (" Discard changes ", "y / Enter: discard    n / Esc: cancel")
             }
-            ConfirmAction::AbortRebase => (" Abort rebase ", "y / Enter: abort    n / Esc: cancel"),
+            ConfirmAction::Abort(_) => (" Abort ", "y / Enter: abort    n / Esc: cancel"),
         };
         // text plus padding and borders
         let width = (prompt.chars().count().max(hint.len()) as u16 + 4).min(area.width);
@@ -2280,7 +2323,7 @@ mod tests {
 
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
-        assert!(state.rebasing);
+        assert_eq!(state.operation, Some(Operation::Rebase));
         assert_eq!(
             state.changes.unstaged[0].status,
             LocalChangeStatus::Conflicted
@@ -2288,7 +2331,7 @@ mod tests {
 
         // continuing with the conflict unresolved fails and keeps rebasing
         assert!(state.commit_or_continue().is_err());
-        assert!(state.rebasing);
+        assert_eq!(state.operation, Some(Operation::Rebase));
 
         // resolve, stage, then c continues instead of committing
         fs::write(repo_path.join("a.txt"), "resolved\n")?;
@@ -2297,14 +2340,14 @@ mod tests {
         state.toggle_stage()?;
         state.commit_or_continue()?;
         assert!(state.take_needs_refresh());
-        assert!(!state.rebasing);
+        assert_eq!(state.operation, None);
         assert_eq!(
             git_stdout(repo_path, &["log", "--format=%s", "-2"]),
             "feature change\nmaster change"
         );
 
         // abort only exists while rebasing
-        assert!(state.request_abort_rebase().is_err());
+        assert!(state.request_abort().is_err());
         Ok(())
     }
 
@@ -2318,24 +2361,148 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
 
-        state.request_abort_rebase()?;
+        state.request_abort()?;
         assert_eq!(
             state.confirm_prompt(),
             Some("Abort the rebase and go back to where it started?")
         );
         // cancelling keeps rebasing
         state.handle_confirm_key(key(KeyCode::Char('n')))?;
-        assert!(state.rebasing);
+        assert_eq!(state.operation, Some(Operation::Rebase));
 
-        state.request_abort_rebase()?;
+        state.request_abort()?;
         state.handle_confirm_key(key(KeyCode::Char('y')))?;
         assert!(state.take_needs_refresh());
-        assert!(!state.rebasing);
+        assert_eq!(state.operation, None);
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(
             git_stdout(repo_path, &["rev-parse", "HEAD"]),
             feature_before
         );
+        Ok(())
+    }
+
+    // A repository with "feature" and "master" changing a.txt differently, on master.
+    fn diverged_branches(repo_path: &std::path::Path) -> GitRepository<'_> {
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for (key, value) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.com"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            git_stdout(repo_path, &["config", key, value]);
+        }
+        fs::write(repo_path.join("a.txt"), "base\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("base", "2024-01-01");
+        git.checkout_b("feature");
+        fs::write(repo_path.join("a.txt"), "feature\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("feature change", "2024-01-02");
+        fs::write(repo_path.join("b.txt"), "b\n").unwrap();
+        git.add(&["b.txt"]);
+        git.commit("feature second", "2024-01-03");
+        git.checkout("master");
+        fs::write(repo_path.join("a.txt"), "master\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("master change", "2024-01-04");
+        git
+    }
+
+    fn resolve_and_stage(state: &mut LocalChangesState, repo_path: &std::path::Path) {
+        fs::write(repo_path.join("a.txt"), "resolved\n").unwrap();
+        state.reload();
+        select_row(state, "a.txt");
+        state.toggle_stage().unwrap();
+    }
+
+    #[test]
+    fn test_merge_conflict() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert_eq!(state.operation, Some(Operation::Merge));
+        // git's message, without its comment lines
+        assert_eq!(state.message.text(), "Merge branch 'feature'");
+        assert!(state.toggle_amend().is_err());
+
+        resolve_and_stage(&mut state, repo_path);
+        state.commit_or_continue()?;
+        assert_eq!(state.operation, None);
+        // a merge commit, with both parents
+        let parents = git_stdout(repo_path, &["log", "-1", "--format=%p"]);
+        assert_eq!(parents.split(' ').count(), 2);
+        assert!(git_stdout(repo_path, &["log", "-1", "--format=%s"]).starts_with("Merge branch"));
+
+        // a new merge, aborted
+        git_stdout(repo_path, &["reset", "--hard", "HEAD^"]);
+        git_stdout(repo_path, &["merge", "feature"]);
+        let before = git_stdout(repo_path, &["rev-parse", "HEAD"]);
+        state.reload();
+        state.request_abort()?;
+        assert_eq!(
+            state.confirm_prompt(),
+            Some("Abort the merge and go back to where it started?")
+        );
+        state.handle_confirm_key(key(KeyCode::Enter))?;
+        assert_eq!(state.operation, None);
+        assert_eq!(git_stdout(repo_path, &["rev-parse", "HEAD"]), before);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cherry_pick_sequence() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        // the first commit conflicts, the second follows once it is committed
+        git_stdout(repo_path, &["cherry-pick", "feature~1", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert_eq!(state.operation, Some(Operation::CherryPick));
+        assert_eq!(state.message.text(), "feature change");
+
+        resolve_and_stage(&mut state, repo_path);
+        state.commit_or_continue()?;
+        assert_eq!(state.operation, None);
+        assert_eq!(
+            git_stdout(repo_path, &["log", "--format=%s", "-3"]),
+            "feature second\nfeature change\nmaster change"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_revert_abort() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = diverged_branches(repo_path);
+        // reverting the base change of a.txt conflicts with master's change
+        git.checkout("feature");
+        fs::write(repo_path.join("a.txt"), "feature again\n")?;
+        git.add(&["a.txt"]);
+        git.commit("feature again", "2024-01-05");
+        git_stdout(repo_path, &["revert", "--no-edit", "HEAD~2"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert_eq!(state.operation, Some(Operation::Revert));
+        assert!(state
+            .message
+            .text()
+            .starts_with("Revert \"feature change\""));
+
+        state.request_abort()?;
+        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        assert_eq!(state.operation, None);
+        assert!(state.request_abort().is_err());
         Ok(())
     }
 }

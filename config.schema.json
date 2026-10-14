@@ -751,7 +751,7 @@
         "commit": {
           "$ref": "#/definitions/keybindArray"
         },
-        "abort_rebase": {
+        "abort": {
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_amend": {

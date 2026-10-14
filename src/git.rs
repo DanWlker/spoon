@@ -385,27 +385,51 @@ impl Repository {
         run_git(&self.path, &args, None)
     }
 
-    // Whether a rebase stopped (on a conflict, or to edit a commit) and waits to be continued.
-    pub fn rebase_in_progress(&self) -> bool {
-        let git_path = |name: &str| {
-            git_output(&self.path, &["rev-parse", "--git-path", name])
-                .map(|p| self.path.join(p.trim()))
-                .ok()
-        };
+    // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
+    pub fn operation_in_progress(&self) -> Option<Operation> {
+        let exists = |name: &str| self.git_path(name).is_some_and(|p| p.exists());
         // rebase-apply is also used by `git am`, which does not leave the "rebasing" file
-        git_path("rebase-merge").is_some_and(|p| p.is_dir())
-            || git_path("rebase-apply/rebasing").is_some_and(|p| p.exists())
+        if exists("rebase-merge") || exists("rebase-apply/rebasing") {
+            Some(Operation::Rebase)
+        } else if exists("MERGE_HEAD") {
+            Some(Operation::Merge)
+        } else if exists("CHERRY_PICK_HEAD") {
+            Some(Operation::CherryPick)
+        } else if exists("REVERT_HEAD") {
+            Some(Operation::Revert)
+        } else {
+            None
+        }
     }
 
-    pub fn rebase_continue(&self) -> std::result::Result<(), String> {
+    // The commit message git prepared for the operation in progress, without its comment lines.
+    pub fn prepared_message(&self) -> Option<String> {
+        let content = std::fs::read_to_string(self.git_path("MERGE_MSG")?).ok()?;
+        let message: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
+        Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
+    }
+
+    // Continues a rebase, or the remaining commits of a cherry-pick or revert of several commits.
+    pub fn continue_operation(&self, operation: Operation) -> std::result::Result<(), String> {
+        let command = match operation {
+            Operation::Rebase => "rebase",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+            Operation::Merge => return Ok(()),
+        };
+        // a single cherry-pick or revert is done once committed, only a sequence goes on
+        if operation != Operation::Rebase && !self.git_path("sequencer").is_some_and(|p| p.exists())
+        {
+            return Ok(());
+        }
         let output = Command::new("git")
-            .args(["rebase", "--continue"])
-            // keep the messages of the rebased commits instead of opening an editor
+            .args([command, "--continue"])
+            // keep the messages of the commits instead of opening an editor
             .env("GIT_EDITOR", "true")
             .current_dir(&self.path)
             .stdin(Stdio::null())
             .output()
-            .map_err(|e| format!("failed to run git rebase --continue: {e}"))?;
+            .map_err(|e| format!("failed to run git {command} --continue: {e}"))?;
         if output.status.success() {
             Ok(())
         } else {
@@ -417,12 +441,24 @@ impl Repository {
                 .find(|s| !s.is_empty())
                 .unwrap_or_default()
                 .to_string();
-            Err(format!("git rebase --continue failed: {reason}"))
+            Err(format!("git {command} --continue failed: {reason}"))
         }
     }
 
-    pub fn rebase_abort(&self) -> std::result::Result<(), String> {
-        run_git(&self.path, &["rebase", "--abort"], None)
+    pub fn abort_operation(&self, operation: Operation) -> std::result::Result<(), String> {
+        let command = match operation {
+            Operation::Rebase => "rebase",
+            Operation::Merge => "merge",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+        };
+        run_git(&self.path, &[command, "--abort"], None)
+    }
+
+    fn git_path(&self, name: &str) -> Option<PathBuf> {
+        git_output(&self.path, &["rev-parse", "--git-path", name])
+            .map(|p| self.path.join(p.trim()))
+            .ok()
     }
 
     pub fn commit_staged(&self, message: &str, amend: bool) -> std::result::Result<(), String> {
@@ -921,6 +957,31 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
     cmd.wait().unwrap();
 
     changes
+}
+
+// An operation that can stop on conflicts, leaving the repository in the middle of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    Rebase,
+    Merge,
+    CherryPick,
+    Revert,
+}
+
+impl Operation {
+    pub fn name(self) -> &'static str {
+        match self {
+            Operation::Rebase => "rebase",
+            Operation::Merge => "merge",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+        }
+    }
+
+    // A rebase goes on with its own commits, the others are finished by committing.
+    pub fn continues_without_commit(self) -> bool {
+        self == Operation::Rebase
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

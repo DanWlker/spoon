@@ -104,9 +104,9 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus commit message                                         | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message | `confirm`    |
-| <kbd>c</kbd>                         | Commit (or amend), or continue the rebase in progress        | `commit`                        |
+| <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert; or continue a rebase | `commit` |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
-| <kbd>C</kbd>                         | Abort the rebase in progress (asks first)                    | `abort_rebase`                  |
+| <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |
 | <kbd>m</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
@@ -124,8 +124,10 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
 <kbd>c</kbd> commits the staged changes with the message, or starts typing the message when it is empty.
-While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits, and <kbd>C</kbd> aborts it.
-The commit section title shows when amending or rebasing.
+While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
+While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
+Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
+The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
 While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.

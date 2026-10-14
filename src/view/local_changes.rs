@@ -98,8 +98,8 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.as_mut_state().commit_or_continue();
                 self.after_action(result);
             }
-            UserEvent::AbortRebase => {
-                if let Err(err) = self.as_mut_state().request_abort_rebase() {
+            UserEvent::Abort => {
+                if let Err(err) = self.as_mut_state().request_abort() {
                     self.tx.send(AppEvent::NotifyError(err));
                 }
             }

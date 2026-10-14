@@ -241,7 +241,7 @@ pub enum UserEvent {
     ToggleSelect,
     Stash,
     Commit,
-    AbortRebase,
+    Abort,
     ToggleAmend,
     Discard,
     SearchTargetToggle,
@@ -327,7 +327,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "toggle_select" => Ok(UserEvent::ToggleSelect),
                         "stash" => Ok(UserEvent::Stash),
                         "commit" => Ok(UserEvent::Commit),
-                        "abort_rebase" => Ok(UserEvent::AbortRebase),
+                        "abort" => Ok(UserEvent::Abort),
                         "toggle_amend" => Ok(UserEvent::ToggleAmend),
                         "discard" => Ok(UserEvent::Discard),
                         _ => {

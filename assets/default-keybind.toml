@@ -50,8 +50,8 @@ toggle_select = ["m"]
 stash = ["s"]
 # commit (or amend), or continue the rebase in progress
 commit = ["c"]
-# abort the rebase in progress, after confirming
-abort_rebase = ["shift-c"]
+# abort the rebase, merge, cherry-pick or revert in progress, after confirming
+abort = ["shift-c"]
 # amend the last commit instead of making a new one
 toggle_amend = ["shift-a"]
 # discard the selected unstaged changes in local changes, after confirming
