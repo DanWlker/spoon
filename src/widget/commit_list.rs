@@ -199,6 +199,8 @@ pub struct CommitListState<'a> {
     search_matches: Vec<SearchMatch>,
 
     marked_commit_hash: Option<CommitHash>,
+    // commits picked with space for commands on several commits, in the order they were picked
+    picked_commit_hashes: Vec<CommitHash>,
     selected: usize,
     offset: usize,
     total: usize,
@@ -230,6 +232,7 @@ impl<'a> CommitListState<'a> {
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); total],
             marked_commit_hash: None,
+            picked_commit_hashes: Vec::new(),
             selected: 0,
             offset: 0,
             total,
@@ -256,6 +259,41 @@ impl<'a> CommitListState<'a> {
         } else {
             Some(selected.clone())
         };
+    }
+
+    pub fn picked_commit_hashes(&self) -> &[CommitHash] {
+        &self.picked_commit_hashes
+    }
+
+    pub fn is_picked(&self, commit_hash: &CommitHash) -> bool {
+        self.picked_commit_hashes.contains(commit_hash)
+    }
+
+    pub fn toggle_pick(&mut self) {
+        if self.total == 0 {
+            return;
+        }
+        let selected = self.selected_commit_hash().clone();
+        if let Some(pos) = self
+            .picked_commit_hashes
+            .iter()
+            .position(|h| *h == selected)
+        {
+            self.picked_commit_hashes.remove(pos);
+        } else {
+            self.picked_commit_hashes.push(selected);
+        }
+    }
+
+    pub fn clear_picks(&mut self) {
+        self.picked_commit_hashes.clear();
+    }
+
+    pub fn restore_picked_commit_hashes(&mut self, picked_commit_hashes: Vec<CommitHash>) {
+        self.picked_commit_hashes = picked_commit_hashes
+            .into_iter()
+            .filter(|hash| self.commit_hash_set.contains(hash))
+            .collect();
     }
 
     pub fn restore_marked_commit_hash(&mut self, marked_commit_hash: Option<CommitHash>) {
@@ -852,8 +890,8 @@ impl CommitList<'_> {
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(_, commit_info)| {
-                let marker = if state.marked_commit_hash() == Some(&commit_info.commit.commit_hash)
-                {
+                let hash = &commit_info.commit.commit_hash;
+                let marker = if state.marked_commit_hash() == Some(hash) {
                     "*"
                 } else {
                     "│"
@@ -1032,6 +1070,11 @@ impl CommitList<'_> {
             line = line
                 .bg(self.ctx.color_theme.list_selected_bg)
                 .fg(self.ctx.color_theme.list_selected_fg);
+        } else if state.is_picked(&state.commits[state.offset + i].commit.commit_hash) {
+            // spans keep their own colors over the line's, so recolor each one to stay readable
+            let fg = self.ctx.color_theme.list_picked_fg;
+            line.spans = line.spans.into_iter().map(|span| span.fg(fg)).collect();
+            line = line.bg(self.ctx.color_theme.list_picked_bg);
         }
         ListItem::new(line)
     }
@@ -1380,6 +1423,50 @@ mod tests {
             state.toggle_mark();
             assert_eq!(state.marked_commit_hash(), None);
             assert_eq!(state.current_list_status(), status);
+        });
+    }
+
+    #[test]
+    fn test_pick_toggles_commits_in_picking_order() {
+        with_commit_list_state(&["first", "second", "third"], |state| {
+            let first = state.selected_commit_hash().clone();
+            state.toggle_pick();
+            state.select_last();
+            let third = state.selected_commit_hash().clone();
+            let status = state.current_list_status();
+            state.toggle_pick();
+            assert_eq!(state.picked_commit_hashes(), [first.clone(), third.clone()]);
+            assert_eq!(state.current_list_status(), status);
+
+            // picking is independent of the mark
+            assert_eq!(state.marked_commit_hash(), None);
+
+            state.select_first();
+            state.toggle_pick();
+            assert_eq!(state.picked_commit_hashes(), [third]);
+
+            state.clear_picks();
+            assert!(state.picked_commit_hashes().is_empty());
+        });
+    }
+
+    #[test]
+    fn test_pick_refresh_preserves_loaded_hashes_and_drops_missing_hashes() {
+        let context = with_commit_list_state(&["first", "second"], |state| {
+            state.toggle_pick();
+            state.select_next();
+            state.toggle_pick();
+            ListRefreshViewContext::from(&*state)
+        });
+        assert_eq!(context.picked_commit_hashes.len(), 2);
+
+        with_commit_list_state(&["first", "second"], |state| {
+            state.restore_picked_commit_hashes(context.picked_commit_hashes.clone());
+            assert_eq!(state.picked_commit_hashes(), context.picked_commit_hashes);
+        });
+        with_commit_list_state(&["first"], |state| {
+            state.restore_picked_commit_hashes(context.picked_commit_hashes);
+            assert_eq!(state.picked_commit_hashes().len(), 1);
         });
     }
 

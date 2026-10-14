@@ -109,6 +109,18 @@ impl<'a> View<'a> {
         }
     }
 
+    // The number of commits picked in the commit list, shown in the status line.
+    pub fn picked_commit_count(&self) -> usize {
+        let list_state = match self {
+            View::List(view) => view.as_list_state(),
+            View::Detail(view) => view.as_list_state(),
+            View::UserCommand(view) => view.as_list_state(),
+            View::Refs(view) => view.as_list_state(),
+            View::Default | View::LocalChanges(_) | View::Help(_) => return 0,
+        };
+        list_state.picked_commit_hashes().len()
+    }
+
     // Views with numbered panels take digit keys; elsewhere they are a count prefix.
     pub fn has_panels(&self) -> bool {
         matches!(self, View::LocalChanges(_) | View::Detail(_))
@@ -251,6 +263,7 @@ impl RefreshViewContext {
 pub struct ListRefreshViewContext {
     pub commit_hash: String,
     pub marked_commit_hash: Option<CommitHash>,
+    pub picked_commit_hashes: Vec<CommitHash>,
     pub selected: usize,
     pub height: usize,
     pub scroll_to_top: bool,
@@ -270,6 +283,7 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
         ListRefreshViewContext {
             commit_hash,
             marked_commit_hash: list_state.marked_commit_hash().cloned(),
+            picked_commit_hashes: list_state.picked_commit_hashes().to_vec(),
             selected,
             height,
             scroll_to_top,

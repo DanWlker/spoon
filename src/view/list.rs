@@ -156,8 +156,19 @@ impl<'a> ListView<'a> {
                     self.tx.send(AppEvent::OpenHelp);
                 }
                 UserEvent::Cancel => {
-                    self.as_mut_list_state().cancel_search();
-                    self.clear_search_query();
+                    // clear an applied search first, then the picked commits
+                    let list_state = self.as_list_state();
+                    if matches!(list_state.search_state(), SearchState::Inactive)
+                        && !list_state.picked_commit_hashes().is_empty()
+                    {
+                        self.as_mut_list_state().clear_picks();
+                    } else {
+                        self.as_mut_list_state().cancel_search();
+                        self.clear_search_query();
+                    }
+                }
+                UserEvent::ToggleSelect => {
+                    self.as_mut_list_state().toggle_pick();
                 }
                 UserEvent::Confirm => {
                     self.tx.send(AppEvent::OpenDetail);
@@ -294,6 +305,7 @@ impl<'a> ListView<'a> {
         let ListRefreshViewContext {
             commit_hash,
             marked_commit_hash,
+            picked_commit_hashes,
             selected,
             height,
             scroll_to_top,
@@ -302,6 +314,7 @@ impl<'a> ListView<'a> {
         } = list_context;
         let list_state = self.as_mut_list_state();
         list_state.restore_marked_commit_hash(marked_commit_hash.clone());
+        list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
         list_state.restore_search_options(*search_options);
         list_state.reset_height(*height);
         if *scroll_to_top {

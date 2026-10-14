@@ -27,8 +27,9 @@ The default key bindings can be overridden.
 | <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>Tab</kbd>                       | Open refs list                                     | `ref_list`                                   |
+| <kbd>Space</kbd>                     | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
-| <kbd>Esc</kbd>                       | Cancel search                                      | `cancel`                                     |
+| <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
 | <kbd>Ctrl-t</kbd>                    | Toggle search target                               | `search_target_toggle`                       |
 | <kbd>Ctrl-g</kbd>                    | Toggle ignore case                                 | `ignore_case_toggle`                         |
@@ -88,7 +89,7 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus commit message, amend checkbox and commit button       | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message / Toggle amend / Commit | `confirm` |
-| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line                  | `toggle_stage`                  |
+| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line                  | `toggle_select`                  |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |

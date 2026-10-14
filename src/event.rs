@@ -236,7 +236,7 @@ pub enum UserEvent {
     Search,
     UserCommand(usize),
     FocusPanel(usize),
-    ToggleStage,
+    ToggleSelect,
     Discard,
     SearchTargetToggle,
     IgnoreCaseToggle,
@@ -318,7 +318,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "refresh" => Ok(UserEvent::Refresh),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
-                        "toggle_stage" => Ok(UserEvent::ToggleStage),
+                        "toggle_select" => Ok(UserEvent::ToggleSelect),
                         "discard" => Ok(UserEvent::Discard),
                         _ => {
                             let msg = format!("Unknown user event: {value}");

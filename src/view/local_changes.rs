@@ -83,7 +83,7 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.as_mut_state().enter();
                 self.after_action(result);
             }
-            UserEvent::ToggleStage => {
+            UserEvent::ToggleSelect => {
                 let result = self.as_mut_state().toggle_stage();
                 self.after_action(result);
             }

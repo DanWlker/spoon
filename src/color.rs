@@ -17,6 +17,10 @@ pub struct ColorTheme {
     pub list_selected_fg: RatatuiColor,
     #[default(RatatuiColor::DarkGray)]
     pub list_selected_bg: RatatuiColor,
+    #[default(RatatuiColor::Black)]
+    pub list_picked_fg: RatatuiColor,
+    #[default(RatatuiColor::Blue)]
+    pub list_picked_bg: RatatuiColor,
     #[default(RatatuiColor::Yellow)]
     pub list_ref_paren_fg: RatatuiColor,
     #[default(RatatuiColor::Green)]

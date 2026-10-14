@@ -422,7 +422,17 @@ impl App<'_> {
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let text: Line = match &self.app_status.status_line {
             StatusLine::None => {
-                if self.app_status.numeric_prefix.is_empty() {
+                let picked = self.view.picked_commit_count();
+                if self.app_status.numeric_prefix.is_empty() && picked > 0 {
+                    let commits = if picked == 1 { "commit" } else { "commits" };
+                    let msg = format!("{picked} {commits} picked  (Esc to clear)");
+                    let msg_w = console::measure_text_width(&msg);
+                    let pad_w = (area.width as usize).saturating_sub(msg_w + 2 /* pad */);
+                    Line::from(vec![
+                        " ".repeat(pad_w).into(),
+                        msg.fg(self.ctx.color_theme.status_info_fg),
+                    ])
+                } else if self.app_status.numeric_prefix.is_empty() {
                     Line::raw("")
                 } else {
                     Line::raw(self.app_status.numeric_prefix.as_str())
