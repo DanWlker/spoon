@@ -4,14 +4,16 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rustc_hash::FxHashMap;
 use serde::{de::Deserializer, Deserialize};
 
-use crate::event::UserEvent;
+use crate::event::{Page, UserEvent};
 
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
 // Single keys, and sequences of keys pressed one after another (written separated by spaces, like "] m").
+// The events of a page (see `UserEvent::page`) are kept apart, so pages can use the same key differently.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeyBind {
     keys: FxHashMap<KeyEvent, UserEvent>,
+    page_keys: FxHashMap<(Page, KeyEvent), UserEvent>,
     sequences: FxHashMap<Vec<KeyEvent>, UserEvent>,
 }
 
@@ -55,13 +57,27 @@ impl KeyBind {
     // starting with it, and a sequence takes over the key it starts with.
     fn merge(&mut self, patch: KeyBind) {
         for (key_event, user_event) in patch.keys {
+            // a key for every page takes over the page keys too
             self.sequences.retain(|keys, _| keys[0] != key_event);
+            self.page_keys.retain(|(_, key), _| *key != key_event);
             self.keys.insert(key_event, user_event);
+        }
+        for ((page, key_event), user_event) in patch.page_keys {
+            self.sequences.retain(|keys, _| keys[0] != key_event);
+            self.page_keys.insert((page, key_event), user_event);
         }
         for (key_events, user_event) in patch.sequences {
             self.keys.remove(&key_events[0]);
+            self.page_keys.retain(|(_, key), _| *key != key_events[0]);
             self.sequences.insert(key_events, user_event);
         }
+    }
+
+    // The event of the key on the page: its event there, else its event for every page.
+    pub fn get_on(&self, page: Option<Page>, key: &KeyEvent) -> Option<UserEvent> {
+        page.and_then(|page| self.page_keys.get(&(page, *key)))
+            .or_else(|| self.keys.get(key))
+            .copied()
     }
 
     // Matches the keys pressed so far against the key sequences.
@@ -81,6 +97,12 @@ impl KeyBind {
             .iter()
             .filter(|(_, ue)| **ue == user_event)
             .map(|(ke, _)| *ke)
+            .chain(
+                self.page_keys
+                    .iter()
+                    .filter(|(_, ue)| **ue == user_event)
+                    .map(|((_, ke), _)| *ke),
+            )
             .collect();
         key_events.sort_by(|a, b| a.partial_cmp(b).unwrap()); // At least when used for key bindings, it doesn't seem to be a problem...
         let mut sequences: Vec<&Vec<KeyEvent>> = self
@@ -139,7 +161,10 @@ impl<'de> Deserialize<'de> for KeyBind {
                     }
                 };
                 let conflict = if keys.len() == 1 {
-                    keybind.keys.insert(keys.remove(0), user_event)
+                    match user_event.page() {
+                        Some(page) => keybind.page_keys.insert((page, keys.remove(0)), user_event),
+                        None => keybind.keys.insert(keys.remove(0), user_event),
+                    }
                 } else {
                     keybind.sequences.insert(keys, user_event)
                 };
@@ -154,7 +179,12 @@ impl<'de> Deserialize<'de> for KeyBind {
 
         // a key starting a sequence cannot do something on its own, the sequence could not be typed
         for (keys, user_event) in &keybind.sequences {
-            if let Some(key_user_event) = keybind.keys.get(&keys[0]) {
+            let page_key_user_event = keybind
+                .page_keys
+                .iter()
+                .find(|((_, key), _)| *key == keys[0])
+                .map(|(_, ue)| ue);
+            if let Some(key_user_event) = keybind.keys.get(&keys[0]).or(page_key_user_event) {
                 let msg = format!(
                     "{} starts the key sequence of {user_event:?}, so it cannot map to {key_user_event:?}",
                     key_event_to_string(keys[0])
@@ -392,6 +422,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            page_keys: FxHashMap::default(),
             sequences: FxHashMap::default(),
         };
 
@@ -494,5 +525,47 @@ mod tests {
 
         let key_event = KeyEvent::new(KeyCode::F(12), KeyModifiers::empty());
         assert_eq!(key_event_to_string(key_event), "F12");
+    }
+
+    #[test]
+    fn test_page_keys() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+        let keybind: KeyBind = toml::from_str(
+            r#"
+            discard = ["d"]
+            diff = ["d"]
+            quit = ["q"]
+        "#,
+        )
+        .unwrap();
+        // the same key does something else on each page
+        assert_eq!(
+            keybind.get_on(Some(Page::LocalChanges), &key('d')),
+            Some(UserEvent::Discard)
+        );
+        assert_eq!(
+            keybind.get_on(Some(Page::Graph), &key('d')),
+            Some(UserEvent::Diff)
+        );
+        assert_eq!(keybind.get_on(None, &key('d')), None);
+        assert_eq!(
+            keybind.get_on(Some(Page::Graph), &key('q')),
+            Some(UserEvent::Quit)
+        );
+
+        // a key for every page takes over the page keys
+        let mut merged = keybind.clone();
+        merged.merge(toml::from_str(r#"quit = ["d"]"#).unwrap());
+        assert_eq!(
+            merged.get_on(Some(Page::Graph), &key('d')),
+            Some(UserEvent::Quit)
+        );
+
+        // a page cannot map a key twice
+        assert!(toml::from_str::<KeyBind>(
+            r#"diff = ["d"]
+reset = ["d"]"#
+        )
+        .is_err());
     }
 }

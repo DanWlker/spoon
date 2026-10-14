@@ -21,12 +21,12 @@ use rustc_hash::FxHashMap;
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, EventController, UserEvent, UserEventWithCount},
+    event::{AppEvent, EventController, Page, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
     },
-    git::{run_remote_command, Commit, CommitHash, FileChange, Head, Ref, Repository},
+    git::{run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository},
     graph::GraphImageManager,
     keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
@@ -35,11 +35,11 @@ use crate::{
     widget::{
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
+        git_dialog::{
+            CheckoutTarget, DialogCommit, DialogOutcome, GitDialog, GitDialogWidget, RemoteAction,
+        },
         local_changes::LocalChangesState,
         ref_list::{RefList, RefListState},
-        remote_dialog::{
-            DialogOutcome, RemoteAction, RemoteCommand, RemoteDialog, RemoteDialogWidget,
-        },
     },
 };
 
@@ -87,8 +87,8 @@ pub struct AppContext {
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
-    // what the fetch, pull or push running in the background is doing, kept across refreshes
-    pub remote_task: RefCell<Option<String>>,
+    // what the git command running in the background is doing, kept across refreshes
+    pub running_task: RefCell<Option<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -120,8 +120,8 @@ pub struct App<'a> {
     parked_local_changes: Option<LocalChangesRefreshViewContext>,
     // the tab of the commit details while the local changes page is shown, to reopen them
     parked_detail_tab: Option<DetailTab>,
-    // the fetch, pull or push popup, over any view
-    remote_dialog: Option<RemoteDialog>,
+    // the popup confirming a git command, over any view
+    dialog: Option<GitDialog>,
     app_status: AppStatus,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
@@ -200,7 +200,7 @@ impl<'a> App<'a> {
             sidebar_focused,
             parked_local_changes,
             parked_detail_tab,
-            remote_dialog: None,
+            dialog: None,
             app_status: AppStatus::default(),
             ctx,
             ec,
@@ -251,8 +251,8 @@ impl App<'_> {
                         }
                     }
 
-                    if self.remote_dialog.is_some() {
-                        self.handle_remote_dialog_key(key);
+                    if self.dialog.is_some() {
+                        self.handle_dialog_key(key);
                         continue;
                     }
 
@@ -301,17 +301,21 @@ impl App<'_> {
                         }
                     }
 
-                    let user_event = self.ctx.keybind.get(&key).copied().filter(|ue| {
-                        // digits continue a count, and without panels to focus they start one (or are typed)
-                        match ue {
-                            UserEvent::FocusPanel(n) => {
-                                self.app_status.numeric_prefix.is_empty()
-                                    && !matches!(self.view, View::Help(_))
-                                    && (*n == 0 || self.view.has_panels())
-                            }
-                            _ => true,
-                        }
-                    });
+                    let user_event =
+                        self.ctx
+                            .keybind
+                            .get_on(self.current_page(), &key)
+                            .filter(|ue| {
+                                // digits continue a count, and without panels to focus they start one (or are typed)
+                                match ue {
+                                    UserEvent::FocusPanel(n) => {
+                                        self.app_status.numeric_prefix.is_empty()
+                                            && !matches!(self.view, View::Help(_))
+                                            && (*n == 0 || self.view.has_panels())
+                                    }
+                                    _ => true,
+                                }
+                            });
 
                     if let Some(UserEvent::Cancel) = user_event {
                         if !self.app_status.numeric_prefix.is_empty() {
@@ -377,8 +381,8 @@ impl App<'_> {
                 AppEvent::RunExternal(command) => {
                     self.run_external(&command);
                 }
-                AppEvent::RemoteFinished { command, result } => {
-                    self.finish_remote_command(command, result);
+                AppEvent::TaskFinished { task, result } => {
+                    self.finish_task(task, result);
                 }
                 AppEvent::OpenHelp => {
                     self.open_help();
@@ -409,6 +413,7 @@ impl App<'_> {
                         sidebar_focused: self.sidebar_focused,
                         local_changes: self.parked_local_changes.take(),
                         detail_tab: match &self.view {
+                            View::Detail(view) if view.is_comparing() => None,
                             View::Detail(view) => Some(view.tab()),
                             _ => self.parked_detail_tab.take(),
                         },
@@ -513,9 +518,9 @@ impl App<'_> {
         let sidebar = RefList::new(self.ctx.clone(), self.sidebar_focused);
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.sidebar);
         self.view.render(f, view_area);
-        if let Some(dialog) = &self.remote_dialog {
+        if let Some(dialog) = &self.dialog {
             f.render_widget(
-                RemoteDialogWidget::new(dialog, &self.ctx.color_theme),
+                GitDialogWidget::new(dialog, &self.ctx.color_theme),
                 view_area,
             );
         }
@@ -535,7 +540,7 @@ impl App<'_> {
                     keys_to_string(&self.app_status.pending_keys)
                 );
                 if let (true, Some(task)) =
-                    (prefix.is_empty(), self.ctx.remote_task.borrow().as_ref())
+                    (prefix.is_empty(), self.ctx.running_task.borrow().as_ref())
                 {
                     let msg = format!("{task}…");
                     let msg_w = console::measure_text_width(&msg);
@@ -859,6 +864,10 @@ impl App<'_> {
         if self.handle_remote_event(event) {
             return;
         }
+        if event.page() == Some(Page::Graph) {
+            self.handle_graph_event(event);
+            return;
+        }
         match event {
             UserEvent::FocusPanel(0) => {
                 self.set_sidebar_focused(true);
@@ -921,6 +930,18 @@ impl App<'_> {
         }
     }
 
+    // The page whose keys apply: none of them while the sidebar has the focus.
+    fn current_page(&self) -> Option<Page> {
+        if self.sidebar_focused {
+            return None;
+        }
+        match self.view {
+            View::List(_) | View::Detail(_) => Some(Page::Graph),
+            View::LocalChanges(_) => Some(Page::LocalChanges),
+            _ => None,
+        }
+    }
+
     fn set_sidebar_focused(&mut self, focused: bool) {
         self.sidebar_focused = focused;
         self.sync_sidebar_focus();
@@ -969,8 +990,10 @@ impl App<'_> {
         let commit_list_state = match self.view {
             View::List(ref mut view) => view.take_list_state(),
             View::Detail(ref mut view) => {
-                // they open again when coming back to the graph
-                self.parked_detail_tab = Some(view.tab());
+                // they open again when coming back to the graph, but a comparison
+                if !view.is_comparing() {
+                    self.parked_detail_tab = Some(view.tab());
+                }
                 view.take_list_state()
             }
             View::UserCommand(ref mut view) => view.take_list_state(),
@@ -1031,87 +1054,354 @@ impl App<'_> {
             UserEvent::Pull => RemoteAction::Pull,
             UserEvent::Push => RemoteAction::Push,
             UserEvent::FetchAll => {
-                self.start_remote_command(RemoteCommand::fetch_all());
+                let task = GitTask {
+                    remote: true,
+                    ..GitTask::new(
+                        &["fetch", "--all"],
+                        "Fetching all remotes".into(),
+                        "Fetched all remotes".into(),
+                    )
+                };
+                self.start_task(task);
                 return true;
             }
             _ => return false,
         };
-        if let Some(task) = self.ctx.remote_task.borrow().as_ref() {
+        self.open_dialog(GitDialog::remote(action, self.repository.remote_info()));
+        true
+    }
+
+    fn open_dialog(&mut self, dialog: Result<GitDialog, String>) {
+        if let Some(task) = self.ctx.running_task.borrow().as_ref() {
             self.ec.send(AppEvent::NotifyWarn(format!(
                 "{task}, wait for it to finish"
             )));
-            return true;
+            return;
         }
-        match RemoteDialog::new(action, self.repository.remote_info()) {
+        match dialog {
             Ok(dialog) => {
-                self.remote_dialog = Some(dialog);
+                self.dialog = Some(dialog);
                 // images of the graph would cover the popup
                 self.app_status.pending_clear = PendingClear::Screen;
             }
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
-        true
     }
 
-    fn handle_remote_dialog_key(&mut self, key: KeyEvent) {
-        let Some(dialog) = self.remote_dialog.as_mut() else {
+    fn handle_dialog_key(&mut self, key: KeyEvent) {
+        let Some(dialog) = self.dialog.as_mut() else {
             return;
         };
-        let event = self.ctx.keybind.get(&key).copied();
+        // the popups toggle and type like the local changes page
+        let event = self.ctx.keybind.get_on(Some(Page::LocalChanges), &key);
         if event == Some(UserEvent::ForceQuit) {
             self.ec.send(AppEvent::Quit);
             return;
         }
         match dialog.handle_key(event, key) {
             DialogOutcome::None => {}
-            DialogOutcome::Close => self.close_remote_dialog(),
+            DialogOutcome::Close => self.close_dialog(),
             DialogOutcome::Error(err) => self.ec.send(AppEvent::NotifyError(err)),
-            DialogOutcome::Run(command) => {
-                self.close_remote_dialog();
-                self.start_remote_command(command);
+            DialogOutcome::Run(task) => {
+                self.close_dialog();
+                self.start_task(task);
             }
         }
     }
 
-    fn close_remote_dialog(&mut self) {
-        self.remote_dialog = None;
+    fn close_dialog(&mut self) {
+        self.dialog = None;
         self.app_status.pending_clear = PendingClear::Screen;
     }
 
-    // Runs the command in the background; the app is told when it finishes.
-    fn start_remote_command(&mut self, command: RemoteCommand) {
-        if let Some(task) = self.ctx.remote_task.borrow().as_ref() {
+    // Runs the git command in the background; the app is told when it finishes.
+    fn start_task(&mut self, task: GitTask) {
+        if let Some(running) = self.ctx.running_task.borrow().as_ref() {
             self.ec.send(AppEvent::NotifyWarn(format!(
-                "{task}, wait for it to finish"
+                "{running}, wait for it to finish"
             )));
             return;
         }
-        *self.ctx.remote_task.borrow_mut() = Some(command.running.clone());
+        *self.ctx.running_task.borrow_mut() = Some(task.running.clone());
         let path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
         std::thread::spawn(move || {
-            let result = run_remote_command(&path, &command.args);
-            tx.send(AppEvent::RemoteFinished { command, result });
+            let result = run_task(&path, &task);
+            tx.send(AppEvent::TaskFinished { task, result });
         });
     }
 
-    fn finish_remote_command(&mut self, command: RemoteCommand, result: Result<String, String>) {
-        *self.ctx.remote_task.borrow_mut() = None;
+    fn finish_task(&mut self, task: GitTask, result: Result<String, String>) {
+        *self.ctx.running_task.borrow_mut() = None;
         let typing = self.view.is_capturing_keys()
             || matches!(self.app_status.status_line, StatusLine::Input { .. });
-        // a pull may have changed files or stopped on conflicts, even when it failed;
+        if result.is_ok() && task.uses_picks {
+            self.view.clear_picked_commits();
+        }
+        // what is left to resolve or commit is on the local changes page
+        let to_local_changes = (result.is_ok() && task.show_local_changes)
+            || self.repository.operation_in_progress().is_some();
+        // the command may have changed files or stopped on conflicts, even when it failed;
         // refreshing would interrupt typing, so then it waits for a manual refresh
         if !typing {
+            if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
+                self.show_local_changes_page();
+                self.sidebar.select_local_changes();
+                self.set_sidebar_focused(false);
+            }
             self.view.refresh();
         }
         match result {
             Ok(_) if typing => self.ec.send(AppEvent::NotifySuccess(format!(
                 "{} (refresh to see the changes)",
-                command.done
+                task.done
             ))),
-            Ok(_) => self.ec.send(AppEvent::NotifySuccess(command.done)),
+            Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
+    }
+
+    // The selected commit and the picked ones, on the commit graph.
+    fn graph_selection(&self) -> Option<(CommitHash, Vec<CommitHash>)> {
+        let state = match &self.view {
+            View::List(view) => view.as_list_state(),
+            View::Detail(view) => view.as_list_state(),
+            _ => return None,
+        };
+        Some((
+            state.selected_commit_hash().clone(),
+            state.picked_commit_hashes().to_vec(),
+        ))
+    }
+
+    fn current_branch(&self) -> Option<String> {
+        match self.repository.head() {
+            Head::Branch { name } => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    // The commit as a line in a popup: its short hash and subject.
+    fn dialog_commit(&self, hash: &CommitHash) -> DialogCommit {
+        let subject = self
+            .repository
+            .commit(hash)
+            .map(|c| c.subject.clone())
+            .unwrap_or_default();
+        DialogCommit {
+            hash: hash.as_str().to_string(),
+            line: format!("{} {subject}", hash.as_short_hash()),
+        }
+    }
+
+    // What to give git for a commit, and how to show it: a local branch at it, else a remote
+    // branch, else a tag, else the commit itself.
+    fn ref_or_commit(&self, hash: &CommitHash) -> (String, String) {
+        let refs = self.repository.refs(hash);
+        let find = |f: fn(&Ref) -> bool| refs.iter().find(|r| f(r)).map(|r| r.name().to_string());
+        find(|r| matches!(r, Ref::Branch { .. }))
+            .or_else(|| find(|r| matches!(r, Ref::RemoteBranch { .. })))
+            .or_else(|| find(|r| matches!(r, Ref::Tag { .. })))
+            .map(|name| (name.clone(), name))
+            .unwrap_or_else(|| {
+                let line = self.dialog_commit(hash).line;
+                (hash.as_str().to_string(), line)
+            })
+    }
+
+    // Commits ordered as in the graph, newest first.
+    fn sort_newest_first(&self, mut hashes: Vec<CommitHash>) -> Vec<CommitHash> {
+        hashes.sort_by_key(|h| self.repository.commit_position(h).unwrap_or(usize::MAX));
+        hashes
+    }
+
+    // The commands of the commit graph: diff, rebase, merge, checkout, cherry-pick, squash,
+    // revert and reset.
+    fn handle_graph_event(&mut self, event: UserEvent) {
+        let Some((selected, picked)) = self.graph_selection() else {
+            return;
+        };
+        let branch = self.current_branch();
+        let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
+        let single = |name: &str| -> Result<(), String> {
+            if picked.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{name} works on the selected commit, clear the picked ones first"
+                ))
+            }
+        };
+        // the picked commits, else the selected one
+        let targets = if picked.is_empty() {
+            vec![selected.clone()]
+        } else {
+            picked.clone()
+        };
+        let dialog = match event {
+            UserEvent::Diff => {
+                if let Err(err) = self.open_compare(selected, picked) {
+                    self.ec.send(AppEvent::NotifyError(err));
+                }
+                return;
+            }
+            UserEvent::Rebase => single("Rebase").and_then(|_| {
+                let branch = branch.ok_or("Check out a branch to rebase it")?;
+                let (onto, label) = self.ref_or_commit(&selected);
+                Ok(GitDialog::rebase(&branch, onto, &label))
+            }),
+            UserEvent::Merge => single("Merge").and_then(|_| {
+                let (source, label) = self.ref_or_commit(&selected);
+                if Some(&source) == branch.as_ref() {
+                    return Err(format!("{source} is checked out, choose another branch"));
+                }
+                Ok(GitDialog::merge(&branch_label, source, &label))
+            }),
+            UserEvent::Checkout => {
+                single("Checkout").map(|_| GitDialog::checkout(self.checkout_targets(&selected)))
+            }
+            UserEvent::CherryPick => {
+                let mut commits = self.sort_newest_first(targets);
+                commits.reverse();
+                let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
+                Ok(GitDialog::cherry_pick(&branch_label, commits))
+            }
+            UserEvent::Squash => self.squash_dialog(&branch_label, targets),
+            UserEvent::Revert => {
+                let commits = self.sort_newest_first(targets);
+                let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
+                Ok(GitDialog::revert(&branch_label, commits))
+            }
+            UserEvent::Reset => single("Reset")
+                .map(|_| GitDialog::reset(&branch_label, self.dialog_commit(&selected))),
+            _ => return,
+        };
+        self.open_dialog(dialog);
+    }
+
+    // The branches at the commit to check out, and the commit itself.
+    fn checkout_targets(&self, hash: &CommitHash) -> Vec<CheckoutTarget> {
+        let current = self.current_branch();
+        let all_refs = self.repository.all_refs();
+        let local_exists = |name: &str| {
+            all_refs
+                .iter()
+                .any(|r| matches!(r, Ref::Branch { .. }) && r.name() == name)
+        };
+        let mut targets = vec![];
+        for r in self.repository.refs(hash) {
+            match r {
+                Ref::Branch { name, .. } if Some(name) != current.as_ref() => {
+                    targets.push(CheckoutTarget {
+                        label: name.clone(),
+                        args: vec![name.clone()],
+                    });
+                }
+                Ref::RemoteBranch { name, .. } => {
+                    // a new local branch tracking it, unless there is one by that name
+                    let Some((_, local)) = name.split_once('/') else {
+                        continue;
+                    };
+                    if local != "HEAD" && !local_exists(local) {
+                        targets.push(CheckoutTarget {
+                            label: format!("{local} (new, tracking {name})"),
+                            args: vec!["--track".into(), name.clone()],
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        targets.push(CheckoutTarget {
+            label: format!("{} (detached HEAD)", hash.as_short_hash()),
+            args: vec!["--detach".into(), hash.as_str().into()],
+        });
+        targets
+    }
+
+    // Squashing rebases from the parent of the oldest commit's parent, so the history from there
+    // must be a line on the current branch.
+    fn squash_dialog(&self, branch: &str, commits: Vec<CommitHash>) -> Result<GitDialog, String> {
+        let commits = self.sort_newest_first(commits);
+        for hash in &commits {
+            let short = hash.as_short_hash();
+            if !self.repository.is_ancestor(hash, "HEAD") {
+                return Err(format!("{short} is not on {branch}, check it out first"));
+            }
+            match self.repository.parents_hash(hash).len() {
+                0 => return Err(format!("{short} is the first commit, it has no parent")),
+                1 => {}
+                _ => return Err(format!("{short} is a merge commit, it can't be squashed")),
+            }
+        }
+        let oldest = commits.last().ok_or("No commit to squash")?;
+        let parent = self.repository.parents_hash(oldest)[0].clone();
+        let base = self
+            .repository
+            .parents_hash(&parent)
+            .first()
+            .map(|h| (*h).clone());
+        if self.repository.has_merges_between(base.as_ref(), "HEAD") {
+            return Err("There are merge commits after them, which squashing would flatten".into());
+        }
+        let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
+        let base = base.map(|h| h.as_str().to_string());
+        Ok(GitDialog::squash(branch, commits, base))
+    }
+
+    // Shows the changes between two commits in the details: the checked out commit and the
+    // selected (or picked) one, or the two picked ones; the older one is the base.
+    fn open_compare(
+        &mut self,
+        selected: CommitHash,
+        picked: Vec<CommitHash>,
+    ) -> Result<(), String> {
+        let head = || {
+            self.repository
+                .head_commit()
+                .ok_or("Nothing is checked out")
+        };
+        let (a, b) = match picked.as_slice() {
+            [] => (head()?, selected),
+            [one] => (head()?, one.clone()),
+            [one, two] => (one.clone(), two.clone()),
+            more => {
+                return Err(format!(
+                    "Diff compares two commits, {} are picked",
+                    more.len()
+                ))
+            }
+        };
+        if a == b {
+            return Err("That commit is checked out, there is nothing to compare".into());
+        }
+        let [target, base]: [CommitHash; 2] = self
+            .sort_newest_first(vec![a, b])
+            .try_into()
+            .expect("two commits");
+        let title = format!("Diff {} → {}", base.as_short_hash(), target.as_short_hash());
+
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.take_list_state(),
+            View::Detail(ref mut view) => view.take_list_state(),
+            _ => return Ok(()),
+        };
+        let (commit, changes) = self.repository.commit_detail(&target);
+        let refs = self.repository.refs(&target).into_iter().cloned().collect();
+        self.view = View::of_detail(
+            commit_list_state,
+            commit,
+            changes,
+            refs,
+            self.repository,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
+        if let View::Detail(ref mut view) = self.view {
+            view.start_compare(self.repository, base, target, title);
+        }
+        self.app_status.pending_clear = PendingClear::ViewImages;
+        Ok(())
     }
 
     fn open_help(&mut self) {

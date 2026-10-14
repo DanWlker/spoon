@@ -234,6 +234,10 @@ impl<'a> ListView<'a> {
         self.commit_list_state.as_mut().unwrap()
     }
 
+    pub fn clear_picks(&mut self) {
+        self.as_mut_list_state().clear_picks();
+    }
+
     pub fn select_ref(&mut self, name: &str) {
         self.as_mut_list_state().select_ref(name);
     }

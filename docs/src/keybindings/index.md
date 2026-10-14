@@ -47,8 +47,16 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show commit details on the info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
-| <kbd>m</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
-| <kbd>]m</kbd> <kbd>[m</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
+| <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
+| <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
+| <kbd>d</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
+| <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
+| <kbd>m</kbd>                         | Merge the selected branch into the current branch  | `merge`                                      |
+| <kbd>c</kbd>                         | Check out the selected branch or commit            | `checkout`                                   |
+| <kbd>C</kbd>                         | Cherry-pick the picked commits, or the selected one | `cherry_pick`                               |
+| <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
+| <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
+| <kbd>U</kbd>                         | Reset the current branch to the selected commit    | `reset`                                      |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -56,6 +64,26 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Ctrl-g</kbd>                    | Toggle ignore case                                 | `ignore_case_toggle`                         |
 | <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match                                 | `fuzzy_toggle`                               |
 | <kbd>R</kbd>                         | Refresh                                            | `refresh`                                    |
+
+#### Commands on the commit graph
+
+<kbd>d</kbd> shows the files changed between two commits and their diff in the details, like the changes tab: the checked out commit and the selected one (or the picked one), or the two picked commits.
+The older commit is the base. It errors with more than two picked commits. <kbd>Esc</kbd> closes it.
+
+The other commands ask first, in a popup showing what they do and the git commands they run:
+
+- <kbd>r</kbd> rebase: the current branch onto the branch at the selected commit (else the commit), stashing and reapplying local changes (checked by default).
+- <kbd>m</kbd> merge: the branch at the selected commit (else the commit) into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit. Squashing and not committing leave the changes on the local changes page, with the message git prepared.
+- <kbd>c</kbd> checkout: a branch at the selected commit (a remote branch becomes a new local branch tracking it) or the commit itself (detached). The local changes are kept (git refuses when they conflict), stashed and reapplied, or discarded (untracked files are kept).
+- <kbd>C</kbd> cherry-pick: the picked commits (oldest first), or the selected one, committing them or leaving the changes on the local changes page, optionally appending "(cherry picked from commit …)" to the messages.
+- <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages, with an interactive rebase from there. The commits must be on the current branch, with no merge commits after them.
+- <kbd>u</kbd> revert: the picked commits (newest first), or the selected one, committing the reverts or leaving them on the local changes page.
+- <kbd>U</kbd> reset: the current branch to the selected commit, mixed (keep the changes, unstaged), soft (keep them staged) or hard (discard them).
+
+Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
+The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them.
+
+These keys are bound for the commit graph only: the local changes page uses <kbd>d</kbd> <kbd>c</kbd> <kbd>C</kbd> <kbd>s</kbd> for its own commands.
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash                        | `short_copy` `full_copy`                     |
 
 #### Commit Detail
@@ -108,7 +136,7 @@ The app is suspended while the editor or merge tool runs, and refreshed after.
 
 #### Picking files
 
-On the local changes page, <kbd>m</kbd> picks files and directories (highlighted, with the count in the panel title).
+On the local changes page, <kbd>v</kbd> picks files and directories (highlighted, with the count in the panel title).
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor, and <kbd>Enter</kbd> shows their combined diff to stage or unstage their hunks and lines.
 <kbd>s</kbd> asks for a stash message in the status line (it may be empty), and stashes including untracked files.
 
@@ -144,8 +172,8 @@ In the commit graph, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> open the details of 
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |
-| <kbd>m</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
-| <kbd>]m</kbd> <kbd>[m</kbd>          | Go to next/previous picked file                              | `next_picked` `previous_picked` |
+| <kbd>v</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
+| <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked file                              | `next_picked` `previous_picked` |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |

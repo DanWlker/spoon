@@ -295,7 +295,15 @@ impl<'a> LocalChangesState<'a> {
     // once, so it can still be cleared.
     fn prepare_message(&mut self) {
         let Some(operation) = self.operation else {
-            self.message_prepared = false;
+            // a squash merge leaves its message without a merge in progress
+            match self.repository.squash_message() {
+                Some(message) if !self.message_prepared && self.message.is_empty() => {
+                    self.message = TextArea::new(&message);
+                    self.message_prepared = true;
+                }
+                Some(_) => {}
+                None => self.message_prepared = false,
+            }
             return;
         };
         if operation.continues_without_commit() || self.message_prepared || !self.message.is_empty()

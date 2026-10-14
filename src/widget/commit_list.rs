@@ -1371,7 +1371,7 @@ mod tests {
                     ui_config: UiConfig::default(),
                     color_theme: ColorTheme::default(),
                     image_protocol,
-                    remote_task: Default::default(),
+                    running_task: Default::default(),
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1475,7 +1475,7 @@ mod tests {
                 ui_config,
                 color_theme: ColorTheme::default(),
                 image_protocol: ImageProtocol::Iterm2,
-                remote_task: Default::default(),
+                running_task: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
             let mut before = Buffer::empty(area);

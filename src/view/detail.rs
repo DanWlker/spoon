@@ -9,14 +9,14 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, FileChange, Ref, Repository},
+    git::{Commit, CommitHash, FileChange, Ref, Repository},
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_detail::{CommitDetail, CommitDetailState},
         commit_list::{CommitList, CommitListState},
         commit_tabs::{
-            render_tab_titles, CommitChanges, CommitChangesState, CommitFiles, CommitFilesState,
-            DetailTab,
+            render_compare_title, render_tab_titles, CommitChanges, CommitChangesState,
+            CommitFiles, CommitFilesState, DetailTab,
         },
         file_tree::{FileTreeState, SearchDirection},
         tree_query::{QueryChange, QueryKind, TreeQuery},
@@ -37,6 +37,8 @@ pub struct DetailView<'a> {
     commit: Commit,
     changes: Vec<FileChange>,
     refs: Vec<Ref>,
+    // comparing two commits: only their changes are shown, under this title
+    compare: Option<String>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -64,9 +66,32 @@ impl<'a> DetailView<'a> {
             commit,
             changes,
             refs,
+            compare: None,
             ctx,
             tx,
         }
+    }
+
+    // Shows the changes from `base` to `target` instead of the selected commit.
+    pub fn start_compare(
+        &mut self,
+        repository: &'a Repository,
+        base: CommitHash,
+        target: CommitHash,
+        title: String,
+    ) {
+        let changes = repository.diff_summary_between(&base, &target);
+        self.changes_state = CommitChangesState::between(repository, Some(base), target, &changes);
+        self.compare = Some(title);
+        self.show_tab(DetailTab::Changes);
+    }
+
+    pub fn clear_picks(&mut self) {
+        self.as_mut_list_state().clear_picks();
+    }
+
+    pub fn is_comparing(&self) -> bool {
+        self.compare.is_some()
     }
 
     pub fn tab(&self) -> DetailTab {
@@ -104,6 +129,10 @@ impl<'a> DetailView<'a> {
             return;
         }
 
+        if let (UserEvent::FocusPanel(_), true) = (event, self.is_comparing()) {
+            // the comparison only has changes
+            return;
+        }
         if let UserEvent::FocusPanel(n) = event {
             if let Some(tab) = DetailTab::from_number(n) {
                 self.tab = tab;
@@ -213,13 +242,22 @@ impl<'a> DetailView<'a> {
         }
         // each tab draws a top border, the titles go over it
         let indicator = self.query().and_then(TreeQuery::indicator);
-        render_tab_titles(
-            self.tab,
-            indicator,
-            &self.ctx.color_theme,
-            detail_area,
-            f.buffer_mut(),
-        );
+        match &self.compare {
+            Some(title) => render_compare_title(
+                title,
+                indicator,
+                &self.ctx.color_theme,
+                detail_area,
+                f.buffer_mut(),
+            ),
+            None => render_tab_titles(
+                self.tab,
+                indicator,
+                &self.ctx.color_theme,
+                detail_area,
+                f.buffer_mut(),
+            ),
+        }
     }
 
     pub fn update_layout(&mut self, area: Rect) {
@@ -421,6 +459,11 @@ impl<'a> DetailView<'a> {
     {
         let commit_list_state = self.as_mut_list_state();
         update_commit_list_state(commit_list_state);
+        if self.is_comparing() {
+            // the comparison stays, the selection only moves in the list
+            return;
+        }
+        let commit_list_state = self.as_mut_list_state();
         let selected = commit_list_state.selected_commit_hash().clone();
         let (commit, changes) = repository.commit_detail(&selected);
         let refs = repository.refs(&selected).into_iter().cloned().collect();
@@ -451,7 +494,12 @@ impl<'a> DetailView<'a> {
     pub fn refresh(&self) {
         let list_state = self.as_list_state();
         let list_context = ListRefreshViewContext::from(list_state);
-        let context = RefreshViewContext::Detail { list_context };
+        // the comparison is not kept, it is opened again with the picks
+        let context = if self.is_comparing() {
+            RefreshViewContext::List { list_context }
+        } else {
+            RefreshViewContext::Detail { list_context }
+        };
         self.tx.send(AppEvent::Refresh(context));
     }
 }

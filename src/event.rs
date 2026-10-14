@@ -13,10 +13,7 @@ use serde::{
     Deserialize,
 };
 
-use crate::{
-    view::RefreshViewContext,
-    widget::{commit_tabs::DetailTab, remote_dialog::RemoteCommand},
-};
+use crate::{git::GitTask, view::RefreshViewContext, widget::commit_tabs::DetailTab};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -30,9 +27,9 @@ pub enum AppEvent {
     CloseUserCommand,
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),
-    // a fetch, pull or push running in the background finished
-    RemoteFinished {
-        command: RemoteCommand,
+    // a git command running in the background finished
+    TaskFinished {
+        task: GitTask,
         result: Result<String, String>,
     },
     OpenHelp,
@@ -253,6 +250,14 @@ pub enum UserEvent {
     FetchAll,
     Pull,
     Push,
+    Diff,
+    Rebase,
+    Merge,
+    Checkout,
+    CherryPick,
+    Squash,
+    Revert,
+    Reset,
     SearchTargetToggle,
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -346,6 +351,14 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "fetch_all" => Ok(UserEvent::FetchAll),
                         "pull" => Ok(UserEvent::Pull),
                         "push" => Ok(UserEvent::Push),
+                        "diff" => Ok(UserEvent::Diff),
+                        "rebase" => Ok(UserEvent::Rebase),
+                        "merge" => Ok(UserEvent::Merge),
+                        "checkout" => Ok(UserEvent::Checkout),
+                        "cherry_pick" => Ok(UserEvent::CherryPick),
+                        "squash" => Ok(UserEvent::Squash),
+                        "revert" => Ok(UserEvent::Revert),
+                        "reset" => Ok(UserEvent::Reset),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))
@@ -373,7 +386,37 @@ fn parse_user_command_number(s: &str) -> Option<usize> {
     None
 }
 
+// The page an event belongs to; events of different pages may share a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Page {
+    // the commit graph, with or without the commit details
+    Graph,
+    LocalChanges,
+}
+
 impl UserEvent {
+    // None for the events of every page, which a key maps to on all of them.
+    pub fn page(&self) -> Option<Page> {
+        match self {
+            UserEvent::Diff
+            | UserEvent::Rebase
+            | UserEvent::Merge
+            | UserEvent::Checkout
+            | UserEvent::CherryPick
+            | UserEvent::Squash
+            | UserEvent::Revert
+            | UserEvent::Reset => Some(Page::Graph),
+            UserEvent::ToggleStage
+            | UserEvent::Stash
+            | UserEvent::Commit
+            | UserEvent::Abort
+            | UserEvent::ToggleAmend
+            | UserEvent::Edit
+            | UserEvent::Discard => Some(Page::LocalChanges),
+            _ => None,
+        }
+    }
+
     pub fn is_countable(&self) -> bool {
         matches!(
             self,

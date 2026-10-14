@@ -48,10 +48,10 @@ focus_panel_3 = ["3"]
 # stage/unstage the selected file, directory, hunk or line in local changes
 toggle_stage = ["space"]
 # select several items: commits in the commit list, files in local changes
-toggle_select = ["m"]
+toggle_select = ["v"]
 # go to the next/previous picked commit or file; keys separated by a space are pressed one after another
-next_picked = ["] m"]
-previous_picked = ["[ m"]
+next_picked = ["] v"]
+previous_picked = ["[ v"]
 # stash local changes, or only the selected files
 stash = ["s"]
 # commit (or amend), or continue the rebase in progress
@@ -64,6 +64,24 @@ toggle_amend = ["shift-a"]
 edit = ["e"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]
+
+# the commit graph; these keys may also be used on the local changes page, for something else there
+# diff the selected commit with HEAD, or the two picked commits, in the details
+diff = ["d"]
+# rebase the current branch onto the selected commit, after confirming
+rebase = ["r"]
+# merge the selected branch into the current branch, after confirming
+merge = ["m"]
+# check out the selected branch or commit, after confirming
+checkout = ["c"]
+# cherry-pick the picked commits, or the selected one, after confirming
+cherry_pick = ["shift-c"]
+# squash the picked commits, or the selected one, into their parents, after confirming
+squash = ["s"]
+# revert the picked commits, or the selected one, after confirming
+revert = ["u"]
+# reset the current branch to the selected commit, after confirming
+reset = ["shift-u"]
 
 # fetch from a remote, chosen in a popup
 fetch = ["f"]

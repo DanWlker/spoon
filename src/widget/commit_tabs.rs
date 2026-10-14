@@ -72,6 +72,24 @@ pub fn render_tab_titles(
     Line::from(spans).render(area, buf);
 }
 
+// Draws the title of a comparison of two commits over the top border of the detail section.
+pub fn render_compare_title(
+    title: &str,
+    indicator: Option<String>,
+    theme: &ColorTheme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let mut spans = vec![Span::raw(format!(" {title} "))
+        .fg(theme.status_info_fg)
+        .bold()];
+    if let Some(indicator) = indicator {
+        spans.push(Span::raw(format!(" {indicator} ")).fg(theme.status_info_fg));
+    }
+    let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
+    Line::from(spans).render(area, buf);
+}
+
 // A file changed by a commit, as listed in the changes tab.
 #[derive(Debug)]
 struct ChangedFile {
@@ -85,6 +103,8 @@ struct ChangedFile {
 pub struct CommitChangesState<'a> {
     repository: &'a Repository,
     commit_hash: CommitHash,
+    // compared to this commit instead of the parent
+    base: Option<CommitHash>,
     files: Vec<ChangedFile>,
     // expanded by default, to show every changed file
     tree: FileTreeState,
@@ -97,6 +117,16 @@ pub struct CommitChangesState<'a> {
 impl<'a> CommitChangesState<'a> {
     pub fn new(
         repository: &'a Repository,
+        commit_hash: CommitHash,
+        changes: &[FileChange],
+    ) -> Self {
+        Self::between(repository, None, commit_hash, changes)
+    }
+
+    // The changes from `base` to the commit; from its parent when None.
+    pub fn between(
+        repository: &'a Repository,
+        base: Option<CommitHash>,
         commit_hash: CommitHash,
         changes: &[FileChange],
     ) -> Self {
@@ -130,6 +160,7 @@ impl<'a> CommitChangesState<'a> {
         Self {
             repository,
             commit_hash,
+            base,
             files,
             tree,
             diff: None,
@@ -156,7 +187,14 @@ impl<'a> CommitChangesState<'a> {
                     _ => vec![row.path.as_str()],
                 };
                 paths.extend(files.iter().filter_map(|f| f.from.as_deref()));
-                self.repository.commit_diff(&self.commit_hash, &paths)
+                match &self.base {
+                    Some(base) => self.repository.diff_between(
+                        base.as_str(),
+                        self.commit_hash.as_str(),
+                        &paths,
+                    ),
+                    None => self.repository.commit_diff(&self.commit_hash, &paths),
+                }
             }
             None => String::new(),
         };

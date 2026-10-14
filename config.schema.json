@@ -784,6 +784,30 @@
         },
         "push": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "diff": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "rebase": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "merge": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "checkout": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "cherry_pick": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "squash": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "revert": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "reset": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {

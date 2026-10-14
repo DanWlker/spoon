@@ -258,6 +258,11 @@ impl Repository {
                 Err(_) => return String::new(),
             },
         };
+        self.diff_between(&base, commit_hash.as_str(), paths)
+    }
+
+    // The diff of `paths` (all files when empty) from one commit to another.
+    pub fn diff_between(&self, base: &str, target: &str, paths: &[&str]) -> String {
         let mut args = vec![
             "diff",
             "--no-color",
@@ -265,12 +270,55 @@ impl Repository {
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "-M",
-            &base,
-            commit_hash.as_str(),
+            base,
+            target,
             "--",
         ];
         args.extend_from_slice(paths);
         git_output(&self.path, &args).unwrap_or_default()
+    }
+
+    // The files changed from one commit to another.
+    pub fn diff_summary_between(&self, base: &CommitHash, target: &CommitHash) -> Vec<FileChange> {
+        let args = [
+            "diff",
+            "--name-status",
+            "-M",
+            base.as_str(),
+            target.as_str(),
+        ];
+        git_output(&self.path, &args)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(parse_name_status_line)
+            .collect()
+    }
+
+    // The commit checked out, None in a repository without commits.
+    pub fn head_commit(&self) -> Option<CommitHash> {
+        git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD"])
+            .ok()
+            .map(|hash| CommitHash::from(hash.trim()))
+    }
+
+    // Where the commit is in the commit list, newer commits first.
+    pub fn commit_position(&self, commit_hash: &CommitHash) -> Option<usize> {
+        self.commit_hashes.iter().position(|h| h == commit_hash)
+    }
+
+    pub fn is_ancestor(&self, ancestor: &CommitHash, descendant: &str) -> bool {
+        let args = ["merge-base", "--is-ancestor", ancestor.as_str(), descendant];
+        git_output(&self.path, &args).is_ok()
+    }
+
+    // Whether there are merge commits after `base` up to `head`.
+    pub fn has_merges_between(&self, base: Option<&CommitHash>, head: &str) -> bool {
+        let range = match base {
+            Some(base) => format!("{}..{head}", base.as_str()),
+            None => head.to_string(),
+        };
+        git_output(&self.path, &["rev-list", "--merges", "-n", "1", &range])
+            .is_ok_and(|out| !out.trim().is_empty())
     }
 
     // The contents of a file at a commit.
@@ -525,7 +573,16 @@ impl Repository {
 
     // The commit message git prepared for the operation in progress, without its comment lines.
     pub fn prepared_message(&self) -> Option<String> {
-        let content = std::fs::read_to_string(self.git_path("MERGE_MSG")?).ok()?;
+        self.message_file("MERGE_MSG")
+    }
+
+    // The message `git merge --squash` prepared, until the squash is committed.
+    pub fn squash_message(&self) -> Option<String> {
+        self.message_file("SQUASH_MSG")
+    }
+
+    fn message_file(&self, name: &str) -> Option<String> {
+        let content = std::fs::read_to_string(self.git_path(name)?).ok()?;
         let message: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
         Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
     }
@@ -1052,6 +1109,27 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
     changes
 }
 
+// A line of `git diff --name-status`, like "M\tsrc/a.rs" or "R087\told.rs\tnew.rs".
+fn parse_name_status_line(line: &str) -> Option<FileChange> {
+    let parts: Vec<&str> = line.split('\t').collect();
+    match (parts.first()?.get(..1)?, parts.len()) {
+        ("A", 2) => Some(FileChange::Add {
+            path: parts[1].into(),
+        }),
+        ("M" | "T", 2) => Some(FileChange::Modify {
+            path: parts[1].into(),
+        }),
+        ("D", 2) => Some(FileChange::Delete {
+            path: parts[1].into(),
+        }),
+        ("R" | "C", 3) => Some(FileChange::Move {
+            from: parts[1].into(),
+            to: parts[2].into(),
+        }),
+        _ => None,
+    }
+}
+
 pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
     let mut cmd = Command::new("git")
         .arg("ls-tree")
@@ -1316,25 +1394,102 @@ pub struct RemoteInfo {
     pub auto_stash: bool,
 }
 
-// Runs a git command that talks to a remote, like fetch or push, and returns what it printed.
-// It runs while the app owns the terminal, so git must not prompt: credentials come from a
-// helper or an agent, and a prompt fails the command instead.
-pub fn run_remote_command(path: &Path, args: &[String]) -> std::result::Result<String, String> {
+// Git commands run in the background, like fetch, merge or checkout, and what to say about them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitTask {
+    // run one after another, stopping at the first that fails
+    pub steps: Vec<Vec<String>>,
+    // stash the local changes before the steps, and reapply them after
+    pub stash: bool,
+    // talks to a remote
+    pub remote: bool,
+    pub env: Vec<(String, String)>,
+    // "Pushing main to origin/main"
+    pub running: String,
+    // "Pushed main to origin/main"
+    pub done: String,
+    // made of the picked commits, which are cleared once it is done
+    pub uses_picks: bool,
+    // leaves changes to commit, so the local changes page is shown once it is done
+    pub show_local_changes: bool,
+}
+
+impl GitTask {
+    pub fn new(args: &[&str], running: String, done: String) -> Self {
+        GitTask {
+            steps: vec![args.iter().map(|a| a.to_string()).collect()],
+            running,
+            done,
+            ..Default::default()
+        }
+    }
+}
+
+// Runs the steps of a task and returns the last line it printed.
+pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<String, String> {
+    let stashed = task.stash
+        && !git_output(path, &["status", "--porcelain"])
+            .unwrap_or_default()
+            .trim()
+            .is_empty();
+    if stashed {
+        let message = format!("serie: {}", task.running);
+        let args = ["stash", "push", "--include-untracked", "-m", &message].map(String::from);
+        run_task_step(path, &args, task)?;
+    }
+    let pop = || run_task_step(path, &["stash", "pop"].map(String::from), task);
+
+    let mut last = String::new();
+    for step in &task.steps {
+        match run_task_step(path, step, task) {
+            Ok(output) => last = output,
+            Err(err) if stashed => {
+                // nothing changed, the local changes go back
+                return Err(match pop() {
+                    Ok(_) => err,
+                    Err(_) => format!("{err} (the local changes are kept in the stash)"),
+                });
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if stashed {
+        pop().map_err(|err| {
+            format!(
+                "{}, but reapplying the local changes failed (they are kept in the stash): {err}",
+                task.done
+            )
+        })?;
+    }
+    Ok(last)
+}
+
+// It runs while the app owns the terminal, so git must not prompt: no editor (the messages git
+// prepares are used as they are), and credentials come from a helper or an agent.
+fn run_task_step(
+    path: &Path,
+    args: &[String],
+    task: &GitTask,
+) -> std::result::Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(path)
         .stdin(Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0");
-    let has_ssh_command = std::env::var_os("GIT_SSH_COMMAND").is_some()
-        || std::env::var_os("GIT_SSH").is_some()
-        || git_output(path, &["config", "--get", "core.sshCommand"]).is_ok();
-    if !has_ssh_command {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        .env("GIT_EDITOR", "true")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(task.env.iter().map(|(k, v)| (k, v)));
+    if task.remote {
+        let has_ssh_command = std::env::var_os("GIT_SSH_COMMAND").is_some()
+            || std::env::var_os("GIT_SSH").is_some()
+            || git_output(path, &["config", "--get", "core.sshCommand"]).is_ok();
+        if !has_ssh_command {
+            cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        }
     }
     let output = cmd
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
-    // git reports progress and results of remote commands on stderr
+    // git reports progress and results of many commands on stderr
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -1350,11 +1505,11 @@ pub fn run_remote_command(path: &Path, args: &[String]) -> std::result::Result<S
     if output.status.success() {
         Ok(last_line(&text))
     } else {
-        // a rejected ref says why it was rejected, then the error lines say what went wrong,
+        // a rejected ref or a conflict says what went wrong best, then the error lines,
         // and the hints after them how to fix it
         let lines = || text.lines().map(str::trim);
         let error = lines()
-            .find(|line| line.starts_with("! "))
+            .find(|line| line.starts_with("! ") || line.starts_with("CONFLICT"))
             .or_else(|| {
                 lines().find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
             })
@@ -1494,13 +1649,12 @@ mod tests {
         )
         .unwrap();
 
-        let args = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
-        run_remote_command(
-            &work,
-            &args("push --set-upstream origin refs/heads/master:refs/heads/main"),
-        )
-        .unwrap();
-        run_remote_command(&work, &args("fetch --all")).unwrap();
+        let run = |s: &str| {
+            let args: Vec<&str> = s.split(' ').collect();
+            run_task(&work, &GitTask::new(&args, String::new(), String::new()))
+        };
+        run("push --set-upstream origin refs/heads/master:refs/heads/main").unwrap();
+        run("fetch --all").unwrap();
 
         let repository = Repository::load(&work, SortCommit::Chronological, None, false).unwrap();
         let info = repository.remote_info();
@@ -1514,7 +1668,7 @@ mod tests {
         );
 
         // the reason is reported, not the hints after it
-        let err = run_remote_command(&work, &args("fetch nowhere")).unwrap_err();
+        let err = run("fetch nowhere").unwrap_err();
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
     }
 }

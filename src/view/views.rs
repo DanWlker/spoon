@@ -102,6 +102,14 @@ impl<'a> View<'a> {
         }
     }
 
+    pub fn clear_picked_commits(&mut self) {
+        match self {
+            View::List(view) => view.clear_picks(),
+            View::Detail(view) => view.clear_picks(),
+            _ => {}
+        }
+    }
+
     // The number of commits picked in the commit list, shown in the status line.
     pub fn picked_commit_count(&self) -> usize {
         let list_state = match self {
