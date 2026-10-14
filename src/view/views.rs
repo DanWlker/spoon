@@ -263,7 +263,6 @@ impl RefreshViewContext {
 #[derive(Debug, Clone)]
 pub struct ListRefreshViewContext {
     pub commit_hash: String,
-    pub marked_commit_hash: Option<CommitHash>,
     pub picked_commit_hashes: Vec<CommitHash>,
     pub selected: usize,
     pub height: usize,
@@ -283,7 +282,6 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
         let search_context = list_state.search_refresh_context();
         ListRefreshViewContext {
             commit_hash,
-            marked_commit_hash: list_state.marked_commit_hash().cloned(),
             picked_commit_hashes: list_state.picked_commit_hashes().to_vec(),
             selected,
             height,

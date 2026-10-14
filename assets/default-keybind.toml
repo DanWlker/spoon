@@ -34,10 +34,7 @@ filter = ["f"]
 search_target_toggle = ["ctrl-t"]
 ignore_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
-mark_toggle = ["m"]
 refresh = ["shift-r"]
-
-user_command_1 = ["shift-d"]
 
 # switch between panels, ex: unstaged/staged in local changes
 # digits are used as a count prefix in views without panels

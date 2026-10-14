@@ -20,7 +20,7 @@ use crate::{
 };
 
 type ExecCommandFn =
-    fn(&Commit, &[Ref], Option<&CommitHash>, usize, Rect, &AppContext) -> Result<String, String>;
+    fn(&Commit, &[Ref], &[CommitHash], usize, Rect, &AppContext) -> Result<String, String>;
 
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
@@ -124,9 +124,6 @@ impl<'a> UserCommandView<'a> {
             }
             UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseUserCommand);
-            }
-            UserEvent::MarkToggle => {
-                self.as_mut_list_state().toggle_mark();
             }
             UserEvent::Refresh => {
                 self.refresh();
@@ -238,13 +235,13 @@ impl<'a> UserCommandView<'a> {
         update_commit_list_state(commit_list_state);
 
         let selected = commit_list_state.selected_commit_hash().clone();
-        let marked_commit_hash = commit_list_state.marked_commit_hash().cloned();
+        let picked_commit_hashes = commit_list_state.picked_commit_hashes().to_vec();
         let (commit, _) = repository.commit_detail(&selected);
         let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
         self.user_command_output_lines = exec_command(
             &commit,
             &refs,
-            marked_commit_hash.as_ref(),
+            &picked_commit_hashes,
             self.user_command_number,
             view_area,
             &self.ctx,

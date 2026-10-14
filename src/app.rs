@@ -22,7 +22,8 @@ use crate::{
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
-        copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
+        copy_to_clipboard, exec_user_command, exec_user_command_suspend, validate_marked_hash,
+        ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, Repository},
     graph::GraphImageManager,
@@ -601,7 +602,7 @@ impl App<'_> {
         let result = build_external_command_parameters_and_exec_command(
             &commit,
             &refs,
-            commit_list_state.marked_commit_hash(),
+            commit_list_state.picked_commit_hashes(),
             user_command_number,
             self.app_status.view_area,
             &self.ctx,
@@ -640,7 +641,7 @@ impl App<'_> {
         let result = build_external_command_parameters_and_exec_command(
             &commit,
             &refs,
-            commit_list_state.marked_commit_hash(),
+            commit_list_state.picked_commit_hashes(),
             user_command_number,
             self.app_status.view_area,
             &self.ctx,
@@ -668,7 +669,7 @@ impl App<'_> {
         match build_external_command_parameters(
             &commit,
             &refs,
-            commit_list_state.marked_commit_hash(),
+            commit_list_state.picked_commit_hashes(),
             user_command_number,
             self.app_status.view_area,
             &self.ctx,
@@ -976,7 +977,7 @@ fn extract_user_command_refresh_by_number(user_command_number: usize, ctx: &AppC
 fn build_external_command_parameters_and_exec_command(
     commit: &Commit,
     refs: &[Ref],
-    marked_commit_hash: Option<&CommitHash>,
+    picked_commit_hashes: &[CommitHash],
     user_command_number: usize,
     view_area: Rect,
     ctx: &AppContext,
@@ -984,7 +985,7 @@ fn build_external_command_parameters_and_exec_command(
     build_external_command_parameters(
         commit,
         refs,
-        marked_commit_hash,
+        picked_commit_hashes,
         user_command_number,
         view_area,
         ctx,
@@ -995,12 +996,13 @@ fn build_external_command_parameters_and_exec_command(
 fn build_external_command_parameters<'a>(
     commit: &'a Commit,
     refs: &'a [Ref],
-    marked_commit_hash: Option<&'a CommitHash>,
+    picked_commit_hashes: &'a [CommitHash],
     user_command_number: usize,
     view_area: Rect,
     ctx: &'a AppContext,
 ) -> Result<ExternalCommandParameters<'a>, String> {
     let command = &extract_user_command_by_number(user_command_number, ctx)?.commands;
+    validate_marked_hash(command, picked_commit_hashes.len())?;
     let target_hash = commit.commit_hash.as_str();
     let parent_hashes = commit
         .parent_commit_hashes
@@ -1033,7 +1035,10 @@ fn build_external_command_parameters<'a>(
     Ok(ExternalCommandParameters {
         command,
         target_hash,
-        marked_hash: marked_commit_hash.map(CommitHash::as_str),
+        picked_hashes: picked_commit_hashes
+            .iter()
+            .map(CommitHash::as_str)
+            .collect(),
         parent_hashes,
         all_refs,
         branches,

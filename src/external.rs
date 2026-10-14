@@ -6,7 +6,8 @@ use crate::config::ClipboardConfig;
 
 const USER_COMMAND_MARKER_PREFIX: &str = "{{";
 const USER_COMMAND_TARGET_HASH_MARKER: &str = "{{target_hash}}";
-const USER_COMMAND_MARKED_HASH_MARKER: &str = "{{marked_hash}}";
+pub const USER_COMMAND_MARKED_HASH_MARKER: &str = "{{marked_hash}}";
+const USER_COMMAND_PICKED_HASHES_MARKER: &str = "{{picked_hashes}}";
 const USER_COMMAND_FIRST_PARENT_HASH_MARKER: &str = "{{first_parent_hash}}";
 const USER_COMMAND_PARENT_HASHES_MARKER: &str = "{{parent_hashes}}";
 const USER_COMMAND_REFS_MARKER: &str = "{{refs}}";
@@ -75,7 +76,8 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
 pub struct ExternalCommandParameters<'a> {
     pub command: &'a [String],
     pub target_hash: &'a str,
-    pub marked_hash: Option<&'a str>,
+    // commits picked with space, in picking order
+    pub picked_hashes: Vec<&'a str>,
     pub parent_hashes: Vec<&'a str>,
     pub all_refs: Vec<&'a str>,
     pub branches: Vec<&'a str>,
@@ -84,6 +86,19 @@ pub struct ExternalCommandParameters<'a> {
     pub stash: Option<&'a str>,
     pub area_width: u16,
     pub area_height: u16,
+}
+
+// {{marked_hash}} refers to a single picked commit, so it is ambiguous with several.
+pub fn validate_marked_hash(command: &[String], picked_count: usize) -> Result<(), String> {
+    let uses_marked_hash = command
+        .iter()
+        .any(|arg| arg.contains(USER_COMMAND_MARKED_HASH_MARKER));
+    if uses_marked_hash && picked_count > 1 {
+        return Err(format!(
+            "{USER_COMMAND_MARKED_HASH_MARKER} needs one picked commit, but {picked_count} are picked; use {USER_COMMAND_PICKED_HASHES_MARKER} for several"
+        ));
+    }
+    Ok(())
 }
 
 pub fn exec_user_command(params: ExternalCommandParameters) -> Result<String, String> {
@@ -140,6 +155,7 @@ fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
             USER_COMMAND_TAGS_MARKER => command.extend(to_vec(&params.tags)),
             USER_COMMAND_REFS_MARKER => command.extend(to_vec(&params.all_refs)),
             USER_COMMAND_PARENT_HASHES_MARKER => command.extend(to_vec(&params.parent_hashes)),
+            USER_COMMAND_PICKED_HASHES_MARKER => command.extend(to_vec(&params.picked_hashes)),
             // Otherwise, replace the marker within the single argument string.
             _ => command.push(replace_command_arg(arg, params)),
         }
@@ -150,7 +166,12 @@ fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
 fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
     let sep = " ";
     let target_hash = params.target_hash;
-    let marked_hash = params.marked_hash.unwrap_or_default();
+    // with several picked commits, using {{marked_hash}} is rejected earlier, see `validate_marked_hash`
+    let marked_hash = match params.picked_hashes.as_slice() {
+        [hash] => hash,
+        _ => "",
+    };
+    let picked_hashes = &params.picked_hashes.join(sep);
     let first_parent_hash = &params.parent_hashes.first().cloned().unwrap_or_default();
     let parent_hashes = &params.parent_hashes.join(sep);
     let all_refs = &params.all_refs.join(sep);
@@ -163,6 +184,7 @@ fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
 
     s.replace(USER_COMMAND_TARGET_HASH_MARKER, target_hash)
         .replace(USER_COMMAND_MARKED_HASH_MARKER, marked_hash)
+        .replace(USER_COMMAND_PICKED_HASHES_MARKER, picked_hashes)
         .replace(USER_COMMAND_FIRST_PARENT_HASH_MARKER, first_parent_hash)
         .replace(USER_COMMAND_PARENT_HASHES_MARKER, parent_hashes)
         .replace(USER_COMMAND_REFS_MARKER, all_refs)
@@ -172,4 +194,63 @@ fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
         .replace(USER_COMMAND_STASH_MARKER, stash)
         .replace(USER_COMMAND_AREA_WIDTH_MARKER, area_width)
         .replace(USER_COMMAND_AREA_HEIGHT_MARKER, area_height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params<'a>(
+        command: &'a [String],
+        picked_hashes: Vec<&'a str>,
+    ) -> ExternalCommandParameters<'a> {
+        ExternalCommandParameters {
+            command,
+            target_hash: "target",
+            picked_hashes,
+            parent_hashes: vec![],
+            all_refs: vec![],
+            branches: vec![],
+            remote_branches: vec![],
+            tags: vec![],
+            stash: None,
+            area_width: 0,
+            area_height: 0,
+        }
+    }
+
+    #[test]
+    fn test_picked_hashes() {
+        let command: Vec<String> = [
+            "diff",
+            "{{marked_hash}}",
+            "{{target_hash}}",
+            "{{picked_hashes}}",
+            "x={{picked_hashes}}",
+        ]
+        .map(String::from)
+        .to_vec();
+
+        // one pick is the marked hash
+        let actual = build_user_command(&params(&command, vec!["a"]));
+        assert_eq!(actual, vec!["diff", "a", "target", "a", "x=a"]);
+
+        // none: empty, and a standalone list disappears
+        let actual = build_user_command(&params(&command, vec![]));
+        assert_eq!(actual, vec!["diff", "", "target", "x="]);
+
+        let command: Vec<String> = ["log", "{{picked_hashes}}"].map(String::from).to_vec();
+        let actual = build_user_command(&params(&command, vec!["a", "b"]));
+        assert_eq!(actual, vec!["log", "a", "b"]);
+    }
+
+    #[test]
+    fn test_validate_marked_hash() {
+        let marked: Vec<String> = ["diff", "{{marked_hash}}"].map(String::from).to_vec();
+        let picked: Vec<String> = ["log", "{{picked_hashes}}"].map(String::from).to_vec();
+        assert!(validate_marked_hash(&marked, 0).is_ok());
+        assert!(validate_marked_hash(&marked, 1).is_ok());
+        assert!(validate_marked_hash(&marked, 2).is_err());
+        assert!(validate_marked_hash(&picked, 2).is_ok());
+    }
 }

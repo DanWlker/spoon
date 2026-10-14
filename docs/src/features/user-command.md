@@ -19,12 +19,14 @@ To define a user command, you need to configure the following two settings:
 - Command definition. Specify the actual command you want to execute.
   - Config: `core.user_command.commands_{n}`
 
+No user command is bound to a key by default. `commands_1` is predefined as `git diff` of the selected commit, so binding `user_command_1` is enough to use it.
+
 Example configuration in `config.toml`:
 
 ```toml
 [keybind]
-user_command_1 = ["d"]
-user_command_2 = ["shift-d"]
+user_command_1 = ["shift-d"]
+user_command_2 = ["shift-x"]
 user_command_3 = ["b"]
 user_command_4 = ["a"]
 
@@ -39,18 +41,21 @@ commands_3 = { "name" = "delete branch", type = "silent", commands = ["git", "br
 commands_4 = { "name" = "amend commit", type = "suspend", commands = ["git", "commit", "--amend"], refresh = true }
 ```
 
-## Marked commits
+## Picked commits
 
-Press `m` to mark a commit and use `{{marked_hash}}` to refer to it in user commands.
-For example, mark a commit, select another commit, then press `D` to view the diff:
+Press `space` in the commit list to pick commits; picked commits are highlighted, and the status line shows how many are picked. `Esc` clears them.
+Use `{{marked_hash}}` to refer to a single picked commit, or `{{picked_hashes}}` for all of them.
+For example, pick a commit, select another commit, then press `V` to view the diff between them:
 
 ```toml
 [keybind]
-user_command_2 = ["shift-d"]
+user_command_2 = ["shift-v"]
 
 [core.user_command]
-commands_2 = { name = "diff from mark", commands = ["git", "--no-pager", "diff", "--color=always", "{{marked_hash}}", "{{target_hash}}"] }
+commands_2 = { name = "diff from picked", commands = ["git", "--no-pager", "diff", "--color=always", "{{marked_hash}}", "{{target_hash}}"] }
 ```
+
+A command using `{{marked_hash}}` fails with an error while more than one commit is picked, since it would be ambiguous.
 
 ## Refresh
 
@@ -70,7 +75,11 @@ They will be replaced with their respective values command is executed.
   - The hash of the selected commit.
   - example: `b0ce4cb9c798576af9b4accc9f26ddce5e72063d`
 - `{{marked_hash}}`
-  - The full hash of the marked commit, or an empty string if no commit is marked.
+  - The full hash of the picked commit when exactly one commit is picked, or an empty string if none is.
+  - The command fails with an error when more than one commit is picked.
+- `{{picked_hashes}}`
+  - The full hashes of all picked commits in the order they were picked, separated by a space.
+  - example: `b0ce4cb9c798576af9b4accc9f26ddce5e72063d c103d9744df8ebf100773a11345f011152ec5581`
 - `{{first_parent_hash}}`
   - The hash of the first parent of the selected commit.
   - example: `c103d9744df8ebf100773a11345f011152ec5581`
