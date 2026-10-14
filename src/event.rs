@@ -13,22 +13,21 @@ use serde::{
     Deserialize,
 };
 
-use crate::{view::RefreshViewContext, widget::remote_dialog::RemoteCommand};
+use crate::{
+    view::RefreshViewContext,
+    widget::{commit_tabs::DetailTab, remote_dialog::RemoteCommand},
+};
 
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
     Resize(usize, usize),
     Quit,
-    OpenDetail,
+    // opens the details of the selected commit on a tab
+    OpenDetail(DetailTab),
     CloseDetail,
     OpenUserCommand(usize),
     CloseUserCommand,
-    OpenRefs,
-    CloseRefs {
-        // go to the local changes page instead of the commit list
-        to_local_changes: bool,
-    },
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),
     // a fetch, pull or push running in the background finished
@@ -46,8 +45,6 @@ pub enum AppEvent {
         value: String,
     },
     Refresh(RefreshViewContext),
-    ClearViewImages,
-    ClearScreen,
     ClearStatusLine,
     UpdateStatusInput {
         message: String,

@@ -27,6 +27,7 @@ select_bottom = ["shift-l"]
 go_to_next = ["n"]
 go_to_previous = ["shift-n"]
 confirm = ["enter"]
+# switch between the local changes page and the commit graph
 ref_list = ["tab"]
 search = ["/"]
 # filter file trees
@@ -36,8 +37,10 @@ ignore_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
 refresh = ["shift-r"]
 
-# switch between panels, ex: unstaged/staged in local changes
-# digits are used as a count prefix in views without panels
+# focus the refs sidebar on the left
+focus_panel_0 = ["0"]
+# switch between panels, ex: unstaged/staged in local changes, or the tabs of the commit details
+# (opened right away from the commit list); digits are used as a count prefix in views without panels
 focus_panel_1 = ["1"]
 focus_panel_2 = ["2"]
 focus_panel_3 = ["3"]

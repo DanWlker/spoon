@@ -170,9 +170,6 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::Discard => {
                 self.as_mut_state().request_discard();
             }
-            UserEvent::RefList => {
-                self.tx.send(AppEvent::OpenRefs);
-            }
             UserEvent::FocusPanel(1) => {
                 self.as_mut_state()
                     .focus_section(LocalChangesSection::Unstaged);
@@ -249,10 +246,6 @@ impl<'a> LocalChangesView<'a> {
         self.commit_list_state.take().unwrap()
     }
 
-    pub fn take_local_changes_state(&mut self) -> LocalChangesState<'a> {
-        self.local_changes_state.take().unwrap()
-    }
-
     fn as_list_state(&self) -> &CommitListState<'a> {
         self.commit_list_state.as_ref().unwrap()
     }
@@ -263,6 +256,15 @@ impl<'a> LocalChangesView<'a> {
 
     fn as_mut_state(&mut self) -> &mut LocalChangesState<'a> {
         self.local_changes_state.as_mut().unwrap()
+    }
+
+    // Dims the page while the sidebar has the focus.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.as_mut_state().set_focused(focused);
+    }
+
+    pub fn local_change_count(&self) -> usize {
+        self.as_state().count()
     }
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
@@ -333,16 +335,19 @@ impl<'a> LocalChangesView<'a> {
         state.reset_selection(context.section, context.selected_path);
     }
 
-    pub fn refresh(&self) {
-        let list_context = ListRefreshViewContext::from(self.as_list_state());
-        let local_changes_context = LocalChangesRefreshViewContext {
+    // What to restore of the page, after a refresh or coming back to it.
+    pub fn context(&self) -> LocalChangesRefreshViewContext {
+        LocalChangesRefreshViewContext {
             section: self.as_state().section(),
             selected_path: self.as_state().selected_path(),
             commit_draft: Box::new(self.as_state().commit_draft()),
-        };
+        }
+    }
+
+    pub fn refresh(&self) {
         let context = RefreshViewContext::LocalChanges {
-            list_context,
-            local_changes_context,
+            list_context: ListRefreshViewContext::from(self.as_list_state()),
+            local_changes_context: self.context(),
         };
         self.tx.send(AppEvent::Refresh(context));
     }

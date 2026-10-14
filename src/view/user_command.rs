@@ -15,6 +15,7 @@ use crate::{
     view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
+        commit_tabs::DetailTab,
         commit_user_command::{CommitUserCommand, CommitUserCommandState},
     },
 };
@@ -120,7 +121,7 @@ impl<'a> UserCommandView<'a> {
                 }
             }
             UserEvent::Confirm => {
-                self.tx.send(AppEvent::OpenDetail);
+                self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
             }
             UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseUserCommand);

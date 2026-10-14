@@ -214,6 +214,8 @@ fn build_lines(
     let common_helps = vec![
         (vec![UserEvent::ForceQuit, UserEvent::Quit], "Quit app".into()),
         (vec![UserEvent::HelpToggle], "Open help".into()),
+        (vec![UserEvent::RefList], "Switch between local changes and the commit graph".into()),
+        (vec![UserEvent::FocusPanel(0)], "Focus the refs sidebar".into()),
         (vec![UserEvent::Fetch], "Fetch from a remote".into()),
         (vec![UserEvent::FetchAll], "Fetch all remotes".into()),
         (vec![UserEvent::Pull], "Pull a branch of a remote".into()),
@@ -250,7 +252,9 @@ fn build_lines(
         (vec![UserEvent::SelectMiddle], "Select middle of the screen".into()),
         (vec![UserEvent::SelectBottom], "Select bottom of the screen".into()),
         (vec![UserEvent::Confirm], "Show commit details".into()),
-        (vec![UserEvent::RefList], "Open refs list".into()),
+        (vec![UserEvent::FocusPanel(1)], "Show commit info".into()),
+        (vec![UserEvent::FocusPanel(2)], "Show changed files and their diff".into()),
+        (vec![UserEvent::FocusPanel(3)], "Show all files of the commit".into()),
         (vec![UserEvent::Search], "Start search".into()),
         (vec![UserEvent::Cancel], "Cancel search / Clear picked commits".into()),
         (vec![UserEvent::ToggleSelect], "Pick/Unpick commit".into()),
@@ -295,7 +299,8 @@ fn build_lines(
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
 
     let refs_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::RefList], "Close refs list".into()),
+        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "Back to the page".into()),
+        (vec![UserEvent::FocusPanel(1), UserEvent::FocusPanel(2), UserEvent::FocusPanel(3)], "Focus a panel of the page".into()),
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
         (vec![UserEvent::GoToTop], "Go to top".into()),
@@ -305,11 +310,10 @@ fn build_lines(
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
     ];
-    let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
+    let (refs_key_lines, refs_value_lines) = build_block_lines("Refs Sidebar:", refs_helps, color_theme, keybind);
 
     let local_changes_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Back, then clear picked files, search, filter".into()),
-        (vec![UserEvent::RefList], "Open refs list on branches".into()),
         (vec![UserEvent::FocusPanel(1)], "Focus unstaged files".into()),
         (vec![UserEvent::FocusPanel(2)], "Focus staged files".into()),
         (vec![UserEvent::FocusPanel(3)], "Focus commit message".into()),

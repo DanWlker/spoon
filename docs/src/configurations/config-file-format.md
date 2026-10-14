@@ -393,7 +393,7 @@ The height of a user command area.
 
 ### `ui.refs.width`
 
-The width of a refs list area.
+The width of the refs sidebar on the left.
 
 - type: `u16`
 - default: `26`

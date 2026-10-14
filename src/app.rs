@@ -31,10 +31,12 @@ use crate::{
     keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
     search::SearchOptions,
-    view::{RefreshViewContext, View},
+    view::{AppRefreshContext, LocalChangesRefreshViewContext, RefreshViewContext, View},
     widget::{
         commit_list::{CommitInfo, CommitListState},
+        commit_tabs::DetailTab,
         local_changes::LocalChangesState,
+        ref_list::{RefList, RefListState},
         remote_dialog::{
             DialogOutcome, RemoteAction, RemoteCommand, RemoteDialog, RemoteDialogWidget,
         },
@@ -70,11 +72,12 @@ pub enum InitialSelection {
 
 pub enum Ret {
     Quit,
-    Refresh(RefreshRequest),
+    Refresh(Box<RefreshRequest>),
 }
 
 pub struct RefreshRequest {
     pub context: RefreshViewContext,
+    pub app: AppRefreshContext,
 }
 
 #[derive(Debug)]
@@ -110,6 +113,13 @@ struct AppStatus {
 pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
+    // the refs on the left, always shown beside the page (but the help)
+    sidebar: RefListState,
+    sidebar_focused: bool,
+    // the local changes page while the graph is shown, to come back to it as it was
+    parked_local_changes: Option<LocalChangesRefreshViewContext>,
+    // the tab of the commit details while the local changes page is shown, to reopen them
+    parked_detail_tab: Option<DetailTab>,
     // the fetch, pull or push popup, over any view
     remote_dialog: Option<RemoteDialog>,
     app_status: AppStatus,
@@ -125,8 +135,12 @@ impl<'a> App<'a> {
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
-        refresh_view_context: Option<RefreshViewContext>,
+        refresh: Option<Box<RefreshRequest>>,
     ) -> Self {
+        let (refresh_view_context, app_context) = match refresh {
+            Some(request) => (Some(request.context), Some(request.app)),
+            None => (None, None),
+        };
         let graph = graph_image_manager.graph();
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let commits = graph
@@ -167,9 +181,25 @@ impl<'a> App<'a> {
         }
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
 
+        let mut sidebar =
+            RefListState::new(&repository.all_refs(), repository.local_changes().count());
+        let mut sidebar_focused = false;
+        let mut parked_local_changes = None;
+        let mut parked_detail_tab = None;
+        if let Some(context) = app_context {
+            sidebar.reset_tree_status(context.sidebar_selected, context.sidebar_opened);
+            sidebar_focused = context.sidebar_focused;
+            parked_local_changes = context.local_changes;
+            parked_detail_tab = context.detail_tab;
+        }
+
         let mut app = Self {
             repository,
             view,
+            sidebar,
+            sidebar_focused,
+            parked_local_changes,
+            parked_detail_tab,
             remote_dialog: None,
             app_status: AppStatus::default(),
             ctx,
@@ -182,9 +212,10 @@ impl<'a> App<'a> {
 
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
-            // start on the local changes page; the graph is one Esc away
-            None => app.open_local_changes(),
+            // start on the local changes page; the graph is one Tab away
+            None => app.show_local_changes_page(),
         }
+        app.sync_sidebar_focus();
 
         app
     }
@@ -247,16 +278,12 @@ impl App<'_> {
                             SequenceMatch::Partial => continue,
                             SequenceMatch::Complete(ue) => {
                                 self.app_status.pending_keys.clear();
-                                if self.handle_remote_event(ue) {
-                                    self.app_status.numeric_prefix.clear();
-                                    continue;
-                                }
                                 let event_with_count = process_numeric_prefix(
                                     &self.app_status.numeric_prefix,
                                     ue,
                                     key,
                                 );
-                                self.view.handle_event(event_with_count, key);
+                                self.dispatch(event_with_count, key);
                                 self.app_status.numeric_prefix.clear();
                                 continue;
                             }
@@ -275,8 +302,15 @@ impl App<'_> {
                     }
 
                     let user_event = self.ctx.keybind.get(&key).copied().filter(|ue| {
-                        // without panels to focus, digits fall through to the numeric prefix (or search input)
-                        !matches!(ue, UserEvent::FocusPanel(_)) || self.view.has_panels()
+                        // digits continue a count, and without panels to focus they start one (or are typed)
+                        match ue {
+                            UserEvent::FocusPanel(n) => {
+                                self.app_status.numeric_prefix.is_empty()
+                                    && !matches!(self.view, View::Help(_))
+                                    && (*n == 0 || self.view.has_panels())
+                            }
+                            _ => true,
+                        }
                     });
 
                     if let Some(UserEvent::Cancel) = user_event {
@@ -291,13 +325,10 @@ impl App<'_> {
                         Some(UserEvent::ForceQuit) => {
                             self.ec.send(AppEvent::Quit);
                         }
-                        Some(ue) if self.handle_remote_event(ue) => {
-                            self.app_status.numeric_prefix.clear();
-                        }
                         Some(ue) => {
                             let event_with_count =
                                 process_numeric_prefix(&self.app_status.numeric_prefix, ue, key);
-                            self.view.handle_event(event_with_count, key);
+                            self.dispatch(event_with_count, key);
                             self.app_status.numeric_prefix.clear();
                         }
                         None => {
@@ -328,8 +359,8 @@ impl App<'_> {
                     self.cleanup_graph_images()?;
                     return Ok(Ret::Quit);
                 }
-                AppEvent::OpenDetail => {
-                    self.open_detail();
+                AppEvent::OpenDetail(tab) => {
+                    self.open_detail(tab);
                     self.app_status.pending_clear = PendingClear::ViewImages;
                 }
                 AppEvent::CloseDetail => {
@@ -342,12 +373,6 @@ impl App<'_> {
                 AppEvent::CloseUserCommand => {
                     self.close_user_command();
                     self.app_status.pending_clear = PendingClear::Screen;
-                }
-                AppEvent::OpenRefs => {
-                    self.open_refs();
-                }
-                AppEvent::CloseRefs { to_local_changes } => {
-                    self.close_refs(to_local_changes);
                 }
                 AppEvent::RunExternal(command) => {
                     self.run_external(&command);
@@ -377,14 +402,19 @@ impl App<'_> {
                 }
                 AppEvent::Refresh(context) => {
                     self.cleanup_graph_images()?;
-                    let request = RefreshRequest { context };
-                    return Ok(Ret::Refresh(request));
-                }
-                AppEvent::ClearViewImages => {
-                    self.app_status.pending_clear = PendingClear::ViewImages;
-                }
-                AppEvent::ClearScreen => {
-                    self.app_status.pending_clear = PendingClear::Screen;
+                    let (sidebar_selected, sidebar_opened) = self.sidebar.current_tree_status();
+                    let app = AppRefreshContext {
+                        sidebar_selected,
+                        sidebar_opened,
+                        sidebar_focused: self.sidebar_focused,
+                        local_changes: self.parked_local_changes.take(),
+                        detail_tab: match &self.view {
+                            View::Detail(view) => Some(view.tab()),
+                            _ => self.parked_detail_tab.take(),
+                        },
+                    };
+                    let request = RefreshRequest { context, app };
+                    return Ok(Ret::Refresh(Box::new(request)));
                 }
                 AppEvent::ClearStatusLine => {
                     self.clear_status_line();
@@ -425,6 +455,7 @@ impl App<'_> {
     fn prepare_render(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
         let area: Rect = terminal.size()?.into();
         let [view_area, _] = split_app_areas(area);
+        let [_, view_area] = self.split_sidebar(view_area);
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
@@ -471,9 +502,16 @@ impl App<'_> {
         f.render_widget(base, f.area());
 
         let [view_area, status_line_area] = split_app_areas(f.area());
+        let [sidebar_area, view_area] = self.split_sidebar(view_area);
 
         self.update_state(view_area);
 
+        if let View::LocalChanges(view) = &self.view {
+            self.sidebar
+                .set_local_change_count(view.local_change_count());
+        }
+        let sidebar = RefList::new(self.ctx.clone(), self.sidebar_focused);
+        f.render_stateful_widget(sidebar, sidebar_area, &mut self.sidebar);
         self.view.render(f, view_area);
         if let Some(dialog) = &self.remote_dialog {
             f.render_widget(
@@ -596,6 +634,19 @@ impl App<'_> {
     }
 }
 
+impl App<'_> {
+    // The sidebar on the left and the page; the help takes the whole area.
+    fn split_sidebar(&self, area: Rect) -> [Rect; 2] {
+        let width = if matches!(self.view, View::Help(_)) {
+            0
+        } else {
+            // leave the page some room on narrow terminals
+            self.ctx.ui_config.refs.width.min(area.width / 3)
+        };
+        Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area)
+    }
+}
+
 fn split_app_areas(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(area)
 }
@@ -625,7 +676,7 @@ impl App<'_> {
         Ok(())
     }
 
-    fn open_detail(&mut self) {
+    fn open_detail(&mut self, tab: DetailTab) {
         let commit_list_state = match self.view {
             View::List(ref mut view) => view.take_list_state(),
             View::UserCommand(ref mut view) => view.take_list_state(),
@@ -641,6 +692,9 @@ impl App<'_> {
             self.ctx.clone(),
             self.ec.sender(),
         );
+        if let View::Detail(ref mut view) = self.view {
+            view.show_tab(tab);
+        }
     }
 
     fn close_detail(&mut self) {
@@ -780,57 +834,6 @@ impl App<'_> {
         }
     }
 
-    fn open_refs(&mut self) {
-        let (commit_list_state, local_changes_state, from_local_changes) = match self.view {
-            View::List(ref mut view) => (
-                view.take_list_state(),
-                LocalChangesState::load(self.repository),
-                false,
-            ),
-            View::LocalChanges(ref mut view) => (
-                view.take_list_state(),
-                view.take_local_changes_state(),
-                true,
-            ),
-            _ => return,
-        };
-        let refs = self.repository.all_refs();
-        self.view = View::of_refs(
-            commit_list_state,
-            &refs,
-            local_changes_state,
-            self.ctx.clone(),
-            self.ec.sender(),
-        );
-        if from_local_changes {
-            // tab cycles from the local changes page to the branches
-            if let View::Refs(ref mut view) = self.view {
-                view.select_branches();
-            }
-        }
-    }
-
-    fn close_refs(&mut self, to_local_changes: bool) {
-        if let View::Refs(ref mut view) = self.view {
-            let commit_list_state = view.take_list_state();
-            if to_local_changes {
-                if !view.is_showing_local_changes() {
-                    // the graph is shown until now
-                    self.app_status.pending_clear = PendingClear::ViewImages;
-                }
-                let local_changes_state = view.take_local_changes_state();
-                self.view = View::of_local_changes(
-                    commit_list_state,
-                    local_changes_state,
-                    self.ctx.clone(),
-                    self.ec.sender(),
-                );
-            } else {
-                self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
-            }
-        }
-    }
-
     fn run_external(&mut self, command: &[String]) {
         self.ec.suspend();
         let result = exec_interactive(command);
@@ -841,6 +844,183 @@ impl App<'_> {
         if let Err(err) = result {
             self.ec.send(AppEvent::NotifyError(err));
         }
+    }
+
+    // Handles what works on every page (the sidebar, switching pages, fetch, pull and push),
+    // else hands the event to the focused sidebar or the page.
+    fn dispatch(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+        let event = event_with_count.event;
+        // keys typed into the search of the list, or over the help, belong to the view
+        let typing = matches!(self.app_status.status_line, StatusLine::Input { .. });
+        if typing || matches!(self.view, View::Help(_)) {
+            self.view.handle_event(event_with_count, key);
+            return;
+        }
+        if self.handle_remote_event(event) {
+            return;
+        }
+        match event {
+            UserEvent::FocusPanel(0) => {
+                self.set_sidebar_focused(true);
+                return;
+            }
+            UserEvent::RefList => {
+                self.switch_page();
+                return;
+            }
+            _ => {}
+        }
+        if self.sidebar_focused {
+            self.handle_sidebar_event(event_with_count, key);
+        } else {
+            self.view.handle_event(event_with_count, key);
+        }
+    }
+
+    fn handle_sidebar_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+        let count = event_with_count.count;
+        match event_with_count.event {
+            UserEvent::Quit => self.ec.send(AppEvent::Quit),
+            UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
+            UserEvent::Refresh => self.view.refresh(),
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                (0..count).for_each(|_| self.sidebar.select_next());
+                self.show_sidebar_selection();
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                (0..count).for_each(|_| self.sidebar.select_prev());
+                self.show_sidebar_selection();
+            }
+            UserEvent::GoToTop => {
+                self.sidebar.select_first();
+                self.show_sidebar_selection();
+            }
+            UserEvent::GoToBottom => {
+                self.sidebar.select_last();
+                self.show_sidebar_selection();
+            }
+            UserEvent::NavigateRight => {
+                self.sidebar.open_node();
+                self.show_sidebar_selection();
+            }
+            UserEvent::NavigateLeft => {
+                self.sidebar.close_node();
+                self.show_sidebar_selection();
+            }
+            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
+                // back to the page, showing what is selected
+                self.set_sidebar_focused(false);
+            }
+            UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
+            UserEvent::FocusPanel(_) => {
+                // a panel of the page
+                self.set_sidebar_focused(false);
+                self.view.handle_event(event_with_count, key);
+            }
+            _ => {}
+        }
+    }
+
+    fn set_sidebar_focused(&mut self, focused: bool) {
+        self.sidebar_focused = focused;
+        self.sync_sidebar_focus();
+    }
+
+    // The page shows its selection dimmed while the sidebar has the focus.
+    fn sync_sidebar_focus(&mut self) {
+        if let View::LocalChanges(ref mut view) = self.view {
+            view.set_focused(!self.sidebar_focused);
+        }
+    }
+
+    // Shows the page of the selected row: local changes, or the graph at the selected ref.
+    fn show_sidebar_selection(&mut self) {
+        if self.sidebar.is_local_changes_selected() {
+            self.show_local_changes_page();
+        } else {
+            // the commit details stay open, showing the commit of the ref
+            if !matches!(self.view, View::Detail(_)) {
+                self.show_graph_page();
+            }
+            let Some(name) = self.sidebar.selected_ref_name() else {
+                return;
+            };
+            match &mut self.view {
+                View::List(view) => view.select_ref(&name),
+                View::Detail(view) => view.select_ref(self.repository, &name),
+                _ => {}
+            }
+        }
+    }
+
+    // Tab: between the local changes page and the graph, focusing the page.
+    fn switch_page(&mut self) {
+        if matches!(self.view, View::LocalChanges(_)) {
+            self.show_graph_page();
+            self.sidebar.select_branches();
+        } else {
+            self.show_local_changes_page();
+            self.sidebar.select_local_changes();
+        }
+        self.set_sidebar_focused(false);
+    }
+
+    fn show_local_changes_page(&mut self) {
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.take_list_state(),
+            View::Detail(ref mut view) => {
+                // they open again when coming back to the graph
+                self.parked_detail_tab = Some(view.tab());
+                view.take_list_state()
+            }
+            View::UserCommand(ref mut view) => view.take_list_state(),
+            _ => return,
+        };
+        self.view = View::of_local_changes(
+            commit_list_state,
+            LocalChangesState::load(self.repository),
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
+        if let (Some(context), View::LocalChanges(view)) =
+            (self.parked_local_changes.take(), &mut self.view)
+        {
+            view.reset_local_changes_with(context);
+        }
+        self.sync_sidebar_focus();
+        self.app_status.pending_clear = PendingClear::ViewImages;
+    }
+
+    // The commit list, with the details when they were open before the local changes page.
+    fn show_graph_page(&mut self) {
+        let commit_list_state = match self.view {
+            View::LocalChanges(ref mut view) => {
+                self.parked_local_changes = Some(view.context());
+                view.take_list_state()
+            }
+            View::Detail(ref mut view) => view.take_list_state(),
+            View::UserCommand(ref mut view) => view.take_list_state(),
+            _ => return,
+        };
+        self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+        if let Some(tab) = self.parked_detail_tab.take() {
+            self.open_detail(tab);
+        }
+        self.app_status.pending_clear = PendingClear::Screen;
+    }
+
+    fn copy_sidebar_ref_name(&self) {
+        let (name, value) = if let Some(branch) = self.sidebar.selected_branch() {
+            ("Branch Name", branch)
+        } else if let Some(tag) = self.sidebar.selected_tag() {
+            ("Tag Name", tag)
+        } else {
+            return;
+        };
+        self.ec.send(AppEvent::CopyToClipboard {
+            name: name.into(),
+            value,
+        });
     }
 
     // Opens the fetch, pull or push popup, or fetches all remotes, for the event bound to them.
@@ -856,12 +1036,6 @@ impl App<'_> {
             }
             _ => return false,
         };
-        // keys typed into the search of the list, or over the help, are not these
-        if matches!(self.app_status.status_line, StatusLine::Input { .. })
-            || matches!(self.view, View::Help(_) | View::Default)
-        {
-            return false;
-        }
         if let Some(task) = self.ctx.remote_task.borrow().as_ref() {
             self.ec.send(AppEvent::NotifyWarn(format!(
                 "{task}, wait for it to finish"
@@ -940,20 +1114,6 @@ impl App<'_> {
         }
     }
 
-    fn open_local_changes(&mut self) {
-        if let View::List(ref mut view) = self.view {
-            let commit_list_state = view.take_list_state();
-            let local_changes_state = LocalChangesState::load(self.repository);
-            self.view = View::of_local_changes(
-                commit_list_state,
-                local_changes_state,
-                self.ctx.clone(),
-                self.ec.sender(),
-            );
-            self.app_status.pending_clear = PendingClear::ViewImages;
-        }
-    }
-
     fn open_help(&mut self) {
         let before_view = std::mem::take(&mut self.view);
         self.view = View::of_help(before_view, self.ctx.clone(), self.ec.sender());
@@ -1008,7 +1168,8 @@ impl App<'_> {
         match context {
             RefreshViewContext::List { .. } => {}
             RefreshViewContext::Detail { .. } => {
-                self.open_detail();
+                let tab = self.parked_detail_tab.take().unwrap_or_default();
+                self.open_detail(tab);
             }
             RefreshViewContext::UserCommand {
                 user_command_context,
@@ -1020,15 +1181,9 @@ impl App<'_> {
                 local_changes_context,
                 ..
             } => {
-                self.open_local_changes();
+                self.show_local_changes_page();
                 if let View::LocalChanges(ref mut view) = self.view {
                     view.reset_local_changes_with(local_changes_context);
-                }
-            }
-            RefreshViewContext::Refs { refs_context, .. } => {
-                self.open_refs();
-                if let View::Refs(ref mut view) = self.view {
-                    view.reset_refs_with(refs_context);
                 }
             }
         }

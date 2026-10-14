@@ -8,7 +8,7 @@ use std::{
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, StatefulWidget, Widget},
 };
@@ -1476,9 +1476,16 @@ impl LocalChangesPanel<'_> {
         if active {
             let y = inner.y + (cursor - offset) as u16;
             if y < inner.bottom() {
-                let highlight_style = Style::default()
-                    .bg(self.ctx.color_theme.ref_selected_bg)
-                    .fg(self.ctx.color_theme.ref_selected_fg);
+                // dimmed while another panel, like the refs sidebar, has the focus
+                let highlight_style = if state.focused {
+                    Style::default()
+                        .bg(self.ctx.color_theme.ref_selected_bg)
+                        .fg(self.ctx.color_theme.ref_selected_fg)
+                } else {
+                    Style::default()
+                        .fg(self.ctx.color_theme.status_info_fg)
+                        .add_modifier(Modifier::BOLD)
+                };
                 buf.set_style(Rect::new(inner.x, y, inner.width, 1), highlight_style);
             }
         }

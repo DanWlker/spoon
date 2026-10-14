@@ -3,7 +3,8 @@ use std::{collections::HashSet, rc::Rc};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Style,
+    style::{Style, Stylize},
+    text::Span,
     widgets::{Block, Borders, Padding, StatefulWidget},
 };
 use semver::Version;
@@ -116,6 +117,24 @@ impl RefListState {
         self.scroll_to_selection = true;
     }
 
+    pub fn select_local_changes(&mut self) {
+        self.selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
+        self.scroll_to_selection = true;
+    }
+
+    // Keeps the count in the name of the local changes row up to date.
+    pub fn set_local_change_count(&mut self, count: usize) {
+        let name = local_changes_name(count);
+        if let Some(root) = self.roots.first_mut() {
+            if root.name != name {
+                root.name.clone_from(&name);
+                if let Some(row) = self.visible_rows.first_mut() {
+                    row.name = name;
+                }
+            }
+        }
+    }
+
     pub fn is_local_changes_selected(&self) -> bool {
         self.selected.len() == 1 && self.selected[0] == TREE_LOCAL_CHANGES_ROOT_IDENT
     }
@@ -218,11 +237,12 @@ fn collect_visible_rows(
 
 pub struct RefList {
     ctx: Rc<AppContext>,
+    focused: bool,
 }
 
 impl RefList {
-    pub fn new(ctx: Rc<AppContext>) -> RefList {
-        RefList { ctx }
+    pub fn new(ctx: Rc<AppContext>, focused: bool) -> RefList {
+        RefList { ctx, focused }
     }
 }
 
@@ -230,9 +250,16 @@ impl StatefulWidget for RefList {
     type State = RefListState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let theme = &self.ctx.color_theme;
+        let title_fg = if self.focused {
+            theme.status_info_fg
+        } else {
+            theme.fg
+        };
         let block = Block::default()
-            .borders(Borders::LEFT)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+            .borders(Borders::TOP | Borders::RIGHT)
+            .style(Style::default().fg(theme.divider_fg))
+            .title(Span::raw(" [0] Refs ").fg(title_fg).bold())
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         ratatui::widgets::Widget::render(block, area, buf);
@@ -254,9 +281,16 @@ impl StatefulWidget for RefList {
         }
 
         let item_style = Style::default().fg(self.ctx.color_theme.fg);
-        let highlight_style = Style::default()
-            .bg(self.ctx.color_theme.ref_selected_bg)
-            .fg(self.ctx.color_theme.ref_selected_fg);
+        // the selection stands out less while the page has the focus
+        let highlight_style = if self.focused {
+            Style::default()
+                .bg(self.ctx.color_theme.ref_selected_bg)
+                .fg(self.ctx.color_theme.ref_selected_fg)
+        } else {
+            Style::default()
+                .fg(self.ctx.color_theme.status_info_fg)
+                .bold()
+        };
 
         for (line, row) in state
             .visible_rows
@@ -318,7 +352,7 @@ fn build_ref_tree_nodes(refs: &[&Ref], local_change_count: usize) -> Vec<RefTree
     vec![
         RefTreeNode::new(
             TREE_LOCAL_CHANGES_ROOT_IDENT.into(),
-            format!("Local Changes ({local_change_count})"),
+            local_changes_name(local_change_count),
             Vec::new(),
         ),
         RefTreeNode::new(
@@ -342,6 +376,10 @@ fn build_ref_tree_nodes(refs: &[&Ref], local_change_count: usize) -> Vec<RefTree
             stash_nodes,
         ),
     ]
+}
+
+fn local_changes_name(count: usize) -> String {
+    format!("Local Changes ({count})")
 }
 
 #[derive(Debug)]

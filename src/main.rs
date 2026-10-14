@@ -199,7 +199,7 @@ fn main() -> Result<()> {
     });
 
     let ec = event::EventController::init();
-    let mut refresh_view_context = None;
+    let mut refresh = None;
     let mut terminal = None;
 
     let ret = loop {
@@ -230,7 +230,7 @@ fn main() -> Result<()> {
             initial_selection,
             ctx.clone(),
             &ec,
-            refresh_view_context,
+            refresh,
         );
 
         match app.run(terminal.as_mut().unwrap()) {
@@ -238,7 +238,7 @@ fn main() -> Result<()> {
                 break Ok(());
             }
             Ok(Ret::Refresh(request)) => {
-                refresh_view_context = Some(request.context);
+                refresh = Some(request);
                 continue;
             }
             Err(e) => {

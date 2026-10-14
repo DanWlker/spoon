@@ -9,10 +9,11 @@ use crate::{
     search::SearchOptions,
     view::{
         detail::DetailView, help::HelpView, list::ListView, local_changes::LocalChangesView,
-        refs::RefsView, user_command::UserCommandView,
+        user_command::UserCommandView,
     },
     widget::{
         commit_list::{CommitListState, SearchRefreshContext},
+        commit_tabs::DetailTab,
         local_changes::{CommitDraft, LocalChangesSection, LocalChangesState},
     },
 };
@@ -24,7 +25,6 @@ pub enum View<'a> {
     List(Box<ListView<'a>>),
     Detail(Box<DetailView<'a>>),
     UserCommand(Box<UserCommandView<'a>>),
-    Refs(Box<RefsView<'a>>),
     LocalChanges(Box<LocalChangesView<'a>>),
     Help(Box<HelpView<'a>>),
 }
@@ -36,7 +36,6 @@ impl<'a> View<'a> {
             View::List(view) => view.handle_event(event_with_count, key_event),
             View::Detail(view) => view.handle_event(event_with_count, key_event),
             View::UserCommand(view) => view.handle_event(event_with_count, key_event),
-            View::Refs(view) => view.handle_event(event_with_count, key_event),
             View::LocalChanges(view) => view.handle_event(event_with_count, key_event),
             View::Help(view) => view.handle_event(event_with_count, key_event),
         }
@@ -48,7 +47,6 @@ impl<'a> View<'a> {
             View::List(view) => view.render(f, area),
             View::Detail(view) => view.render(f, area),
             View::UserCommand(view) => view.render(f, area),
-            View::Refs(view) => view.render(f, area),
             View::LocalChanges(view) => view.render(f, area),
             View::Help(view) => view.render(f, area),
         }
@@ -60,7 +58,6 @@ impl<'a> View<'a> {
             View::List(view) => view.update_layout(area),
             View::Detail(view) => view.update_layout(area),
             View::UserCommand(view) => view.update_layout(area),
-            View::Refs(view) => view.update_layout(area),
             View::LocalChanges(_) | View::Help(_) => {}
         }
     }
@@ -71,7 +68,6 @@ impl<'a> View<'a> {
             View::List(view) => view.prepare_graph_uploads(),
             View::Detail(view) => view.prepare_graph_uploads(),
             View::UserCommand(view) => view.prepare_graph_uploads(),
-            View::Refs(view) => view.prepare_graph_uploads(),
             View::LocalChanges(_) | View::Help(_) => {}
         }
     }
@@ -82,7 +78,6 @@ impl<'a> View<'a> {
             View::List(view) => view.drain_pending_graph_uploads(),
             View::Detail(view) => view.drain_pending_graph_uploads(),
             View::UserCommand(view) => view.drain_pending_graph_uploads(),
-            View::Refs(view) => view.drain_pending_graph_uploads(),
             View::LocalChanges(_) | View::Help(_) => Vec::new(),
         }
     }
@@ -93,7 +88,6 @@ impl<'a> View<'a> {
             View::List(view) => view.graph_image_ids_sorted(),
             View::Detail(view) => view.graph_image_ids_sorted(),
             View::UserCommand(view) => view.graph_image_ids_sorted(),
-            View::Refs(view) => view.graph_image_ids_sorted(),
             View::LocalChanges(view) => view.graph_image_ids_sorted(),
             View::Help(view) => view.graph_image_ids_sorted(),
         }
@@ -102,7 +96,6 @@ impl<'a> View<'a> {
     pub fn image_clear_area(&self, area: Rect) -> Option<Rect> {
         match self {
             View::Default | View::List(_) => None,
-            View::Refs(view) => view.image_clear_area(area),
             View::Detail(view) => Some(view.image_clear_area(area)),
             View::UserCommand(view) => Some(view.image_clear_area(area)),
             View::LocalChanges(_) | View::Help(_) => Some(area),
@@ -115,15 +108,18 @@ impl<'a> View<'a> {
             View::List(view) => view.as_list_state(),
             View::Detail(view) => view.as_list_state(),
             View::UserCommand(view) => view.as_list_state(),
-            View::Refs(view) => view.as_list_state(),
             View::Default | View::LocalChanges(_) | View::Help(_) => return 0,
         };
         list_state.picked_commit_hashes().len()
     }
 
     // Views with numbered panels take digit keys; elsewhere they are a count prefix.
+    // In the commit list, they open the details on that tab.
     pub fn has_panels(&self) -> bool {
-        matches!(self, View::LocalChanges(_) | View::Detail(_))
+        matches!(
+            self,
+            View::List(_) | View::LocalChanges(_) | View::Detail(_)
+        )
     }
 
     // While typing text or answering a prompt, every key goes to the view as is instead of being mapped to an event.
@@ -179,22 +175,6 @@ impl<'a> View<'a> {
         )))
     }
 
-    pub fn of_refs(
-        commit_list_state: CommitListState<'a>,
-        refs: &[&Ref],
-        local_changes_state: LocalChangesState<'a>,
-        ctx: Rc<AppContext>,
-        tx: Sender,
-    ) -> Self {
-        View::Refs(Box::new(RefsView::new(
-            commit_list_state,
-            refs,
-            local_changes_state,
-            ctx,
-            tx,
-        )))
-    }
-
     pub fn of_local_changes(
         commit_list_state: CommitListState<'a>,
         local_changes_state: LocalChangesState<'a>,
@@ -219,7 +199,6 @@ impl<'a> View<'a> {
             View::List(view) => view.refresh(),
             View::Detail(view) => view.refresh(),
             View::UserCommand(view) => view.refresh(),
-            View::Refs(view) => view.refresh(),
             View::LocalChanges(view) => view.refresh(),
             View::Help(_) => {}
         }
@@ -238,10 +217,6 @@ pub enum RefreshViewContext {
         list_context: ListRefreshViewContext,
         user_command_context: UserCommandRefreshViewContext,
     },
-    Refs {
-        list_context: ListRefreshViewContext,
-        refs_context: RefsRefreshViewContext,
-    },
     LocalChanges {
         list_context: ListRefreshViewContext,
         local_changes_context: LocalChangesRefreshViewContext,
@@ -254,7 +229,6 @@ impl RefreshViewContext {
             RefreshViewContext::List { list_context }
             | RefreshViewContext::Detail { list_context }
             | RefreshViewContext::UserCommand { list_context, .. }
-            | RefreshViewContext::Refs { list_context, .. }
             | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
         }
     }
@@ -305,8 +279,13 @@ pub struct LocalChangesRefreshViewContext {
     pub commit_draft: Box<CommitDraft>,
 }
 
+// What the app keeps besides the view: the sidebar, and the local changes page while the graph is shown.
 #[derive(Debug, Clone)]
-pub struct RefsRefreshViewContext {
-    pub selected: Vec<String>,
-    pub opened: Vec<Vec<String>>,
+pub struct AppRefreshContext {
+    pub sidebar_selected: Vec<String>,
+    pub sidebar_opened: Vec<Vec<String>>,
+    pub sidebar_focused: bool,
+    pub local_changes: Option<LocalChangesRefreshViewContext>,
+    // the tab of the commit details while they are open
+    pub detail_tab: Option<DetailTab>,
 }

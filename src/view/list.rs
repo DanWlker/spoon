@@ -7,7 +7,10 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::CommitHash,
     view::{ListRefreshViewContext, RefreshViewContext},
-    widget::commit_list::{CommitList, CommitListState, SearchState},
+    widget::{
+        commit_list::{CommitList, CommitListState, SearchState},
+        commit_tabs::DetailTab,
+    },
 };
 
 #[derive(Debug)]
@@ -177,10 +180,13 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().select_next_pick(false);
                 }
                 UserEvent::Confirm => {
-                    self.tx.send(AppEvent::OpenDetail);
+                    self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
                 }
-                UserEvent::RefList => {
-                    self.tx.send(AppEvent::OpenRefs);
+                UserEvent::FocusPanel(n) => {
+                    // the panels of the details, opened right away
+                    if let Some(tab) = DetailTab::from_number(n) {
+                        self.tx.send(AppEvent::OpenDetail(tab));
+                    }
                 }
                 UserEvent::Refresh => {
                     self.refresh();
@@ -226,6 +232,10 @@ impl<'a> ListView<'a> {
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state.as_mut().unwrap()
+    }
+
+    pub fn select_ref(&mut self, name: &str) {
+        self.as_mut_list_state().select_ref(name);
     }
 
     pub fn as_list_state(&self) -> &CommitListState<'a> {

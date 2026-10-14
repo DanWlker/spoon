@@ -12,6 +12,8 @@ The default key bindings can be overridden.
 | ------------------------------ | ----------- | --------------------- |
 | <kbd>Ctrl-c</kbd> <kbd>q</kbd> | Quit app    | `force_quit` `quit`   |
 | <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
+| <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
+| <kbd>0</kbd>                   | Focus the refs sidebar | `focus_panel_0` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
@@ -44,7 +46,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
 | <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
-| <kbd>Tab</kbd>                       | Open refs list                                     | `ref_list`                                   |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show commit details on the info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
 | <kbd>m</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
 | <kbd>]m</kbd> <kbd>[m</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
@@ -110,11 +112,12 @@ On the local changes page, <kbd>m</kbd> picks files and directories (highlighted
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor, and <kbd>Enter</kbd> shows their combined diff to stage or unstage their hunks and lines.
 <kbd>s</kbd> asks for a stash message in the status line (it may be empty), and stashes including untracked files.
 
-#### Refs List
+#### Refs Sidebar
 
-| Key                                                | Description      | Corresponding keybind            |
-| -------------------------------------------------- | ---------------- | -------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Tab</kbd> | Close refs list  | `close` `cancel` `ref_list`      |
+| Key                                                  | Description      | Corresponding keybind            |
+| ---------------------------------------------------- | ---------------- | -------------------------------- |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Enter</kbd> | Back to the page | `close` `cancel` `confirm`       |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd>               | Focus a panel of the page | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
 | <kbd>J/K</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
@@ -122,15 +125,17 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
 
-The refs list opens with `Local Changes` selected from the commit list, and with `Branches` selected from the local changes page.
-Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local changes → branches → commit list → local changes.
+The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page shows what is selected:
+`Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.
+<kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file).
+
+In the commit graph, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> open the details of the selected commit on that tab, so a count before a command can't start with them there (`5j` works, `10j` doesn't).
 
 #### Local Changes
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter | `close` `cancel` |
-| <kbd>Tab</kbd>                       | Open refs list on branches                                   | `ref_list`                      |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus commit message                                         | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message | `confirm`    |

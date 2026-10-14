@@ -69,6 +69,24 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    pub fn tab(&self) -> DetailTab {
+        self.tab
+    }
+
+    // Shows the commit of the ref, selected in the refs sidebar.
+    pub fn select_ref(&mut self, repository: &'a Repository, name: &str) {
+        let before = self.as_list_state().selected_commit_hash().clone();
+        self.as_mut_list_state().select_ref(name);
+        if *self.as_list_state().selected_commit_hash() != before {
+            self.update_selected_commit(repository, |_| {});
+        }
+    }
+
+    pub fn show_tab(&mut self, tab: DetailTab) {
+        self.tab = tab;
+        self.load_tab();
+    }
+
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
