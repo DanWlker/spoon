@@ -1,6 +1,6 @@
 # Keybindings
 
-You can see the keybindings by pressing the `?` key.
+You can see the keybindings by pressing the `F1` key.
 
 The default key bindings can be overridden.
 
@@ -11,7 +11,25 @@ The default key bindings can be overridden.
 | Key                            | Description | Corresponding keybind |
 | ------------------------------ | ----------- | --------------------- |
 | <kbd>Ctrl-c</kbd> <kbd>q</kbd> | Quit app    | `force_quit` `quit`   |
-| <kbd>?</kbd> <kbd>F1</kbd>     | Open help   | `help_toggle`         |
+| <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
+| <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
+| <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
+| <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
+| <kbd>P</kbd>                   | Push a branch to a remote (chosen in a popup) | `push` |
+
+#### Fetch, pull and push
+
+<kbd>f</kbd>, <kbd>p</kbd> and <kbd>P</kbd> open a popup over any page but the help:
+
+- Fetch: the remote to fetch from.
+- Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash`, `rebase.autoStash` checks it).
+- Push: the local branch, the remote and the branch to push it to, whether to push all tags too, and whether to force push (`--force-with-lease`). A branch without an upstream starts tracking the branch it is pushed to.
+
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> toggles a checkbox, <kbd>e</kbd> types a branch name (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
+The popup shows the git command it will run.
+
+The command runs in the background, the status line shows it while it runs, and the app refreshes when it is done.
+Git cannot ask for a password or passphrase meanwhile, so use a credential helper or an SSH agent: a prompt fails the command instead.
 
 #### Commit List
 
@@ -53,7 +71,7 @@ The default key bindings can be overridden.
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash     | `short_copy` `full_copy`        |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
-| <kbd>/</kbd> <kbd>f</kbd>            | Search/Filter files (changes and files tabs) | `search` `filter` |
+| <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs) | `search` `filter` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 
 The commit detail has three tabs:
@@ -69,7 +87,7 @@ In the changes and files tabs, <kbd>Enter</kbd> expands or collapses the selecte
 The file trees of the local changes page and of the changes and files tabs can be searched and filtered by path:
 
 - <kbd>/</kbd> searches: the selection jumps to the first match as you type, expanding the directories hiding it, and matching names are highlighted. <kbd>n/N</kbd> go to the next/previous match.
-- <kbd>f</kbd> filters: only matching files are shown, with their directories expanded.
+- <kbd>?</kbd> filters: only matching files are shown, with their directories expanded.
 
 <kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Afterwards, the panel title shows the active search and filter, and <kbd>Esc</kbd> clears the search, then the filter.
 Matching ignores case unless the query has an uppercase letter.
@@ -127,7 +145,7 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |
 | <kbd>/</kbd>                         | Search files                                                 | `search`                        |
-| <kbd>f</kbd>                         | Filter files                                                 | `filter`                        |
+| <kbd>?</kbd>                         | Filter files                                                 | `filter`                        |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
@@ -165,7 +183,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 | Key                                                            | Description              | Corresponding keybind           |
 | -------------------------------------------------------------- | ------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>?</kbd> <kbd>F1</kbd> | Close help               | `close` `cancel` `help_toggle`  |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>F1</kbd>              | Close help               | `close` `cancel` `help_toggle`  |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                              | Scroll down/up           | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd>                                                 | Scroll down/up           | `select_down` `select_up`       |
 | <kbd>Ctrl-f/b</kbd>                                            | Scroll page down/up      | `page_down` `page_up`           |

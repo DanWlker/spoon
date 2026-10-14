@@ -214,6 +214,10 @@ fn build_lines(
     let common_helps = vec![
         (vec![UserEvent::ForceQuit, UserEvent::Quit], "Quit app".into()),
         (vec![UserEvent::HelpToggle], "Open help".into()),
+        (vec![UserEvent::Fetch], "Fetch from a remote".into()),
+        (vec![UserEvent::FetchAll], "Fetch all remotes".into()),
+        (vec![UserEvent::Pull], "Pull a branch of a remote".into()),
+        (vec![UserEvent::Push], "Push a branch to a remote".into()),
     ];
     let (common_key_lines, common_value_lines) = build_block_lines("Common:", common_helps, color_theme, keybind);
 

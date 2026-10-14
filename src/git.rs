@@ -409,6 +409,82 @@ impl Repository {
             .unwrap_or_else(|_| self.path.clone())
     }
 
+    // The remotes, local branches and their upstreams, to fetch, pull and push with.
+    pub fn remote_info(&self) -> RemoteInfo {
+        let remotes: Vec<String> = git_output(&self.path, &["remote"])
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect();
+
+        let mut remote_branches: FxHashMap<String, Vec<String>> = FxHashMap::default();
+        let refs = git_output(
+            &self.path,
+            &["for-each-ref", "--format=%(refname)", "refs/remotes"],
+        )
+        .unwrap_or_default();
+        for name in refs.lines() {
+            let name = name.trim_start_matches("refs/remotes/");
+            // remote names may contain slashes, the longest matching one owns the branch
+            let remote = remotes
+                .iter()
+                .filter(|remote| name.starts_with(&format!("{remote}/")))
+                .max_by_key(|remote| remote.len());
+            if let Some(remote) = remote {
+                let branch = &name[remote.len() + 1..];
+                if branch != "HEAD" {
+                    remote_branches
+                        .entry(remote.clone())
+                        .or_default()
+                        .push(branch.to_string());
+                }
+            }
+        }
+
+        let format = "--format=%(refname:short)%00%(upstream:remotename)%00%(upstream:remoteref)";
+        let heads =
+            git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
+        let mut branches = vec![];
+        let mut upstreams = FxHashMap::default();
+        for line in heads.lines() {
+            let parts: Vec<&str> = line.split('\0').collect();
+            let [name, remote, remote_ref] = parts[..] else {
+                continue;
+            };
+            branches.push(name.to_string());
+            if let Some(branch) = remote_ref.strip_prefix("refs/heads/") {
+                if !remote.is_empty() {
+                    upstreams.insert(name.to_string(), (remote.to_string(), branch.to_string()));
+                }
+            }
+        }
+
+        let config_bool = |key: &str| {
+            git_output(&self.path, &["config", "--type=bool", "--get", key])
+                .is_ok_and(|v| v.trim() == "true")
+        };
+        // pull.rebase may also be "merges" or "interactive", which rebase too
+        let pull_rebase = git_output(&self.path, &["config", "--get", "pull.rebase"])
+            .is_ok_and(|v| !matches!(v.trim(), "false" | "no" | "off" | "0" | ""));
+
+        RemoteInfo {
+            current_branch: match &self.head {
+                Head::Branch { name } => Some(name.clone()),
+                _ => None,
+            },
+            remotes,
+            remote_branches,
+            branches,
+            upstreams,
+            pull_rebase,
+            auto_stash: config_bool("rebase.autoStash"),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     // The content of a conflicted file on one side, None when that side deleted it.
     pub fn conflict_side_content(&self, path: &str, side: ConflictSide) -> Option<String> {
         let stage = match side {
@@ -1227,6 +1303,67 @@ fn parse_name_status(bytes: &[u8]) -> Vec<LocalChangeFile> {
     files
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct RemoteInfo {
+    pub current_branch: Option<String>,
+    pub remotes: Vec<String>,
+    // the branches of each remote, without the remote name
+    pub remote_branches: FxHashMap<String, Vec<String>>,
+    pub branches: Vec<String>,
+    // local branch -> (remote, branch on the remote)
+    pub upstreams: FxHashMap<String, (String, String)>,
+    pub pull_rebase: bool,
+    pub auto_stash: bool,
+}
+
+// Runs a git command that talks to a remote, like fetch or push, and returns what it printed.
+// It runs while the app owns the terminal, so git must not prompt: credentials come from a
+// helper or an agent, and a prompt fails the command instead.
+pub fn run_remote_command(path: &Path, args: &[String]) -> std::result::Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let has_ssh_command = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || git_output(path, &["config", "--get", "core.sshCommand"]).is_ok();
+    if !has_ssh_command {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
+    // git reports progress and results of remote commands on stderr
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let last_line = |text: &str| {
+        text.lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    if output.status.success() {
+        Ok(last_line(&text))
+    } else {
+        // a rejected ref says why it was rejected, then the error lines say what went wrong,
+        // and the hints after them how to fix it
+        let lines = || text.lines().map(str::trim);
+        let error = lines()
+            .find(|line| line.starts_with("! "))
+            .or_else(|| {
+                lines().find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
+            })
+            .map(String::from)
+            .unwrap_or_else(|| last_line(&text));
+        Err(format!("git {} failed: {error}", args[0]))
+    }
+}
+
 // The empty tree, as the base of a root commit.
 fn empty_tree(path: &Path) -> std::result::Result<String, String> {
     git_output(path, &["hash-object", "-t", "tree", "/dev/null"]).map(|s| s.trim().to_string())
@@ -1337,5 +1474,47 @@ mod tests {
         };
         assert_eq!(actual, expected);
         assert_eq!(actual.count(), 6);
+    }
+
+    #[test]
+    fn test_push_fetch_and_remote_info() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        git_output(dir.path(), &["init", "-q", "--bare", "remote.git"]).unwrap();
+        let repo = GitRepository::new(&work);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        git_output(
+            &work,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        )
+        .unwrap();
+
+        let args = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        run_remote_command(
+            &work,
+            &args("push --set-upstream origin refs/heads/master:refs/heads/main"),
+        )
+        .unwrap();
+        run_remote_command(&work, &args("fetch --all")).unwrap();
+
+        let repository = Repository::load(&work, SortCommit::Chronological, None, false).unwrap();
+        let info = repository.remote_info();
+        assert_eq!(info.current_branch.as_deref(), Some("master"));
+        assert_eq!(info.remotes, vec!["origin"]);
+        assert_eq!(info.branches, vec!["master"]);
+        assert_eq!(info.remote_branches["origin"], vec!["main"]);
+        assert_eq!(
+            info.upstreams["master"],
+            ("origin".to_string(), "main".to_string())
+        );
+
+        // the reason is reported, not the hints after it
+        let err = run_remote_command(&work, &args("fetch nowhere")).unwrap_err();
+        assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
     }
 }

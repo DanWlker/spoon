@@ -1,6 +1,6 @@
 force_quit = ["ctrl-c"]
 quit = ["q"]
-help_toggle = ["?","f1"]
+help_toggle = ["f1"]
 cancel = ["esc"]
 close = ["backspace"]
 
@@ -30,7 +30,7 @@ confirm = ["enter"]
 ref_list = ["tab"]
 search = ["/"]
 # filter file trees
-filter = ["f"]
+filter = ["?"]
 search_target_toggle = ["ctrl-t"]
 ignore_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
@@ -61,6 +61,15 @@ toggle_amend = ["shift-a"]
 edit = ["e"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]
+
+# fetch from a remote, chosen in a popup
+fetch = ["f"]
+# fetch all remotes
+fetch_all = ["shift-f"]
+# pull a branch of a remote, chosen in a popup
+pull = ["p"]
+# push a branch to a remote, chosen in a popup
+push = ["shift-p"]
 
 # copy part of information, ex: copy the short commit hash not all
 short_copy = ["y"]

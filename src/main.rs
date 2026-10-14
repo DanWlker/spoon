@@ -195,6 +195,7 @@ fn main() -> Result<()> {
         ui_config,
         color_theme,
         image_protocol,
+        remote_task: Default::default(),
     });
 
     let ec = event::EventController::init();

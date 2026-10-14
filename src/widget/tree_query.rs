@@ -7,7 +7,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::color::ColorTheme;
 
-// Searching (`/`) and filtering (`f`) a file tree by path.
+// Searching (`/`) and filtering (`?`) a file tree by path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryKind {
     Search,

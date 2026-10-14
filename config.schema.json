@@ -772,6 +772,18 @@
         },
         "discard": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "fetch": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fetch_all": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "pull": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "push": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {

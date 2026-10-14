@@ -13,7 +13,7 @@ use serde::{
     Deserialize,
 };
 
-use crate::view::RefreshViewContext;
+use crate::{view::RefreshViewContext, widget::remote_dialog::RemoteCommand};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -31,6 +31,11 @@ pub enum AppEvent {
     },
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),
+    // a fetch, pull or push running in the background finished
+    RemoteFinished {
+        command: RemoteCommand,
+        result: Result<String, String>,
+    },
     OpenHelp,
     CloseHelp,
     SelectNewerCommit,
@@ -58,7 +63,6 @@ pub enum AppEvent {
     #[expect(dead_code)]
     NotifyInfo(String),
     NotifySuccess(String),
-    #[expect(dead_code)]
     NotifyWarn(String),
     NotifyError(String),
 }
@@ -248,6 +252,10 @@ pub enum UserEvent {
     Edit,
     ToggleAmend,
     Discard,
+    Fetch,
+    FetchAll,
+    Pull,
+    Push,
     SearchTargetToggle,
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -337,6 +345,10 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "abort" => Ok(UserEvent::Abort),
                         "toggle_amend" => Ok(UserEvent::ToggleAmend),
                         "discard" => Ok(UserEvent::Discard),
+                        "fetch" => Ok(UserEvent::Fetch),
+                        "fetch_all" => Ok(UserEvent::FetchAll),
+                        "pull" => Ok(UserEvent::Pull),
+                        "push" => Ok(UserEvent::Push),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

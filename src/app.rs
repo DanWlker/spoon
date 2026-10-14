@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     io::{self, Write},
     rc::Rc,
 };
@@ -25,7 +26,7 @@ use crate::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
     },
-    git::{Commit, CommitHash, FileChange, Head, Ref, Repository},
+    git::{run_remote_command, Commit, CommitHash, FileChange, Head, Ref, Repository},
     graph::GraphImageManager,
     keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
@@ -34,6 +35,9 @@ use crate::{
     widget::{
         commit_list::{CommitInfo, CommitListState},
         local_changes::LocalChangesState,
+        remote_dialog::{
+            DialogOutcome, RemoteAction, RemoteCommand, RemoteDialog, RemoteDialogWidget,
+        },
     },
 };
 
@@ -80,6 +84,8 @@ pub struct AppContext {
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
+    // what the fetch, pull or push running in the background is doing, kept across refreshes
+    pub remote_task: RefCell<Option<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -104,6 +110,8 @@ struct AppStatus {
 pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
+    // the fetch, pull or push popup, over any view
+    remote_dialog: Option<RemoteDialog>,
     app_status: AppStatus,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
@@ -162,6 +170,7 @@ impl<'a> App<'a> {
         let mut app = Self {
             repository,
             view,
+            remote_dialog: None,
             app_status: AppStatus::default(),
             ctx,
             ec,
@@ -211,6 +220,11 @@ impl App<'_> {
                         }
                     }
 
+                    if self.remote_dialog.is_some() {
+                        self.handle_remote_dialog_key(key);
+                        continue;
+                    }
+
                     if self.view.is_capturing_keys() {
                         if let Some(UserEvent::ForceQuit) = self.ctx.keybind.get(&key) {
                             self.ec.send(AppEvent::Quit);
@@ -233,6 +247,10 @@ impl App<'_> {
                             SequenceMatch::Partial => continue,
                             SequenceMatch::Complete(ue) => {
                                 self.app_status.pending_keys.clear();
+                                if self.handle_remote_event(ue) {
+                                    self.app_status.numeric_prefix.clear();
+                                    continue;
+                                }
                                 let event_with_count = process_numeric_prefix(
                                     &self.app_status.numeric_prefix,
                                     ue,
@@ -256,7 +274,7 @@ impl App<'_> {
                         }
                     }
 
-                    let user_event = self.ctx.keybind.get(&key).filter(|ue| {
+                    let user_event = self.ctx.keybind.get(&key).copied().filter(|ue| {
                         // without panels to focus, digits fall through to the numeric prefix (or search input)
                         !matches!(ue, UserEvent::FocusPanel(_)) || self.view.has_panels()
                     });
@@ -273,9 +291,12 @@ impl App<'_> {
                         Some(UserEvent::ForceQuit) => {
                             self.ec.send(AppEvent::Quit);
                         }
+                        Some(ue) if self.handle_remote_event(ue) => {
+                            self.app_status.numeric_prefix.clear();
+                        }
                         Some(ue) => {
                             let event_with_count =
-                                process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
+                                process_numeric_prefix(&self.app_status.numeric_prefix, ue, key);
                             self.view.handle_event(event_with_count, key);
                             self.app_status.numeric_prefix.clear();
                         }
@@ -330,6 +351,9 @@ impl App<'_> {
                 }
                 AppEvent::RunExternal(command) => {
                     self.run_external(&command);
+                }
+                AppEvent::RemoteFinished { command, result } => {
+                    self.finish_remote_command(command, result);
                 }
                 AppEvent::OpenHelp => {
                     self.open_help();
@@ -451,6 +475,12 @@ impl App<'_> {
         self.update_state(view_area);
 
         self.view.render(f, view_area);
+        if let Some(dialog) = &self.remote_dialog {
+            f.render_widget(
+                RemoteDialogWidget::new(dialog, &self.ctx.color_theme),
+                view_area,
+            );
+        }
         self.render_status_line(f, status_line_area);
     }
 }
@@ -466,7 +496,17 @@ impl App<'_> {
                     self.app_status.numeric_prefix,
                     keys_to_string(&self.app_status.pending_keys)
                 );
-                if prefix.is_empty() && picked > 0 {
+                if let (true, Some(task)) =
+                    (prefix.is_empty(), self.ctx.remote_task.borrow().as_ref())
+                {
+                    let msg = format!("{task}…");
+                    let msg_w = console::measure_text_width(&msg);
+                    let pad_w = (area.width as usize).saturating_sub(msg_w + 2 /* pad */);
+                    Line::from(vec![
+                        " ".repeat(pad_w).into(),
+                        msg.fg(self.ctx.color_theme.status_info_fg),
+                    ])
+                } else if prefix.is_empty() && picked > 0 {
                     let commits = if picked == 1 { "commit" } else { "commits" };
                     let msg = format!("{picked} {commits} picked  (Esc to clear)");
                     let msg_w = console::measure_text_width(&msg);
@@ -800,6 +840,103 @@ impl App<'_> {
         self.view.refresh();
         if let Err(err) = result {
             self.ec.send(AppEvent::NotifyError(err));
+        }
+    }
+
+    // Opens the fetch, pull or push popup, or fetches all remotes, for the event bound to them.
+    // Returns whether the event was one of them.
+    fn handle_remote_event(&mut self, event: UserEvent) -> bool {
+        let action = match event {
+            UserEvent::Fetch => RemoteAction::Fetch,
+            UserEvent::Pull => RemoteAction::Pull,
+            UserEvent::Push => RemoteAction::Push,
+            UserEvent::FetchAll => {
+                self.start_remote_command(RemoteCommand::fetch_all());
+                return true;
+            }
+            _ => return false,
+        };
+        // keys typed into the search of the list, or over the help, are not these
+        if matches!(self.app_status.status_line, StatusLine::Input { .. })
+            || matches!(self.view, View::Help(_) | View::Default)
+        {
+            return false;
+        }
+        if let Some(task) = self.ctx.remote_task.borrow().as_ref() {
+            self.ec.send(AppEvent::NotifyWarn(format!(
+                "{task}, wait for it to finish"
+            )));
+            return true;
+        }
+        match RemoteDialog::new(action, self.repository.remote_info()) {
+            Ok(dialog) => {
+                self.remote_dialog = Some(dialog);
+                // images of the graph would cover the popup
+                self.app_status.pending_clear = PendingClear::Screen;
+            }
+            Err(err) => self.ec.send(AppEvent::NotifyError(err)),
+        }
+        true
+    }
+
+    fn handle_remote_dialog_key(&mut self, key: KeyEvent) {
+        let Some(dialog) = self.remote_dialog.as_mut() else {
+            return;
+        };
+        let event = self.ctx.keybind.get(&key).copied();
+        if event == Some(UserEvent::ForceQuit) {
+            self.ec.send(AppEvent::Quit);
+            return;
+        }
+        match dialog.handle_key(event, key) {
+            DialogOutcome::None => {}
+            DialogOutcome::Close => self.close_remote_dialog(),
+            DialogOutcome::Error(err) => self.ec.send(AppEvent::NotifyError(err)),
+            DialogOutcome::Run(command) => {
+                self.close_remote_dialog();
+                self.start_remote_command(command);
+            }
+        }
+    }
+
+    fn close_remote_dialog(&mut self) {
+        self.remote_dialog = None;
+        self.app_status.pending_clear = PendingClear::Screen;
+    }
+
+    // Runs the command in the background; the app is told when it finishes.
+    fn start_remote_command(&mut self, command: RemoteCommand) {
+        if let Some(task) = self.ctx.remote_task.borrow().as_ref() {
+            self.ec.send(AppEvent::NotifyWarn(format!(
+                "{task}, wait for it to finish"
+            )));
+            return;
+        }
+        *self.ctx.remote_task.borrow_mut() = Some(command.running.clone());
+        let path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            let result = run_remote_command(&path, &command.args);
+            tx.send(AppEvent::RemoteFinished { command, result });
+        });
+    }
+
+    fn finish_remote_command(&mut self, command: RemoteCommand, result: Result<String, String>) {
+        *self.ctx.remote_task.borrow_mut() = None;
+        let typing = self.view.is_capturing_keys()
+            || matches!(self.app_status.status_line, StatusLine::Input { .. });
+        // a pull may have changed files or stopped on conflicts, even when it failed;
+        // refreshing would interrupt typing, so then it waits for a manual refresh
+        if !typing {
+            self.view.refresh();
+        }
+        match result {
+            Ok(_) if typing => self.ec.send(AppEvent::NotifySuccess(format!(
+                "{} (refresh to see the changes)",
+                command.done
+            ))),
+            Ok(_) => self.ec.send(AppEvent::NotifySuccess(command.done)),
+            Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
     }
 

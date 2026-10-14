@@ -7,5 +7,6 @@ pub mod diff;
 pub mod file_tree;
 pub mod local_changes;
 pub mod ref_list;
+pub mod remote_dialog;
 pub mod text_area;
 pub mod tree_query;
