@@ -54,6 +54,8 @@ commit = ["c"]
 abort = ["shift-c"]
 # amend the last commit instead of making a new one
 toggle_amend = ["shift-a"]
+# open the selected file in $VISUAL or $EDITOR
+edit = ["e"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]
 

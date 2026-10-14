@@ -5,10 +5,14 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    external::{editor_command, merge_tool_command},
     view::{ListRefreshViewContext, LocalChangesRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::CommitListState,
-        local_changes::{LocalChangesPanel, LocalChangesSection, LocalChangesState},
+        local_changes::{
+            ConflictMove, ExternalRequest, LocalChangesPanel, LocalChangesSection,
+            LocalChangesState,
+        },
         tree_query::QueryKind,
     },
 };
@@ -40,6 +44,11 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+        self.handle_event_inner(event_with_count, key);
+        self.run_external_request();
+    }
+
+    fn handle_event_inner(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         // while confirming or typing, keys arrive unmapped, see App::run
         if self.as_state().is_confirming() {
             if let Err(err) = self.as_mut_state().handle_confirm_key(key) {
@@ -66,6 +75,20 @@ impl<'a> LocalChangesView<'a> {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
+        if self.as_state().is_conflict_focused() {
+            // the sides are side by side, the tools below them
+            let direction = match event {
+                UserEvent::NavigateLeft => Some(ConflictMove::Left),
+                UserEvent::NavigateRight => Some(ConflictMove::Right),
+                UserEvent::NavigateUp | UserEvent::SelectUp => Some(ConflictMove::Up),
+                UserEvent::NavigateDown | UserEvent::SelectDown => Some(ConflictMove::Down),
+                _ => None,
+            };
+            if let Some(direction) = direction {
+                self.as_mut_state().move_conflict_item(direction);
+                return;
+            }
+        }
         if self.as_state().is_commit_focused() {
             // the commit section only has the message, there is nothing to move to
             if let UserEvent::NavigateDown
@@ -93,6 +116,11 @@ impl<'a> LocalChangesView<'a> {
             }
             UserEvent::ToggleSelect => {
                 self.as_mut_state().toggle_pick();
+            }
+            UserEvent::Edit => {
+                if let Err(err) = self.as_mut_state().request_edit() {
+                    self.tx.send(AppEvent::NotifyError(err));
+                }
             }
             UserEvent::Commit => {
                 let result = self.as_mut_state().commit_or_continue();
@@ -234,6 +262,21 @@ impl<'a> LocalChangesView<'a> {
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
         self.as_list_state().graph_image_ids_sorted()
+    }
+
+    // Runs the editor or merge tool the state asked for, in place of the app.
+    fn run_external_request(&mut self) {
+        let Some(request) = self.as_mut_state().take_external_request() else {
+            return;
+        };
+        let command = match request {
+            ExternalRequest::Editor(path) => editor_command(&path),
+            ExternalRequest::MergeTool(path) => {
+                let tool = self.ctx.core_config.git.merge_tool.as_deref();
+                merge_tool_command(self.as_state().toplevel(), &path, tool)
+            }
+        };
+        self.tx.send(AppEvent::RunExternal(command));
     }
 
     pub fn is_capturing_keys(&self) -> bool {

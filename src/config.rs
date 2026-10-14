@@ -139,6 +139,8 @@ pub struct CoreOptionConfig {
 pub struct CoreGitConfig {
     #[default = false]
     pub mailmap: bool,
+    // the tool `git mergetool` runs, its own `merge.tool` config when None
+    pub merge_tool: Option<String>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -455,7 +457,10 @@ mod tests {
                     graph_antialias: None,
                     initial_selection: None,
                 },
-                git: CoreGitConfig { mailmap: false },
+                git: CoreGitConfig {
+                    mailmap: false,
+                    merge_tool: None,
+                },
                 search: CoreSearchConfig {
                     target: SearchTarget::All,
                     ignore_case: false,
@@ -591,7 +596,10 @@ mod tests {
                     graph_antialias: Some(true),
                     initial_selection: Some(InitialSelection::Head),
                 },
-                git: CoreGitConfig { mailmap: true },
+                git: CoreGitConfig {
+                    mailmap: true,
+                    merge_tool: None,
+                },
                 search: CoreSearchConfig {
                     target: SearchTarget::Author,
                     ignore_case: true,
@@ -706,7 +714,10 @@ mod tests {
                     graph_antialias: None,
                     initial_selection: None,
                 },
-                git: CoreGitConfig { mailmap: false },
+                git: CoreGitConfig {
+                    mailmap: false,
+                    merge_tool: None,
+                },
                 search: CoreSearchConfig {
                     target: SearchTarget::All,
                     ignore_case: false,

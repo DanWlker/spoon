@@ -402,6 +402,51 @@ impl Repository {
         }
     }
 
+    // The top directory of the working tree, which file paths of local changes are relative to.
+    pub fn toplevel(&self) -> PathBuf {
+        git_output(&self.path, &["rev-parse", "--show-toplevel"])
+            .map(|p| PathBuf::from(p.trim()))
+            .unwrap_or_else(|_| self.path.clone())
+    }
+
+    // The content of a conflicted file on one side, None when that side deleted it.
+    pub fn conflict_side_content(&self, path: &str, side: ConflictSide) -> Option<String> {
+        let stage = match side {
+            ConflictSide::Ours => 2,
+            ConflictSide::Theirs => 3,
+        };
+        let object = format!(":{stage}:{path}");
+        let output = Command::new("git")
+            .args(["cat-file", "blob", &object])
+            .current_dir(self.toplevel())
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    // Resolves a conflicted file by keeping one side, removing it when that side deleted it.
+    pub fn resolve_conflict(
+        &self,
+        path: &str,
+        side: ConflictSide,
+    ) -> std::result::Result<(), String> {
+        let toplevel = self.toplevel();
+        if self.conflict_side_content(path, side).is_none() {
+            return run_git(&toplevel, &["rm", "--quiet", "--", path], None);
+        }
+        let option = match side {
+            ConflictSide::Ours => "--ours",
+            ConflictSide::Theirs => "--theirs",
+        };
+        run_git(&toplevel, &["checkout", option, "--", path], None)?;
+        run_git(&toplevel, &["add", "--", path], None)
+    }
+
     // The commit message git prepared for the operation in progress, without its comment lines.
     pub fn prepared_message(&self) -> Option<String> {
         let content = std::fs::read_to_string(self.git_path("MERGE_MSG")?).ok()?;
@@ -957,6 +1002,13 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
     cmd.wait().unwrap();
 
     changes
+}
+
+// The two versions of a conflicted file: what was there (ours) and what is coming in (theirs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictSide {
+    Ours,
+    Theirs,
 }
 
 // An operation that can stop on conflicts, leaving the repository in the middle of it.

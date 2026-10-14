@@ -1,4 +1,4 @@
-use std::{cell::RefCell, process::Command};
+use std::{cell::RefCell, path::Path, process::Command};
 
 use arboard::Clipboard;
 
@@ -86,6 +86,50 @@ pub struct ExternalCommandParameters<'a> {
     pub stash: Option<&'a str>,
     pub area_width: u16,
     pub area_height: u16,
+}
+
+// Opens `path` in the user's editor: $VISUAL, then $EDITOR, then vi.
+// The variables are expanded by the shell, so they may include arguments, like "code --wait".
+pub fn editor_command(path: &Path) -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        r#"exec ${VISUAL:-${EDITOR:-vi}} "$1""#.into(),
+        "sh".into(),
+        path.to_string_lossy().into_owned(),
+    ]
+}
+
+// Resolves the conflicts of `path` (relative to `toplevel`) in a merge tool, git's merge.tool unless given.
+pub fn merge_tool_command(toplevel: &Path, path: &str, tool: Option<&str>) -> Vec<String> {
+    let mut command: Vec<String> = vec![
+        "git".into(),
+        "-C".into(),
+        toplevel.to_string_lossy().into_owned(),
+        "mergetool".into(),
+        "--no-prompt".into(),
+    ];
+    if let Some(tool) = tool {
+        command.extend(["--tool".into(), tool.into()]);
+    }
+    command.extend(["--".into(), path.into()]);
+    command
+}
+
+// Runs an interactive command in the terminal, which the app gives up meanwhile, see App::run_external.
+pub fn exec_interactive(command: &[String]) -> Result<(), String> {
+    let status = Command::new(&command[0])
+        .args(&command[1..])
+        .status()
+        .map_err(|e| format!("Failed to execute {}: {e}", command[0]))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} exited with non-zero status: {status}",
+            command[0]
+        ))
+    }
 }
 
 // {{marked_hash}} refers to a single picked commit, so it is ambiguous with several.
@@ -242,6 +286,29 @@ mod tests {
         let command: Vec<String> = ["log", "{{picked_hashes}}"].map(String::from).to_vec();
         let actual = build_user_command(&params(&command, vec!["a", "b"]));
         assert_eq!(actual, vec!["log", "a", "b"]);
+    }
+
+    #[test]
+    fn test_editor_and_merge_tool_commands() {
+        let editor = editor_command(Path::new("/repo/a b.txt"));
+        assert_eq!(editor[0], "sh");
+        assert_eq!(editor[4], "/repo/a b.txt");
+
+        let tool = merge_tool_command(Path::new("/repo"), "a.txt", Some("meld"));
+        let expected = [
+            "git",
+            "-C",
+            "/repo",
+            "mergetool",
+            "--no-prompt",
+            "--tool",
+            "meld",
+            "--",
+            "a.txt",
+        ];
+        assert_eq!(tool, expected);
+        let tool = merge_tool_command(Path::new("/repo"), "a.txt", None);
+        assert!(!tool.contains(&"--tool".to_string()));
     }
 
     #[test]

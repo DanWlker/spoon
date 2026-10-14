@@ -74,6 +74,17 @@ The file trees of the local changes page and of the changes and files tabs can b
 Matching ignores case unless the query has an uppercase letter.
 On the local changes page, the filter applies to both the unstaged and staged files, and staging, unstaging and discarding a directory only affect the files shown.
 
+#### Resolving conflicts
+
+Conflicted files are marked `U`. With the cursor on one, the diff is replaced by its conflicts: the existing side (ours) and the incoming side (theirs) of each conflict, side by side, with two tools below them.
+<kbd>Enter</kbd> moves into it, <kbd>Left/Right</kbd> choose a side and <kbd>Up/Down</kbd> a tool, then <kbd>Enter</kbd>:
+
+- on a side, resolves the file by keeping that side entirely (removing the file if that side deleted it), and stages it.
+- on `Edit in merge tool`, runs `git mergetool` for the file, with the tool of [`core.git.merge_tool`](../configurations/config-file-format.md) or else git's `merge.tool` config.
+- on `Open in editor`, opens the file in `$VISUAL` or `$EDITOR` (like <kbd>e</kbd>), to edit the conflict markers by hand; stage it with <kbd>Space</kbd> afterwards.
+
+The app is suspended while the editor or merge tool runs, and refreshed after.
+
 #### Picking files
 
 On the local changes page, <kbd>m</kbd> picks files and directories (highlighted, with the count in the panel title).
@@ -105,6 +116,7 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>3</kbd>                         | Focus commit message                                         | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message | `confirm`    |
 | <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert; or continue a rebase | `commit` |
+| <kbd>e</kbd>                         | Open the file in `$VISUAL` or `$EDITOR`                      | `edit`                          |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |

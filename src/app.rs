@@ -22,8 +22,8 @@ use crate::{
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
-        copy_to_clipboard, exec_user_command, exec_user_command_suspend, validate_marked_hash,
-        ExternalCommandParameters,
+        copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
+        validate_marked_hash, ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, Repository},
     graph::GraphImageManager,
@@ -290,6 +290,9 @@ impl App<'_> {
                 }
                 AppEvent::CloseRefs { to_local_changes } => {
                     self.close_refs(to_local_changes);
+                }
+                AppEvent::RunExternal(command) => {
+                    self.run_external(&command);
                 }
                 AppEvent::CloseLocalChanges => {
                     self.close_local_changes();
@@ -749,6 +752,18 @@ impl App<'_> {
             } else {
                 self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
             }
+        }
+    }
+
+    fn run_external(&mut self, command: &[String]) {
+        self.ec.suspend();
+        let result = exec_interactive(command);
+        self.ec.resume();
+        self.app_status.pending_clear = PendingClear::Screen;
+        // the command may have changed files, or resolved conflicts
+        self.view.refresh();
+        if let Err(err) = result {
+            self.ec.send(AppEvent::NotifyError(err));
         }
     }
 

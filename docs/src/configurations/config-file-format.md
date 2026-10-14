@@ -13,6 +13,7 @@ initial_selection = "latest"
 
 [core.git]
 mailmap = false
+# merge_tool = "meld"
 
 [core.search]
 target = "all"
@@ -196,6 +197,13 @@ Whether to resolve author and committer identities through the repository's [`.m
 - default: `false`
 
 When enabled, names and emails are displayed as mapped by `.mailmap`, in the same way as `git log` and `git shortlog`. Repositories without a `.mailmap` file are unaffected.
+
+### `core.git.merge_tool`
+
+The merge tool to resolve conflicts with from the local changes page, passed to `git mergetool --tool`.
+
+- type: `string`
+- default: not set, `git mergetool` uses git's `merge.tool` config
 
 ### `graph.row_image_width`
 

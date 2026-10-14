@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashSet},
     ops::Range,
+    path::PathBuf,
     rc::Rc,
 };
 
@@ -17,8 +18,9 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
-    git::{LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository},
+    git::{ConflictSide, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository},
     widget::{
+        conflict::ConflictView,
         diff::{diff_lines, parse_diff, ParsedDiff},
         file_tree::{
             ancestors, build_rooted_file_tree_rows, find_match, FileTreeRow, SearchDirection,
@@ -33,6 +35,33 @@ use crate::{
 pub enum LocalChangesSection {
     Unstaged,
     Staged,
+}
+
+// The choices of the conflict panel: a side to keep, or a tool to resolve the conflicts with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictItem {
+    Existing,
+    Incoming,
+    MergeTool,
+    Editor,
+}
+
+// A direction to move between the choices of the conflict panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictMove {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+// An interactive program for the view to run in place of the app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalRequest {
+    // an absolute path
+    Editor(PathBuf),
+    // a path relative to the top of the working tree
+    MergeTool(String),
 }
 
 // An action waiting for the user to confirm it in a popup.
@@ -53,6 +82,8 @@ pub struct CommitDraft {
 #[derive(Debug)]
 pub struct LocalChangesState<'a> {
     repository: &'a Repository,
+    // the paths of local changes are relative to it
+    toplevel: PathBuf,
     changes: LocalChanges,
     unstaged_rows: Vec<FileTreeRow>,
     staged_rows: Vec<FileTreeRow>,
@@ -98,6 +129,12 @@ pub struct LocalChangesState<'a> {
 
     // the action and question shown in a popup while waiting for the user to confirm
     confirm: Option<(ConfirmAction, String)>,
+    // the two sides of the conflicted file under the cursor, shown instead of its diff
+    conflict: Option<ConflictView>,
+    conflict_focused: bool,
+    conflict_item: ConflictItem,
+    // an editor or merge tool for the view to run, see `take_external_request`
+    external_request: Option<ExternalRequest>,
     // a rebase, merge, cherry-pick or revert stopped and waits to be finished (or aborted)
     operation: Option<Operation>,
     // whether git's prepared message was put in the message box for the operation in progress
@@ -117,6 +154,7 @@ impl<'a> LocalChangesState<'a> {
         };
         let mut state = Self {
             repository,
+            toplevel: repository.toplevel(),
             changes,
             unstaged_rows,
             staged_rows,
@@ -145,6 +183,10 @@ impl<'a> LocalChangesState<'a> {
             needs_refresh: false,
             stash_input: None,
             confirm: None,
+            conflict: None,
+            conflict_focused: false,
+            conflict_item: ConflictItem::Existing,
+            external_request: None,
             operation: repository.operation_in_progress(),
             message_prepared: false,
         };
@@ -420,7 +462,10 @@ impl<'a> LocalChangesState<'a> {
 
     // Asks for confirmation to discard the selected unstaged line, hunk, file or directory.
     pub fn request_discard(&mut self) {
-        if self.commit_focused || self.section != LocalChangesSection::Unstaged {
+        if self.commit_focused
+            || self.conflict_focused
+            || self.section != LocalChangesSection::Unstaged
+        {
             return;
         }
         let Some(row) = self.selected_row() else {
@@ -550,12 +595,85 @@ impl<'a> LocalChangesState<'a> {
         Ok(())
     }
 
+    // Asks the view to open the file under the cursor in the editor.
+    pub fn request_edit(&mut self) -> Result<(), String> {
+        if self.commit_focused {
+            return Ok(());
+        }
+        let Some(row) = self.selected_row() else {
+            return Ok(());
+        };
+        let Some(file) = row.file_index.and_then(|i| self.files().get(i)) else {
+            return Err("Select a file to edit".into());
+        };
+        let path = self.toplevel.join(&file.path);
+        if !path.exists() {
+            return Err(format!("{} does not exist in the working tree", file.path));
+        }
+        self.external_request = Some(ExternalRequest::Editor(path));
+        Ok(())
+    }
+
+    pub fn toplevel(&self) -> &std::path::Path {
+        &self.toplevel
+    }
+
+    pub fn take_external_request(&mut self) -> Option<ExternalRequest> {
+        self.external_request.take()
+    }
+
+    pub fn is_conflict_focused(&self) -> bool {
+        self.conflict_focused
+    }
+
+    // Moves between the sides (side by side) and the tools below them.
+    pub fn move_conflict_item(&mut self, direction: ConflictMove) {
+        use ConflictItem::*;
+        self.conflict_item = match (self.conflict_item, direction) {
+            (Existing, ConflictMove::Right) => Incoming,
+            (Incoming, ConflictMove::Left) => Existing,
+            (Existing | Incoming, ConflictMove::Down) => MergeTool,
+            (MergeTool, ConflictMove::Down) => Editor,
+            (Editor, ConflictMove::Up) => MergeTool,
+            (MergeTool, ConflictMove::Up) => Existing,
+            (item, _) => item,
+        };
+    }
+
+    fn activate_conflict_item(&mut self) -> Result<(), String> {
+        let Some(path) = self.selected_path() else {
+            return Ok(());
+        };
+        let side = match self.conflict_item {
+            ConflictItem::Existing => ConflictSide::Ours,
+            ConflictItem::Incoming => ConflictSide::Theirs,
+            ConflictItem::MergeTool => {
+                self.external_request = Some(ExternalRequest::MergeTool(path));
+                return Ok(());
+            }
+            ConflictItem::Editor => {
+                self.external_request = Some(ExternalRequest::Editor(self.toplevel.join(path)));
+                return Ok(());
+            }
+        };
+        let result = self.repository.resolve_conflict(&path, side);
+        self.conflict_focused = false;
+        self.reload();
+        result
+    }
+
     // Goes one level deeper: files -> hunks -> lines of the selected hunk.
     // Does nothing when the diff has no hunk to select.
     // In the commit section, starts editing the message or toggles amend.
     pub fn enter(&mut self) -> Result<(), String> {
         if self.commit_focused {
             self.editing = true;
+        } else if self.conflict_focused {
+            self.activate_conflict_item()?;
+        } else if self.conflict.is_some() && !self.diff_focused && self.picked().is_empty() {
+            // a conflicted file is resolved from the conflict panel instead of its diff
+            self.conflict_focused = true;
+            self.conflict_item = ConflictItem::Existing;
         } else if !self.diff_focused {
             // with picked rows, the diff shows all their files to stage hunks and lines from
             if !self.picked().is_empty() {
@@ -588,6 +706,9 @@ impl<'a> LocalChangesState<'a> {
         } else if self.commit_focused {
             self.commit_focused = false;
             true
+        } else if self.conflict_focused {
+            self.conflict_focused = false;
+            true
         } else if self.line_mode {
             self.line_mode = false;
             // the cursor may have moved into another hunk
@@ -605,6 +726,7 @@ impl<'a> LocalChangesState<'a> {
     fn leave_diff(&mut self) {
         self.diff_focused = false;
         self.line_mode = false;
+        self.conflict_focused = false;
         if std::mem::take(&mut self.diff_of_picked) {
             self.load_diff();
         }
@@ -676,7 +798,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
     pub fn toggle_stage(&mut self) -> Result<(), String> {
-        if self.commit_focused {
+        if self.commit_focused || self.conflict_focused {
             return Ok(());
         }
         let result = if self.line_mode {
@@ -1093,6 +1215,15 @@ impl<'a> LocalChangesState<'a> {
     }
 
     fn set_diff(&mut self, diff: &str) {
+        let conflicted = self
+            .selected_row()
+            .and_then(|row| row.file_index)
+            .and_then(|i| self.files().get(i))
+            .filter(|f| f.status == LocalChangeStatus::Conflicted && !self.diff_of_picked)
+            .map(|f| f.path.clone());
+        self.conflict =
+            conflicted.map(|path| ConflictView::load(self.repository, &self.toplevel, &path));
+        self.conflict_focused = false;
         self.diff = parse_diff(diff);
         self.diff_focused = false;
         self.line_mode = false;
@@ -1172,7 +1303,11 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
 
         self.render_file_section(state, LocalChangesSection::Unstaged, unstaged_area, buf);
         self.render_file_section(state, LocalChangesSection::Staged, staged_area, buf);
-        self.render_diff(state, diff_area, buf);
+        if state.conflict.is_some() {
+            self.render_conflict(state, diff_area, buf);
+        } else {
+            self.render_diff(state, diff_area, buf);
+        }
         self.render_commit(state, commit_area, buf);
         if let Some((action, prompt)) = &state.confirm {
             self.render_confirm_popup(*action, prompt, area, buf);
@@ -1427,6 +1562,109 @@ impl LocalChangesPanel<'_> {
         let text_area = message_block.inner(inner);
         message_block.render(inner, buf);
         self.render_message(state, text_area, buf);
+    }
+
+    fn render_conflict(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
+        let Some(conflict) = &state.conflict else {
+            return;
+        };
+        let theme = &self.ctx.color_theme;
+        let path = state.selected_path().unwrap_or_default();
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .style(Style::default().fg(theme.divider_fg))
+            .title(Line::from(vec![
+                Span::raw(format!(" {path} ")).fg(theme.fg),
+                Span::raw("· conflicted ").fg(theme.status_warn_fg),
+            ]))
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        // the sides to pick from, side by side, then the tools, one per line
+        let [sides_area, tools_area] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(inner);
+        let [ours_area, theirs_area] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(sides_area);
+        let focused = |item| state.focused && state.conflict_focused && state.conflict_item == item;
+
+        let label = |name: &str, label: &str| {
+            if label.is_empty() {
+                format!(" {name} ")
+            } else {
+                format!(" {name} · {label} ")
+            }
+        };
+        let sides = [
+            (
+                ours_area,
+                ConflictItem::Existing,
+                label("Existing", &conflict.ours_label),
+                &conflict.ours,
+            ),
+            (
+                theirs_area,
+                ConflictItem::Incoming,
+                label("Incoming", &conflict.theirs_label),
+                &conflict.theirs,
+            ),
+        ];
+        let mut height = 0;
+        for (side_area, item, title, lines) in sides {
+            let border_fg = if focused(item) {
+                theme.status_info_fg
+            } else {
+                theme.divider_fg
+            };
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(border_fg))
+                .title(Span::raw(title).fg(border_fg).bold());
+            let content_area = block.inner(side_area);
+            block.render(side_area, buf);
+            height = content_area.height as usize;
+            let longest = conflict.ours.len().max(conflict.theirs.len());
+            state.diff_offset = state.diff_offset.min(longest.saturating_sub(height));
+            let lines: Vec<Line> = lines
+                .iter()
+                .skip(state.diff_offset)
+                .take(height)
+                .map(|line| {
+                    if line.starts_with("── conflict") {
+                        Line::raw(line.clone()).fg(theme.status_input_transient_fg)
+                    } else {
+                        Line::raw(line.clone()).fg(theme.fg)
+                    }
+                })
+                .collect();
+            Paragraph::new(lines).render(content_area, buf);
+        }
+        state.diff_height = height;
+
+        let tool = match &self.ctx.core_config.git.merge_tool {
+            Some(tool) => format!("[ Edit in merge tool ({tool}) ]"),
+            None => "[ Edit in merge tool ]".to_string(),
+        };
+        let tools = [
+            (ConflictItem::MergeTool, tool),
+            (ConflictItem::Editor, "[ Open in editor ]".to_string()),
+        ];
+        for (i, (item, text)) in tools.into_iter().enumerate() {
+            let width = (text.chars().count() as u16).min(tools_area.width);
+            let tool_area = Rect::new(tools_area.x, tools_area.y + i as u16, width, 1);
+            if tool_area.y >= tools_area.bottom() {
+                break;
+            }
+            let style = if focused(item) {
+                Style::default()
+                    .bg(theme.ref_selected_bg)
+                    .fg(theme.ref_selected_fg)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            Paragraph::new(Line::styled(text, style)).render(tool_area, buf);
+        }
     }
 
     fn render_confirm_popup(
@@ -2503,6 +2741,95 @@ mod tests {
         state.handle_confirm_key(key(KeyCode::Char('y')))?;
         assert_eq!(state.operation, None);
         assert!(state.request_abort().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_conflict_panel() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.set_focused(true);
+        select_row(&mut state, "a.txt");
+
+        // the conflicted file shows both sides instead of its diff
+        let conflict = state.conflict.as_ref().unwrap();
+        assert_eq!(
+            (conflict.ours_label.as_str(), conflict.theirs_label.as_str()),
+            ("HEAD", "feature")
+        );
+        assert_eq!(conflict.ours, ["── conflict 1 ──", "master"]);
+        assert_eq!(conflict.theirs, ["── conflict 1 ──", "feature"]);
+
+        // the tools ask the view to run them
+        state.enter()?;
+        assert!(state.is_conflict_focused());
+        state.move_conflict_item(ConflictMove::Down);
+        state.enter()?;
+        assert_eq!(
+            state.take_external_request(),
+            Some(ExternalRequest::MergeTool("a.txt".into()))
+        );
+        state.move_conflict_item(ConflictMove::Down);
+        state.enter()?;
+        let toplevel = state.toplevel().to_path_buf();
+        assert_eq!(
+            state.take_external_request(),
+            Some(ExternalRequest::Editor(toplevel.join("a.txt")))
+        );
+
+        // esc goes back to the files
+        assert!(state.back());
+        assert!(!state.is_conflict_focused());
+
+        // e opens the file in the editor from the files too
+        state.request_edit()?;
+        assert_eq!(
+            state.take_external_request(),
+            Some(ExternalRequest::Editor(toplevel.join("a.txt")))
+        );
+        select_row(&mut state, ROOT_PATH);
+        assert!(state.request_edit().is_err());
+        select_row(&mut state, "a.txt");
+
+        // picking a side resolves the file with it
+        state.enter()?;
+        state.move_conflict_item(ConflictMove::Right);
+        state.enter()?;
+        assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "feature\n");
+        assert!(state.changes.unstaged.is_empty());
+        assert!(state.conflict.is_none());
+        assert_eq!(state.operation, Some(Operation::Merge));
+        Ok(())
+    }
+
+    #[test]
+    fn test_conflict_with_deleted_side() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = diverged_branches(repo_path);
+        // master deletes the file that feature changes
+        git_stdout(repo_path, &["rm", "--quiet", "a.txt"]);
+        git.commit("delete", "2024-01-05");
+        git_stdout(repo_path, &["merge", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.set_focused(true);
+        select_row(&mut state, "a.txt");
+        let conflict = state.conflict.as_ref().unwrap();
+        assert_eq!(conflict.ours, ["(deleted)"]);
+        assert_eq!(conflict.theirs, ["feature"]);
+
+        // keeping the deleting side removes the file
+        state.enter()?;
+        state.enter()?;
+        assert!(!repo_path.join("a.txt").exists());
+        assert!(state.changes.unstaged.is_empty());
         Ok(())
     }
 }

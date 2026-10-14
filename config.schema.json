@@ -77,6 +77,10 @@
               "type": "boolean",
               "description": "Whether to resolve author and committer identities through the repository's .mailmap file.",
               "default": false
+            },
+            "merge_tool": {
+              "type": "string",
+              "description": "The merge tool to resolve conflicts with, passed to `git mergetool --tool`. Git's merge.tool config is used when not set."
             }
           },
           "additionalProperties": false
@@ -755,6 +759,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_amend": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "edit": {
           "$ref": "#/definitions/keybindArray"
         },
         "discard": {
