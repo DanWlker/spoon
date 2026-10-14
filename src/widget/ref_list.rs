@@ -3,13 +3,16 @@ use std::{collections::HashSet, rc::Rc};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Style, Stylize},
-    text::Span,
+    style::{Modifier, Style},
     widgets::{Block, Borders, Padding, StatefulWidget},
 };
 use semver::Version;
 
-use crate::{app::AppContext, git::Ref};
+use crate::{
+    app::AppContext,
+    git::Ref,
+    widget::style::{mark_selected_row, panel_title},
+};
 
 const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
 const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
@@ -274,20 +277,11 @@ impl StatefulWidget for RefList {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let theme = &self.ctx.color_theme;
-        let title_fg = if self.focused {
-            theme.status_info_fg
-        } else {
-            theme.fg
-        };
-        let title = if self.collapsed {
-            " [0] "
-        } else {
-            " [0] Refs "
-        };
+        let label = if self.collapsed { "[0]" } else { "[0] Refs" };
         let block = Block::default()
             .borders(Borders::TOP | Borders::RIGHT)
             .style(Style::default().fg(theme.divider_fg))
-            .title(Span::raw(title).fg(title_fg).bold())
+            .title(panel_title(label, "", self.focused, theme))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         ratatui::widgets::Widget::render(block, area, buf);
@@ -308,10 +302,9 @@ impl StatefulWidget for RefList {
             state.scroll_to_selection = false;
         }
 
-        let item_style = Style::default().fg(self.ctx.color_theme.fg);
-        let highlight_style = Style::default()
-            .bg(self.ctx.color_theme.ref_selected_bg)
-            .fg(self.ctx.color_theme.ref_selected_fg);
+        let item_style = Style::default().fg(theme.fg);
+        // the sections stand out from the refs in them
+        let root_style = item_style.add_modifier(Modifier::BOLD);
 
         for (line, row) in state
             .visible_rows
@@ -335,12 +328,19 @@ impl StatefulWidget for RefList {
                 "▸ "
             };
             let prefix = format!("{}{symbol}", "  ".repeat(row.depth));
-            let (text_x, _) = buf.set_stringn(inner.x, y, prefix, inner.width as usize, item_style);
+            let symbol_style = Style::default().fg(theme.status_input_transient_fg);
+            let (text_x, _) =
+                buf.set_stringn(inner.x, y, prefix, inner.width as usize, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
-            buf.set_stringn(text_x, y, &row.name, remaining as usize, item_style);
+            let style = if row.depth == 0 {
+                root_style
+            } else {
+                item_style
+            };
+            buf.set_stringn(text_x, y, &row.name, remaining as usize, style);
             // the selection only shows while moving in the sidebar
             if self.focused && row.identifier == state.selected {
-                buf.set_style(Rect::new(inner.x, y, inner.width, 1), highlight_style);
+                mark_selected_row(buf, inner, y, true, theme);
             }
         }
     }

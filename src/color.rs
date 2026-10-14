@@ -13,92 +13,122 @@ pub struct ColorTheme {
     #[default(RatatuiColor::Reset)]
     pub bg: RatatuiColor,
 
-    #[default(RatatuiColor::White)]
+    #[default(CREAM)]
     pub list_selected_fg: RatatuiColor,
-    #[default(RatatuiColor::DarkGray)]
+    #[default(SELECTION_BG)]
     pub list_selected_bg: RatatuiColor,
-    #[default(RatatuiColor::Black)]
+    #[default(INK)]
     pub list_picked_fg: RatatuiColor,
-    #[default(RatatuiColor::Blue)]
+    #[default(FUCHSIA)]
     pub list_picked_bg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(MUTED)]
     pub list_ref_paren_fg: RatatuiColor,
-    #[default(RatatuiColor::Green)]
+    #[default(GREEN)]
     pub list_ref_branch_fg: RatatuiColor,
-    #[default(RatatuiColor::Red)]
+    #[default(RED)]
     pub list_ref_remote_branch_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(YELLOW)]
     pub list_ref_tag_fg: RatatuiColor,
-    #[default(RatatuiColor::Magenta)]
+    #[default(FUCHSIA)]
     pub list_ref_stash_fg: RatatuiColor,
-    #[default(RatatuiColor::Cyan)]
+    #[default(CYAN)]
     pub list_head_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub list_subject_fg: RatatuiColor,
-    #[default(RatatuiColor::Cyan)]
+    #[default(LAVENDER)]
     pub list_name_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(INDIGO)]
     pub list_hash_fg: RatatuiColor,
-    #[default(RatatuiColor::Magenta)]
+    #[default(MUTED)]
     pub list_date_fg: RatatuiColor,
-    #[default(RatatuiColor::Black)]
+    #[default(INK)]
     pub list_match_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(YELLOW)]
     pub list_match_bg: RatatuiColor,
 
-    #[default(RatatuiColor::Reset)]
+    #[default(MUTED)]
     pub detail_label_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub detail_name_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub detail_date_fg: RatatuiColor,
-    #[default(RatatuiColor::Blue)]
+    #[default(INDIGO)]
     pub detail_email_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub detail_hash_fg: RatatuiColor,
-    #[default(RatatuiColor::Green)]
+    #[default(GREEN)]
     pub detail_ref_branch_fg: RatatuiColor,
-    #[default(RatatuiColor::Red)]
+    #[default(RED)]
     pub detail_ref_remote_branch_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(YELLOW)]
     pub detail_ref_tag_fg: RatatuiColor,
-    #[default(RatatuiColor::Green)]
+    #[default(GREEN)]
     pub detail_file_change_add_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(YELLOW)]
     pub detail_file_change_modify_fg: RatatuiColor,
-    #[default(RatatuiColor::Red)]
+    #[default(RED)]
     pub detail_file_change_delete_fg: RatatuiColor,
-    #[default(RatatuiColor::Magenta)]
+    #[default(FUCHSIA)]
     pub detail_file_change_move_fg: RatatuiColor,
 
-    #[default(RatatuiColor::White)]
+    #[default(CREAM)]
     pub ref_selected_fg: RatatuiColor,
-    #[default(RatatuiColor::DarkGray)]
+    #[default(SELECTION_BG)]
     pub ref_selected_bg: RatatuiColor,
 
-    #[default(RatatuiColor::Green)]
+    #[default(FUCHSIA)]
     pub help_block_title_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(INDIGO)]
     pub help_key_fg: RatatuiColor,
 
     #[default(RatatuiColor::Reset)]
     pub virtual_cursor_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub status_input_fg: RatatuiColor,
-    #[default(RatatuiColor::DarkGray)]
+    #[default(MUTED)]
     pub status_input_transient_fg: RatatuiColor,
-    #[default(RatatuiColor::Cyan)]
+    #[default(INDIGO)]
     pub status_info_fg: RatatuiColor,
-    #[default(RatatuiColor::Green)]
+    #[default(GREEN)]
     pub status_success_fg: RatatuiColor,
-    #[default(RatatuiColor::Yellow)]
+    #[default(YELLOW)]
     pub status_warn_fg: RatatuiColor,
-    #[default(RatatuiColor::Red)]
+    #[default(RED)]
     pub status_error_fg: RatatuiColor,
 
-    #[default(RatatuiColor::DarkGray)]
+    #[default(SUBTLE)]
     pub divider_fg: RatatuiColor,
+
+    // the focused panel: its title (as a badge) and its border
+    #[default(INDIGO)]
+    pub accent_fg: RatatuiColor,
+    // text on the accent color
+    #[default(CREAM)]
+    pub accent_text_fg: RatatuiColor,
+    // the mark beside the selected row
+    #[default(FUCHSIA)]
+    pub highlight_fg: RatatuiColor,
+    #[default(STATUS_BAR_FG)]
+    pub status_bar_fg: RatatuiColor,
+    #[default(STATUS_BAR_BG)]
+    pub status_bar_bg: RatatuiColor,
 }
+
+// The default colors, after the palette of Charm's tools (lipgloss, huh, bubbles).
+const INDIGO: RatatuiColor = RatatuiColor::Rgb(0x75, 0x71, 0xF9);
+const FUCHSIA: RatatuiColor = RatatuiColor::Rgb(0xF7, 0x80, 0xE2);
+const CREAM: RatatuiColor = RatatuiColor::Rgb(0xFF, 0xFD, 0xF5);
+const GREEN: RatatuiColor = RatatuiColor::Rgb(0x02, 0xBF, 0x87);
+const RED: RatatuiColor = RatatuiColor::Rgb(0xED, 0x56, 0x7A);
+const YELLOW: RatatuiColor = RatatuiColor::Rgb(0xEC, 0xCB, 0x6E);
+const CYAN: RatatuiColor = RatatuiColor::Rgb(0x6E, 0xC8, 0xF0);
+const LAVENDER: RatatuiColor = RatatuiColor::Rgb(0xA4, 0x9F, 0xC5);
+const MUTED: RatatuiColor = RatatuiColor::Rgb(0x62, 0x62, 0x62);
+const SUBTLE: RatatuiColor = RatatuiColor::Rgb(0x3A, 0x3A, 0x3A);
+const INK: RatatuiColor = RatatuiColor::Rgb(0x1E, 0x1E, 0x24);
+const SELECTION_BG: RatatuiColor = RatatuiColor::Rgb(0x35, 0x31, 0x4C);
+const STATUS_BAR_FG: RatatuiColor = RatatuiColor::Rgb(0xC1, 0xC6, 0xB2);
+const STATUS_BAR_BG: RatatuiColor = RatatuiColor::Rgb(0x2A, 0x2A, 0x2E);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphColor {

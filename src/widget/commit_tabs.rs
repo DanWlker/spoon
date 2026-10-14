@@ -12,6 +12,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     git::{CommitHash, FileChange, Repository},
+    widget::style::{mark_selected_row, panel_title},
     widget::{
         diff::{diff_lines, parse_diff, ParsedDiff},
         file_tree::{FileTree, FileTreeRow, FileTreeState},
@@ -61,7 +62,10 @@ pub fn render_tab_titles(
         .map(|(i, tab)| {
             let title = format!(" [{}] {} ", i + 2, tab.title());
             if *tab == current && focused {
-                Span::raw(title).fg(theme.status_info_fg).bold()
+                Span::raw(title)
+                    .fg(theme.accent_text_fg)
+                    .bg(theme.accent_fg)
+                    .bold()
             } else if *tab == current {
                 Span::raw(title).fg(theme.fg).bold()
             } else {
@@ -70,7 +74,7 @@ pub fn render_tab_titles(
         })
         .collect();
     if let Some(indicator) = indicator {
-        spans.push(Span::raw(format!(" {indicator} ")).fg(theme.status_info_fg));
+        spans.push(Span::raw(format!(" {indicator} ")).fg(theme.highlight_fg));
     }
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     Line::from(spans).render(area, buf);
@@ -85,15 +89,8 @@ pub fn render_compare_title(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let fg = if focused {
-        theme.status_info_fg
-    } else {
-        theme.fg
-    };
-    let mut spans = vec![Span::raw(format!(" {title} ")).fg(fg).bold()];
-    if let Some(indicator) = indicator {
-        spans.push(Span::raw(format!(" {indicator} ")).fg(theme.status_info_fg));
-    }
+    let indicator = indicator.unwrap_or_default();
+    let spans = panel_title(title, &indicator, focused, theme).spans;
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     Line::from(spans).render(area, buf);
 }
@@ -560,18 +557,8 @@ fn render_rows_with_cursor(
     let lines: Vec<Line> = lines.into_iter().skip(offset).collect();
     Paragraph::new(lines).fg(theme.fg).render(area, buf);
 
-    if let Some(y) = (cursor - offset)
-        .try_into()
-        .ok()
-        .filter(|&y: &u16| y < area.height)
-    {
-        let highlight_style = Style::default()
-            .bg(theme.ref_selected_bg)
-            .fg(theme.ref_selected_fg);
-        buf.set_style(
-            Rect::new(area.x, area.y + y, area.width, 1),
-            highlight_style,
-        );
+    if let Ok(y) = u16::try_from(cursor - offset) {
+        mark_selected_row(buf, area, area.y + y, true, theme);
     }
 }
 

@@ -11,9 +11,9 @@ use ratatui::{
         SynchronizedUpdate,
     },
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Paragraph},
     DefaultTerminal, Frame, Terminal,
 };
 use rustc_hash::FxHashMap;
@@ -40,6 +40,7 @@ use crate::{
         },
         local_changes::LocalChangesState,
         ref_list::{RefList, RefListState},
+        style::key_hints,
     },
 };
 
@@ -541,109 +542,153 @@ impl App<'_> {
 }
 
 impl App<'_> {
+    // A bar after lipgloss's status bar: the page and the branch as badges, then the message,
+    // and on the right what runs in the background and the picked commits.
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
-        let text: Line = match &self.app_status.status_line {
+        let theme = &self.ctx.color_theme;
+        let bar = Style::default()
+            .fg(theme.status_bar_fg)
+            .bg(theme.status_bar_bg);
+        let page = match &self.view {
+            _ if self.sidebar_focused => "REFS",
+            View::LocalChanges(_) => "CHANGES",
+            View::UserCommand(_) => "COMMAND",
+            View::Help(_) => "HELP",
+            _ => "GRAPH",
+        };
+        let branch = match self.repository.head() {
+            Head::Branch { name } => name.clone(),
+            Head::Detached { target } => format!("{} (detached)", target.as_short_hash()),
+            Head::None => "no commits".into(),
+        };
+        let mut left = vec![
+            Span::raw(format!(" {page} "))
+                .fg(theme.accent_text_fg)
+                .bg(theme.accent_fg)
+                .bold(),
+            Span::raw(format!(" {branch} "))
+                .fg(theme.status_bar_fg)
+                .bg(theme.divider_fg),
+            Span::raw(" "),
+        ];
+        let left_width: usize = left.iter().map(Span::width).sum();
+        let mut right = vec![];
+
+        match &self.app_status.status_line {
             StatusLine::None => {
-                let picked = self.view.picked_commit_count();
                 // the count and the keys of a key sequence typed so far
                 let prefix = format!(
                     "{}{}",
                     self.app_status.numeric_prefix,
                     keys_to_string(&self.app_status.pending_keys)
                 );
-                if let (true, Some(task)) =
-                    (prefix.is_empty(), self.ctx.running_task.borrow().as_ref())
-                {
-                    let msg = format!("{task}…");
-                    let msg_w = console::measure_text_width(&msg);
-                    let pad_w = (area.width as usize).saturating_sub(msg_w + 2 /* pad */);
-                    Line::from(vec![
-                        " ".repeat(pad_w).into(),
-                        msg.fg(self.ctx.color_theme.status_info_fg),
-                    ])
-                } else if prefix.is_empty() && picked > 0 {
-                    let commits = if picked == 1 { "commit" } else { "commits" };
-                    let msg = format!("{picked} {commits} picked  (Esc to clear)");
-                    let msg_w = console::measure_text_width(&msg);
-                    let pad_w = (area.width as usize).saturating_sub(msg_w + 2 /* pad */);
-                    Line::from(vec![
-                        " ".repeat(pad_w).into(),
-                        msg.fg(self.ctx.color_theme.status_info_fg),
-                    ])
-                } else {
-                    Line::raw(prefix).fg(self.ctx.color_theme.status_input_transient_fg)
-                }
+                left.push(Span::raw(prefix).fg(theme.accent_fg).bold());
             }
             StatusLine::Input {
                 message, metadata, ..
-            } => status_line_with_metadata(
-                message,
-                metadata,
-                Style::default().fg(self.ctx.color_theme.status_input_fg),
-                Style::default().fg(self.ctx.color_theme.status_input_transient_fg),
-                area.width,
-            ),
+            } => {
+                left.push(Span::raw(message.clone()).fg(theme.status_bar_fg));
+                right.push(Span::raw(format!("{metadata} ")).fg(theme.status_input_transient_fg));
+            }
             StatusLine::Transient(msg) => {
-                let msg_w = console::measure_text_width(msg.as_str());
-                let pad_w = (area.width as usize).saturating_sub(msg_w + 2 /* pad */);
-                Line::from(vec![
-                    " ".repeat(pad_w).into(),
-                    msg.as_str()
-                        .fg(self.ctx.color_theme.status_input_transient_fg),
-                ])
+                right.push(Span::raw(format!("{msg} ")).fg(theme.status_input_transient_fg));
             }
             StatusLine::SearchResult {
                 message,
                 options,
                 matched,
             } => {
-                let message_style = if *matched {
-                    Style::default().fg(self.ctx.color_theme.status_info_fg)
+                let span = Span::raw(message.clone());
+                left.push(if *matched {
+                    span.fg(theme.accent_fg)
                 } else {
-                    Style::default()
-                        .fg(self.ctx.color_theme.status_warn_fg)
-                        .add_modifier(Modifier::BOLD)
-                };
-                status_line_with_metadata(
-                    message,
-                    options,
-                    message_style,
-                    Style::default().fg(self.ctx.color_theme.status_input_transient_fg),
-                    area.width,
-                )
+                    span.fg(theme.status_warn_fg).bold()
+                });
+                right.push(Span::raw(format!("{options} ")).fg(theme.status_input_transient_fg));
             }
             StatusLine::NotificationInfo(msg) => {
-                Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
+                left.push(Span::raw(msg.clone()).fg(theme.accent_fg));
             }
-            StatusLine::NotificationSuccess(msg) => Line::raw(msg)
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_success_fg),
-            StatusLine::NotificationWarn(msg) => Line::raw(msg)
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_warn_fg),
-            StatusLine::NotificationError(msg) => Line::raw(format!("ERROR: {msg}"))
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_error_fg),
-        };
-        let paragraph = Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                .padding(Padding::horizontal(1)),
-        );
-        f.render_widget(paragraph, area);
+            StatusLine::NotificationSuccess(msg) => {
+                left.push(
+                    Span::raw(format!("✓ {msg}"))
+                        .fg(theme.status_success_fg)
+                        .bold(),
+                );
+            }
+            StatusLine::NotificationWarn(msg) => {
+                left.push(
+                    Span::raw(format!("! {msg}"))
+                        .fg(theme.status_warn_fg)
+                        .bold(),
+                );
+            }
+            StatusLine::NotificationError(msg) => {
+                left.push(
+                    Span::raw(" ERROR ")
+                        .fg(theme.accent_text_fg)
+                        .bg(theme.status_error_fg)
+                        .bold(),
+                );
+                left.push(Span::raw(format!(" {msg}")).fg(theme.status_error_fg));
+            }
+        }
+
+        if matches!(self.app_status.status_line, StatusLine::None) {
+            if let Some(task) = self.ctx.running_task.borrow().as_ref() {
+                right.push(Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
+            }
+            let picked = self.view.picked_commit_count();
+            if picked > 0 {
+                let commits = if picked == 1 { "commit" } else { "commits" };
+                right.push(
+                    Span::raw(format!(" {picked} {commits} picked "))
+                        .fg(theme.list_picked_fg)
+                        .bg(theme.list_picked_bg)
+                        .bold(),
+                );
+                right.push(Span::raw(" esc to clear ").fg(theme.status_input_transient_fg));
+            }
+            if right.is_empty() {
+                // the keys to find the way around, like bubbles' short help
+                let key = |event| {
+                    self.ctx
+                        .keybind
+                        .keys_for_event(event)
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                };
+                let keys = [
+                    (key(UserEvent::RefList), "switch page"),
+                    (key(UserEvent::FocusPanel(0)), "refs"),
+                    (key(UserEvent::HelpToggle), "help"),
+                ];
+                let keys: Vec<(&str, &str)> = keys
+                    .iter()
+                    .filter(|(key, _)| !key.is_empty())
+                    .map(|(key, description)| (key.as_str(), *description))
+                    .collect();
+                right.extend(key_hints(&keys, theme).spans);
+                right.push(Span::raw(" "));
+            }
+        }
+
+        let line = status_bar_line(left, right, area.width);
+        f.render_widget(Paragraph::new(line).style(bar), area);
 
         if let StatusLine::Input {
             cursor_position, ..
         } = &self.app_status.status_line
         {
-            let (x, y) = (area.x + cursor_position + 1, area.y + 1);
+            let (x, y) = (area.x + left_width as u16 + cursor_position, area.y);
             match &self.ctx.ui_config.common.cursor_type {
                 CursorType::Native => {
                     f.set_cursor_position((x, y));
                 }
                 CursorType::Virtual(cursor) => {
-                    let style = Style::default().fg(self.ctx.color_theme.virtual_cursor_fg);
+                    let style = Style::default().fg(theme.virtual_cursor_fg);
                     f.buffer_mut().set_string(x, y, cursor, style);
                 }
             }
@@ -670,7 +715,7 @@ impl App<'_> {
 const COLLAPSED_SIDEBAR_WIDTH: u16 = 6;
 
 fn split_app_areas(area: Rect) -> [Rect; 2] {
-    Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(area)
+    Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area)
 }
 
 fn clear_fullscreen<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Error> {
@@ -1561,28 +1606,20 @@ impl App<'_> {
     }
 }
 
-fn status_line_with_metadata(
-    message: &str,
-    metadata: &str,
-    message_style: Style,
-    metadata_style: Style,
-    area_width: u16,
+// The spans on the left, then those on the right, aligned to the right edge when they fit.
+fn status_bar_line(
+    mut left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    width: u16,
 ) -> Line<'static> {
-    let content_width = area_width.saturating_sub(2) as usize;
-    let message_width = console::measure_text_width(message);
-    let metadata_width = console::measure_text_width(metadata);
-    let min_gap_width = 2;
-
-    if message_width + min_gap_width + metadata_width > content_width {
-        return Line::from(Span::styled(message.to_owned(), message_style));
+    let left_width: usize = left.iter().map(Span::width).sum();
+    let right_width: usize = right.iter().map(Span::width).sum();
+    let width = width as usize;
+    if left_width + right_width < width {
+        left.push(Span::raw(" ".repeat(width - left_width - right_width)));
+        left.extend(right);
     }
-
-    let pad_width = content_width - message_width - metadata_width;
-    Line::from(vec![
-        Span::styled(message.to_owned(), message_style),
-        Span::raw(" ".repeat(pad_width)),
-        Span::styled(metadata.to_owned(), metadata_style),
-    ])
+    Line::from(left)
 }
 
 fn selected_commit_details(
@@ -1755,22 +1792,13 @@ mod tests {
     }
 
     #[test]
-    fn test_status_line_with_metadata_right_aligns_metadata() {
-        let line =
-            status_line_with_metadata("left", "[meta]", Style::default(), Style::default(), 14);
+    fn test_status_bar_line_right_aligns_the_right_spans() {
+        let line = status_bar_line(vec![Span::raw("left")], vec![Span::raw("[meta]")], 14);
+        let texts: Vec<&str> = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["left", "    ", "[meta]"]);
 
-        assert_eq!(line.spans.len(), 3);
-        assert_eq!(line.spans[0].content.as_ref(), "left");
-        assert_eq!(line.spans[1].content.as_ref(), "  ");
-        assert_eq!(line.spans[2].content.as_ref(), "[meta]");
-    }
-
-    #[test]
-    fn test_status_line_with_metadata_hides_metadata_when_area_is_too_narrow() {
-        let line =
-            status_line_with_metadata("left", "[meta]", Style::default(), Style::default(), 13);
-
+        // without room, the right spans are left out
+        let line = status_bar_line(vec![Span::raw("left")], vec![Span::raw("[meta]")], 10);
         assert_eq!(line.spans.len(), 1);
-        assert_eq!(line.spans[0].content.as_ref(), "left");
     }
 }

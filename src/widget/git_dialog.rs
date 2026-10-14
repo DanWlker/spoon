@@ -12,6 +12,7 @@ use crate::{
     color::ColorTheme,
     event::UserEvent,
     git::{GitTask, RemoteInfo},
+    widget::style::key_hints,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -809,20 +810,19 @@ impl Widget for GitDialogWidget<'_> {
             .fields
             .iter()
             .any(|(.., f)| matches!(f, Field::Check(_)));
-        let mut keys = vec!["j/k move", "h/l change"];
+        let mut keys = vec![("j/k", "move"), ("h/l", "change")];
         if has_check {
-            keys.push("space toggle");
+            keys.push(("space", "toggle"));
         }
         if has_text {
-            keys.push("e type");
+            keys.push(("e", "type"));
         }
-        let enter = format!("enter {}", dialog.verb);
-        keys.extend([enter.as_str(), "esc cancel"]);
-        let keys_hint = keys.join("  ");
+        keys.extend([("enter", dialog.verb), ("esc", "cancel")]);
+        let keys_hint = key_hints(&keys, theme);
         // the width stays the same while typing
-        let min_width = keys_hint.chars().count();
+        let min_width = keys_hint.width();
         let hint = if dialog.editing {
-            "type a branch name    enter / esc: done".to_string()
+            key_hints(&[("type", "a branch name"), ("enter/esc", "done")], theme)
         } else {
             keys_hint
         };
@@ -831,9 +831,12 @@ impl Widget for GitDialogWidget<'_> {
         if !dialog.intro.is_empty() {
             lines.push(Line::raw(""));
             for (i, line) in dialog.intro.iter().enumerate() {
-                let line = Line::raw(line.clone());
                 // the heading stands out from the commits under it
-                lines.push(if i == 0 { line.bold() } else { line });
+                lines.push(if i == 0 {
+                    Line::raw(line.clone()).fg(theme.accent_fg).bold()
+                } else {
+                    Line::raw(line.clone()).fg(theme.fg)
+                });
             }
         }
         lines.push(Line::raw(""));
@@ -841,14 +844,22 @@ impl Widget for GitDialogWidget<'_> {
         let mut checks_started = false;
         for (i, (_, label, field)) in dialog.fields.iter().enumerate() {
             let selected = i == dialog.selected;
-            let row_style = if selected {
-                Style::default()
-                    .fg(theme.list_selected_fg)
-                    .bg(theme.list_selected_bg)
+            // the field being changed has a bar beside it, like huh's forms
+            let bar = if selected {
+                Span::raw("┃ ").fg(theme.accent_fg)
+            } else {
+                Span::raw("  ")
+            };
+            let label_style = if selected {
+                Style::default().fg(theme.accent_fg).bold()
             } else {
                 Style::default().fg(theme.fg)
             };
-            let marker = if selected { "▌" } else { " " };
+            let arrow_style = if selected {
+                Style::default().fg(theme.highlight_fg)
+            } else {
+                dim
+            };
             let line = match field {
                 Field::Choice { options, index } => {
                     let more = if options.len() > 1 {
@@ -857,11 +868,12 @@ impl Widget for GitDialogWidget<'_> {
                         String::new()
                     };
                     Line::from(vec![
-                        Span::raw(format!("{marker} {label:<LABEL_WIDTH$}  ")),
-                        Span::raw("‹ ").patch_style(dim),
-                        Span::raw(options[*index].clone()).bold(),
-                        Span::raw(" ›").patch_style(dim),
-                        Span::raw(more).patch_style(dim),
+                        bar,
+                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
+                        Span::styled("‹ ", arrow_style),
+                        Span::raw(options[*index].clone()).fg(theme.fg).bold(),
+                        Span::styled(" ›", arrow_style),
+                        Span::styled(more, dim),
                     ])
                 }
                 Field::Text { input, options } => {
@@ -872,17 +884,18 @@ impl Widget for GitDialogWidget<'_> {
                     } else {
                         "  new"
                     };
-                    let prefix = format!("{marker} {label:<LABEL_WIDTH$}  ");
+                    let prefix_width = 2 + LABEL_WIDTH + 2;
                     if selected && dialog.editing {
-                        let x = prefix.chars().count() + 2 + input.visual_cursor();
+                        let x = prefix_width + 2 + input.visual_cursor();
                         cursor = Some((x as u16, lines.len() as u16));
                     }
                     Line::from(vec![
-                        Span::raw(prefix),
-                        Span::raw("‹ ").patch_style(dim),
-                        Span::raw(value.to_string()).bold(),
-                        Span::raw(" ›").patch_style(dim),
-                        Span::raw(note).fg(theme.status_info_fg),
+                        bar,
+                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
+                        Span::styled("‹ ", arrow_style),
+                        Span::raw(value.to_string()).fg(theme.fg).bold(),
+                        Span::styled(" ›", arrow_style),
+                        Span::raw(note).fg(theme.highlight_fg),
                     ])
                 }
                 Field::Check(checked) => {
@@ -890,19 +903,31 @@ impl Widget for GitDialogWidget<'_> {
                         lines.push(Line::raw(""));
                     }
                     checks_started = true;
-                    let mark = if *checked { "[x]" } else { "[ ]" };
-                    Line::raw(format!("{marker} {mark} {label}"))
+                    let mark = if *checked {
+                        Span::raw("[•] ").fg(theme.status_success_fg).bold()
+                    } else {
+                        Span::styled("[ ] ", dim)
+                    };
+                    Line::from(vec![
+                        bar,
+                        mark,
+                        Span::styled(label.to_string(), label_style),
+                    ])
                 }
             };
-            lines.push(line.patch_style(row_style));
+            lines.push(line);
         }
         lines.push(Line::raw(""));
         if let Some(warning) = dialog.warning() {
-            lines.push(Line::raw(warning).fg(theme.status_warn_fg).bold());
+            lines.push(
+                Line::raw(format!("! {warning}"))
+                    .fg(theme.status_warn_fg)
+                    .bold(),
+            );
         }
         lines.push(Line::raw(dialog.summary()).patch_style(dim).italic());
         lines.push(Line::raw(""));
-        lines.push(Line::raw(hint.clone()).patch_style(dim));
+        lines.push(hint);
 
         let content_width = lines
             .iter()
@@ -922,9 +947,14 @@ impl Widget for GitDialogWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.help_block_title_fg))
+            .border_style(Style::default().fg(theme.accent_fg))
             .style(Style::default().fg(theme.fg).bg(theme.bg))
-            .title(Span::raw(dialog.title).bold())
+            .title(
+                Span::raw(dialog.title)
+                    .fg(theme.accent_text_fg)
+                    .bg(theme.accent_fg)
+                    .bold(),
+            )
             .padding(Padding::horizontal(1));
         let inner = block.inner(popup);
         Paragraph::new(lines).block(block).render(popup, buf);

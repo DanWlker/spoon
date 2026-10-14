@@ -23,6 +23,7 @@ use crate::{
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{SearchOptions, SearchTarget},
+    widget::style::panel_title,
 };
 
 static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default().respect_case());
@@ -822,23 +823,14 @@ pub fn render_commit_list_panel<'a>(
     focused: bool,
 ) {
     let theme = &ctx.color_theme;
-    let title_fg = if focused {
-        theme.status_info_fg
-    } else {
-        theme.fg
-    };
     let picked = match state.picked_commit_hashes().len() {
         0 => String::new(),
-        n => format!(" · {n} picked"),
+        n => format!("{n} picked"),
     };
     let block = Block::default()
         .borders(Borders::TOP)
         .style(Style::default().fg(theme.divider_fg))
-        .title(
-            Span::raw(format!(" [1] Commits{picked} "))
-                .fg(title_fg)
-                .bold(),
-        );
+        .title(panel_title("[1] Commits", &picked, focused, theme));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx), inner, state);

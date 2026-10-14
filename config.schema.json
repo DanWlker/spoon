@@ -434,52 +434,52 @@
         "list_selected_fg": {
           "type": "string",
           "description": "Foreground color for a selected item in lists.",
-          "default": "white"
+          "default": "#fffdf5"
         },
         "list_selected_bg": {
           "type": "string",
           "description": "Background color for a selected item in lists.",
-          "default": "dark-gray"
+          "default": "#35314c"
         },
         "list_picked_fg": {
           "type": "string",
           "description": "Foreground color for commits picked with space in the commit list.",
-          "default": "black"
+          "default": "#1e1e24"
         },
         "list_picked_bg": {
           "type": "string",
           "description": "Background color for commits picked with space in the commit list.",
-          "default": "blue"
+          "default": "#f780e2"
         },
         "list_ref_paren_fg": {
           "type": "string",
           "description": "Color for parentheses surrounding refs in the commit list.",
-          "default": "yellow"
+          "default": "#626262"
         },
         "list_ref_branch_fg": {
           "type": "string",
           "description": "Color for local branches in the commit list.",
-          "default": "green"
+          "default": "#02bf87"
         },
         "list_ref_remote_branch_fg": {
           "type": "string",
           "description": "Color for remote branches in the commit list.",
-          "default": "red"
+          "default": "#ed567a"
         },
         "list_ref_tag_fg": {
           "type": "string",
           "description": "Color for tags in the commit list.",
-          "default": "yellow"
+          "default": "#eccb6e"
         },
         "list_ref_stash_fg": {
           "type": "string",
           "description": "Color for stashes in the commit list.",
-          "default": "magenta"
+          "default": "#f780e2"
         },
         "list_head_fg": {
           "type": "string",
           "description": "Color for the HEAD indicator in the commit list.",
-          "default": "cyan"
+          "default": "#6ec8f0"
         },
         "list_subject_fg": {
           "type": "string",
@@ -489,32 +489,32 @@
         "list_name_fg": {
           "type": "string",
           "description": "Color for the author name in the commit list.",
-          "default": "cyan"
+          "default": "#a49fc5"
         },
         "list_hash_fg": {
           "type": "string",
           "description": "Color for the commit hash in the commit list.",
-          "default": "yellow"
+          "default": "#7571f9"
         },
         "list_date_fg": {
           "type": "string",
           "description": "Color for the date in the commit list.",
-          "default": "magenta"
+          "default": "#626262"
         },
         "list_match_fg": {
           "type": "string",
           "description": "Foreground color for a search match in the commit list.",
-          "default": "black"
+          "default": "#1e1e24"
         },
         "list_match_bg": {
           "type": "string",
           "description": "Background color for a search match in the commit list.",
-          "default": "yellow"
+          "default": "#eccb6e"
         },
         "detail_label_fg": {
           "type": "string",
           "description": "Color for labels in the commit detail view.",
-          "default": "reset"
+          "default": "#626262"
         },
         "detail_name_fg": {
           "type": "string",
@@ -529,7 +529,7 @@
         "detail_email_fg": {
           "type": "string",
           "description": "Color for author/committer email addresses in the commit detail view.",
-          "default": "blue"
+          "default": "#7571f9"
         },
         "detail_hash_fg": {
           "type": "string",
@@ -539,57 +539,57 @@
         "detail_ref_branch_fg": {
           "type": "string",
           "description": "Color for local branches in the commit detail view.",
-          "default": "green"
+          "default": "#02bf87"
         },
         "detail_ref_remote_branch_fg": {
           "type": "string",
           "description": "Color for remote branches in the commit detail view.",
-          "default": "red"
+          "default": "#ed567a"
         },
         "detail_ref_tag_fg": {
           "type": "string",
           "description": "Color for tags in the commit detail view.",
-          "default": "yellow"
+          "default": "#eccb6e"
         },
         "detail_file_change_add_fg": {
           "type": "string",
           "description": "Color for added file status in the commit detail view.",
-          "default": "green"
+          "default": "#02bf87"
         },
         "detail_file_change_modify_fg": {
           "type": "string",
           "description": "Color for modified file status in the commit detail view.",
-          "default": "yellow"
+          "default": "#eccb6e"
         },
         "detail_file_change_delete_fg": {
           "type": "string",
           "description": "Color for deleted file status in the commit detail view.",
-          "default": "red"
+          "default": "#ed567a"
         },
         "detail_file_change_move_fg": {
           "type": "string",
           "description": "Color for moved file status in the commit detail view.",
-          "default": "magenta"
+          "default": "#f780e2"
         },
         "ref_selected_fg": {
           "type": "string",
           "description": "Foreground color for a selected item in the refs list.",
-          "default": "white"
+          "default": "#fffdf5"
         },
         "ref_selected_bg": {
           "type": "string",
           "description": "Background color for a selected item in the refs list.",
-          "default": "dark-gray"
+          "default": "#35314c"
         },
         "help_block_title_fg": {
           "type": "string",
           "description": "Color for block titles in the help view.",
-          "default": "green"
+          "default": "#f780e2"
         },
         "help_key_fg": {
           "type": "string",
           "description": "Color for key bindings in the help view.",
-          "default": "yellow"
+          "default": "#7571f9"
         },
         "virtual_cursor_fg": {
           "type": "string",
@@ -604,32 +604,57 @@
         "status_input_transient_fg": {
           "type": "string",
           "description": "Foreground color for transient messages in the status bar.",
-          "default": "dark-gray"
+          "default": "#626262"
         },
         "status_info_fg": {
           "type": "string",
           "description": "Color for informational messages in the status bar.",
-          "default": "cyan"
+          "default": "#7571f9"
         },
         "status_success_fg": {
           "type": "string",
           "description": "Color for success messages in the status bar.",
-          "default": "green"
+          "default": "#02bf87"
         },
         "status_warn_fg": {
           "type": "string",
           "description": "Color for warning messages in the status bar.",
-          "default": "yellow"
+          "default": "#eccb6e"
         },
         "status_error_fg": {
           "type": "string",
           "description": "Color for error messages in the status bar.",
-          "default": "red"
+          "default": "#ed567a"
         },
         "divider_fg": {
           "type": "string",
           "description": "Color for dividers.",
-          "default": "dark-gray"
+          "default": "#3a3a3a"
+        },
+        "accent_fg": {
+          "type": "string",
+          "description": "Color of the focused panel: its title badge and border.",
+          "default": "#7571f9"
+        },
+        "accent_text_fg": {
+          "type": "string",
+          "description": "Color for text on the accent color, like the title badge of the focused panel.",
+          "default": "#fffdf5"
+        },
+        "highlight_fg": {
+          "type": "string",
+          "description": "Color for the mark beside the selected row, and highlighted notes.",
+          "default": "#f780e2"
+        },
+        "status_bar_fg": {
+          "type": "string",
+          "description": "Foreground color of the status bar.",
+          "default": "#c1c6b2"
+        },
+        "status_bar_bg": {
+          "type": "string",
+          "description": "Background color of the status bar.",
+          "default": "#2a2a2e"
         }
       },
       "additionalProperties": false

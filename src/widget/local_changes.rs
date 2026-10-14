@@ -10,7 +10,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, StatefulWidget, Widget},
 };
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
@@ -26,6 +26,7 @@ use crate::{
             ancestors, build_rooted_file_tree_rows, find_match, find_next, FileTreeRow,
             SearchDirection, ROOT_PATH,
         },
+        style::{key_hints, mark_selected_row, panel_title},
         text_area::TextArea,
         tree_query::{highlighted_name, path_matches, QueryChange, QueryKind, TreeQuery},
     },
@@ -1384,35 +1385,25 @@ impl LocalChangesPanel<'_> {
             ),
         };
         let active = state.section == section;
-        let title_fg = if active && state.focused && !state.diff_focused && !state.commit_focused {
-            self.ctx.color_theme.status_info_fg
-        } else {
-            self.ctx.color_theme.fg
-        };
+        let focused = active && state.focused && !state.diff_focused && !state.commit_focused;
+        let mut extras = vec![];
+        if section == LocalChangesSection::Staged && state.amend_base.is_some() {
+            extras.push("amending".to_string());
+        }
+        if !picked.is_empty() {
+            extras.push(format!("{} picked", picked.len()));
+        }
+        extras.extend(state.query_indicator(section));
+        let label = format!("[{number}] {name} ({})", files.len());
         let block = Block::default()
             .borders(Borders::TOP | Borders::RIGHT)
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-            .title(
-                Span::raw(format!(
-                    " [{number}] {name} ({}){}{}{} ",
-                    files.len(),
-                    if section == LocalChangesSection::Staged && state.amend_base.is_some() {
-                        " · amending"
-                    } else {
-                        ""
-                    },
-                    match picked.len() {
-                        0 => String::new(),
-                        n => format!(" · {n} picked"),
-                    },
-                    state
-                        .query_indicator(section)
-                        .map(|q| format!(" · {q}"))
-                        .unwrap_or_default()
-                ))
-                .fg(title_fg)
-                .bold(),
-            )
+            .title(panel_title(
+                &label,
+                &extras.join(" · "),
+                focused,
+                &self.ctx.color_theme,
+            ))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         block.render(area, buf);
@@ -1487,43 +1478,34 @@ impl LocalChangesPanel<'_> {
         // only the section whose diff is displayed shows its cursor
         if active {
             let y = inner.y + (cursor - offset) as u16;
-            if y < inner.bottom() {
-                // dimmed while another panel, like the refs sidebar, has the focus
-                let highlight_style = if state.focused {
-                    Style::default()
-                        .bg(self.ctx.color_theme.ref_selected_bg)
-                        .fg(self.ctx.color_theme.ref_selected_fg)
-                } else {
-                    Style::default()
-                        .fg(self.ctx.color_theme.status_info_fg)
-                        .add_modifier(Modifier::BOLD)
-                };
-                buf.set_style(Rect::new(inner.x, y, inner.width, 1), highlight_style);
-            }
+            // quieter while another panel, like the refs sidebar, has the focus
+            mark_selected_row(buf, inner, y, state.focused, &self.ctx.color_theme);
         }
     }
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
-        let mut title = match state.selected_row() {
+        let title = match state.selected_row() {
             _ if state.diff_of_picked => picked_files_label(state.target_files().len()),
             Some(row) if row.is_root() => "/".to_string(),
             Some(row) => row.path.clone(),
             None => String::new(),
         };
-        if state.line_mode {
-            title.push_str(" · select lines");
+        let mode = if state.line_mode {
+            "select lines"
         } else if state.diff_focused {
-            title.push_str(" · select hunks");
-        }
-        let title_fg = if state.diff_focused {
-            self.ctx.color_theme.status_info_fg
+            "select hunks"
         } else {
-            self.ctx.color_theme.fg
+            ""
         };
         let block = Block::default()
             .borders(Borders::TOP)
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-            .title(Span::raw(format!(" {title} ")).fg(title_fg))
+            .title(panel_title(
+                &title,
+                mode,
+                state.focused && state.diff_focused,
+                &self.ctx.color_theme,
+            ))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         block.render(area, buf);
@@ -1564,15 +1546,10 @@ impl LocalChangesPanel<'_> {
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
         let theme = &self.ctx.color_theme;
         let focused = state.focused && state.commit_focused;
-        let title_fg = if focused {
-            theme.status_info_fg
-        } else {
-            theme.fg
-        };
         // amending and rebasing have no controls of their own, the title shows them
-        let mut title = vec![Span::raw(" [3] Commit ").fg(title_fg).bold()];
+        let mut title = panel_title("[3] Commit", "", focused, theme).spans;
         if state.amend_base.is_some() {
-            title.push(Span::raw("· amending ").fg(theme.status_warn_fg));
+            title.push(Span::raw(" · amending ").fg(theme.status_warn_fg));
         }
         if let Some(operation) = state.operation {
             let (doing, c) = match operation {
@@ -1581,7 +1558,7 @@ impl LocalChangesPanel<'_> {
                 Operation::CherryPick => ("cherry-picking", "commit"),
                 Operation::Revert => ("reverting", "commit"),
             };
-            let text = format!("· {doing} (c {c}, C abort) ");
+            let text = format!(" · {doing} (c {c}, C abort) ");
             title.push(Span::raw(text).fg(theme.status_warn_fg));
         }
         let block = Block::default()
@@ -1593,12 +1570,13 @@ impl LocalChangesPanel<'_> {
         block.render(area, buf);
 
         let border_fg = if focused {
-            theme.status_info_fg
+            theme.accent_fg
         } else {
             theme.divider_fg
         };
         let mut message_block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .style(Style::default().fg(border_fg));
         if state.editing {
             message_block = message_block.title(Span::raw(" editing · Esc to stop ").fg(border_fg));
@@ -1619,7 +1597,10 @@ impl LocalChangesPanel<'_> {
             .style(Style::default().fg(theme.divider_fg))
             .title(Line::from(vec![
                 Span::raw(format!(" {path} ")).fg(theme.fg),
-                Span::raw("· conflicted ").fg(theme.status_warn_fg),
+                Span::raw(" conflicted ")
+                    .fg(theme.accent_text_fg)
+                    .bg(theme.status_error_fg)
+                    .bold(),
             ]))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
@@ -1659,15 +1640,15 @@ impl LocalChangesPanel<'_> {
         ];
         let mut height = 0;
         for (side_area, item, title, lines) in sides {
-            let border_fg = if focused(item) {
-                theme.status_info_fg
-            } else {
-                theme.divider_fg
-            };
             let block = Block::default()
                 .borders(Borders::ALL)
-                .style(Style::default().fg(border_fg))
-                .title(Span::raw(title).fg(border_fg).bold());
+                .border_type(BorderType::Rounded)
+                .style(Style::default().fg(if focused(item) {
+                    theme.accent_fg
+                } else {
+                    theme.divider_fg
+                }))
+                .title(panel_title(title.trim(), "", focused(item), theme));
             let content_area = block.inner(side_area);
             block.render(side_area, buf);
             height = content_area.height as usize;
@@ -1690,12 +1671,12 @@ impl LocalChangesPanel<'_> {
         state.diff_height = height;
 
         let tool = match &self.ctx.core_config.git.merge_tool {
-            Some(tool) => format!("[ Edit in merge tool ({tool}) ]"),
-            None => "[ Edit in merge tool ]".to_string(),
+            Some(tool) => format!("  Edit in merge tool ({tool})  "),
+            None => "  Edit in merge tool  ".to_string(),
         };
         let tools = [
             (ConflictItem::MergeTool, tool),
-            (ConflictItem::Editor, "[ Open in editor ]".to_string()),
+            (ConflictItem::Editor, "  Open in editor  ".to_string()),
         ];
         for (i, (item, text)) in tools.into_iter().enumerate() {
             let width = (text.chars().count() as u16).min(tools_area.width);
@@ -1705,12 +1686,14 @@ impl LocalChangesPanel<'_> {
             if tool_area.y >= tools_area.bottom() {
                 break;
             }
+            // buttons, the focused one filled
             let style = if focused(item) {
                 Style::default()
-                    .bg(theme.ref_selected_bg)
-                    .fg(theme.ref_selected_fg)
+                    .bg(theme.accent_fg)
+                    .fg(theme.accent_text_fg)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme.fg)
+                Style::default().fg(theme.fg).bg(theme.status_bar_bg)
             };
             Paragraph::new(Line::styled(text, style)).render(tool_area, buf);
         }
@@ -1724,15 +1707,14 @@ impl LocalChangesPanel<'_> {
         buf: &mut Buffer,
     ) {
         let theme = &self.ctx.color_theme;
-        let (title, hint) = match action {
-            ConfirmAction::Discard => {
-                (" Discard changes ", "y / Enter: discard    n / Esc: cancel")
-            }
-            ConfirmAction::Abort(_) => (" Abort ", "y / Enter: abort    n / Esc: cancel"),
+        let (title, verb) = match action {
+            ConfirmAction::Discard => ("Discard changes", "discard"),
+            ConfirmAction::Abort(_) => ("Abort", "abort"),
         };
+        let hint = key_hints(&[("y/enter", verb), ("n/esc", "cancel")], theme);
         // text plus padding and borders
-        let width = (prompt.chars().count().max(hint.len()) as u16 + 4).min(area.width);
-        let height = 6.min(area.height);
+        let width = (prompt.chars().count().max(hint.width()) as u16 + 4).min(area.width);
+        let height = 8.min(area.height);
         let popup = Rect::new(
             area.x + (area.width.saturating_sub(width)) / 2,
             area.y + (area.height.saturating_sub(height)) / 2,
@@ -1742,14 +1724,20 @@ impl LocalChangesPanel<'_> {
         Clear.render(popup, buf);
         let block = Block::default()
             .borders(Borders::ALL)
-            .style(Style::default().fg(theme.status_warn_fg).bg(theme.bg))
-            .title(Span::raw(title).bold())
-            .padding(Padding::horizontal(1));
+            .border_type(BorderType::Rounded)
+            .style(Style::default().fg(theme.status_error_fg).bg(theme.bg))
+            .title(
+                Span::raw(format!(" {title} "))
+                    .fg(theme.accent_text_fg)
+                    .bg(theme.status_error_fg)
+                    .bold(),
+            )
+            .padding(Padding::new(1, 1, 1, 0));
         let lines = vec![
-            Line::raw(prompt.to_string()).fg(theme.fg),
-            Line::raw("This cannot be undone.").fg(theme.status_warn_fg),
+            Line::raw(prompt.to_string()).fg(theme.fg).bold(),
+            Line::raw("This cannot be undone.").fg(theme.status_error_fg),
             Line::raw(""),
-            Line::raw(hint).fg(theme.status_input_transient_fg),
+            hint,
         ];
         Paragraph::new(lines).block(block).render(popup, buf);
     }
