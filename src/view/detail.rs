@@ -138,6 +138,14 @@ impl<'a> DetailView<'a> {
             self.update_query_status();
             return;
         }
+        if let UserEvent::NextTab | UserEvent::PreviousTab = event {
+            // the comparison only has changes; the focus stays where it is
+            if !self.is_comparing() {
+                self.tab = self.tab.cycle(event == UserEvent::NextTab);
+                self.load_tab();
+            }
+            return;
+        }
         if let UserEvent::FocusPanel(n) = event {
             if n == 1 {
                 self.list_focused = true;

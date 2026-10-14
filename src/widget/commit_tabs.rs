@@ -32,6 +32,18 @@ pub enum DetailTab {
 impl DetailTab {
     const ALL: [DetailTab; 3] = [DetailTab::Info, DetailTab::Changes, DetailTab::Files];
 
+    // The tab after (or before) this one, around from the last to the first.
+    pub fn cycle(self, forward: bool) -> Self {
+        let len = Self::ALL.len();
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        let next = if forward {
+            (i + 1) % len
+        } else {
+            (i + len - 1) % len
+        };
+        Self::ALL[next]
+    }
+
     pub fn from_number(n: usize) -> Option<Self> {
         Self::ALL.get(n.checked_sub(2)?).copied()
     }

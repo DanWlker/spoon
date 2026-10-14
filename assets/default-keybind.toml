@@ -51,9 +51,12 @@ focus_panel_4 = ["4"]
 toggle_stage = ["space"]
 # select several items: commits in the commit list, files in local changes
 toggle_select = ["v"]
-# go to the next/previous picked commit or file; keys separated by a space are pressed one after another
-next_picked = ["] v"]
-previous_picked = ["[ v"]
+# go to the next/previous picked commit or file
+next_picked = ["}"]
+previous_picked = ["{"]
+# switch to the next/previous tab of the commit details: info, changes, files
+next_tab = ["]"]
+previous_tab = ["["]
 # stash local changes, or only the selected files
 stash = ["s"]
 # commit (or amend), or continue the rebase in progress

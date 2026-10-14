@@ -52,7 +52,7 @@ Any single character not listed above (e.g., `a`, `b`, `1`, `!`) can be used as 
 
 ### Key Sequences
 
-Keys separated by spaces are a sequence, pressed one after another, for example `"] v"` (the default of `next_picked`).
+Keys separated by spaces are a sequence, pressed one after another, for example `"g n"`.
 After the first keys, the status line shows them while waiting for the next one; <kbd>Esc</kbd> cancels, and a key that does not continue the sequence acts as usual.
 
 A key cannot both start a sequence and be bound on its own, since the sequence could not be typed.

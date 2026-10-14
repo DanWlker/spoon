@@ -780,6 +780,12 @@
         "previous_picked": {
           "$ref": "#/definitions/keybindArray"
         },
+        "next_tab": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_tab": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "stash": {
           "$ref": "#/definitions/keybindArray"
         },

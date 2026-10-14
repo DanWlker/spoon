@@ -94,8 +94,9 @@ pub struct LocalChangesState<'a> {
     // directories collapsed by the user, all are expanded otherwise
     unstaged_collapsed: HashSet<String>,
     staged_collapsed: HashSet<String>,
-    // the search applies to the focused section, the filter to both
-    query: TreeQuery,
+    // the search and filter of each section, applying to it only
+    unstaged_query: TreeQuery,
+    staged_query: TreeQuery,
     // paths of the rows picked with `m` in each section, which actions apply to instead of the cursor
     unstaged_picked: BTreeSet<String>,
     staged_picked: BTreeSet<String>,
@@ -163,7 +164,8 @@ impl<'a> LocalChangesState<'a> {
             unstaged_cursor: 0,
             unstaged_collapsed: HashSet::new(),
             staged_collapsed: HashSet::new(),
-            query: TreeQuery::default(),
+            unstaged_query: TreeQuery::default(),
+            staged_query: TreeQuery::default(),
             unstaged_picked: BTreeSet::new(),
             staged_picked: BTreeSet::new(),
             diff_of_picked: false,
@@ -401,7 +403,7 @@ impl<'a> LocalChangesState<'a> {
         self.files()
             .iter()
             .filter(|f| self.picked().iter().any(|p| covers(p, &f.path)))
-            .filter(|f| self.query.keeps(&f.path))
+            .filter(|f| self.query().keeps(&f.path))
             .collect()
     }
 
@@ -855,7 +857,7 @@ impl<'a> LocalChangesState<'a> {
         };
         // with picked rows or a filter, the files are given rather than the whole directory
         let targets = self.target_files();
-        let mut paths = if self.picked().is_empty() && self.query.filter().is_none() {
+        let mut paths = if self.picked().is_empty() && self.query().filter().is_none() {
             vec![row.path.as_str()]
         } else {
             file_paths(&targets)
@@ -890,9 +892,16 @@ impl<'a> LocalChangesState<'a> {
         self.changes = self.load_changes();
         self.operation = self.repository.operation_in_progress();
         self.prepare_message();
-        let filter = self.query.filter();
-        self.unstaged_rows = build_rows(&self.changes.unstaged, &self.unstaged_collapsed, filter);
-        self.staged_rows = build_rows(&self.changes.staged, &self.staged_collapsed, filter);
+        self.unstaged_rows = build_rows(
+            &self.changes.unstaged,
+            &self.unstaged_collapsed,
+            self.unstaged_query.filter(),
+        );
+        self.staged_rows = build_rows(
+            &self.changes.staged,
+            &self.staged_collapsed,
+            self.staged_query.filter(),
+        );
         self.unstaged_cursor =
             restore_cursor(&self.unstaged_rows, unstaged_path, self.unstaged_cursor);
         self.staged_cursor = restore_cursor(&self.staged_rows, staged_path, self.staged_cursor);
@@ -938,32 +947,32 @@ impl<'a> LocalChangesState<'a> {
     fn row_files(&self, row: &FileTreeRow) -> Vec<&LocalChangeFile> {
         self.files()
             .iter()
-            .filter(|f| row.contains(&f.path) && self.query.keeps(&f.path))
+            .filter(|f| row.contains(&f.path) && self.query().keeps(&f.path))
             .collect()
     }
 
     // Starts typing a search or filter, moving the focus back to the files.
     pub fn start_query(&mut self, kind: QueryKind) {
         self.focus_section(self.section);
-        self.query.start(kind);
+        self.query_mut().start(kind);
     }
 
     pub fn is_typing_query(&self) -> bool {
-        self.query.is_editing()
+        self.query().is_editing()
     }
 
     pub fn query_status_input(&self) -> Option<(String, u16)> {
-        self.query.status_input()
+        self.query().status_input()
     }
 
     pub fn handle_query_key(&mut self, key: KeyEvent) {
-        let change = self.query.handle_key(key);
+        let change = self.query_mut().handle_key(key);
         self.apply_query_change(change);
     }
 
     // Clears the search, or else the filter. Returns false when there was neither.
     pub fn clear_query(&mut self) -> bool {
-        let change = self.query.clear();
+        let change = self.query_mut().clear();
         self.apply_query_change(change);
         change != QueryChange::None
     }
@@ -982,14 +991,15 @@ impl<'a> LocalChangesState<'a> {
             QueryChange::None => {}
             QueryChange::Search => self.search(SearchDirection::Current),
             QueryChange::Filter => {
+                // only the focused section is filtered
                 let path = self.selected_path();
-                let filter = self.query.filter();
-                self.unstaged_rows =
-                    build_rows(&self.changes.unstaged, &self.unstaged_collapsed, filter);
-                self.staged_rows = build_rows(&self.changes.staged, &self.staged_collapsed, filter);
-                self.unstaged_cursor =
-                    restore_cursor(&self.unstaged_rows, None, self.unstaged_cursor);
-                self.staged_cursor = restore_cursor(&self.staged_rows, None, self.staged_cursor);
+                let rows = build_rows(self.files(), self.collapsed(), self.query().filter());
+                let cursor = restore_cursor(&rows, None, self.cursor());
+                match self.section {
+                    LocalChangesSection::Unstaged => self.unstaged_rows = rows,
+                    LocalChangesSection::Staged => self.staged_rows = rows,
+                }
+                *self.cursor_mut() = cursor;
                 self.select_path_or_keep(path);
             }
         }
@@ -997,10 +1007,10 @@ impl<'a> LocalChangesState<'a> {
 
     // Selects the match of the search in the current section, expanding the directories hiding it.
     fn search(&mut self, direction: SearchDirection) {
-        let Some(query) = self.query.search().map(String::from) else {
+        let Some(query) = self.query().search().map(String::from) else {
             return;
         };
-        let all_rows = build_rows(self.files(), &HashSet::new(), self.query.filter());
+        let all_rows = build_rows(self.files(), &HashSet::new(), self.query().filter());
         let current = self.selected_path();
         let path = find_match(&all_rows, current.as_deref(), &query, direction);
         self.reveal(path);
@@ -1016,7 +1026,7 @@ impl<'a> LocalChangesState<'a> {
         } else {
             SearchDirection::Previous
         };
-        let all_rows = build_rows(self.files(), &HashSet::new(), self.query.filter());
+        let all_rows = build_rows(self.files(), &HashSet::new(), self.query().filter());
         let current = self.selected_path();
         let picked = self.picked();
         let path = find_next(&all_rows, current.as_deref(), direction, |row| {
@@ -1050,10 +1060,10 @@ impl<'a> LocalChangesState<'a> {
 
     // The search and filter, for the title of `section`.
     fn query_indicator(&self, section: LocalChangesSection) -> Option<String> {
-        let search = self.query.search().filter(|_| section == self.section);
+        let query = self.query_of(section);
         let parts: Vec<String> = [
-            search.map(|s| format!("/{s}")),
-            self.query.filter().map(|f| format!("filter: {f}")),
+            query.search().map(|s| format!("/{s}")),
+            query.filter().map(|f| format!("filter: {f}")),
         ]
         .into_iter()
         .flatten()
@@ -1109,6 +1119,25 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // The search and filter of the focused section.
+    fn query(&self) -> &TreeQuery {
+        self.query_of(self.section)
+    }
+
+    fn query_mut(&mut self) -> &mut TreeQuery {
+        match self.section {
+            LocalChangesSection::Unstaged => &mut self.unstaged_query,
+            LocalChangesSection::Staged => &mut self.staged_query,
+        }
+    }
+
+    fn query_of(&self, section: LocalChangesSection) -> &TreeQuery {
+        match section {
+            LocalChangesSection::Unstaged => &self.unstaged_query,
+            LocalChangesSection::Staged => &self.staged_query,
+        }
+    }
+
     fn collapsed_mut(&mut self) -> &mut HashSet<String> {
         match self.section {
             LocalChangesSection::Unstaged => &mut self.unstaged_collapsed,
@@ -1119,7 +1148,7 @@ impl<'a> LocalChangesState<'a> {
     // Rebuilds the rows of the current section after expanding or collapsing, keeping the selection.
     fn rebuild_rows(&mut self) {
         let path = self.selected_path();
-        let filter = self.query.filter();
+        let filter = self.query().filter();
         let rows = match self.section {
             LocalChangesSection::Unstaged => {
                 build_rows(&self.changes.unstaged, &self.unstaged_collapsed, filter)
@@ -1241,7 +1270,7 @@ impl<'a> LocalChangesState<'a> {
                 .file_index
                 .is_some_and(|i| self.files()[i].status == LocalChangeStatus::Untracked);
             // a directory shows only the files passing the filter
-            let paths = if row.is_dir() && self.query.filter().is_some() {
+            let paths = if row.is_dir() && self.query().filter().is_some() {
                 file_paths(&self.row_files(row))
             } else {
                 vec![row.path.as_str()]
@@ -1420,7 +1449,7 @@ impl LocalChangesPanel<'_> {
         }
 
         // the search is highlighted in the section it applies to
-        let search = state.query.search().filter(|_| active);
+        let search = state.query_of(section).search();
         let lines: Vec<Line> = rows
             .iter()
             .map(|row| {
@@ -1432,12 +1461,13 @@ impl LocalChangesPanel<'_> {
                             LocalChangesSection::Staged => &state.staged_collapsed,
                         };
                         // everything is expanded while filtering
-                        let symbol =
-                            if state.query.filter().is_none() && collapsed.contains(&row.path) {
-                                "▸ "
-                            } else {
-                                "▾ "
-                            };
+                        let symbol = if state.query_of(section).filter().is_none()
+                            && collapsed.contains(&row.path)
+                        {
+                            "▸ "
+                        } else {
+                            "▾ "
+                        };
                         let mut spans = vec![Span::raw(indent), Span::raw(symbol)];
                         spans.extend(highlighted_name(&row.name, search, &self.ctx.color_theme));
                         Line::from(spans)
@@ -1606,12 +1636,15 @@ impl LocalChangesPanel<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // the sides to pick from, side by side over half the height, then the tools, one per line,
-        // all centered vertically
-        let [sides_area, tools_area] =
-            Layout::vertical([Constraint::Percentage(50), Constraint::Length(2)])
-                .flex(Flex::Center)
-                .areas(inner);
+        // the sides to pick from, side by side over half the height, then the tools with a line
+        // between each, all centered vertically
+        let [sides_area, _, tools_area] = Layout::vertical([
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .flex(Flex::Center)
+        .areas(inner);
         let [ours_area, theirs_area] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(sides_area);
@@ -1682,7 +1715,7 @@ impl LocalChangesPanel<'_> {
             let width = (text.chars().count() as u16).min(tools_area.width);
             // centered under the sides
             let x = tools_area.x + (tools_area.width - width) / 2;
-            let tool_area = Rect::new(x, tools_area.y + i as u16, width, 1);
+            let tool_area = Rect::new(x, tools_area.y + 2 * i as u16, width, 1);
             if tool_area.y >= tools_area.bottom() {
                 break;
             }
@@ -2402,10 +2435,11 @@ mod tests {
         );
         assert_eq!(paths(&state.changes.unstaged), vec!["src/app.rs"]);
 
-        // nothing left matches in the unstaged section, the filter still applies to both
+        // nothing left matches in the unstaged section; the staged one has no filter of its own
         assert!(visible(&state).is_empty());
         state.focus_section(LocalChangesSection::Staged);
         assert_eq!(visible(&state).len(), 6);
+        assert_eq!(state.query_indicator(LocalChangesSection::Staged), None);
 
         // n and N step through matches, wrapping around
         type_query(&mut state, QueryKind::Search, "list");
@@ -2415,11 +2449,13 @@ mod tests {
         state.search_next(true);
         assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
 
-        // esc clears the search, then the filter
-        assert!(state.clear_query());
+        // esc clears the search of the staged section, the filter is the unstaged one's
         assert!(state.clear_query());
         assert!(!state.clear_query());
         state.focus_section(LocalChangesSection::Unstaged);
+        assert!(visible(&state).is_empty());
+        assert!(state.clear_query());
+        assert!(!state.clear_query());
         assert_eq!(visible(&state), vec![":/", "src", "src/app.rs"]);
 
         Ok(())
