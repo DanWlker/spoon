@@ -8,3 +8,4 @@ TODO:
      between the project, and its submodules
 1. code review, refer to gittui also for practices maybe
 1. simplify
+1. Whole border should light up like lazygit
