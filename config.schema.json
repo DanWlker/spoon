@@ -728,11 +728,21 @@
         },
         "full_copy": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_stage": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "discard": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {
         "^user_command_[0-9]+$": {
           "description": "Keybinding to toggle a specific user command view, where the number corresponds to the command in 'core.user_command'.",
+          "$ref": "#/definitions/keybindArray"
+        },
+        "^focus_panel_[0-9]+$": {
+          "description": "Keybinding to focus a specific panel in views with multiple panels, such as unstaged (1), staged (2) and commit (3) in local changes.",
           "$ref": "#/definitions/keybindArray"
         }
       },

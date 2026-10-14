@@ -17,7 +17,7 @@ go_to_bottom = ["shift-g"]
 scroll_down = ["ctrl-e"]
 scroll_up = ["ctrl-y"]
 page_up = ["ctrl-b", "pageup"]
-page_down = ["ctrl-f", "pagedown", "space"]
+page_down = ["ctrl-f", "pagedown"]
 half_page_up = ["ctrl-u"]
 half_page_down = ["ctrl-d"]
 select_top = ["shift-h"]
@@ -36,6 +36,15 @@ mark_toggle = ["m"]
 refresh = ["shift-r"]
 
 user_command_1 = ["d"]
+
+# switch between panels, ex: unstaged/staged in local changes
+# digits are used as a count prefix in views without panels
+focus_panel_1 = ["1"]
+focus_panel_2 = ["2"]
+focus_panel_3 = ["3"]
+
+# stage/unstage the selected file, directory or hunk in local changes
+toggle_stage = ["space"]
 
 # copy part of information, ex: copy the short commit hash not all
 short_copy = ["c"]
