@@ -228,14 +228,18 @@ impl Repository {
     }
 
     // `staged_base` is the tree staged changes are compared to, HEAD when None (see `amend_base`)
+    // `untracked` only applies to a single path
     pub fn local_change_diff(
         &self,
-        path: &str,
+        paths: &[&str],
         untracked: bool,
         staged: bool,
         staged_base: Option<&str>,
     ) -> String {
-        load_local_change_diff(&self.path, path, untracked, staged, staged_base)
+        if paths.is_empty() {
+            return String::new();
+        }
+        load_local_change_diff(&self.path, paths, untracked, staged, staged_base)
     }
 
     // The tree to compare the index to while amending: the parent of HEAD, or the empty tree for a root commit.
@@ -995,7 +999,7 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
 
 fn load_local_change_diff(
     path: &Path,
-    target: &str,
+    targets: &[&str],
     untracked: bool,
     staged: bool,
     staged_base: Option<&str>,
@@ -1008,11 +1012,17 @@ fn load_local_change_diff(
         .arg("--src-prefix=a/")
         .arg("--dst-prefix=b/");
     if staged {
-        cmd.arg("--cached").args(staged_base).arg("--").arg(target);
+        cmd.arg("--cached")
+            .args(staged_base)
+            .arg("--")
+            .args(targets);
     } else if untracked {
-        cmd.arg("--no-index").arg("--").arg("/dev/null").arg(target);
+        cmd.arg("--no-index")
+            .arg("--")
+            .arg("/dev/null")
+            .args(targets);
     } else {
-        cmd.arg("--").arg(target);
+        cmd.arg("--").args(targets);
     }
     // `--no-index` exits with 1 when the files differ, so the exit status is not checked
     cmd.current_dir(path)

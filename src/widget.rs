@@ -7,3 +7,4 @@ pub mod file_tree;
 pub mod local_changes;
 pub mod ref_list;
 pub mod text_area;
+pub mod tree_query;

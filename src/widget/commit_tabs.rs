@@ -15,6 +15,7 @@ use crate::{
     widget::{
         diff::{diff_lines, parse_diff, ParsedDiff},
         file_tree::{FileTree, FileTreeRow, FileTreeState},
+        tree_query::{highlighted_name, path_matches},
     },
 };
 
@@ -44,8 +45,15 @@ impl DetailTab {
 }
 
 // Draws the tab titles over the top border of the detail section.
-pub fn render_tab_titles(current: DetailTab, theme: &ColorTheme, area: Rect, buf: &mut Buffer) {
-    let spans: Vec<Span> = DetailTab::ALL
+// The search and filter of the current tab are shown after the titles.
+pub fn render_tab_titles(
+    current: DetailTab,
+    indicator: Option<String>,
+    theme: &ColorTheme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let mut spans: Vec<Span> = DetailTab::ALL
         .iter()
         .enumerate()
         .map(|(i, tab)| {
@@ -57,6 +65,9 @@ pub fn render_tab_titles(current: DetailTab, theme: &ColorTheme, area: Rect, buf
             }
         })
         .collect();
+    if let Some(indicator) = indicator {
+        spans.push(Span::raw(format!(" {indicator} ")).fg(theme.status_info_fg));
+    }
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     Line::from(spans).render(area, buf);
 }
@@ -133,14 +144,18 @@ impl<'a> CommitChangesState<'a> {
         }
         let diff = match self.tree.selected() {
             Some(row) => {
-                // a directory shows the diff of all its changed files
-                let mut paths: Vec<&str> = vec![row.path.as_str()];
-                paths.extend(
-                    self.files
-                        .iter()
-                        .filter(|f| row.contains(&f.path))
-                        .filter_map(|f| f.from.as_deref()),
-                );
+                // a directory shows the diff of all its changed files, those passing the filter
+                let files: Vec<&ChangedFile> = self
+                    .files
+                    .iter()
+                    .filter(|f| row.contains(&f.path))
+                    .filter(|f| self.tree.filter().is_none_or(|q| path_matches(&f.path, q)))
+                    .collect();
+                let mut paths: Vec<&str> = match self.tree.filter() {
+                    Some(_) if row.is_dir() => files.iter().map(|f| f.path.as_str()).collect(),
+                    _ => vec![row.path.as_str()],
+                };
+                paths.extend(files.iter().filter_map(|f| f.from.as_deref()));
                 self.repository.commit_diff(&self.commit_hash, &paths)
             }
             None => String::new(),
@@ -286,13 +301,16 @@ impl<'a> CommitFilesState<'a> {
 
 pub struct CommitChanges<'a> {
     ctx: Rc<AppContext>,
+    // highlighted in the names
+    search: Option<String>,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CommitChanges<'_> {
-    pub fn new(ctx: Rc<AppContext>) -> Self {
+    pub fn new(ctx: Rc<AppContext>, search: Option<&str>) -> Self {
         Self {
             ctx,
+            search: search.map(String::from),
             _marker: std::marker::PhantomData,
         }
     }
@@ -306,7 +324,12 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
         let [tree_area, diff_area] = split_tree_and_side(theme, area, buf);
 
         if state.tree.rows().is_empty() {
-            Paragraph::new(Line::raw("No changes").fg(theme.status_input_transient_fg))
+            let message = if state.files.is_empty() {
+                "No changes"
+            } else {
+                "No matches"
+            };
+            Paragraph::new(Line::raw(message).fg(theme.status_input_transient_fg))
                 .render(tree_area, buf);
         } else {
             let lines = state
@@ -314,15 +337,21 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
                 .rows()
                 .iter()
                 .map(|row| match row.file_index {
-                    None => dir_line(row, state.tree.is_open(&row.path)),
+                    None => dir_line(
+                        row,
+                        state.tree.is_open(&row.path),
+                        self.search.as_deref(),
+                        theme,
+                    ),
                     Some(i) => {
                         let symbol = state.files[i].symbol;
-                        Line::from(vec![
+                        let mut spans = vec![
                             "  ".repeat(row.depth).into(),
                             Span::raw(symbol).fg(symbol_color(symbol, theme)),
                             " ".into(),
-                            row.name.clone().into(),
-                        ])
+                        ];
+                        spans.extend(highlighted_name(&row.name, self.search.as_deref(), theme));
+                        Line::from(spans)
                     }
                 })
                 .collect();
@@ -340,13 +369,16 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
 
 pub struct CommitFiles<'a> {
     ctx: Rc<AppContext>,
+    // highlighted in the names
+    search: Option<String>,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CommitFiles<'_> {
-    pub fn new(ctx: Rc<AppContext>) -> Self {
+    pub fn new(ctx: Rc<AppContext>, search: Option<&str>) -> Self {
         Self {
             ctx,
+            search: search.map(String::from),
             _marker: std::marker::PhantomData,
         }
     }
@@ -360,16 +392,21 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
         let [tree_area, preview_area] = split_tree_and_side(theme, area, buf);
 
         if let Some(tree) = &state.tree {
+            if tree.rows().is_empty() && tree.filter().is_some() {
+                Paragraph::new(Line::raw("No matches").fg(theme.status_input_transient_fg))
+                    .render(tree_area, buf);
+            }
+            let search = self.search.as_deref();
             let lines = tree
                 .rows()
                 .iter()
                 .map(|row| match row.file_index {
-                    None => dir_line(row, tree.is_open(&row.path)),
-                    Some(_) => Line::from(vec![
-                        "  ".repeat(row.depth).into(),
-                        "  ".into(),
-                        row.name.clone().into(),
-                    ]),
+                    None => dir_line(row, tree.is_open(&row.path), search, theme),
+                    Some(_) => {
+                        let mut spans = vec!["  ".repeat(row.depth).into(), "  ".into()];
+                        spans.extend(highlighted_name(&row.name, search, theme));
+                        Line::from(spans)
+                    }
                 })
                 .collect();
             render_rows_with_cursor(lines, tree.cursor(), theme, tree_area, buf);
@@ -435,13 +472,16 @@ fn split_tree_and_side(theme: &ColorTheme, area: Rect, buf: &mut Buffer) -> [Rec
     [tree_inner, side_area]
 }
 
-fn dir_line(row: &FileTreeRow, open: bool) -> Line<'static> {
+fn dir_line(
+    row: &FileTreeRow,
+    open: bool,
+    search: Option<&str>,
+    theme: &ColorTheme,
+) -> Line<'static> {
     let symbol = if open { "▾ " } else { "▸ " };
-    Line::from(vec![
-        "  ".repeat(row.depth).into(),
-        symbol.into(),
-        row.name.clone().into(),
-    ])
+    let mut spans = vec!["  ".repeat(row.depth).into(), symbol.into()];
+    spans.extend(highlighted_name(&row.name, search, theme));
+    Line::from(spans)
 }
 
 // Renders `lines` from `offset`, clamped so the end of the lines stays at the bottom; returns the clamped offset.

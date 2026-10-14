@@ -56,6 +56,8 @@ The default key bindings can be overridden.
 | <kbd>D</kbd>                         | Toggle custom user command view | `user_command_1`                |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
+| <kbd>/</kbd> <kbd>f</kbd>            | Search/Filter files (changes and files tabs) | `search` `filter` |
+| <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 
 The commit detail has three tabs:
 
@@ -64,6 +66,17 @@ The commit detail has three tabs:
 - **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> select a file, the scroll keys scroll the preview.
 
 In the changes and files tabs, <kbd>Enter</kbd> expands or collapses the selected directory instead of closing the details.
+
+#### Searching and filtering files
+
+The file trees of the local changes page and of the changes and files tabs can be searched and filtered by path:
+
+- <kbd>/</kbd> searches: the selection jumps to the first match as you type, expanding the directories hiding it, and matching names are highlighted. <kbd>n/N</kbd> go to the next/previous match.
+- <kbd>f</kbd> filters: only matching files are shown, with their directories expanded.
+
+<kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Afterwards, the panel title shows the active search and filter, and <kbd>Esc</kbd> clears the search, then the filter.
+Matching ignores case unless the query has an uppercase letter.
+On the local changes page, the filter applies to both the unstaged and staged files, and staging, unstaging and discarding a directory only affect the files shown.
 
 #### Refs List
 
@@ -92,6 +105,9 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line                  | `toggle_select`                  |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |
+| <kbd>/</kbd>                         | Search files                                                 | `search`                        |
+| <kbd>f</kbd>                         | Filter files                                                 | `filter`                        |
+| <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |

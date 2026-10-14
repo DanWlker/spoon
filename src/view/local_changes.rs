@@ -9,6 +9,7 @@ use crate::{
     widget::{
         commit_list::CommitListState,
         local_changes::{LocalChangesPanel, LocalChangesSection, LocalChangesState},
+        tree_query::QueryKind,
     },
 };
 
@@ -50,6 +51,11 @@ impl<'a> LocalChangesView<'a> {
             self.as_mut_state().handle_text_key(key);
             return;
         }
+        if self.as_state().is_typing_query() {
+            self.as_mut_state().handle_query_key(key);
+            self.update_query_status();
+            return;
+        }
 
         let event = event_with_count.event;
         let count = event_with_count.count;
@@ -74,10 +80,26 @@ impl<'a> LocalChangesView<'a> {
                 self.tx.send(AppEvent::Quit);
             }
             UserEvent::Cancel | UserEvent::Close => {
-                // lines -> hunks -> files -> close, or commit section -> files -> close
-                if !self.as_mut_state().back() {
+                // lines -> hunks -> files, or commit section -> files,
+                // then clear the search, then the filter, then close
+                let state = self.as_mut_state();
+                if !state.back() && !state.clear_query() {
                     self.tx.send(AppEvent::CloseLocalChanges);
                 }
+            }
+            UserEvent::Search => {
+                self.as_mut_state().start_query(QueryKind::Search);
+                self.update_query_status();
+            }
+            UserEvent::Filter => {
+                self.as_mut_state().start_query(QueryKind::Filter);
+                self.update_query_status();
+            }
+            UserEvent::GoToNext => {
+                self.as_mut_state().search_next(true);
+            }
+            UserEvent::GoToPrevious => {
+                self.as_mut_state().search_next(false);
             }
             UserEvent::Confirm => {
                 let result = self.as_mut_state().enter();
@@ -190,7 +212,20 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn is_capturing_keys(&self) -> bool {
-        self.as_state().is_editing() || self.as_state().is_confirming()
+        let state = self.as_state();
+        state.is_editing() || state.is_confirming() || state.is_typing_query()
+    }
+
+    // Shows the search or filter being typed in the status line.
+    fn update_query_status(&self) {
+        match self.as_state().query_status_input() {
+            Some((message, cursor_position)) => self.tx.send(AppEvent::UpdateStatusInput {
+                message,
+                cursor_position,
+                metadata: String::new(),
+            }),
+            None => self.tx.send(AppEvent::ClearStatusLine),
+        }
     }
 
     fn after_action(&mut self, result: Result<(), String>) {

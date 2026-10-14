@@ -18,7 +18,8 @@ use crate::{
             render_tab_titles, CommitChanges, CommitChangesState, CommitFiles, CommitFilesState,
             DetailTab,
         },
-        file_tree::FileTreeState,
+        file_tree::{FileTreeState, SearchDirection},
+        tree_query::{QueryChange, QueryKind, TreeQuery},
     },
 };
 
@@ -29,6 +30,9 @@ pub struct DetailView<'a> {
     tab: DetailTab,
     changes_state: CommitChangesState<'a>,
     files_state: CommitFilesState<'a>,
+    // kept while moving between commits
+    changes_query: TreeQuery,
+    files_query: TreeQuery,
 
     commit: Commit,
     changes: Vec<FileChange>,
@@ -55,6 +59,8 @@ impl<'a> DetailView<'a> {
             tab: DetailTab::default(),
             changes_state: CommitChangesState::new(repository, hash.clone(), &changes),
             files_state: CommitFilesState::new(repository, hash),
+            changes_query: TreeQuery::default(),
+            files_query: TreeQuery::default(),
             commit,
             changes,
             refs,
@@ -63,9 +69,22 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
+    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
+
+        // typing a search or filter, keys arrive unmapped, see App::run
+        if self.is_typing_query() {
+            if let Some(query) = self.query_mut() {
+                let change = query.handle_key(key);
+                self.apply_query_change(change);
+            }
+            self.update_query_status();
+            return;
+        }
+        if self.handle_query_event(event) {
+            return;
+        }
 
         if let UserEvent::FocusPanel(n) = event {
             if let Some(tab) = DetailTab::from_number(n) {
@@ -167,16 +186,25 @@ impl<'a> DetailView<'a> {
                 f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
             }
             DetailTab::Changes => {
-                let commit_changes = CommitChanges::new(self.ctx.clone());
+                let search = self.changes_query.search();
+                let commit_changes = CommitChanges::new(self.ctx.clone(), search);
                 f.render_stateful_widget(commit_changes, detail_area, &mut self.changes_state);
             }
             DetailTab::Files => {
-                let commit_files = CommitFiles::new(self.ctx.clone());
+                let search = self.files_query.search();
+                let commit_files = CommitFiles::new(self.ctx.clone(), search);
                 f.render_stateful_widget(commit_files, detail_area, &mut self.files_state);
             }
         }
         // each tab draws a top border, the titles go over it
-        render_tab_titles(self.tab, &self.ctx.color_theme, detail_area, f.buffer_mut());
+        let indicator = self.query().and_then(TreeQuery::indicator);
+        render_tab_titles(
+            self.tab,
+            indicator,
+            &self.ctx.color_theme,
+            detail_area,
+            f.buffer_mut(),
+        );
     }
 
     pub fn update_layout(&mut self, area: Rect) {
@@ -229,6 +257,104 @@ impl<'a> DetailView<'a> {
             DetailTab::Info => {}
             DetailTab::Changes => self.changes_state.ensure_loaded(),
             DetailTab::Files => self.files_state.ensure_loaded(),
+        }
+        // the states of another commit start without the filter
+        self.apply_query_change(QueryChange::Filter);
+    }
+
+    pub fn is_typing_query(&self) -> bool {
+        self.query().is_some_and(TreeQuery::is_editing)
+    }
+
+    // The search and filter of the current tab, which has a file tree.
+    fn query(&self) -> Option<&TreeQuery> {
+        match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => Some(&self.changes_query),
+            DetailTab::Files => Some(&self.files_query),
+        }
+    }
+
+    fn query_mut(&mut self) -> Option<&mut TreeQuery> {
+        match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => Some(&mut self.changes_query),
+            DetailTab::Files => Some(&mut self.files_query),
+        }
+    }
+
+    // Starts, steps through and clears the search and filter; returns whether the event was handled.
+    fn handle_query_event(&mut self, event: UserEvent) -> bool {
+        let Some(query) = self.query_mut() else {
+            return false;
+        };
+        match event {
+            UserEvent::Search => query.start(QueryKind::Search),
+            UserEvent::Filter => query.start(QueryKind::Filter),
+            UserEvent::GoToNext | UserEvent::GoToPrevious => {
+                let direction = if event == UserEvent::GoToNext {
+                    SearchDirection::Next
+                } else {
+                    SearchDirection::Previous
+                };
+                self.search(direction);
+                return true;
+            }
+            UserEvent::Cancel | UserEvent::Close => {
+                // clear the search, then the filter, before closing
+                let change = query.clear();
+                if change == QueryChange::None {
+                    return false;
+                }
+                self.apply_query_change(change);
+                return true;
+            }
+            _ => return false,
+        }
+        self.update_query_status();
+        true
+    }
+
+    fn apply_query_change(&mut self, change: QueryChange) {
+        match change {
+            QueryChange::None => {}
+            QueryChange::Search => self.search(SearchDirection::Current),
+            QueryChange::Filter => {
+                let filter = self.query().and_then(TreeQuery::filter).map(String::from);
+                let filter = filter.as_deref();
+                match self.tab {
+                    DetailTab::Info => {}
+                    DetailTab::Changes => self.changes_state.update_tree(|t| t.set_filter(filter)),
+                    DetailTab::Files => self.files_state.update_tree(|t| t.set_filter(filter)),
+                }
+            }
+        }
+    }
+
+    fn search(&mut self, direction: SearchDirection) {
+        let Some(search) = self.query().and_then(TreeQuery::search).map(String::from) else {
+            return;
+        };
+        match self.tab {
+            DetailTab::Info => {}
+            DetailTab::Changes => self
+                .changes_state
+                .update_tree(|t| t.search(&search, direction)),
+            DetailTab::Files => self
+                .files_state
+                .update_tree(|t| t.search(&search, direction)),
+        }
+    }
+
+    // Shows the search or filter being typed in the status line.
+    fn update_query_status(&self) {
+        match self.query().and_then(TreeQuery::status_input) {
+            Some((message, cursor_position)) => self.tx.send(AppEvent::UpdateStatusInput {
+                message,
+                cursor_position,
+                metadata: String::new(),
+            }),
+            None => self.tx.send(AppEvent::ClearStatusLine),
         }
     }
 

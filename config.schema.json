@@ -739,6 +739,9 @@
         "full_copy": {
           "$ref": "#/definitions/keybindArray"
         },
+        "filter": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "toggle_select": {
           "$ref": "#/definitions/keybindArray"
         },

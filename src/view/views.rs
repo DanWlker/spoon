@@ -130,6 +130,7 @@ impl<'a> View<'a> {
     pub fn is_capturing_keys(&self) -> bool {
         match self {
             View::LocalChanges(view) => view.is_capturing_keys(),
+            View::Detail(view) => view.is_typing_query(),
             _ => false,
         }
     }

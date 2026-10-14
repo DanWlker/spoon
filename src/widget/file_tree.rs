@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
+use crate::widget::tree_query::path_matches;
+
 // A row of a file tree as displayed: directories first, then files, each sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileTreeRow {
@@ -74,10 +76,15 @@ impl FileTree {
         Self { root }
     }
 
-    // The rows of the tree, descending only into the directories for which `is_open` is true.
-    pub fn rows(&self, is_open: impl Fn(&str) -> bool) -> Vec<FileTreeRow> {
+    // The rows of the files for which `keep` is true and their directories, descending only into the
+    // directories for which `is_open` is true.
+    pub fn rows(
+        &self,
+        is_open: impl Fn(&str) -> bool,
+        keep: impl Fn(&str) -> bool,
+    ) -> Vec<FileTreeRow> {
         let mut rows = Vec::new();
-        collect_rows(&self.root, "", 0, &is_open, &mut rows);
+        collect_rows(&self.root, "", 0, &is_open, &keep, &mut rows);
         rows
     }
 }
@@ -89,6 +96,8 @@ pub struct FileTreeState {
     open_by_default: bool,
     // directories whose state differs from `open_by_default`
     toggled: HashSet<String>,
+    // only files whose path matches are shown, with all directories expanded
+    filter: Option<String>,
     rows: Vec<FileTreeRow>,
     cursor: usize,
 }
@@ -99,6 +108,7 @@ impl FileTreeState {
             tree,
             open_by_default,
             toggled: HashSet::new(),
+            filter: None,
             rows: Vec::new(),
             cursor: 0,
         };
@@ -112,6 +122,7 @@ impl FileTreeState {
             tree,
             open_by_default: self.open_by_default,
             toggled: self.toggled.clone(),
+            filter: self.filter.clone(),
             rows: Vec::new(),
             cursor: 0,
         };
@@ -135,7 +146,31 @@ impl FileTreeState {
     }
 
     pub fn is_open(&self, path: &str) -> bool {
-        self.open_by_default != self.toggled.contains(path)
+        self.filter.is_some() || self.open_by_default != self.toggled.contains(path)
+    }
+
+    pub fn filter(&self) -> Option<&str> {
+        self.filter.as_deref()
+    }
+
+    pub fn set_filter(&mut self, filter: Option<&str>) {
+        self.filter = filter.map(String::from);
+        self.rebuild_rows();
+    }
+
+    // Selects the next match of `query`, expanding the directories that hide it.
+    pub fn search(&mut self, query: &str, direction: SearchDirection) {
+        let keep = |path: &str| keeps(self.filter.as_deref(), path);
+        let all_rows = self.tree.rows(|_| true, keep);
+        let current = self.selected().map(|r| r.path.as_str());
+        if let Some(path) = find_match(&all_rows, current, query, direction) {
+            for dir in ancestors(&path) {
+                if !self.is_open(&dir) {
+                    self.toggle_dir(dir);
+                }
+            }
+            self.select_path(&path);
+        }
     }
 
     pub fn select_path(&mut self, path: &str) {
@@ -197,7 +232,8 @@ impl FileTreeState {
 
     fn rebuild_rows(&mut self) {
         let selected = self.selected().map(|r| r.path.clone());
-        self.rows = self.tree.rows(|path| self.is_open(path));
+        let keep = |path: &str| keeps(self.filter.as_deref(), path);
+        self.rows = self.tree.rows(|path| self.is_open(path), keep);
         self.cursor = 0;
         if let Some(path) = selected {
             self.select_path(&path);
@@ -205,20 +241,73 @@ impl FileTreeState {
     }
 }
 
-// The rows of the tree of `paths` under a root row, when there are any paths, descending only
-// into the directories (and the root, see `ROOT_PATH`) for which `is_open` is true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchDirection {
+    // the selected row if it matches, else the next match
+    Current,
+    Next,
+    Previous,
+}
+
+// The path of the match of `query` in `rows` from `current` in `direction`, wrapping around.
+pub fn find_match(
+    rows: &[FileTreeRow],
+    current: Option<&str>,
+    query: &str,
+    direction: SearchDirection,
+) -> Option<String> {
+    let matches: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.is_root() && path_matches(&r.path, query))
+        .map(|(i, _)| i)
+        .collect();
+    let cur = current
+        .and_then(|path| rows.iter().position(|r| r.path == path))
+        .unwrap_or(0);
+    let found = match direction {
+        SearchDirection::Current => matches.iter().find(|&&i| i >= cur),
+        SearchDirection::Next => matches.iter().find(|&&i| i > cur),
+        SearchDirection::Previous => matches.iter().rev().find(|&&i| i < cur),
+    };
+    let wrapped = match direction {
+        SearchDirection::Previous => matches.last(),
+        _ => matches.first(),
+    };
+    found.or(wrapped).map(|&i| rows[i].path.clone())
+}
+
+// The directories containing `path`, outermost first, starting with the root.
+pub fn ancestors(path: &str) -> Vec<String> {
+    let mut dirs = vec![ROOT_PATH.to_string()];
+    let mut end = 0;
+    while let Some(i) = path[end..].find('/') {
+        end += i;
+        dirs.push(path[..end].to_string());
+        end += 1;
+    }
+    dirs
+}
+
+fn keeps(filter: Option<&str>, path: &str) -> bool {
+    filter.is_none_or(|f| path_matches(path, f))
+}
+
+// The rows of the tree of `paths` under a root row, when any of them is kept, see `FileTree::rows`.
+// Only descends into the directories (and the root, see `ROOT_PATH`) for which `is_open` is true.
 pub fn build_rooted_file_tree_rows<'p>(
     paths: impl IntoIterator<Item = &'p str>,
     is_open: impl Fn(&str) -> bool,
+    keep: impl Fn(&str) -> bool,
 ) -> Vec<FileTreeRow> {
     let tree = FileTree::new(paths);
-    if tree.root.dirs.is_empty() && tree.root.files.is_empty() {
+    let rows = tree.rows(&is_open, keep);
+    if rows.is_empty() {
         return Vec::new();
     }
     if !is_open(ROOT_PATH) {
         return vec![FileTreeRow::root()];
     }
-    let rows = tree.rows(is_open);
     std::iter::once(FileTreeRow::root())
         .chain(rows.into_iter().map(|row| FileTreeRow {
             depth: row.depth + 1,
@@ -234,13 +323,15 @@ fn sort_files(node: &mut DirNode) {
     }
 }
 
+// Returns whether any file under `node` is kept; directories without kept files are left out.
 fn collect_rows(
     node: &DirNode,
     parent: &str,
     depth: usize,
     is_open: &impl Fn(&str) -> bool,
+    keep: &impl Fn(&str) -> bool,
     rows: &mut Vec<FileTreeRow>,
-) {
+) -> bool {
     let join = |name: &str| {
         if parent.is_empty() {
             name.to_string()
@@ -248,8 +339,14 @@ fn collect_rows(
             format!("{parent}/{name}")
         }
     };
+    let mut any_kept = false;
     for (name, child) in &node.dirs {
         let path = join(name);
+        let mut child_rows = Vec::new();
+        if !collect_rows(child, &path, depth + 1, is_open, keep, &mut child_rows) {
+            continue;
+        }
+        any_kept = true;
         rows.push(FileTreeRow {
             depth,
             name: name.clone(),
@@ -257,17 +354,22 @@ fn collect_rows(
             file_index: None,
         });
         if is_open(&path) {
-            collect_rows(child, &path, depth + 1, is_open, rows);
+            rows.extend(child_rows);
         }
     }
     for (name, index) in &node.files {
-        rows.push(FileTreeRow {
-            depth,
-            name: name.clone(),
-            path: join(name),
-            file_index: Some(*index),
-        });
+        let path = join(name);
+        if keep(&path) {
+            any_kept = true;
+            rows.push(FileTreeRow {
+                depth,
+                name: name.clone(),
+                path,
+                file_index: Some(*index),
+            });
+        }
     }
+    any_kept
 }
 
 #[cfg(test)]
@@ -275,7 +377,7 @@ mod tests {
     use super::*;
 
     fn build_file_tree_rows<'p>(paths: impl IntoIterator<Item = &'p str>) -> Vec<FileTreeRow> {
-        FileTree::new(paths).rows(|_| true)
+        FileTree::new(paths).rows(|_| true, |_| true)
     }
 
     fn row(depth: usize, name: &str, path: &str, file_index: Option<usize>) -> FileTreeRow {
@@ -351,7 +453,7 @@ mod tests {
     #[test]
     fn test_build_rooted_file_tree_rows() {
         let paths = ["src/main.rs", "README.md"];
-        let actual = build_rooted_file_tree_rows(paths, |_| true);
+        let actual = build_rooted_file_tree_rows(paths, |_| true, |_| true);
         let expected = vec![
             row(0, "/", ":/", None),
             row(1, "src", "src", None),
@@ -362,9 +464,9 @@ mod tests {
         assert!(actual[0].contains("src/main.rs"));
         assert!(actual[0].contains("README.md"));
 
-        assert!(build_rooted_file_tree_rows([], |_| true).is_empty());
+        assert!(build_rooted_file_tree_rows([], |_| true, |_| true).is_empty());
 
-        let actual = build_rooted_file_tree_rows(paths, |path| path != "src");
+        let actual = build_rooted_file_tree_rows(paths, |path| path != "src", |_| true);
         let expected = vec![
             row(0, "/", ":/", None),
             row(1, "src", "src", None),
@@ -372,15 +474,77 @@ mod tests {
         ];
         assert_eq!(actual, expected);
 
-        let actual = build_rooted_file_tree_rows(paths, |path| path != ROOT_PATH);
+        let actual = build_rooted_file_tree_rows(paths, |path| path != ROOT_PATH, |_| true);
         assert_eq!(actual, vec![row(0, "/", ":/", None)]);
+    }
+
+    #[test]
+    fn test_filter_and_search() {
+        let paths = [
+            "src/view/list.rs",
+            "src/app.rs",
+            "docs/list.md",
+            "README.md",
+        ];
+        let mut state = FileTreeState::new(FileTree::new(paths), false);
+        let visible = |state: &FileTreeState| -> Vec<String> {
+            state.rows().iter().map(|r| r.path.clone()).collect()
+        };
+        assert_eq!(visible(&state), vec!["docs", "src", "README.md"]);
+
+        // searching expands the directories hiding the match, and wraps around
+        state.search("list", SearchDirection::Current);
+        assert_eq!(state.selected().unwrap().path, "docs/list.md");
+        state.search("list", SearchDirection::Next);
+        assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
+        assert_eq!(
+            visible(&state),
+            vec![
+                "docs",
+                "docs/list.md",
+                "src",
+                "src/view",
+                "src/view/list.rs",
+                "src/app.rs",
+                "README.md"
+            ]
+        );
+        state.search("list", SearchDirection::Next);
+        assert_eq!(state.selected().unwrap().path, "docs/list.md");
+        state.search("list", SearchDirection::Previous);
+        assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
+
+        // filtering shows only matching files, expanded, keeping the selection
+        state.set_filter(Some("list"));
+        assert_eq!(
+            visible(&state),
+            vec![
+                "docs",
+                "docs/list.md",
+                "src",
+                "src/view",
+                "src/view/list.rs"
+            ]
+        );
+        assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
+
+        state.set_filter(Some("nothing"));
+        assert!(visible(&state).is_empty());
+        state.set_filter(None);
+        assert_eq!(visible(&state).len(), 7);
+    }
+
+    #[test]
+    fn test_ancestors() {
+        assert_eq!(ancestors("a/b/c.rs"), vec![":/", "a", "a/b"]);
+        assert_eq!(ancestors("c.rs"), vec![":/"]);
     }
 
     #[test]
     fn test_collapsed_rows() {
         let tree = FileTree::new(["tests/cases/a.ts", "src/main.rs", "README.md"]);
 
-        let actual = tree.rows(|_| false);
+        let actual = tree.rows(|_| false, |_| true);
         let expected = vec![
             row(0, "src", "src", None),
             row(0, "tests", "tests", None),
@@ -389,10 +553,10 @@ mod tests {
         assert_eq!(actual, expected);
 
         // an open directory inside a closed one stays hidden
-        let actual = tree.rows(|path| path == "tests/cases");
+        let actual = tree.rows(|path| path == "tests/cases", |_| true);
         assert_eq!(actual, expected);
 
-        let actual = tree.rows(|path| path == "tests");
+        let actual = tree.rows(|path| path == "tests", |_| true);
         let expected = vec![
             row(0, "src", "src", None),
             row(0, "tests", "tests", None),
