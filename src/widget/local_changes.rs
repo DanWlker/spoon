@@ -1,4 +1,4 @@
-use std::{ops::Range, rc::Rc};
+use std::{collections::HashSet, ops::Range, rc::Rc};
 
 use ratatui::{
     buffer::Buffer,
@@ -15,7 +15,7 @@ use crate::{
     git::{LocalChangeFile, LocalChangeStatus, LocalChanges, Repository},
     widget::{
         diff::{diff_lines, parse_diff, ParsedDiff},
-        file_tree::{build_rooted_file_tree_rows, FileTreeRow},
+        file_tree::{build_rooted_file_tree_rows, FileTreeRow, ROOT_PATH},
         text_area::TextArea,
     },
 };
@@ -50,6 +50,9 @@ pub struct LocalChangesState<'a> {
     section: LocalChangesSection,
     unstaged_cursor: usize,
     staged_cursor: usize,
+    // directories collapsed by the user, all are expanded otherwise
+    unstaged_collapsed: HashSet<String>,
+    staged_collapsed: HashSet<String>,
     // false while the page is only previewed from the refs list
     focused: bool,
     // true while selecting hunks (or lines) in the diff instead of files
@@ -83,10 +86,8 @@ pub struct LocalChangesState<'a> {
 impl<'a> LocalChangesState<'a> {
     pub fn load(repository: &'a Repository) -> Self {
         let changes = repository.local_changes();
-        let unstaged_rows =
-            build_rooted_file_tree_rows(changes.unstaged.iter().map(|f| f.path.as_str()));
-        let staged_rows =
-            build_rooted_file_tree_rows(changes.staged.iter().map(|f| f.path.as_str()));
+        let unstaged_rows = build_rows(&changes.unstaged, &HashSet::new());
+        let staged_rows = build_rows(&changes.staged, &HashSet::new());
         // while only previewed, show whichever section has something to look at
         let section = if unstaged_rows.is_empty() && !staged_rows.is_empty() {
             LocalChangesSection::Staged
@@ -100,6 +101,8 @@ impl<'a> LocalChangesState<'a> {
             staged_rows,
             section,
             unstaged_cursor: 0,
+            unstaged_collapsed: HashSet::new(),
+            staged_collapsed: HashSet::new(),
             staged_cursor: 0,
             focused: false,
             diff_focused: false,
@@ -522,10 +525,8 @@ impl<'a> LocalChangesState<'a> {
         let selected_path = self.selected_path();
 
         self.changes = self.load_changes();
-        self.unstaged_rows =
-            build_rooted_file_tree_rows(self.changes.unstaged.iter().map(|f| f.path.as_str()));
-        self.staged_rows =
-            build_rooted_file_tree_rows(self.changes.staged.iter().map(|f| f.path.as_str()));
+        self.unstaged_rows = build_rows(&self.changes.unstaged, &self.unstaged_collapsed);
+        self.staged_rows = build_rows(&self.changes.staged, &self.staged_collapsed);
         self.unstaged_cursor =
             restore_cursor(&self.unstaged_rows, unstaged_path, self.unstaged_cursor);
         self.staged_cursor = restore_cursor(&self.staged_rows, staged_path, self.staged_cursor);
@@ -559,6 +560,78 @@ impl<'a> LocalChangesState<'a> {
             changes.staged = self.repository.staged_changes_against(base);
         }
         changes
+    }
+
+    pub fn expand(&mut self) {
+        if let Some(row) = self
+            .files_focused_dir()
+            .filter(|r| self.collapsed().contains(&r.path))
+        {
+            let path = row.path.clone();
+            self.collapsed_mut().remove(&path);
+            self.rebuild_rows();
+        }
+    }
+
+    // Collapses the selected directory, or moves to the parent directory when it is not open.
+    pub fn collapse(&mut self) {
+        if self.diff_focused || self.commit_focused {
+            return;
+        }
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        if row.is_dir() && !self.collapsed().contains(&row.path) {
+            let path = row.path.clone();
+            self.collapsed_mut().insert(path);
+            self.rebuild_rows();
+        } else if !row.is_root() {
+            let parent = match row.path.rsplit_once('/') {
+                Some((parent, _)) => parent.to_string(),
+                None => ROOT_PATH.to_string(),
+            };
+            if let Some(pos) = self.rows().iter().position(|r| r.path == parent) {
+                self.move_cursor(pos);
+            }
+        }
+    }
+
+    fn files_focused_dir(&self) -> Option<&FileTreeRow> {
+        if self.diff_focused || self.commit_focused {
+            return None;
+        }
+        self.selected_row().filter(|r| r.is_dir())
+    }
+
+    fn collapsed(&self) -> &HashSet<String> {
+        match self.section {
+            LocalChangesSection::Unstaged => &self.unstaged_collapsed,
+            LocalChangesSection::Staged => &self.staged_collapsed,
+        }
+    }
+
+    fn collapsed_mut(&mut self) -> &mut HashSet<String> {
+        match self.section {
+            LocalChangesSection::Unstaged => &mut self.unstaged_collapsed,
+            LocalChangesSection::Staged => &mut self.staged_collapsed,
+        }
+    }
+
+    // Rebuilds the rows of the current section after expanding or collapsing, keeping the selection.
+    fn rebuild_rows(&mut self) {
+        let path = self.selected_path();
+        let rows = match self.section {
+            LocalChangesSection::Unstaged => {
+                build_rows(&self.changes.unstaged, &self.unstaged_collapsed)
+            }
+            LocalChangesSection::Staged => build_rows(&self.changes.staged, &self.staged_collapsed),
+        };
+        let cursor = restore_cursor(&rows, path, self.cursor());
+        match self.section {
+            LocalChangesSection::Unstaged => self.unstaged_rows = rows,
+            LocalChangesSection::Staged => self.staged_rows = rows,
+        }
+        *self.cursor_mut() = cursor;
     }
 
     fn rows(&self) -> &[FileTreeRow] {
@@ -658,6 +731,12 @@ impl<'a> LocalChangesState<'a> {
         self.selected_line = 0;
         self.diff_offset = 0;
     }
+}
+
+fn build_rows(files: &[LocalChangeFile], collapsed: &HashSet<String>) -> Vec<FileTreeRow> {
+    build_rooted_file_tree_rows(files.iter().map(|f| f.path.as_str()), |path| {
+        !collapsed.contains(path)
+    })
 }
 
 fn file_paths<'f>(files: &[&'f LocalChangeFile]) -> Vec<&'f str> {
@@ -774,11 +853,22 @@ impl LocalChangesPanel<'_> {
             .map(|row| {
                 let indent = "  ".repeat(row.depth);
                 match row.file_index {
-                    None => Line::from(vec![
-                        Span::raw(indent),
-                        Span::raw("▾ "),
-                        Span::raw(row.name.clone()),
-                    ]),
+                    None => {
+                        let collapsed = match section {
+                            LocalChangesSection::Unstaged => &state.unstaged_collapsed,
+                            LocalChangesSection::Staged => &state.staged_collapsed,
+                        };
+                        let symbol = if collapsed.contains(&row.path) {
+                            "▸ "
+                        } else {
+                            "▾ "
+                        };
+                        Line::from(vec![
+                            Span::raw(indent),
+                            Span::raw(symbol),
+                            Span::raw(row.name.clone()),
+                        ])
+                    }
                     Some(i) => {
                         let status = files[i].status;
                         Line::from(vec![
@@ -1036,7 +1126,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::{git::SortCommit, test_support::git::GitRepository, widget::file_tree::ROOT_PATH};
+    use crate::{git::SortCommit, test_support::git::GitRepository};
 
     fn numbered_lines(n: usize) -> String {
         (1..=n).map(|i| format!("line {i}\n")).collect()
@@ -1491,6 +1581,70 @@ mod tests {
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "a\n");
         assert!(!repo_path.join("u.txt").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_collapse() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::create_dir_all(repo_path.join("src/sub"))?;
+        fs::write(repo_path.join("src/sub/a.rs"), "a\n")?;
+        fs::write(repo_path.join("src/b.rs"), "b\n")?;
+        fs::write(repo_path.join("README"), "r\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.set_focused(true);
+        let visible = |state: &LocalChangesState| -> Vec<String> {
+            state.rows().iter().map(|r| r.path.clone()).collect()
+        };
+        let selected = |state: &LocalChangesState| state.selected_path().unwrap();
+        assert_eq!(
+            visible(&state),
+            vec![":/", "src", "src/sub", "src/sub/a.rs", "src/b.rs", "README"]
+        );
+
+        // left from a file goes to its directory, then collapses it
+        select_row(&mut state, "src/sub/a.rs");
+        state.collapse();
+        assert_eq!(selected(&state), "src/sub");
+        state.collapse();
+        assert_eq!(
+            visible(&state),
+            vec![":/", "src", "src/sub", "src/b.rs", "README"]
+        );
+
+        // a top level file goes up to the root
+        select_row(&mut state, "README");
+        state.collapse();
+        assert_eq!(selected(&state), ":/");
+
+        // right expands again
+        select_row(&mut state, "src/sub");
+        state.expand();
+        assert_eq!(visible(&state).len(), 6);
+
+        // a collapsed directory stays collapsed after staging, and stages everything inside
+        state.collapse();
+        state.toggle_stage()?;
+        assert_eq!(paths(&state.changes.staged), vec!["src/sub/a.rs"]);
+        state.focus_section(LocalChangesSection::Staged);
+        assert_eq!(
+            visible(&state),
+            vec![":/", "src", "src/sub", "src/sub/a.rs"]
+        );
+        state.focus_section(LocalChangesSection::Unstaged);
+        assert_eq!(visible(&state), vec![":/", "src", "src/b.rs", "README"]);
+
+        // collapsing the root hides everything
+        select_row(&mut state, ":/");
+        state.collapse();
+        assert_eq!(visible(&state), vec![":/"]);
 
         Ok(())
     }

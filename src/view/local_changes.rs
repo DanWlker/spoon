@@ -120,6 +120,12 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::GoToBottom => {
                 self.as_mut_state().select_last();
             }
+            UserEvent::NavigateRight => {
+                self.as_mut_state().expand();
+            }
+            UserEvent::NavigateLeft => {
+                self.as_mut_state().collapse();
+            }
             UserEvent::ScrollDown => {
                 self.as_mut_state().scroll_diff_down(count);
             }

@@ -205,25 +205,26 @@ impl FileTreeState {
     }
 }
 
-// The rows of a fully expanded tree of `paths`, under a root row when there are any.
+// The rows of the tree of `paths` under a root row, when there are any paths, descending only
+// into the directories (and the root, see `ROOT_PATH`) for which `is_open` is true.
 pub fn build_rooted_file_tree_rows<'p>(
     paths: impl IntoIterator<Item = &'p str>,
+    is_open: impl Fn(&str) -> bool,
 ) -> Vec<FileTreeRow> {
-    let rows = build_file_tree_rows(paths);
-    if rows.is_empty() {
-        return rows;
+    let tree = FileTree::new(paths);
+    if tree.root.dirs.is_empty() && tree.root.files.is_empty() {
+        return Vec::new();
     }
+    if !is_open(ROOT_PATH) {
+        return vec![FileTreeRow::root()];
+    }
+    let rows = tree.rows(is_open);
     std::iter::once(FileTreeRow::root())
         .chain(rows.into_iter().map(|row| FileTreeRow {
             depth: row.depth + 1,
             ..row
         }))
         .collect()
-}
-
-// The rows of a fully expanded tree of `paths`.
-pub fn build_file_tree_rows<'p>(paths: impl IntoIterator<Item = &'p str>) -> Vec<FileTreeRow> {
-    FileTree::new(paths).rows(|_| true)
 }
 
 fn sort_files(node: &mut DirNode) {
@@ -272,6 +273,10 @@ fn collect_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_file_tree_rows<'p>(paths: impl IntoIterator<Item = &'p str>) -> Vec<FileTreeRow> {
+        FileTree::new(paths).rows(|_| true)
+    }
 
     fn row(depth: usize, name: &str, path: &str, file_index: Option<usize>) -> FileTreeRow {
         FileTreeRow {
@@ -345,7 +350,8 @@ mod tests {
 
     #[test]
     fn test_build_rooted_file_tree_rows() {
-        let actual = build_rooted_file_tree_rows(["src/main.rs", "README.md"]);
+        let paths = ["src/main.rs", "README.md"];
+        let actual = build_rooted_file_tree_rows(paths, |_| true);
         let expected = vec![
             row(0, "/", ":/", None),
             row(1, "src", "src", None),
@@ -356,7 +362,18 @@ mod tests {
         assert!(actual[0].contains("src/main.rs"));
         assert!(actual[0].contains("README.md"));
 
-        assert!(build_rooted_file_tree_rows([]).is_empty());
+        assert!(build_rooted_file_tree_rows([], |_| true).is_empty());
+
+        let actual = build_rooted_file_tree_rows(paths, |path| path != "src");
+        let expected = vec![
+            row(0, "/", ":/", None),
+            row(1, "src", "src", None),
+            row(1, "README.md", "README.md", Some(1)),
+        ];
+        assert_eq!(actual, expected);
+
+        let actual = build_rooted_file_tree_rows(paths, |path| path != ROOT_PATH);
+        assert_eq!(actual, vec![row(0, "/", ":/", None)]);
     }
 
     #[test]

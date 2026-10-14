@@ -309,6 +309,7 @@ fn build_lines(
         (vec![UserEvent::Confirm], "Select hunks / lines; Edit message / Toggle amend / Commit".into()),
         (vec![UserEvent::ToggleStage], "Stage/Unstage file, directory, hunk or line".into()),
         (vec![UserEvent::Discard], "Discard unstaged file, directory, hunk or line".into()),
+        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory".into()),
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Select next file/hunk/line".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Select previous file/hunk/line".into()),
         (vec![UserEvent::GoToTop], "Select first file/hunk/line".into()),
