@@ -739,7 +739,13 @@
         "filter": {
           "$ref": "#/definitions/keybindArray"
         },
+        "toggle_stage": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "toggle_select": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "stash": {
           "$ref": "#/definitions/keybindArray"
         },
         "discard": {

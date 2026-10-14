@@ -303,13 +303,15 @@ fn build_lines(
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
 
     let local_changes_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Back (editing > commit, lines > hunks > files) / Close".into()),
+        (vec![UserEvent::Cancel, UserEvent::Close], "Back, then clear picked files, search, filter / Close".into()),
         (vec![UserEvent::RefList], "Open refs list on branches".into()),
         (vec![UserEvent::FocusPanel(1)], "Focus unstaged files".into()),
         (vec![UserEvent::FocusPanel(2)], "Focus staged files".into()),
         (vec![UserEvent::FocusPanel(3)], "Focus commit message, amend and commit".into()),
         (vec![UserEvent::Confirm], "Select hunks / lines; Edit message / Toggle amend / Commit".into()),
-        (vec![UserEvent::ToggleSelect], "Stage/Unstage file, directory, hunk or line".into()),
+        (vec![UserEvent::ToggleStage], "Stage/Unstage file, directory, hunk or line, or the picked files".into()),
+        (vec![UserEvent::ToggleSelect], "Pick/Unpick file or directory".into()),
+        (vec![UserEvent::Stash], "Stash all changes, or the picked files".into()),
         (vec![UserEvent::Discard], "Discard unstaged file, directory, hunk or line".into()),
         (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory".into()),
         (vec![UserEvent::Search], "Search files".into()),

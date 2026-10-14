@@ -27,7 +27,7 @@ The default key bindings can be overridden.
 | <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>Tab</kbd>                       | Open refs list                                     | `ref_list`                                   |
-| <kbd>Space</kbd>                     | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
+| <kbd>m</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -74,6 +74,12 @@ The file trees of the local changes page and of the changes and files tabs can b
 Matching ignores case unless the query has an uppercase letter.
 On the local changes page, the filter applies to both the unstaged and staged files, and staging, unstaging and discarding a directory only affect the files shown.
 
+#### Picking files
+
+On the local changes page, <kbd>m</kbd> picks files and directories (highlighted, with the count in the panel title).
+While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor, and <kbd>Enter</kbd> shows their combined diff to stage or unstage their hunks and lines.
+<kbd>s</kbd> asks for a stash message in the status line (it may be empty), and stashes including untracked files.
+
 #### Refs List
 
 | Key                                                | Description      | Corresponding keybind            |
@@ -93,12 +99,14 @@ Closing it keeps showing what is selected, so <kbd>Tab</kbd> cycles: local chang
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Close local changes | `close` `cancel` |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter<br>Close local changes | `close` `cancel` |
 | <kbd>Tab</kbd>                       | Open refs list on branches                                   | `ref_list`                      |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus commit message, amend checkbox and commit button       | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message / Toggle amend / Commit | `confirm` |
-| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line                  | `toggle_select`                  |
+| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |
+| <kbd>m</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
+| <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |
 | <kbd>/</kbd>                         | Search files                                                 | `search`                        |

@@ -372,6 +372,19 @@ impl Repository {
         run_git(&self.path, &args, Some(patch))
     }
 
+    // Stashes the changes of `paths` (all changes when empty), including untracked files.
+    pub fn stash_push(&self, paths: &[&str], message: &str) -> std::result::Result<(), String> {
+        let mut args = vec!["stash", "push", "--include-untracked", "--quiet"];
+        if !message.is_empty() {
+            args.extend(["--message", message]);
+        }
+        if !paths.is_empty() {
+            args.push("--");
+            args.extend_from_slice(paths);
+        }
+        run_git(&self.path, &args, None)
+    }
+
     pub fn commit_staged(&self, message: &str, amend: bool) -> std::result::Result<(), String> {
         // the message is read from stdin so no editor is opened
         let mut args = vec!["commit", "--quiet", "--file=-"];

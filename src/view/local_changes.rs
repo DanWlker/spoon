@@ -56,6 +56,12 @@ impl<'a> LocalChangesView<'a> {
             self.update_query_status();
             return;
         }
+        if self.as_state().is_typing_stash() {
+            let result = self.as_mut_state().handle_stash_key(key);
+            self.update_stash_status();
+            self.after_action(result);
+            return;
+        }
 
         let event = event_with_count.event;
         let count = event_with_count.count;
@@ -81,12 +87,19 @@ impl<'a> LocalChangesView<'a> {
             }
             UserEvent::Cancel | UserEvent::Close => {
                 // lines -> hunks -> files, or commit section -> files,
-                // then clear the search, then the filter, then close
+                // then clear the picked files, then the search, then the filter, then close
                 let state = self.as_mut_state();
-                if !state.back() && !state.clear_query() {
+                if !state.back() && !state.clear_picks() && !state.clear_query() {
                     self.tx.send(AppEvent::CloseLocalChanges);
                 }
             }
+            UserEvent::ToggleSelect => {
+                self.as_mut_state().toggle_pick();
+            }
+            UserEvent::Stash => match self.as_mut_state().start_stash() {
+                Ok(()) => self.update_stash_status(),
+                Err(err) => self.tx.send(AppEvent::NotifyError(err)),
+            },
             UserEvent::Search => {
                 self.as_mut_state().start_query(QueryKind::Search);
                 self.update_query_status();
@@ -105,7 +118,7 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.as_mut_state().enter();
                 self.after_action(result);
             }
-            UserEvent::ToggleSelect => {
+            UserEvent::ToggleStage => {
                 let result = self.as_mut_state().toggle_stage();
                 self.after_action(result);
             }
@@ -213,7 +226,24 @@ impl<'a> LocalChangesView<'a> {
 
     pub fn is_capturing_keys(&self) -> bool {
         let state = self.as_state();
-        state.is_editing() || state.is_confirming() || state.is_typing_query()
+        state.is_editing()
+            || state.is_confirming()
+            || state.is_typing_query()
+            || state.is_typing_stash()
+    }
+
+    // Shows the stash message being typed in the status line.
+    fn update_stash_status(&self) {
+        match self.as_state().stash_status_input() {
+            Some((message, cursor_position, metadata)) => {
+                self.tx.send(AppEvent::UpdateStatusInput {
+                    message,
+                    cursor_position,
+                    metadata,
+                })
+            }
+            None => self.tx.send(AppEvent::ClearStatusLine),
+        }
     }
 
     // Shows the search or filter being typed in the status line.
@@ -231,8 +261,8 @@ impl<'a> LocalChangesView<'a> {
     fn after_action(&mut self, result: Result<(), String>) {
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
-        } else if self.as_mut_state().take_committed() {
-            // reload the repository so the new commit appears in the graph
+        } else if self.as_mut_state().take_needs_refresh() {
+            // reload the repository so the new commit or stash appears in the graph
             self.refresh();
         }
     }

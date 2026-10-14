@@ -1,4 +1,8 @@
-use std::{collections::HashSet, ops::Range, rc::Rc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    ops::Range,
+    rc::Rc,
+};
 
 use ratatui::{
     buffer::Buffer,
@@ -8,7 +12,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, StatefulWidget, Widget},
 };
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
+use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
@@ -59,6 +64,11 @@ pub struct LocalChangesState<'a> {
     staged_collapsed: HashSet<String>,
     // the search applies to the focused section, the filter to both
     query: TreeQuery,
+    // paths of the rows picked with `m` in each section, which actions apply to instead of the cursor
+    unstaged_picked: BTreeSet<String>,
+    staged_picked: BTreeSet<String>,
+    // whether the diff shows the picked files rather than the row under the cursor
+    diff_of_picked: bool,
     // false while the page is only previewed from the refs list
     focused: bool,
     // true while selecting hunks (or lines) in the diff instead of files
@@ -82,8 +92,10 @@ pub struct LocalChangesState<'a> {
     amend_base: Option<String>,
     // the message typed before amending, restored when amending is turned off
     message_before_amend: Option<TextArea>,
-    // set once a commit is made, until the view picks it up to refresh the repository
-    committed: bool,
+    // set once a commit or stash is made, until the view picks it up to refresh the repository
+    needs_refresh: bool,
+    // the message typed before stashing, see `start_stash`
+    stash_input: Option<Input>,
 
     // the question shown in a popup while waiting for the user to confirm discarding
     discard_prompt: Option<String>,
@@ -110,6 +122,9 @@ impl<'a> LocalChangesState<'a> {
             unstaged_collapsed: HashSet::new(),
             staged_collapsed: HashSet::new(),
             query: TreeQuery::default(),
+            unstaged_picked: BTreeSet::new(),
+            staged_picked: BTreeSet::new(),
+            diff_of_picked: false,
             staged_cursor: 0,
             focused: false,
             diff_focused: false,
@@ -125,7 +140,8 @@ impl<'a> LocalChangesState<'a> {
             message: TextArea::default(),
             amend_base: None,
             message_before_amend: None,
-            committed: false,
+            needs_refresh: false,
+            stash_input: None,
             discard_prompt: None,
         };
         state.load_diff();
@@ -143,16 +159,14 @@ impl<'a> LocalChangesState<'a> {
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
         if !focused {
-            self.diff_focused = false;
-            self.line_mode = false;
+            self.leave_diff();
             self.commit_focused = false;
             self.editing = false;
         }
     }
 
     pub fn focus_section(&mut self, section: LocalChangesSection) {
-        self.diff_focused = false;
-        self.line_mode = false;
+        self.leave_diff();
         self.commit_focused = false;
         self.editing = false;
         if self.section != section {
@@ -178,8 +192,7 @@ impl<'a> LocalChangesState<'a> {
 
     pub fn focus_commit(&mut self) {
         self.commit_focused = true;
-        self.diff_focused = false;
-        self.line_mode = false;
+        self.leave_diff();
     }
 
     pub fn is_editing(&self) -> bool {
@@ -223,14 +236,134 @@ impl<'a> LocalChangesState<'a> {
         self.amend_base = None;
         self.message_before_amend = None;
         self.commit_item = CommitItem::Message;
-        self.committed = true;
+        self.needs_refresh = true;
         self.reload();
         Ok(())
     }
 
-    // Returns true once after a commit was made.
-    pub fn take_committed(&mut self) -> bool {
-        std::mem::take(&mut self.committed)
+    // Returns true once after a commit or stash was made.
+    pub fn take_needs_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.needs_refresh)
+    }
+
+    // Picks or unpicks the row under the cursor, for actions on several files.
+    pub fn toggle_pick(&mut self) {
+        if self.diff_focused || self.commit_focused {
+            return;
+        }
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let picked = self.picked_mut();
+        if !picked.remove(&path) {
+            picked.insert(path);
+        }
+    }
+
+    // Clears the picked rows of the current section. Returns false when there were none.
+    pub fn clear_picks(&mut self) -> bool {
+        let picked = self.picked_mut();
+        let had_picks = !picked.is_empty();
+        picked.clear();
+        had_picks
+    }
+
+    fn picked(&self) -> &BTreeSet<String> {
+        match self.section {
+            LocalChangesSection::Unstaged => &self.unstaged_picked,
+            LocalChangesSection::Staged => &self.staged_picked,
+        }
+    }
+
+    fn picked_mut(&mut self) -> &mut BTreeSet<String> {
+        match self.section {
+            LocalChangesSection::Unstaged => &mut self.unstaged_picked,
+            LocalChangesSection::Staged => &mut self.staged_picked,
+        }
+    }
+
+    // The files actions apply to: those in the picked rows, or else in the row under the cursor.
+    // Only files passing the filter are included.
+    fn target_files(&self) -> Vec<&LocalChangeFile> {
+        if self.picked().is_empty() {
+            return match self.selected_row() {
+                Some(row) => self.row_files(row),
+                None => Vec::new(),
+            };
+        }
+        self.files()
+            .iter()
+            .filter(|f| self.picked().iter().any(|p| covers(p, &f.path)))
+            .filter(|f| self.query.keeps(&f.path))
+            .collect()
+    }
+
+    // Starts typing a stash message; Enter stashes the picked files, or else all changes.
+    pub fn start_stash(&mut self) -> Result<(), String> {
+        if self.count() == 0 {
+            return Err("No local changes to stash".into());
+        }
+        self.stash_input = Some(Input::default());
+        Ok(())
+    }
+
+    pub fn is_typing_stash(&self) -> bool {
+        self.stash_input.is_some()
+    }
+
+    // The stash prompt for the status line: (text, cursor position, hint).
+    pub fn stash_status_input(&self) -> Option<(String, u16, String)> {
+        let input = self.stash_input.as_ref()?;
+        let prefix = "Stash message: ";
+        let cursor = (prefix.len() + input.visual_cursor()) as u16;
+        let target = if self.picked().is_empty() {
+            "all changes".to_string()
+        } else {
+            picked_files_label(self.target_files().len())
+        };
+        let hint = format!("Enter: stash {target}  Esc: cancel");
+        Some((format!("{prefix}{}", input.value()), cursor, hint))
+    }
+
+    pub fn handle_stash_key(&mut self, key: KeyEvent) -> Result<(), String> {
+        let Some(input) = self.stash_input.as_mut() else {
+            return Ok(());
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.stash_input = None;
+                Ok(())
+            }
+            KeyCode::Enter => {
+                let message = input.value().trim().to_string();
+                self.stash_input = None;
+                let result = self.stash(&message);
+                self.reload();
+                result
+            }
+            _ => {
+                input.handle_event(&Event::Key(key));
+                Ok(())
+            }
+        }
+    }
+
+    fn stash(&mut self, message: &str) -> Result<(), String> {
+        let paths: Vec<&str> = if self.picked().is_empty() {
+            Vec::new()
+        } else {
+            let targets = self.target_files();
+            if targets.is_empty() {
+                return Ok(());
+            }
+            let mut paths = file_paths(&targets);
+            paths.extend(targets.iter().filter_map(|f| f.orig_path.as_deref()));
+            paths
+        };
+        self.repository.stash_push(&paths, message)?;
+        self.clear_picks();
+        self.needs_refresh = true;
+        Ok(())
     }
 
     // Asks for confirmation to discard the selected unstaged line, hunk, file or directory.
@@ -241,7 +374,9 @@ impl<'a> LocalChangesState<'a> {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let path = if row.is_root() {
+        let path = if !self.picked().is_empty() && !self.diff_focused {
+            picked_files_label(self.target_files().len())
+        } else if row.is_root() {
             "all files".to_string()
         } else {
             row.path.clone()
@@ -265,7 +400,11 @@ impl<'a> LocalChangesState<'a> {
         match key.code {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 self.discard_prompt = None;
+                let picked_files = !self.diff_focused;
                 let result = self.discard();
+                if picked_files && result.is_ok() {
+                    self.clear_picks();
+                }
                 self.reload();
                 result
             }
@@ -293,11 +432,8 @@ impl<'a> LocalChangesState<'a> {
             return self.repository.apply_patch_to_worktree(&patch, true);
         }
 
-        let Some(row) = self.selected_row() else {
-            return Ok(());
-        };
         let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = self
-            .row_files(row)
+            .target_files()
             .into_iter()
             .partition(|f| f.status == LocalChangeStatus::Untracked);
         self.repository
@@ -350,6 +486,11 @@ impl<'a> LocalChangesState<'a> {
                 CommitItem::Commit => self.commit()?,
             }
         } else if !self.diff_focused {
+            // with picked rows, the diff shows all their files to stage hunks and lines from
+            if !self.picked().is_empty() {
+                self.diff_of_picked = true;
+                self.load_diff();
+            }
             if !self.diff.hunks.is_empty() {
                 self.diff_focused = true;
                 self.select_hunk(0);
@@ -382,10 +523,19 @@ impl<'a> LocalChangesState<'a> {
             self.select_hunk(self.selected_hunk);
             true
         } else if self.diff_focused {
-            self.diff_focused = false;
+            self.leave_diff();
             true
         } else {
             false
+        }
+    }
+
+    // Moves the focus out of the diff, which shows the row under the cursor again.
+    fn leave_diff(&mut self) {
+        self.diff_focused = false;
+        self.line_mode = false;
+        if std::mem::take(&mut self.diff_of_picked) {
+            self.load_diff();
         }
     }
 
@@ -468,7 +618,11 @@ impl<'a> LocalChangesState<'a> {
         } else if self.diff_focused {
             self.toggle_stage_hunk()
         } else {
-            self.toggle_stage_row()
+            let result = self.toggle_stage_row();
+            if result.is_ok() {
+                self.clear_picks();
+            }
+            result
         };
         // reload even on failure, since git may have changed part of the index
         self.reload();
@@ -498,11 +652,12 @@ impl<'a> LocalChangesState<'a> {
         let Some(row) = self.selected_row() else {
             return Ok(());
         };
-        // while filtering, only the files shown are affected rather than the whole directory
-        let targets = self.row_files(row);
-        let mut paths = match self.query.filter() {
-            Some(_) => file_paths(&targets),
-            None => vec![row.path.as_str()],
+        // with picked rows or a filter, the files are given rather than the whole directory
+        let targets = self.target_files();
+        let mut paths = if self.picked().is_empty() && self.query.filter().is_none() {
+            vec![row.path.as_str()]
+        } else {
+            file_paths(&targets)
         };
         if paths.is_empty() {
             return Ok(());
@@ -544,8 +699,14 @@ impl<'a> LocalChangesState<'a> {
         let selected_hunk = self.selected_hunk;
         let selected_line = self.selected_line;
         self.load_diff();
-        // stay in the diff while the same path still has hunks left
-        if diff_focused && self.selected_path() == selected_path && !self.diff.hunks.is_empty() {
+        if self.diff_of_picked && self.diff.hunks.is_empty() {
+            // nothing left to stage from the picked files
+            self.diff_of_picked = false;
+            self.load_diff();
+        }
+        // stay in the diff while the same path (or the picked files) still has hunks left
+        let same_source = self.diff_of_picked || self.selected_path() == selected_path;
+        if diff_focused && same_source && !self.diff.hunks.is_empty() {
             self.diff_focused = true;
             self.select_hunk(selected_hunk);
             if line_mode {
@@ -826,6 +987,27 @@ impl<'a> LocalChangesState<'a> {
 
     fn load_diff(&mut self) {
         let staged = self.section == LocalChangesSection::Staged;
+        let base = self.amend_base.as_deref();
+        if self.diff_of_picked {
+            // untracked files are only shown by diffing each against /dev/null
+            let targets = self.target_files();
+            let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = targets
+                .into_iter()
+                .partition(|f| f.status == LocalChangeStatus::Untracked);
+            let mut diff =
+                self.repository
+                    .local_change_diff(&file_paths(&tracked), false, staged, base);
+            for file in untracked {
+                diff.push_str(&self.repository.local_change_diff(
+                    &[&file.path],
+                    true,
+                    staged,
+                    base,
+                ));
+            }
+            self.set_diff(&diff);
+            return;
+        }
         let diff = self.selected_row().map(|row| {
             let untracked = row
                 .file_index
@@ -836,11 +1018,14 @@ impl<'a> LocalChangesState<'a> {
             } else {
                 vec![row.path.as_str()]
             };
-            let base = self.amend_base.as_deref();
             self.repository
                 .local_change_diff(&paths, untracked, staged, base)
         });
-        self.diff = parse_diff(&diff.unwrap_or_default());
+        self.set_diff(&diff.unwrap_or_default());
+    }
+
+    fn set_diff(&mut self, diff: &str) {
+        self.diff = parse_diff(diff);
         self.diff_focused = false;
         self.line_mode = false;
         self.selected_hunk = 0;
@@ -860,6 +1045,23 @@ fn build_rows(
         |path| filter.is_some() || !collapsed.contains(path),
         |path| filter.is_none_or(|f| path_matches(path, f)),
     )
+}
+
+fn picked_files_label(count: usize) -> String {
+    if count == 1 {
+        "1 picked file".into()
+    } else {
+        format!("{count} picked files")
+    }
+}
+
+// Whether the picked row at `picked` contains the file at `path`.
+fn covers(picked: &str, path: &str) -> bool {
+    picked == ROOT_PATH
+        || picked == path
+        || path
+            .strip_prefix(picked)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn file_paths<'f>(files: &[&'f LocalChangeFile]) -> Vec<&'f str> {
@@ -921,6 +1123,10 @@ impl LocalChangesPanel<'_> {
         area: Rect,
         buf: &mut Buffer,
     ) {
+        let picked = match section {
+            LocalChangesSection::Unstaged => &state.unstaged_picked,
+            LocalChangesSection::Staged => &state.staged_picked,
+        };
         let (number, name, files, rows, cursor) = match section {
             LocalChangesSection::Unstaged => (
                 1,
@@ -948,12 +1154,16 @@ impl LocalChangesPanel<'_> {
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .title(
                 Span::raw(format!(
-                    " [{number}] {name} ({}){}{} ",
+                    " [{number}] {name} ({}){}{}{} ",
                     files.len(),
                     if section == LocalChangesSection::Staged && state.amend_base.is_some() {
                         " · amending"
                     } else {
                         ""
+                    },
+                    match picked.len() {
+                        0 => String::new(),
+                        n => format!(" · {n} picked"),
                     },
                     state
                         .query_indicator(section)
@@ -1023,6 +1233,17 @@ impl LocalChangesPanel<'_> {
             .style(Style::default().fg(self.ctx.color_theme.fg))
             .render(inner, buf);
 
+        // picked rows, like picked commits in the commit list
+        let picked_style = Style::default()
+            .bg(self.ctx.color_theme.list_picked_bg)
+            .fg(self.ctx.color_theme.list_picked_fg);
+        for (i, row) in rows.iter().enumerate().skip(offset).take(height) {
+            if picked.contains(&row.path) {
+                let y = inner.y + (i - offset) as u16;
+                buf.set_style(Rect::new(inner.x, y, inner.width, 1), picked_style);
+            }
+        }
+
         // only the section whose diff is displayed shows its cursor
         if active {
             let y = inner.y + (cursor - offset) as u16;
@@ -1037,6 +1258,7 @@ impl LocalChangesPanel<'_> {
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
         let mut title = match state.selected_row() {
+            _ if state.diff_of_picked => picked_files_label(state.target_files().len()),
             Some(row) if row.is_root() => "/".to_string(),
             Some(row) => row.path.clone(),
             None => String::new(),
@@ -1574,8 +1796,8 @@ mod tests {
         state.focus_commit();
         state.cycle_commit_item(false);
         state.enter()?;
-        assert!(state.take_committed());
-        assert!(!state.take_committed());
+        assert!(state.take_needs_refresh());
+        assert!(!state.take_needs_refresh());
         assert_eq!(
             git_stdout(repo_path, &["log", "-1", "--format=%B"]),
             "first change\n\nbody"
@@ -1864,6 +2086,143 @@ mod tests {
         assert!(!state.clear_query());
         state.focus_section(LocalChangesSection::Unstaged);
         assert_eq!(visible(&state), vec![":/", "src", "src/app.rs"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_picked_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(repo_path.join(name), "x\n")?;
+        }
+        git.add(&["a.txt", "b.txt", "c.txt"]);
+        git.commit("init", "2024-01-01");
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(repo_path.join(name), "x\nchanged\n")?;
+        }
+        fs::create_dir(repo_path.join("dir"))?;
+        fs::write(repo_path.join("dir/u.txt"), "u\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.set_focused(true);
+
+        // pick a file and a directory, then stage both at once
+        select_row(&mut state, "a.txt");
+        state.toggle_pick();
+        select_row(&mut state, "dir");
+        state.toggle_pick();
+        state.toggle_stage()?;
+        assert_eq!(paths(&state.changes.staged), vec!["a.txt", "dir/u.txt"]);
+        assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "c.txt"]);
+        assert!(state.picked().is_empty());
+
+        // enter shows the diff of the picked files, to stage their hunks one by one
+        select_row(&mut state, "b.txt");
+        state.toggle_pick();
+        select_row(&mut state, "c.txt");
+        state.toggle_pick();
+        state.enter()?;
+        assert!(state.diff_focused && state.diff_of_picked);
+        assert_eq!(state.diff.hunks.len(), 2);
+        state.toggle_stage()?;
+        assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
+        assert!(state.diff_focused && state.diff_of_picked);
+        state.toggle_stage()?;
+        assert!(state.changes.unstaged.is_empty());
+        assert!(!state.diff_focused && !state.diff_of_picked);
+
+        // discard the picked files only
+        fs::write(repo_path.join("b.txt"), "x\nchanged\nagain\n")?;
+        fs::write(repo_path.join("c.txt"), "x\nchanged\nagain\n")?;
+        state.reload();
+        state.clear_picks();
+        select_row(&mut state, "b.txt");
+        state.toggle_pick();
+        state.request_discard();
+        assert_eq!(
+            state.discard_prompt.as_deref(),
+            Some("Discard all changes to 1 picked file?")
+        );
+        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
+
+        // unstage picked files
+        state.focus_section(LocalChangesSection::Staged);
+        select_row(&mut state, "a.txt");
+        state.toggle_pick();
+        state.toggle_stage()?;
+        assert!(!paths(&state.changes.staged).contains(&"a.txt"));
+
+        // esc: back from the diff, then the picked files, then the search and filter
+        state.focus_section(LocalChangesSection::Unstaged);
+        select_row(&mut state, "c.txt");
+        state.toggle_pick();
+        type_query(&mut state, QueryKind::Filter, "txt");
+        state.enter()?;
+        assert!(state.back());
+        assert!(!state.back());
+        assert!(state.clear_picks());
+        assert!(!state.clear_picks());
+        assert!(state.clear_query());
+        assert!(!state.clear_query());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stash() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for name in ["a.txt", "b.txt"] {
+            fs::write(repo_path.join(name), "x\n")?;
+        }
+        git.add(&["a.txt", "b.txt"]);
+        git.commit("init", "2024-01-01");
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            git_stdout(repo_path, &["config", key, value]);
+        }
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.set_focused(true);
+        assert!(state.start_stash().is_err());
+
+        // stash only the picked file
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        fs::write(repo_path.join("b.txt"), "b\n")?;
+        fs::write(repo_path.join("u.txt"), "u\n")?;
+        state.reload();
+        select_row(&mut state, "a.txt");
+        state.toggle_pick();
+        state.start_stash()?;
+        let (_, _, hint) = state.stash_status_input().unwrap();
+        assert_eq!(hint, "Enter: stash 1 picked file  Esc: cancel");
+        for c in "only a".chars() {
+            state.handle_stash_key(key(KeyCode::Char(c)))?;
+        }
+        state.handle_stash_key(key(KeyCode::Enter))?;
+        assert!(state.take_needs_refresh());
+        assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "u.txt"]);
+        assert!(git_stdout(repo_path, &["stash", "list"]).contains("only a"));
+
+        // esc cancels
+        state.start_stash()?;
+        state.handle_stash_key(key(KeyCode::Esc))?;
+        assert!(!state.is_typing_stash());
+        assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "u.txt"]);
+
+        // without picks, everything is stashed, including untracked files
+        state.start_stash()?;
+        state.handle_stash_key(key(KeyCode::Enter))?;
+        assert!(state.changes.unstaged.is_empty());
+        assert_eq!(git_stdout(repo_path, &["stash", "list"]).lines().count(), 2);
 
         Ok(())
     }

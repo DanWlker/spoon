@@ -43,7 +43,7 @@ commands_4 = { "name" = "amend commit", type = "suspend", commands = ["git", "co
 
 ## Picked commits
 
-Press `space` in the commit list to pick commits; picked commits are highlighted, and the status line shows how many are picked. `Esc` clears them.
+Press `m` in the commit list to pick commits; picked commits are highlighted, and the status line shows how many are picked. `Esc` clears them.
 Use `{{marked_hash}}` to refer to a single picked commit, or `{{picked_hashes}}` for all of them.
 For example, pick a commit, select another commit, then press `V` to view the diff between them:
 

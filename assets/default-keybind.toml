@@ -42,9 +42,12 @@ focus_panel_1 = ["1"]
 focus_panel_2 = ["2"]
 focus_panel_3 = ["3"]
 
-# stage/unstage the selected file, directory, hunk or line in local changes,
-# pick/unpick the selected commit in the commit list
-toggle_select = ["space"]
+# stage/unstage the selected file, directory, hunk or line in local changes
+toggle_stage = ["space"]
+# select several items: commits in the commit list, files in local changes
+toggle_select = ["m"]
+# stash local changes, or only the selected files
+stash = ["s"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]
 
