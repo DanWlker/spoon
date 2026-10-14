@@ -9,7 +9,8 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{List, ListItem, StatefulWidget, Widget},
+    widgets::{Block, Borders, List, ListItem, StatefulWidget, Widget},
+    Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use tui_input::{backend::crossterm::EventHandler, Input, InputRequest};
@@ -804,6 +805,43 @@ impl<'a> CommitListState<'a> {
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
     _marker: std::marker::PhantomData<&'a ()>,
+}
+
+// The rows of the commit list under the border of its panel.
+pub fn commit_list_inner_height(height: u16) -> usize {
+    height.saturating_sub(1) as usize
+}
+
+// The commit list as the first panel of the graph: under a top border titled with its number,
+// which stands out while it has the focus, and the count of picked commits.
+pub fn render_commit_list_panel<'a>(
+    f: &mut Frame,
+    area: Rect,
+    state: &mut CommitListState<'a>,
+    ctx: Rc<AppContext>,
+    focused: bool,
+) {
+    let theme = &ctx.color_theme;
+    let title_fg = if focused {
+        theme.status_info_fg
+    } else {
+        theme.fg
+    };
+    let picked = match state.picked_commit_hashes().len() {
+        0 => String::new(),
+        n => format!(" · {n} picked"),
+    };
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .style(Style::default().fg(theme.divider_fg))
+        .title(
+            Span::raw(format!(" [1] Commits{picked} "))
+                .fg(title_fg)
+                .bold(),
+        );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_stateful_widget(CommitList::new(ctx), inner, state);
 }
 
 impl<'a> CommitList<'a> {

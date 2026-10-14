@@ -102,6 +102,16 @@ impl<'a> View<'a> {
         }
     }
 
+    // False while the refs sidebar has the focus.
+    pub fn set_focused(&mut self, focused: bool) {
+        match self {
+            View::List(view) => view.set_focused(focused),
+            View::Detail(view) => view.set_focused(focused),
+            View::LocalChanges(view) => view.set_focused(focused),
+            _ => {}
+        }
+    }
+
     pub fn clear_picked_commits(&mut self) {
         match self {
             View::List(view) => view.clear_picks(),
@@ -293,6 +303,7 @@ pub struct AppRefreshContext {
     pub sidebar_selected: Vec<String>,
     pub sidebar_opened: Vec<Vec<String>>,
     pub sidebar_focused: bool,
+    pub sidebar_collapsed: bool,
     pub local_changes: Option<LocalChangesRefreshViewContext>,
     // the tab of the commit details while they are open
     pub detail_tab: Option<DetailTab>,

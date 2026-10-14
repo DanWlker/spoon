@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-// The tabs of the commit detail section, switched with the panel numbers.
+// The tabs of the commit detail section, switched with the panel numbers 2 to 4 (1 is the commit list).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
     #[default]
@@ -32,7 +32,7 @@ impl DetailTab {
     const ALL: [DetailTab; 3] = [DetailTab::Info, DetailTab::Changes, DetailTab::Files];
 
     pub fn from_number(n: usize) -> Option<Self> {
-        Self::ALL.get(n.checked_sub(1)?).copied()
+        Self::ALL.get(n.checked_sub(2)?).copied()
     }
 
     fn title(self) -> &'static str {
@@ -48,6 +48,8 @@ impl DetailTab {
 // The search and filter of the current tab are shown after the titles.
 pub fn render_tab_titles(
     current: DetailTab,
+    // false while the commit list has the focus
+    focused: bool,
     indicator: Option<String>,
     theme: &ColorTheme,
     area: Rect,
@@ -57,9 +59,11 @@ pub fn render_tab_titles(
         .iter()
         .enumerate()
         .map(|(i, tab)| {
-            let title = format!(" [{}] {} ", i + 1, tab.title());
-            if *tab == current {
+            let title = format!(" [{}] {} ", i + 2, tab.title());
+            if *tab == current && focused {
                 Span::raw(title).fg(theme.status_info_fg).bold()
+            } else if *tab == current {
+                Span::raw(title).fg(theme.fg).bold()
             } else {
                 Span::raw(title).fg(theme.status_input_transient_fg)
             }
@@ -75,14 +79,18 @@ pub fn render_tab_titles(
 // Draws the title of a comparison of two commits over the top border of the detail section.
 pub fn render_compare_title(
     title: &str,
+    focused: bool,
     indicator: Option<String>,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let mut spans = vec![Span::raw(format!(" {title} "))
-        .fg(theme.status_info_fg)
-        .bold()];
+    let fg = if focused {
+        theme.status_info_fg
+    } else {
+        theme.fg
+    };
+    let mut spans = vec![Span::raw(format!(" {title} ")).fg(fg).bold()];
     if let Some(indicator) = indicator {
         spans.push(Span::raw(format!(" {indicator} ")).fg(theme.status_info_fg));
     }

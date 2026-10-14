@@ -260,7 +260,10 @@ impl<'a> LocalChangesView<'a> {
 
     // Dims the page while the sidebar has the focus.
     pub fn set_focused(&mut self, focused: bool) {
-        self.as_mut_state().set_focused(focused);
+        // losing the focus leaves the diff and the message, only once
+        if self.as_state().is_focused() != focused {
+            self.as_mut_state().set_focused(focused);
+        }
     }
 
     pub fn local_change_count(&self) -> usize {

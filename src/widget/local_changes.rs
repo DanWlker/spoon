@@ -203,6 +203,10 @@ impl<'a> LocalChangesState<'a> {
         self.section
     }
 
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
         if !focused {

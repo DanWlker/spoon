@@ -13,7 +13,7 @@ The default key bindings can be overridden.
 | <kbd>Ctrl-c</kbd> <kbd>q</kbd> | Quit app    | `force_quit` `quit`   |
 | <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
 | <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
-| <kbd>0</kbd>                   | Focus the refs sidebar | `focus_panel_0` |
+| <kbd>0</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_0` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
@@ -46,7 +46,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
 | <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
-| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show commit details on the info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
+| <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show commit details on the info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
 | <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
 | <kbd>d</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
@@ -90,7 +90,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 
 | Key                                  | Description                     | Corresponding keybind           |
 | ------------------------------------ | ------------------------------- | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Close commit details            | `close` `cancel`                |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `close` `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up             | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up        | `half_page_down` `half_page_up` |
@@ -99,7 +99,8 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Alt-Down</kbd> <kbd>Alt-j</kbd> | Select parent commit            | `go_to_parent`                  |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash     | `short_copy` `full_copy`        |
-| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> | Show info / changes / files tab | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
+| <kbd>1</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_1` |
+| <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs) | `search` `filter` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
@@ -144,8 +145,9 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 
 | Key                                                  | Description      | Corresponding keybind            |
 | ---------------------------------------------------- | ---------------- | -------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Enter</kbd> | Back to the page | `close` `cancel` `confirm`       |
-| <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd>               | Focus a panel of the page | `focus_panel_1` `focus_panel_2` `focus_panel_3` |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd>                  | Back to the page | `close` `cancel`                 |
+| <kbd>Enter</kbd>                                     | Open/Close node, else back to the page | `confirm`              |
+| <kbd>1</kbd> - <kbd>4</kbd>                          | Focus a panel of the page | `focus_panel_1` ... `focus_panel_4` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
 | <kbd>J/K</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
@@ -157,7 +159,8 @@ The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page s
 `Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.
 <kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file).
 
-In the commit graph, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> open the details of the selected commit on that tab, so a count before a command can't start with them there (`5j` works, `10j` doesn't).
+In the commit graph, <kbd>1</kbd> focuses the commit list and <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> open the details of the selected commit on the info / changes / files tab, so a count before a command can't start with them there (`5j` works, `10j` doesn't).
+While the details are open, <kbd>1</kbd> moves the focus to the commit list above, where moving the selection shows the details of each commit, and <kbd>2</kbd> - <kbd>4</kbd> or <kbd>Enter</kbd> go back to the details.
 
 #### Local Changes
 

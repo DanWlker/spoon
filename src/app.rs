@@ -116,6 +116,8 @@ pub struct App<'a> {
     // the refs on the left, always shown beside the page (but the help)
     sidebar: RefListState,
     sidebar_focused: bool,
+    // shrunk to its title, by pressing its number again
+    sidebar_collapsed: bool,
     // the local changes page while the graph is shown, to come back to it as it was
     parked_local_changes: Option<LocalChangesRefreshViewContext>,
     // the tab of the commit details while the local changes page is shown, to reopen them
@@ -184,11 +186,13 @@ impl<'a> App<'a> {
         let mut sidebar =
             RefListState::new(&repository.all_refs(), repository.local_changes().count());
         let mut sidebar_focused = false;
+        let mut sidebar_collapsed = false;
         let mut parked_local_changes = None;
         let mut parked_detail_tab = None;
         if let Some(context) = app_context {
             sidebar.reset_tree_status(context.sidebar_selected, context.sidebar_opened);
             sidebar_focused = context.sidebar_focused;
+            sidebar_collapsed = context.sidebar_collapsed;
             parked_local_changes = context.local_changes;
             parked_detail_tab = context.detail_tab;
         }
@@ -198,6 +202,7 @@ impl<'a> App<'a> {
             view,
             sidebar,
             sidebar_focused,
+            sidebar_collapsed,
             parked_local_changes,
             parked_detail_tab,
             dialog: None,
@@ -411,6 +416,7 @@ impl App<'_> {
                         sidebar_selected,
                         sidebar_opened,
                         sidebar_focused: self.sidebar_focused,
+                        sidebar_collapsed: self.sidebar_collapsed,
                         local_changes: self.parked_local_changes.take(),
                         detail_tab: match &self.view {
                             View::Detail(view) if view.is_comparing() => None,
@@ -515,7 +521,13 @@ impl App<'_> {
             self.sidebar
                 .set_local_change_count(view.local_change_count());
         }
-        let sidebar = RefList::new(self.ctx.clone(), self.sidebar_focused);
+        // views are replaced while switching pages, they take the focus as they are drawn
+        self.sync_sidebar_focus();
+        let sidebar = RefList::new(
+            self.ctx.clone(),
+            self.sidebar_focused,
+            self.sidebar_collapsed,
+        );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.sidebar);
         self.view.render(f, view_area);
         if let Some(dialog) = &self.dialog {
@@ -644,6 +656,8 @@ impl App<'_> {
     fn split_sidebar(&self, area: Rect) -> [Rect; 2] {
         let width = if matches!(self.view, View::Help(_)) {
             0
+        } else if self.sidebar_collapsed {
+            COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
             // leave the page some room on narrow terminals
             self.ctx.ui_config.refs.width.min(area.width / 3)
@@ -651,6 +665,9 @@ impl App<'_> {
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area)
     }
 }
+
+// " [0] " and the border on its right
+const COLLAPSED_SIDEBAR_WIDTH: u16 = 6;
 
 fn split_app_areas(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(area)
@@ -870,7 +887,16 @@ impl App<'_> {
         }
         match event {
             UserEvent::FocusPanel(0) => {
-                self.set_sidebar_focused(true);
+                // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
+                if self.sidebar_focused && !self.sidebar_collapsed {
+                    self.sidebar_collapsed = true;
+                    self.set_sidebar_focused(false);
+                } else {
+                    self.sidebar_collapsed = false;
+                    self.set_sidebar_focused(true);
+                }
+                // the page moves, and the graph images with it
+                self.app_status.pending_clear = PendingClear::Screen;
                 return;
             }
             UserEvent::RefList => {
@@ -916,8 +942,13 @@ impl App<'_> {
                 self.sidebar.close_node();
                 self.show_sidebar_selection();
             }
-            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
-                // back to the page, showing what is selected
+            UserEvent::Confirm => {
+                // a folder opens or closes, else back to the page showing what is selected
+                if !self.sidebar.toggle_node() {
+                    self.set_sidebar_focused(false);
+                }
+            }
+            UserEvent::Cancel | UserEvent::Close => {
                 self.set_sidebar_focused(false);
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
@@ -949,9 +980,7 @@ impl App<'_> {
 
     // The page shows its selection dimmed while the sidebar has the focus.
     fn sync_sidebar_focus(&mut self) {
-        if let View::LocalChanges(ref mut view) = self.view {
-            view.set_focused(!self.sidebar_focused);
-        }
+        self.view.set_focused(!self.sidebar_focused);
     }
 
     // Shows the page of the selected row: local changes, or the graph at the selected ref.

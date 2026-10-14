@@ -1162,7 +1162,10 @@ mod tests {
         let log = git(path, &["log", "--format=%s"]);
         assert_eq!(log, "c4\nc2\nc1\n");
         let message = git(path, &["log", "-1", "--format=%B", "HEAD~1"]);
-        assert!(message.contains("c2") && message.contains("c3"), "{message}");
+        assert!(
+            message.contains("c2") && message.contains("c3"),
+            "{message}"
+        );
     }
 
     #[test]

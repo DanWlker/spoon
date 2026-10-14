@@ -13,7 +13,7 @@ use crate::{
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_detail::{CommitDetail, CommitDetailState},
-        commit_list::{CommitList, CommitListState},
+        commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::{
             render_compare_title, render_tab_titles, CommitChanges, CommitChangesState,
             CommitFiles, CommitFilesState, DetailTab,
@@ -39,6 +39,11 @@ pub struct DetailView<'a> {
     refs: Vec<Ref>,
     // comparing two commits: only their changes are shown, under this title
     compare: Option<String>,
+    // the commit list above has the focus (1), moving the selection shows the details of each commit
+    list_focused: bool,
+    // false while the refs sidebar has the focus
+    page_focused: bool,
+    repository: &'a Repository,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -67,6 +72,9 @@ impl<'a> DetailView<'a> {
             changes,
             refs,
             compare: None,
+            list_focused: false,
+            page_focused: true,
+            repository,
             ctx,
             tx,
         }
@@ -84,6 +92,10 @@ impl<'a> DetailView<'a> {
         self.changes_state = CommitChangesState::between(repository, Some(base), target, &changes);
         self.compare = Some(title);
         self.show_tab(DetailTab::Changes);
+    }
+
+    pub fn set_focused(&mut self, focused: bool) {
+        self.page_focused = focused;
     }
 
     pub fn clear_picks(&mut self) {
@@ -108,6 +120,7 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn show_tab(&mut self, tab: DetailTab) {
+        self.list_focused = false;
         self.tab = tab;
         self.load_tab();
     }
@@ -125,22 +138,34 @@ impl<'a> DetailView<'a> {
             self.update_query_status();
             return;
         }
-        if self.handle_query_event(event) {
-            return;
-        }
-
-        if let (UserEvent::FocusPanel(_), true) = (event, self.is_comparing()) {
-            // the comparison only has changes
-            return;
-        }
         if let UserEvent::FocusPanel(n) = event {
-            if let Some(tab) = DetailTab::from_number(n) {
-                self.tab = tab;
-                self.load_tab();
+            if n == 1 {
+                self.list_focused = true;
+            } else if self.is_comparing() {
+                // the comparison only has changes
+                self.list_focused = false;
+            } else if let Some(tab) = DetailTab::from_number(n) {
+                self.show_tab(tab);
             }
             return;
         }
+        // the picked commits are cleared before the search, the filter and the details
+        if let UserEvent::Cancel | UserEvent::Close = event {
+            if !self.as_list_state().picked_commit_hashes().is_empty() {
+                self.clear_picks();
+                return;
+            }
+        }
+        if self.list_focused {
+            if self.handle_list_event(event, count) {
+                return;
+            }
+        } else if self.handle_query_event(event) {
+            return;
+        }
+
         let handled = match self.tab {
+            _ if self.list_focused => false,
             DetailTab::Info => false,
             DetailTab::Changes => self.handle_changes_event(event, count),
             DetailTab::Files => self.handle_files_event(event, count),
@@ -220,8 +245,9 @@ impl<'a> DetailView<'a> {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let [list_area, detail_area] = self.split_areas(area);
 
-        let commit_list = CommitList::new(self.ctx.clone());
-        f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
+        let ctx = self.ctx.clone();
+        let list_focused = self.page_focused && self.list_focused;
+        render_commit_list_panel(f, list_area, self.as_mut_list_state(), ctx, list_focused);
 
         match self.tab {
             DetailTab::Info => {
@@ -242,9 +268,11 @@ impl<'a> DetailView<'a> {
         }
         // each tab draws a top border, the titles go over it
         let indicator = self.query().and_then(TreeQuery::indicator);
+        let focused = self.page_focused && !self.list_focused;
         match &self.compare {
             Some(title) => render_compare_title(
                 title,
+                focused,
                 indicator,
                 &self.ctx.color_theme,
                 detail_area,
@@ -252,6 +280,7 @@ impl<'a> DetailView<'a> {
             ),
             None => render_tab_titles(
                 self.tab,
+                focused,
                 indicator,
                 &self.ctx.color_theme,
                 detail_area,
@@ -263,7 +292,7 @@ impl<'a> DetailView<'a> {
     pub fn update_layout(&mut self, area: Rect) {
         let [list_area, _] = self.split_areas(area);
         self.as_mut_list_state()
-            .update_height(list_area.height as usize);
+            .update_height(commit_list_inner_height(list_area.height));
     }
 
     pub fn prepare_graph_uploads(&mut self) {
@@ -284,6 +313,49 @@ impl<'a> DetailView<'a> {
             UserEvent::HalfPageDown => state.scroll_diff_down(page / 2 * count),
             UserEvent::HalfPageUp => state.scroll_diff_up(page / 2 * count),
             _ => return handle_tree_event(event, count, |f| state.update_tree(f)),
+        }
+        true
+    }
+
+    // Moves in the commit list while it has the focus, showing the details of the selected commit;
+    // returns whether the event was handled.
+    fn handle_list_event(&mut self, event: UserEvent, count: usize) -> bool {
+        let state = self.as_mut_list_state();
+        let before = state.selected_commit_hash().clone();
+        let repeat = |state: &mut CommitListState<'a>, f: fn(&mut CommitListState<'a>)| {
+            (0..count).for_each(|_| f(state))
+        };
+        match event {
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                repeat(state, CommitListState::select_next)
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                repeat(state, CommitListState::select_prev)
+            }
+            UserEvent::GoToParent => repeat(state, CommitListState::select_parent),
+            UserEvent::GoToTop => state.select_first(),
+            UserEvent::GoToBottom => state.select_last(),
+            UserEvent::PageDown => repeat(state, CommitListState::scroll_down_page),
+            UserEvent::PageUp => repeat(state, CommitListState::scroll_up_page),
+            UserEvent::HalfPageDown => repeat(state, CommitListState::scroll_down_half),
+            UserEvent::HalfPageUp => repeat(state, CommitListState::scroll_up_half),
+            UserEvent::ScrollDown => repeat(state, CommitListState::scroll_down),
+            UserEvent::ScrollUp => repeat(state, CommitListState::scroll_up),
+            UserEvent::SelectTop => state.select_high(),
+            UserEvent::SelectMiddle => state.select_middle(),
+            UserEvent::SelectBottom => state.select_low(),
+            UserEvent::ToggleSelect => state.toggle_pick(),
+            UserEvent::NextPicked => state.select_next_pick(true),
+            UserEvent::PreviousPicked => state.select_next_pick(false),
+            UserEvent::Confirm => {
+                // into the details
+                self.list_focused = false;
+                return true;
+            }
+            _ => return false,
+        }
+        if *self.as_list_state().selected_commit_hash() != before {
+            self.update_selected_commit(self.repository, |_| {});
         }
         true
     }

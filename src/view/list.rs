@@ -8,7 +8,9 @@ use crate::{
     git::CommitHash,
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
-        commit_list::{CommitList, CommitListState, SearchState},
+        commit_list::{
+            commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
+        },
         commit_tabs::DetailTab,
     },
 };
@@ -16,6 +18,8 @@ use crate::{
 #[derive(Debug)]
 pub struct ListView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
+    // false while the refs sidebar has the focus
+    focused: bool,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -29,6 +33,7 @@ impl<'a> ListView<'a> {
     ) -> ListView<'a> {
         ListView {
             commit_list_state: Some(commit_list_state),
+            focused: true,
             ctx,
             tx,
         }
@@ -212,12 +217,13 @@ impl<'a> ListView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let commit_list = CommitList::new(self.ctx.clone());
-        f.render_stateful_widget(commit_list, area, self.as_mut_list_state());
+        let (ctx, focused) = (self.ctx.clone(), self.focused);
+        render_commit_list_panel(f, area, self.as_mut_list_state(), ctx, focused);
     }
 
     pub fn update_layout(&mut self, area: Rect) {
-        self.as_mut_list_state().update_height(area.height as usize);
+        self.as_mut_list_state()
+            .update_height(commit_list_inner_height(area.height));
     }
 
     pub fn prepare_graph_uploads(&mut self) {
@@ -232,6 +238,10 @@ impl<'a> ListView<'a> {
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state.as_mut().unwrap()
+    }
+
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     pub fn clear_picks(&mut self) {

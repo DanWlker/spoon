@@ -92,6 +92,23 @@ impl RefListState {
         }
     }
 
+    // Opens or closes the selected node; returns false when it has no children.
+    pub fn toggle_node(&mut self) -> bool {
+        let has_children = self
+            .visible_rows
+            .iter()
+            .any(|row| row.identifier == self.selected && row.has_children);
+        if !has_children {
+            return false;
+        }
+        if !self.opened.remove(&self.selected) {
+            self.opened.insert(self.selected.clone());
+        }
+        self.rebuild_visible_rows();
+        self.scroll_to_selection = true;
+        true
+    }
+
     pub fn close_node(&mut self) {
         if self.opened.remove(&self.selected) {
             self.rebuild_visible_rows();
@@ -238,11 +255,17 @@ fn collect_visible_rows(
 pub struct RefList {
     ctx: Rc<AppContext>,
     focused: bool,
+    // only the title is shown
+    collapsed: bool,
 }
 
 impl RefList {
-    pub fn new(ctx: Rc<AppContext>, focused: bool) -> RefList {
-        RefList { ctx, focused }
+    pub fn new(ctx: Rc<AppContext>, focused: bool, collapsed: bool) -> RefList {
+        RefList {
+            ctx,
+            focused,
+            collapsed,
+        }
     }
 }
 
@@ -256,14 +279,19 @@ impl StatefulWidget for RefList {
         } else {
             theme.fg
         };
+        let title = if self.collapsed {
+            " [0] "
+        } else {
+            " [0] Refs "
+        };
         let block = Block::default()
             .borders(Borders::TOP | Borders::RIGHT)
             .style(Style::default().fg(theme.divider_fg))
-            .title(Span::raw(" [0] Refs ").fg(title_fg).bold())
+            .title(Span::raw(title).fg(title_fg).bold())
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         ratatui::widgets::Widget::render(block, area, buf);
-        if inner.width == 0 || inner.height == 0 {
+        if self.collapsed || inner.width == 0 || inner.height == 0 {
             return;
         }
 
@@ -281,16 +309,9 @@ impl StatefulWidget for RefList {
         }
 
         let item_style = Style::default().fg(self.ctx.color_theme.fg);
-        // the selection stands out less while the page has the focus
-        let highlight_style = if self.focused {
-            Style::default()
-                .bg(self.ctx.color_theme.ref_selected_bg)
-                .fg(self.ctx.color_theme.ref_selected_fg)
-        } else {
-            Style::default()
-                .fg(self.ctx.color_theme.status_info_fg)
-                .bold()
-        };
+        let highlight_style = Style::default()
+            .bg(self.ctx.color_theme.ref_selected_bg)
+            .fg(self.ctx.color_theme.ref_selected_fg);
 
         for (line, row) in state
             .visible_rows
@@ -317,7 +338,8 @@ impl StatefulWidget for RefList {
             let (text_x, _) = buf.set_stringn(inner.x, y, prefix, inner.width as usize, item_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
             buf.set_stringn(text_x, y, &row.name, remaining as usize, item_style);
-            if row.identifier == state.selected {
+            // the selection only shows while moving in the sidebar
+            if self.focused && row.identifier == state.selected {
                 buf.set_style(Rect::new(inner.x, y, inner.width, 1), highlight_style);
             }
         }

@@ -14,7 +14,7 @@ use crate::{
     git::{Commit, CommitHash, Ref, Repository},
     view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
     widget::{
-        commit_list::{CommitList, CommitListState},
+        commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::DetailTab,
         commit_user_command::{CommitUserCommand, CommitUserCommandState},
     },
@@ -136,8 +136,8 @@ impl<'a> UserCommandView<'a> {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let [list_area, user_command_area] = self.split_areas(area);
 
-        let commit_list = CommitList::new(self.ctx.clone());
-        f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
+        let ctx = self.ctx.clone();
+        render_commit_list_panel(f, list_area, self.as_mut_list_state(), ctx, false);
 
         let commit_user_command =
             CommitUserCommand::new(&self.user_command_output_lines, self.ctx.clone());
@@ -151,7 +151,7 @@ impl<'a> UserCommandView<'a> {
     pub fn update_layout(&mut self, area: Rect) {
         let [list_area, _] = self.split_areas(area);
         self.as_mut_list_state()
-            .update_height(list_area.height as usize);
+            .update_height(commit_list_inner_height(list_area.height));
     }
 
     pub fn prepare_graph_uploads(&mut self) {
