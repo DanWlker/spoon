@@ -7,7 +7,7 @@ use std::{
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, StatefulWidget, Widget},
@@ -1581,9 +1581,12 @@ impl LocalChangesPanel<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // the sides to pick from, side by side, then the tools, one per line
+        // the sides to pick from, side by side over half the height, then the tools, one per line,
+        // all centered vertically
         let [sides_area, tools_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(inner);
+            Layout::vertical([Constraint::Percentage(50), Constraint::Length(2)])
+                .flex(Flex::Center)
+                .areas(inner);
         let [ours_area, theirs_area] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(sides_area);
@@ -1652,7 +1655,9 @@ impl LocalChangesPanel<'_> {
         ];
         for (i, (item, text)) in tools.into_iter().enumerate() {
             let width = (text.chars().count() as u16).min(tools_area.width);
-            let tool_area = Rect::new(tools_area.x, tools_area.y + i as u16, width, 1);
+            // centered under the sides
+            let x = tools_area.x + (tools_area.width - width) / 2;
+            let tool_area = Rect::new(x, tools_area.y + i as u16, width, 1);
             if tool_area.y >= tools_area.bottom() {
                 break;
             }
