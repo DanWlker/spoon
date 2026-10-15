@@ -11,6 +11,8 @@ use crate::{
 pub enum GraphCommand {
     // a popup confirming a git command
     Dialog(GitDialog),
+    // the last commit amended on the local changes page
+    AmendHead,
     // the changes from `base` to `target`, shown in the details
     Compare {
         base: CommitHash,
@@ -85,7 +87,7 @@ pub fn graph_command(
             Ok(GitDialog::revert(&branch_label, commits))
         }
         UserEvent::AmendCommit => {
-            single("Amend").and_then(|_| commands.amend(&branch_label, &selected))
+            return Some(single("Amend").and_then(|_| commands.amend(&branch_label, &selected)))
         }
         UserEvent::Reset => single("Reset")
             .map(|_| GitDialog::reset(&branch_label, commands.dialog_commit(&selected))),
@@ -232,26 +234,15 @@ impl GraphCommands<'_> {
         ))
     }
 
-    // Amending a commit with the staged changes rebases the commits after it, which must be a
-    // line on the current branch; the last commit is amended in place.
-    fn amend(&self, branch: &str, commit: &CommitHash) -> Result<GitDialog, String> {
+    // Amends a commit on the local changes page, with its changes and message there: the last one
+    // right away, an older one once a rebase stopped at it, so the commits after it must be a line
+    // on the current branch.
+    fn amend(&self, branch: &str, commit: &CommitHash) -> Result<GraphCommand, String> {
         let repository = self.repository;
-        let staged = repository.local_changes().staged.len();
-        if staged == 0 {
-            return Err("Stage the changes to amend the commit with first".into());
-        }
         let short = commit.as_short_hash();
         let head = repository.head_commit().ok_or("Nothing is checked out")?;
-        let dialog_commit = self.dialog_commit(commit);
         if *commit == head {
-            return Ok(GitDialog::amend(
-                branch,
-                dialog_commit,
-                staged,
-                None,
-                true,
-                false,
-            ));
+            return Ok(GraphCommand::AmendHead);
         }
         let base = match repository.parents_hash(commit)[..] {
             [] => None,
@@ -263,17 +254,16 @@ impl GraphCommands<'_> {
             return Err(format!("{short} is not on {branch}, check it out first"));
         }
         if rebased.values().any(|parents| parents.len() > 1) {
-            return Err("There are merge commits after it, which amending would flatten".into());
+            return Err("There are merge commits after it, which the rebase would flatten".into());
         }
         let base = base.map(|h| h.as_str().to_string());
-        Ok(GitDialog::amend(
+        let dialog = GitDialog::edit(
             branch,
-            dialog_commit,
-            staged,
+            self.dialog_commit(commit),
             base,
-            false,
             self.rebase_auto_stash(),
-        ))
+        );
+        Ok(GraphCommand::Dialog(dialog))
     }
 
     // The changes between two commits: the checked out commit and the selected (or picked) one,
@@ -333,6 +323,7 @@ mod tests {
         match command {
             Ok(GraphCommand::Dialog(dialog)) => dialog.command().unwrap().args.join(" "),
             Ok(GraphCommand::Compare { title, .. }) => title,
+            Ok(GraphCommand::AmendHead) => "amend head".into(),
             Err(err) => err,
         }
     }
@@ -399,6 +390,8 @@ mod tests {
 
     #[test]
     fn test_amend_commit() {
+        use crate::widget::local_changes::LocalChangesState;
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         let git = GitRepository::new(path);
@@ -411,61 +404,51 @@ mod tests {
             git.add(&[&format!("f{i}")]);
             git.commit(&format!("c{}", i + 1), date);
         }
-        let run = |command: Result<GraphCommand, String>| match command {
-            Ok(GraphCommand::Dialog(dialog)) => {
-                crate::git::run_task(path, &dialog.command().unwrap()).unwrap()
-            }
-            _ => panic!("no dialog"),
-        };
-        let load = || Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let hashes = |repository: &Repository| -> Vec<CommitHash> {
-            repository
-                .all_commits()
-                .iter()
-                .map(|c| c.commit_hash.clone())
-                .collect()
-        };
-        let files_of = |rev: &str| {
+        let output = |args: &[&str]| {
             let out = std::process::Command::new("git")
-                .args(["show", "--format=", "--name-only", rev])
+                .args(args)
                 .current_dir(path)
                 .output()
                 .unwrap();
             String::from_utf8(out.stdout).unwrap()
         };
-
-        // nothing staged
+        let load = || Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let repository = load();
-        let c2 = hashes(&repository)[1].clone();
-        let err = args(command(&repository, UserEvent::AmendCommit, &c2, &[]));
-        assert!(err.contains("Stage the changes"), "{err}");
+        let hashes: Vec<CommitHash> = repository
+            .all_commits()
+            .iter()
+            .map(|c| c.commit_hash.clone())
+            .collect();
 
-        // a staged file goes into c2, with an unstaged change kept aside
+        // the last commit is amended on the local changes page right away
+        let head = command(&repository, UserEvent::AmendCommit, &hashes[0], &[]);
+        assert!(matches!(head, Ok(GraphCommand::AmendHead)));
+
+        // an older one, with nothing staged and a change kept aside: the rebase stops at it
+        std::fs::write(path.join("f0"), "changed\n").unwrap();
+        let Ok(GraphCommand::Dialog(dialog)) =
+            command(&repository, UserEvent::AmendCommit, &hashes[1], &[])
+        else {
+            panic!("no dialog");
+        };
+        crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        assert_eq!(output(&["log", "-1", "--format=%s"]), "c2\n");
+
+        // the page amends it: its message and changes, with a new file and message
+        let repository = load();
+        let mut state = LocalChangesState::load(&repository);
+        assert_eq!(state.snapshot().commit_draft_message(), "c2");
         std::fs::write(path.join("new"), "n\n").unwrap();
         git.add(&["new"]);
-        std::fs::write(path.join("f0"), "changed\n").unwrap();
+        state.commit_or_continue().unwrap();
+        state.confirm().unwrap();
         let repository = load();
-        run(command(&repository, UserEvent::AmendCommit, &c2, &[]));
-        assert_eq!(files_of("HEAD~1"), "f1\nnew\n");
-        assert_eq!(files_of("HEAD"), "f2\n");
-        let log = std::process::Command::new("git")
-            .args(["log", "--format=%s"])
-            .current_dir(path)
-            .output()
-            .unwrap();
-        assert_eq!(String::from_utf8(log.stdout).unwrap(), "c3\nc2\nc1\n");
+        let _ = LocalChangesState::load(&repository);
+        assert_eq!(output(&["log", "--format=%s"]), "c3\nc2\nc1\n");
         assert_eq!(
-            std::fs::read_to_string(path.join("f0")).unwrap(),
-            "changed\n"
+            output(&["show", "--format=", "--name-only", "HEAD~1"]),
+            "f1\nnew\n"
         );
-
-        // the last commit is amended in place
-        git.add(&["f0"]);
-        let repository = load();
-        let head = hashes(&repository)[0].clone();
-        let amend = args(command(&repository, UserEvent::AmendCommit, &head, &[]));
-        assert_eq!(amend, "commit --amend --no-edit");
-        run(command(&repository, UserEvent::AmendCommit, &head, &[]));
-        assert_eq!(files_of("HEAD"), "f0\nf2\n");
+        assert_eq!(output(&["status", "--porcelain"]), " M f0\n");
     }
 }

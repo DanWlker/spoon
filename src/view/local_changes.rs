@@ -283,6 +283,11 @@ impl<'a> LocalChangesView<'a> {
         &mut self.local_changes_state
     }
 
+    // Turns amending on, with the message of the last commit in the commit section.
+    pub fn start_amend(&mut self) -> Result<(), String> {
+        self.as_mut_state().start_amend()
+    }
+
     // Another panel takes the focus, leaving the diff and the message.
     pub fn blur(&mut self) {
         self.as_mut_state().focus_files();

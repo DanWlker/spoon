@@ -650,6 +650,12 @@ impl Repository {
         merged
     }
 
+    // Whether a rebase stopped to edit a commit (rather than on conflicts), which is amended then.
+    pub fn rebase_stopped_to_edit(&self) -> bool {
+        self.git_path("rebase-merge/amend")
+            .is_some_and(|p| p.exists())
+    }
+
     // The commit message git prepared for the operation in progress, without its comment lines.
     pub fn prepared_message(&self) -> Option<String> {
         self.message_file("MERGE_MSG")
@@ -1475,8 +1481,6 @@ impl RemoteInfo {
 pub struct GitTask {
     // the arguments of the git command
     pub args: Vec<String>,
-    // a git command run first, before stashing the local changes
-    pub prepare: Option<Vec<String>>,
     // stash the local changes before the command, and reapply them after
     pub stash: bool,
     // talks to a remote
@@ -1505,9 +1509,6 @@ impl GitTask {
 
 // Runs the command of a task, between stashing and reapplying the local changes if it says so.
 pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> {
-    if let Some(prepare) = &task.prepare {
-        run_task_step(path, prepare, task)?;
-    }
     let stashed = task.stash
         && !git_output(path, &["status", "--porcelain"])
             .unwrap_or_default()

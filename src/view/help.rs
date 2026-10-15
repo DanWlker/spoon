@@ -263,7 +263,7 @@ fn build_lines(
         (vec![UserEvent::Squash], "Squash the picked commits, or the selected one, into their parents".into()),
         (vec![UserEvent::Revert], "Revert the picked commits, or the selected one".into()),
         (vec![UserEvent::Reset], "Reset the current branch to the selected commit".into()),
-        (vec![UserEvent::AmendCommit], "Amend the selected commit with the staged changes".into()),
+        (vec![UserEvent::AmendCommit], "Amend the selected commit on the local changes page".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::SearchTargetToggle], "Toggle search target".into()),

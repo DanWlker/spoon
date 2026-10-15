@@ -1360,6 +1360,7 @@ impl App<'_> {
         match graph_command(self.repository, event, selected, picked) {
             None => {}
             Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(dialog)),
+            Some(Ok(GraphCommand::AmendHead)) => self.amend_on_local_changes(),
             Some(Ok(GraphCommand::Compare {
                 base,
                 target,
@@ -1368,6 +1369,18 @@ impl App<'_> {
             // the popups tell first that a command is running
             Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
+        }
+    }
+
+    // Shows the local changes page with the last commit being amended.
+    fn amend_on_local_changes(&mut self) {
+        self.show_local_changes_page();
+        self.shell.sidebar.select_local_changes();
+        self.set_sidebar_focused(false);
+        if let View::LocalChanges(view) = &mut self.view {
+            if let Err(err) = view.start_amend() {
+                self.ec.send(AppEvent::NotifyError(err));
+            }
         }
     }
 

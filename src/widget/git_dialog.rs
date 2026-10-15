@@ -65,11 +65,10 @@ enum DialogKind {
         commit: DialogCommit,
         branch: String,
     },
-    // `base` is where the rebase starts, None from the root; no rebase when the commit is HEAD
-    Amend {
+    // `base` is where the rebase starts, None from the root
+    Edit {
         commit: DialogCommit,
         base: Option<String>,
-        head: bool,
     },
 }
 
@@ -309,34 +308,24 @@ impl GitDialog {
         dialog
     }
 
-    // Amends `commit` with the staged changes: a fixup commit, then a rebase squashing it in.
-    pub fn amend(
+    // Edits `commit`: a rebase stopping at it, to amend it on the local changes page.
+    pub fn edit(
         branch: &str,
         commit: DialogCommit,
-        staged: usize,
         base: Option<String>,
-        head: bool,
         auto_stash: bool,
     ) -> Self {
-        let files = if staged == 1 {
-            "1 staged file".to_string()
-        } else {
-            format!("{staged} staged files")
-        };
         let intro = vec![
-            format!("Amend on {branch}, with the {files}"),
+            format!("Edit on {branch}, amending it on the local changes page"),
             format!("  {}", commit.line),
         ];
-        let kind = DialogKind::Amend { commit, base, head };
-        let mut dialog = Self::with(" Amend ", "amend", intro, kind);
-        // the commits after it are rebased, the last one is amended in place
-        if !head {
-            dialog.push_check(
-                FieldId::AutoStash,
-                "Stash and reapply local changes",
-                auto_stash,
-            );
-        }
+        let kind = DialogKind::Edit { commit, base };
+        let mut dialog = Self::with(" Edit commit ", "edit", intro, kind);
+        dialog.push_check(
+            FieldId::AutoStash,
+            "Stash and reapply local changes",
+            auto_stash,
+        );
         dialog
     }
 
@@ -743,39 +732,35 @@ impl GitDialog {
                     ..Default::default()
                 })
             }
-            DialogKind::Amend {
-                commit, head: true, ..
-            } => Ok(GitTask {
-                running: format!("Amending {}", shorten_hash(&commit.hash)),
-                done: format!("Amended {}", shorten_hash(&commit.hash)),
-                ..GitTask::new(
-                    &["commit", "--amend", "--no-edit"],
-                    String::new(),
-                    String::new(),
-                )
-            }),
-            DialogKind::Amend { commit, base, .. } => {
+            DialogKind::Edit { commit, base } => {
                 let stash = if self.checked(FieldId::AutoStash) {
                     "--autostash"
                 } else {
                     "--no-autostash"
                 };
-                // a fixup naming the commit by its hash, which the rebase squashes into it
-                let fixup = format!("fixup! {}", commit.hash);
-                let prepare = ["commit", "--quiet", "-m", &fixup]
-                    .map(String::from)
-                    .to_vec();
-                let mut args = vec!["rebase".to_string(), "-i".into(), "--autosquash".into()];
-                args.push(stash.into());
+                let mut args = vec!["rebase".to_string(), "-i".into(), stash.into()];
                 args.push(base.clone().unwrap_or_else(|| "--root".into()));
+                // the todo list names the commits with full hashes, the one to edit stops there
+                let editor = format!(
+                    "sed -i.bak -E -e 's/^(pick|p) {0} /edit {0} /'",
+                    commit.hash
+                );
+                let env = [
+                    ("GIT_SEQUENCE_EDITOR", editor.as_str()),
+                    ("GIT_CONFIG_COUNT", "1"),
+                    ("GIT_CONFIG_KEY_0", "core.abbrev"),
+                    ("GIT_CONFIG_VALUE_0", "40"),
+                ];
                 let short = shorten_hash(&commit.hash);
                 Ok(GitTask {
                     args,
-                    prepare: Some(prepare),
-                    // the todo list is taken as git arranged it
-                    env: vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
-                    running: format!("Amending {short}"),
-                    done: format!("Amended {short}"),
+                    env: env
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                    running: format!("Stopping at {short}"),
+                    done: format!("Editing {short}, commit to amend it and go on"),
+                    show_local_changes: true,
                     ..Default::default()
                 })
             }
@@ -910,14 +895,10 @@ impl GitDialog {
             format!("git {}", args.join(" "))
         };
         let command = git(&task.args);
-        let command = if task.stash {
+        if task.stash {
             format!("git stash; {command}; git stash pop")
         } else {
             command
-        };
-        match &task.prepare {
-            Some(prepare) => format!("{}; {command}", git(prepare)),
-            None => command,
         }
     }
 }

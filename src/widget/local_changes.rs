@@ -88,6 +88,7 @@ pub struct CommitDraft {
     message: TextArea,
     amend_base: Option<String>,
     message_before_amend: Option<TextArea>,
+    amend_for_edit: bool,
 }
 
 // Where the keys go on the page.
@@ -142,6 +143,13 @@ pub struct LocalChangesSnapshot {
     pub commit_draft: Box<CommitDraft>,
 }
 
+impl LocalChangesSnapshot {
+    #[cfg(test)]
+    pub fn commit_draft_message(&self) -> String {
+        self.commit_draft.message.text()
+    }
+}
+
 impl Default for LocalChangesSnapshot {
     // the page as it is opened the first time
     fn default() -> Self {
@@ -177,6 +185,10 @@ pub struct LocalChangesState<'a> {
     amend_base: Option<String>,
     // the message typed before amending, restored when amending is turned off
     message_before_amend: Option<TextArea>,
+    // amending the commit a rebase stopped at to edit, turned off when the rebase goes on
+    amend_for_edit: bool,
+    // a rebase stopped to edit a commit, which committing amends before going on
+    editing_commit: bool,
     // set once a commit or stash is made, until the view picks it up to refresh the repository
     needs_refresh: bool,
     // the message typed before stashing, see `start_stash`
@@ -226,6 +238,8 @@ impl<'a> LocalChangesState<'a> {
             message: TextArea::default(),
             amend_base: None,
             message_before_amend: None,
+            amend_for_edit: false,
+            editing_commit: false,
             needs_refresh: false,
             stash_input: None,
             confirm: None,
@@ -241,6 +255,7 @@ impl<'a> LocalChangesState<'a> {
             state.message = draft.message;
             state.amend_base = draft.amend_base;
             state.message_before_amend = draft.message_before_amend;
+            state.amend_for_edit = draft.amend_for_edit;
             if state.amend_base.is_some() {
                 // the staged section shows the last commit too
                 state.changes = state.load_changes();
@@ -251,6 +266,7 @@ impl<'a> LocalChangesState<'a> {
                 state.tree_mut().select_path(&path);
             }
         }
+        state.sync_edit_stop();
         state.load_diff();
         state
     }
@@ -310,7 +326,11 @@ impl<'a> LocalChangesState<'a> {
     // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
     // finishes a merge, cherry-pick or revert), or starts typing the message when there is none yet.
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
-        if let Some(operation) = self.operation.filter(|o| o.continues_without_commit()) {
+        // the commit a rebase stopped at to edit is amended, then the rebase goes on
+        let continues = self
+            .operation
+            .filter(|o| o.continues_without_commit() && !self.editing_commit);
+        if let Some(operation) = continues {
             let result = self.repository.continue_operation(operation);
             // a continue that stops on the next conflict has still applied commits
             self.needs_refresh = true;
@@ -333,15 +353,26 @@ impl<'a> LocalChangesState<'a> {
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
     fn request_commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let branch = match self.repository.head() {
-            Head::Branch { name } => name.clone(),
-            _ => "detached HEAD".to_string(),
-        };
         let amend = self.amend_base.is_some();
-        let action = match (amend, self.operation) {
-            (true, _) => "Amend the last commit on".to_string(),
-            (false, Some(operation)) => format!("Commit the {} on", operation.name()),
-            (false, None) => "Commit to".to_string(),
+        let (action, branch) = if self.editing_commit {
+            // HEAD is the commit being edited, on no branch while rebasing
+            let head = self
+                .repository
+                .head_commit()
+                .unwrap_or_else(|| "HEAD".into());
+            let target = format!("{}, then go on with the rebase", head.as_short_hash());
+            ("Amend".to_string(), target)
+        } else {
+            let branch = match self.repository.head() {
+                Head::Branch { name } => name.clone(),
+                _ => "detached HEAD".to_string(),
+            };
+            let action = match (amend, self.operation) {
+                (true, _) => "Amend the last commit on".to_string(),
+                (false, Some(operation)) => format!("Commit the {} on", operation.name()),
+                (false, None) => "Commit to".to_string(),
+            };
+            (action, branch)
         };
         let message = self.message.text();
         let mut lines = message.trim().lines().map(String::from);
@@ -433,6 +464,7 @@ impl<'a> LocalChangesState<'a> {
         self.message = TextArea::default();
         self.amend_base = None;
         self.message_before_amend = None;
+        self.amend_for_edit = false;
         self.message_prepared = false;
         self.needs_refresh = true;
         self.reload();
@@ -663,12 +695,16 @@ impl<'a> LocalChangesState<'a> {
             message: self.message.clone(),
             amend_base: self.amend_base.clone(),
             message_before_amend: self.message_before_amend.clone(),
+            amend_for_edit: self.amend_for_edit,
         }
     }
 
     // Turning amend on shows the changes of HEAD in the staged section, combined with what is staged,
     // and the HEAD message in place of the typed one. Turning it off restores both.
     pub fn toggle_amend(&mut self) -> Result<(), String> {
+        if self.editing_commit {
+            return Err("The commit being edited is amended; C aborts the rebase".into());
+        }
         if let Some(operation) = self.operation.filter(|_| self.amend_base.is_none()) {
             // HEAD is the commit before the operation, amending it would mix the two up
             return Err(format!("Cannot amend during a {}", operation.name()));
@@ -686,6 +722,51 @@ impl<'a> LocalChangesState<'a> {
         }
         self.reload();
         Ok(())
+    }
+
+    // Turns amending on, if it isn't, focusing the commit section with the message of the commit.
+    pub fn start_amend(&mut self) -> Result<(), String> {
+        if self.amend_base.is_none() {
+            self.toggle_amend()?;
+        }
+        self.focus_commit();
+        Ok(())
+    }
+
+    // A rebase stopped to edit a commit turns amending on, with the message of that commit, and
+    // amending goes off again once the rebase goes on or is aborted.
+    fn sync_edit_stop(&mut self) {
+        self.editing_commit =
+            self.operation == Some(Operation::Rebase) && self.repository.rebase_stopped_to_edit();
+        let changed = if self.editing_commit && self.amend_base.is_none() {
+            match (
+                self.repository.amend_base(),
+                self.repository.head_commit_message(),
+            ) {
+                (Ok(base), Ok(message)) => {
+                    self.amend_base = Some(base);
+                    self.message_before_amend = Some(std::mem::replace(
+                        &mut self.message,
+                        TextArea::new(&message),
+                    ));
+                    self.amend_for_edit = true;
+                    true
+                }
+                _ => false,
+            }
+        } else if !self.editing_commit && self.amend_for_edit {
+            self.amend_base = None;
+            self.message = self.message_before_amend.take().unwrap_or_default();
+            self.amend_for_edit = false;
+            true
+        } else {
+            false
+        };
+        if changed {
+            self.changes = self.load_changes();
+            let tree = file_tree(&self.changes.staged);
+            self.sections[1].tree.set_tree(tree);
+        }
     }
 
     // Asks the view to open the file under the cursor in the editor.
@@ -733,7 +814,9 @@ impl<'a> LocalChangesState<'a> {
         }
         let unstaged = self.section == LocalChangesSection::Unstaged;
         let stage = if unstaged { "stage" } else { "unstage" };
-        let commit = if self
+        let commit = if self.editing_commit {
+            "amend"
+        } else if self
             .operation
             .is_some_and(Operation::continues_without_commit)
         {
@@ -1054,6 +1137,7 @@ impl<'a> LocalChangesState<'a> {
         self.changes = self.load_changes();
         self.operation = self.repository.operation_in_progress();
         self.prepare_message();
+        self.sync_edit_stop();
         self.sections[0]
             .tree
             .set_tree(file_tree(&self.changes.unstaged));

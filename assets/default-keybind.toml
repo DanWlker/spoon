@@ -84,7 +84,7 @@ squash = ["s"]
 revert = ["u"]
 # reset the current branch to the selected commit, after confirming
 reset = ["shift-u"]
-# amend the selected commit with the staged changes, after confirming
+# amend the selected commit on the local changes page (an older one after confirming the rebase stopping at it)
 amend_commit = ["shift-a"]
 
 # in the popups of the git commands: toggle the selected checkbox or go to the next option (dialog_toggle),

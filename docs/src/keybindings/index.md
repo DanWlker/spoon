@@ -57,7 +57,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
 | <kbd>U</kbd>                         | Reset the current branch to the selected commit    | `reset`                                      |
-| <kbd>A</kbd>                         | Amend the selected commit with the staged changes  | `amend_commit`                               |
+| <kbd>A</kbd>                         | Amend the selected commit on the local changes page | `amend_commit`                              |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -80,7 +80,7 @@ The other commands ask first, in a popup showing what they do and the git comman
 - <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages, with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.
 - <kbd>u</kbd> revert: the picked commits (newest first), or the selected one, committing the reverts or leaving them on the local changes page.
 - <kbd>U</kbd> reset: the current branch to the selected commit, mixed (keep the changes, unstaged), soft (keep them staged) or hard (discard them).
-- <kbd>A</kbd> amend: puts the staged changes into the selected commit, keeping its message. The last commit is amended in place; an older one gets a fixup commit, which an interactive rebase squashes into it (`git rebase -i --autosquash`), stashing and reapplying the other local changes like rebase. The commits after it must be on the current branch, with no merge commits.
+- <kbd>A</kbd> amend: edits the selected commit on the local changes page, where amending is turned on: its changes are staged, combined with what is staged, and its message is in the message box, both to change. For the last commit it opens right away; an older one asks first, then an interactive rebase stops at it (`edit`), stashing and reapplying the local changes like rebase. Committing (<kbd>c</kbd>) amends it and goes on with the rebase; <kbd>C</kbd> aborts. The commits after it must be on the current branch, with no merge commits.
 
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
 The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them.
