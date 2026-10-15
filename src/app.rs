@@ -28,16 +28,15 @@ use crate::{
     },
     git::{run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository},
     graph::GraphImageManager,
+    graph_commands::{graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
     search::SearchOptions,
-    view::{AppRefreshContext, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
+    view::{LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
     widget::{
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
-        git_dialog::{
-            CheckoutTarget, DialogCommit, DialogOutcome, GitDialog, GitDialogWidget, RemoteAction,
-        },
+        git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
         local_changes::LocalChangesState,
         ref_list::{RefList, RefListState},
         style::{badge, key_hints},
@@ -73,12 +72,8 @@ pub enum InitialSelection {
 
 pub enum Ret {
     Quit,
-    Refresh(Box<RefreshRequest>),
-}
-
-pub struct RefreshRequest {
-    pub context: RefreshViewContext,
-    pub app: AppRefreshContext,
+    // reload the repository and show the view of the context again
+    Refresh(Box<RefreshViewContext>),
 }
 
 #[derive(Debug)]
@@ -151,10 +146,10 @@ struct AppStatus {
     pending_clear: PendingClear,
 }
 
+// The parts of the app that don't depend on the loaded repository, kept when it is reloaded:
+// the sidebar, the focus, the pages not shown, the popup and the status line.
 #[derive(Debug)]
-pub struct App<'a> {
-    repository: &'a Repository,
-    view: View<'a>,
+pub struct AppShell {
     // the refs on the left, always shown beside the page (but the help)
     sidebar: RefListState,
     sidebar_focused: bool,
@@ -169,6 +164,13 @@ pub struct App<'a> {
     // what the last frame showed, None before the first
     last_frame: Option<FrameLayout>,
     app_status: AppStatus,
+}
+
+#[derive(Debug)]
+pub struct App<'a> {
+    repository: &'a Repository,
+    view: View<'a>,
+    shell: AppShell,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -181,10 +183,11 @@ impl<'a> App<'a> {
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
-        refresh: Option<Box<RefreshRequest>>,
+        // the shell and view of the app before the repository was reloaded
+        refresh: Option<(AppShell, Box<RefreshViewContext>)>,
     ) -> Self {
-        let (refresh_view_context, app_context) = match refresh {
-            Some(request) => (Some(request.context), Some(request.app)),
+        let (shell, refresh_view_context) = match refresh {
+            Some((shell, context)) => (Some(shell), Some(*context)),
             None => (None, None),
         };
         let graph = graph_image_manager.graph();
@@ -227,33 +230,29 @@ impl<'a> App<'a> {
         }
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
 
-        let mut sidebar = RefListState::new(
-            &repository.all_refs(),
-            repository.loaded_local_change_count(),
-        );
-        let mut sidebar_focused = false;
-        let mut sidebar_collapsed = false;
-        let mut parked_local_changes = None;
-        let mut parked_detail_tab = None;
-        if let Some(context) = app_context {
-            sidebar.reset_tree_status(context.sidebar_selected, context.sidebar_opened);
-            sidebar_focused = context.sidebar_focused;
-            sidebar_collapsed = context.sidebar_collapsed;
-            parked_local_changes = context.local_changes;
-            parked_detail_tab = context.detail_tab;
-        }
+        let refs = repository.all_refs();
+        let local_change_count = repository.loaded_local_change_count();
+        let shell = match shell {
+            Some(mut shell) => {
+                shell.sidebar.set_refs(&refs, local_change_count);
+                shell
+            }
+            None => AppShell {
+                sidebar: RefListState::new(&refs, local_change_count),
+                sidebar_focused: false,
+                sidebar_collapsed: false,
+                parked_local_changes: None,
+                parked_detail_tab: None,
+                dialog: None,
+                last_frame: None,
+                app_status: AppStatus::default(),
+            },
+        };
 
         let mut app = Self {
             repository,
             view,
-            sidebar,
-            sidebar_focused,
-            sidebar_collapsed,
-            parked_local_changes,
-            parked_detail_tab,
-            dialog: None,
-            last_frame: None,
-            app_status: AppStatus::default(),
+            shell,
             ctx,
             ec,
         };
@@ -273,6 +272,11 @@ impl<'a> App<'a> {
 }
 
 impl App<'_> {
+    // What is kept of the app when the repository is reloaded.
+    pub fn into_shell(self) -> AppShell {
+        self.shell
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
             self.prepare_render(terminal)?;
@@ -281,7 +285,7 @@ impl App<'_> {
             io::stdout().sync_update(|_| self.draw(terminal))??;
             match self.ec.recv() {
                 AppEvent::Key(key) => {
-                    match self.app_status.status_line {
+                    match self.shell.app_status.status_line {
                         StatusLine::None | StatusLine::Input { .. } => {
                             // do nothing
                         }
@@ -300,7 +304,7 @@ impl App<'_> {
                         }
                     }
 
-                    if self.dialog.is_some() {
+                    if self.shell.dialog.is_some() {
                         self.handle_dialog_key(key);
                         continue;
                     }
@@ -318,36 +322,37 @@ impl App<'_> {
                     // key sequences wait for their next key; typed text (the search input) is no sequence,
                     // and a key of the page goes first, like [ cycling the tabs of the details
                     let pages = self.current_pages();
-                    let page_key = self.app_status.pending_keys.is_empty()
+                    let page_key = self.shell.app_status.pending_keys.is_empty()
                         && self.ctx.keybind.page_key(&pages, &key).is_some();
-                    if !matches!(self.app_status.status_line, StatusLine::Input { .. }) && !page_key
+                    if !matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
+                        && !page_key
                     {
-                        let had_pending = !self.app_status.pending_keys.is_empty();
-                        self.app_status.pending_keys.push(key);
+                        let had_pending = !self.shell.app_status.pending_keys.is_empty();
+                        self.shell.app_status.pending_keys.push(key);
                         match self
                             .ctx
                             .keybind
-                            .match_sequence(&self.app_status.pending_keys)
+                            .match_sequence(&self.shell.app_status.pending_keys)
                         {
                             SequenceMatch::Partial => continue,
                             SequenceMatch::Complete(ue) => {
-                                self.app_status.pending_keys.clear();
+                                self.shell.app_status.pending_keys.clear();
                                 let event_with_count = process_numeric_prefix(
-                                    &self.app_status.numeric_prefix,
+                                    &self.shell.app_status.numeric_prefix,
                                     ue,
                                     key,
                                 );
                                 self.dispatch(event_with_count, key);
-                                self.app_status.numeric_prefix.clear();
+                                self.shell.app_status.numeric_prefix.clear();
                                 continue;
                             }
                             SequenceMatch::None => {
-                                self.app_status.pending_keys.clear();
+                                self.shell.app_status.pending_keys.clear();
                                 // Esc only cancels the started sequence
                                 if had_pending
                                     && self.ctx.keybind.get(&key) == Some(&UserEvent::Cancel)
                                 {
-                                    self.app_status.numeric_prefix.clear();
+                                    self.shell.app_status.numeric_prefix.clear();
                                     continue;
                                 }
                                 // otherwise the key goes on as usual
@@ -359,7 +364,7 @@ impl App<'_> {
                         // digits continue a count, and without panels to focus they start one (or are typed)
                         match ue {
                             UserEvent::FocusPanel(n) => {
-                                self.app_status.numeric_prefix.is_empty()
+                                self.shell.app_status.numeric_prefix.is_empty()
                                     && !matches!(self.view, View::Help(_))
                                     && (*n == 0 || self.view.has_panels())
                             }
@@ -368,9 +373,9 @@ impl App<'_> {
                     });
 
                     if let Some(UserEvent::Cancel) = user_event {
-                        if !self.app_status.numeric_prefix.is_empty() {
+                        if !self.shell.app_status.numeric_prefix.is_empty() {
                             // Clear numeric prefix and cancel the event
-                            self.app_status.numeric_prefix.clear();
+                            self.shell.app_status.numeric_prefix.clear();
                             continue;
                         }
                     }
@@ -380,17 +385,20 @@ impl App<'_> {
                             self.ec.send(AppEvent::Quit);
                         }
                         Some(ue) => {
-                            let event_with_count =
-                                process_numeric_prefix(&self.app_status.numeric_prefix, ue, key);
+                            let event_with_count = process_numeric_prefix(
+                                &self.shell.app_status.numeric_prefix,
+                                ue,
+                                key,
+                            );
                             self.dispatch(event_with_count, key);
-                            self.app_status.numeric_prefix.clear();
+                            self.shell.app_status.numeric_prefix.clear();
                         }
                         None => {
-                            if let StatusLine::Input { .. } = self.app_status.status_line {
+                            if let StatusLine::Input { .. } = self.shell.app_status.status_line {
                                 // In input mode, pass all key events to the view
                                 // fixme: currently, the only thing that processes key_event is searching the list,
                                 //        so this probably works, but it's not the right process...
-                                self.app_status.numeric_prefix.clear();
+                                self.shell.app_status.numeric_prefix.clear();
                                 self.view.handle_event(
                                     UserEventWithCount::from_event(UserEvent::Unknown),
                                     key,
@@ -398,9 +406,10 @@ impl App<'_> {
                             } else if let KeyCode::Char(c) = key.code {
                                 // Accumulate numeric prefix
                                 if c.is_ascii_digit()
-                                    && (c != '0' || !self.app_status.numeric_prefix.is_empty())
+                                    && (c != '0'
+                                        || !self.shell.app_status.numeric_prefix.is_empty())
                                 {
-                                    self.app_status.numeric_prefix.push(c);
+                                    self.shell.app_status.numeric_prefix.push(c);
                                 }
                             }
                         }
@@ -451,21 +460,17 @@ impl App<'_> {
                 }
                 AppEvent::Refresh(context) => {
                     self.cleanup_graph_images()?;
-                    let (sidebar_selected, sidebar_opened) = self.sidebar.current_tree_status();
-                    let app = AppRefreshContext {
-                        sidebar_selected,
-                        sidebar_opened,
-                        sidebar_focused: self.sidebar_focused,
-                        sidebar_collapsed: self.sidebar_collapsed,
-                        local_changes: self.parked_local_changes.take(),
-                        detail_tab: match &self.view {
-                            View::Detail(view) if view.is_comparing() => None,
-                            View::Detail(view) => Some(view.tab()),
-                            _ => self.parked_detail_tab.take(),
-                        },
-                    };
-                    let request = RefreshRequest { context, app };
-                    return Ok(Ret::Refresh(Box::new(request)));
+                    // the details open again on the same tab, but a comparison
+                    match &self.view {
+                        View::Detail(view) if view.is_comparing() => {
+                            self.shell.parked_detail_tab = None
+                        }
+                        View::Detail(view) => self.shell.parked_detail_tab = Some(view.tab()),
+                        _ => {}
+                    }
+                    // the graph is drawn again from scratch
+                    self.shell.last_frame = None;
+                    return Ok(Ret::Refresh(Box::new(context)));
                 }
                 AppEvent::ClearStatusLine => {
                     self.clear_status_line();
@@ -533,10 +538,10 @@ impl App<'_> {
     fn frame_clear(&mut self) -> PendingClear {
         let layout = FrameLayout {
             view: self.view.kind(),
-            sidebar_collapsed: self.sidebar_collapsed,
-            dialog: self.dialog.is_some(),
+            sidebar_collapsed: self.shell.sidebar_collapsed,
+            dialog: self.shell.dialog.is_some(),
         };
-        let clear = match self.last_frame.replace(layout) {
+        let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
             Some(last) if last.sidebar_collapsed != layout.sidebar_collapsed => {
                 PendingClear::Screen
@@ -553,7 +558,7 @@ impl App<'_> {
             Some(_) => PendingClear::ViewImages,
         };
         // a program run in the terminal also needs the screen cleared
-        std::mem::take(&mut self.app_status.pending_clear).max(clear)
+        std::mem::take(&mut self.shell.app_status.pending_clear).max(clear)
     }
 
     fn flush_pending_graph_uploads(&mut self) -> Result<(), std::io::Error> {
@@ -586,18 +591,19 @@ impl App<'_> {
         self.update_state(view_area);
 
         if let View::LocalChanges(view) = &self.view {
-            self.sidebar
+            self.shell
+                .sidebar
                 .set_local_change_count(view.local_change_count());
         }
         // views are replaced while switching pages, they take the focus as they are drawn
         let sidebar = RefList::new(
             self.ctx.clone(),
-            self.sidebar_focused,
-            self.sidebar_collapsed,
+            self.shell.sidebar_focused,
+            self.shell.sidebar_collapsed,
         );
-        f.render_stateful_widget(sidebar, sidebar_area, &mut self.sidebar);
-        self.view.render(f, view_area, !self.sidebar_focused);
-        if let Some(dialog) = &self.dialog {
+        f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
+        self.view.render(f, view_area, !self.shell.sidebar_focused);
+        if let Some(dialog) = &self.shell.dialog {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), view_area);
         }
         self.render_status_line(f, status_line_area);
@@ -613,7 +619,7 @@ impl App<'_> {
             .fg(theme.status_bar_fg)
             .bg(theme.status_bar_bg);
         let page = match &self.view {
-            _ if self.sidebar_focused => "REFS",
+            _ if self.shell.sidebar_focused => "REFS",
             View::LocalChanges(_) => "CHANGES",
             View::UserCommand(_) => "COMMAND",
             View::Help(_) => "HELP",
@@ -634,13 +640,13 @@ impl App<'_> {
         let left_width: usize = left.iter().map(Span::width).sum();
         let mut right = vec![];
 
-        match &self.app_status.status_line {
+        match &self.shell.app_status.status_line {
             StatusLine::None => {
                 // the count and the keys of a key sequence typed so far
                 let prefix = format!(
                     "{}{}",
-                    self.app_status.numeric_prefix,
-                    keys_to_string(&self.app_status.pending_keys)
+                    self.shell.app_status.numeric_prefix,
+                    keys_to_string(&self.shell.app_status.pending_keys)
                 );
                 left.push(Span::raw(prefix).fg(theme.accent_fg).bold());
             }
@@ -689,7 +695,7 @@ impl App<'_> {
             }
         }
 
-        if matches!(self.app_status.status_line, StatusLine::None) {
+        if matches!(self.shell.app_status.status_line, StatusLine::None) {
             if let Some(task) = self.ctx.running_task.borrow().as_ref() {
                 right.push(Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
             }
@@ -721,7 +727,7 @@ impl App<'_> {
 
         if let StatusLine::Input {
             cursor_position, ..
-        } = &self.app_status.status_line
+        } = &self.shell.app_status.status_line
         {
             let (x, y) = (area.x + left_width as u16 + cursor_position, area.y);
             match &self.ctx.ui_config.common.cursor_type {
@@ -742,7 +748,7 @@ impl App<'_> {
     fn split_sidebar(&self, area: Rect) -> [Rect; 2] {
         let width = if matches!(self.view, View::Help(_)) {
             0
-        } else if self.sidebar_collapsed {
+        } else if self.shell.sidebar_collapsed {
             COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
             // leave the page some room on narrow terminals
@@ -771,11 +777,11 @@ fn clear_fullscreen<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Err
 
 impl App<'_> {
     fn update_state(&mut self, view_area: Rect) {
-        self.app_status.view_area = view_area;
+        self.shell.app_status.view_area = view_area;
     }
 
     fn clear_view_image_area(&self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
-        if let Some(area) = self.view.image_clear_area(self.app_status.view_area) {
+        if let Some(area) = self.view.image_clear_area(self.shell.app_status.view_area) {
             let area = area.intersection(terminal.size()?.into());
             for y in area.top()..area.bottom() {
                 self.ctx.image_protocol.clear_line(y);
@@ -819,11 +825,11 @@ impl App<'_> {
             }
             Ok(UserCommandType::Silent) => {
                 self.open_user_command_silent(user_command_number);
-                self.app_status.pending_clear = PendingClear::Screen;
+                self.shell.app_status.pending_clear = PendingClear::Screen;
             }
             Ok(UserCommandType::Suspend) => {
                 self.open_user_command_suspend(user_command_number);
-                self.app_status.pending_clear = PendingClear::Screen;
+                self.shell.app_status.pending_clear = PendingClear::Screen;
             }
             Err(err) => {
                 self.ec.send(AppEvent::NotifyError(err));
@@ -844,7 +850,7 @@ impl App<'_> {
             &refs,
             commit_list_state.picked_commit_hashes(),
             user_command_number,
-            self.app_status.view_area,
+            self.shell.app_status.view_area,
             &self.ctx,
         );
         match result {
@@ -883,7 +889,7 @@ impl App<'_> {
             &refs,
             commit_list_state.picked_commit_hashes(),
             user_command_number,
-            self.app_status.view_area,
+            self.shell.app_status.view_area,
             &self.ctx,
         );
         match result {
@@ -911,7 +917,7 @@ impl App<'_> {
             &refs,
             commit_list_state.picked_commit_hashes(),
             user_command_number,
-            self.app_status.view_area,
+            self.shell.app_status.view_area,
             &self.ctx,
         ) {
             Ok(params) => {
@@ -944,7 +950,7 @@ impl App<'_> {
         self.ec.suspend();
         let result = exec_interactive(command);
         self.ec.resume();
-        self.app_status.pending_clear = PendingClear::Screen;
+        self.shell.app_status.pending_clear = PendingClear::Screen;
         // the command may have changed files, or resolved conflicts
         self.view.refresh();
         if let Err(err) = result {
@@ -957,7 +963,7 @@ impl App<'_> {
     fn dispatch(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let event = event_with_count.event;
         // keys typed into the search of the list, or over the help, belong to the view
-        let typing = matches!(self.app_status.status_line, StatusLine::Input { .. });
+        let typing = matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if typing || matches!(self.view, View::Help(_)) {
             self.view.handle_event(event_with_count, key);
             return;
@@ -972,11 +978,11 @@ impl App<'_> {
         match event {
             UserEvent::FocusPanel(0) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
-                if self.sidebar_focused && !self.sidebar_collapsed {
-                    self.sidebar_collapsed = true;
+                if self.shell.sidebar_focused && !self.shell.sidebar_collapsed {
+                    self.shell.sidebar_collapsed = true;
                     self.set_sidebar_focused(false);
                 } else {
-                    self.sidebar_collapsed = false;
+                    self.shell.sidebar_collapsed = false;
                     self.set_sidebar_focused(true);
                 }
                 return;
@@ -987,7 +993,7 @@ impl App<'_> {
             }
             _ => {}
         }
-        if self.sidebar_focused {
+        if self.shell.sidebar_focused {
             self.handle_sidebar_event(event_with_count, key);
         } else {
             self.view.handle_event(event_with_count, key);
@@ -1001,32 +1007,32 @@ impl App<'_> {
             UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
             UserEvent::Refresh => self.view.refresh(),
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                (0..count).for_each(|_| self.sidebar.select_next());
+                (0..count).for_each(|_| self.shell.sidebar.select_next());
                 self.show_sidebar_selection();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
-                (0..count).for_each(|_| self.sidebar.select_prev());
+                (0..count).for_each(|_| self.shell.sidebar.select_prev());
                 self.show_sidebar_selection();
             }
             UserEvent::GoToTop => {
-                self.sidebar.select_first();
+                self.shell.sidebar.select_first();
                 self.show_sidebar_selection();
             }
             UserEvent::GoToBottom => {
-                self.sidebar.select_last();
+                self.shell.sidebar.select_last();
                 self.show_sidebar_selection();
             }
             UserEvent::NavigateRight => {
-                self.sidebar.open_node();
+                self.shell.sidebar.open_node();
                 self.show_sidebar_selection();
             }
             UserEvent::NavigateLeft => {
-                self.sidebar.close_node();
+                self.shell.sidebar.close_node();
                 self.show_sidebar_selection();
             }
             UserEvent::Confirm => {
                 // a folder opens or closes, else back to the page showing what is selected
-                if !self.sidebar.toggle_node() {
+                if !self.shell.sidebar.toggle_node() {
                     self.set_sidebar_focused(false);
                 }
             }
@@ -1045,7 +1051,7 @@ impl App<'_> {
 
     // The pages whose keys apply, the innermost first: none of them while the sidebar has the focus.
     fn current_pages(&self) -> Vec<Page> {
-        if self.sidebar_focused {
+        if self.shell.sidebar_focused {
             return vec![];
         }
         match &self.view {
@@ -1057,7 +1063,7 @@ impl App<'_> {
     }
 
     fn set_sidebar_focused(&mut self, focused: bool) {
-        self.sidebar_focused = focused;
+        self.shell.sidebar_focused = focused;
         if focused {
             self.view.blur();
         }
@@ -1065,14 +1071,14 @@ impl App<'_> {
 
     // Shows the page of the selected row: local changes, or the graph at the selected ref.
     fn show_sidebar_selection(&mut self) {
-        if self.sidebar.is_local_changes_selected() {
+        if self.shell.sidebar.is_local_changes_selected() {
             self.show_local_changes_page();
         } else {
             // the commit details stay open, showing the commit of the ref
             if !matches!(self.view, View::Detail(_)) {
                 self.show_graph_page();
             }
-            let Some(name) = self.sidebar.selected_ref_name() else {
+            let Some(name) = self.shell.sidebar.selected_ref_name() else {
                 return;
             };
             match &mut self.view {
@@ -1087,10 +1093,10 @@ impl App<'_> {
     fn switch_page(&mut self) {
         if matches!(self.view, View::LocalChanges(_)) {
             self.show_graph_page();
-            self.sidebar.select_branches();
+            self.shell.sidebar.select_branches();
         } else {
             self.show_local_changes_page();
-            self.sidebar.select_local_changes();
+            self.shell.sidebar.select_local_changes();
         }
         self.set_sidebar_focused(false);
     }
@@ -1108,14 +1114,16 @@ impl App<'_> {
         match &self.view {
             View::LocalChanges(_) => return,
             // they open again when coming back to the graph, but a comparison
-            View::Detail(view) if !view.is_comparing() => self.parked_detail_tab = Some(view.tab()),
+            View::Detail(view) if !view.is_comparing() => {
+                self.shell.parked_detail_tab = Some(view.tab())
+            }
             _ => {}
         }
         let Some(commit_list_state) = self.view.take_list_state() else {
             return;
         };
         // as it was when left, or before a refresh
-        let snapshot = self.parked_local_changes.take();
+        let snapshot = self.shell.parked_local_changes.take();
         self.view = View::of_local_changes(
             commit_list_state,
             LocalChangesState::restore(self.repository, snapshot),
@@ -1128,21 +1136,21 @@ impl App<'_> {
     fn show_graph_page(&mut self) {
         match &self.view {
             View::List(_) => return,
-            View::LocalChanges(view) => self.parked_local_changes = Some(view.context()),
+            View::LocalChanges(view) => self.shell.parked_local_changes = Some(view.context()),
             _ => {}
         }
         if !self.show_list() {
             return;
         }
-        if let Some(tab) = self.parked_detail_tab.take() {
+        if let Some(tab) = self.shell.parked_detail_tab.take() {
             self.open_detail(tab);
         }
     }
 
     fn copy_sidebar_ref_name(&self) {
-        let (name, value) = if let Some(branch) = self.sidebar.selected_branch() {
+        let (name, value) = if let Some(branch) = self.shell.sidebar.selected_branch() {
             ("Branch Name", branch)
-        } else if let Some(tag) = self.sidebar.selected_tag() {
+        } else if let Some(tag) = self.shell.sidebar.selected_tag() {
             ("Tag Name", tag)
         } else {
             return;
@@ -1185,14 +1193,14 @@ impl App<'_> {
         }
         match dialog {
             Ok(dialog) => {
-                self.dialog = Some(dialog);
+                self.shell.dialog = Some(dialog);
             }
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
     }
 
     fn handle_dialog_key(&mut self, key: KeyEvent) {
-        let Some(dialog) = self.dialog.as_mut() else {
+        let Some(dialog) = self.shell.dialog.as_mut() else {
             return;
         };
         let event = self.ctx.keybind.get_on(&[Page::Dialog], &key);
@@ -1212,7 +1220,7 @@ impl App<'_> {
     }
 
     fn close_dialog(&mut self) {
-        self.dialog = None;
+        self.shell.dialog = None;
     }
 
     // Runs the git command in the background; the app is told when it finishes.
@@ -1233,7 +1241,7 @@ impl App<'_> {
     fn finish_task(&mut self, task: GitTask, result: Result<(), String>) {
         *self.ctx.running_task.borrow_mut() = None;
         let typing = self.view.is_capturing_keys()
-            || matches!(self.app_status.status_line, StatusLine::Input { .. });
+            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if result.is_ok() && task.uses_picks {
             self.view.clear_picked_commits();
         }
@@ -1242,13 +1250,18 @@ impl App<'_> {
             || self.repository.operation_in_progress().is_some();
         // the command may have changed files or stopped on conflicts, even when it failed;
         // refreshing would interrupt typing, so then it waits for a manual refresh
-        if !typing {
+        if let Some(mut context) = self.view.refresh_context().filter(|_| !typing) {
             if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
-                self.show_local_changes_page();
-                self.sidebar.select_local_changes();
+                // the page opens once the repository is reloaded
+                let snapshot = self.shell.parked_local_changes.take().unwrap_or_default();
+                context = RefreshViewContext::LocalChanges {
+                    list_context: context.list_context().clone(),
+                    local_changes_context: snapshot,
+                };
+                self.shell.sidebar.select_local_changes();
                 self.set_sidebar_focused(false);
             }
-            self.view.refresh();
+            self.ec.send(AppEvent::Refresh(context));
         }
         match result {
             Ok(_) if typing => self.ec.send(AppEvent::NotifySuccess(format!(
@@ -1273,251 +1286,32 @@ impl App<'_> {
         ))
     }
 
-    fn current_branch(&self) -> Option<String> {
-        match self.repository.head() {
-            Head::Branch { name } => Some(name.clone()),
-            _ => None,
-        }
-    }
-
-    // The commit as a line in a popup: its short hash and subject.
-    fn dialog_commit(&self, hash: &CommitHash) -> DialogCommit {
-        let subject = self
-            .repository
-            .commit(hash)
-            .map(|c| c.subject.clone())
-            .unwrap_or_default();
-        DialogCommit {
-            hash: hash.as_str().to_string(),
-            line: format!("{} {subject}", hash.as_short_hash()),
-        }
-    }
-
-    // What to give git for a commit, and how to show it: a local branch at it, else a remote
-    // branch, else a tag, else the commit itself.
-    fn ref_or_commit(&self, hash: &CommitHash) -> (String, String) {
-        let refs = self.repository.refs(hash);
-        let find = |f: fn(&Ref) -> bool| refs.iter().find(|r| f(r)).map(|r| r.name().to_string());
-        find(|r| matches!(r, Ref::Branch { .. }))
-            .or_else(|| find(|r| matches!(r, Ref::RemoteBranch { .. })))
-            .or_else(|| find(|r| matches!(r, Ref::Tag { .. })))
-            .map(|name| (name.clone(), name))
-            .unwrap_or_else(|| {
-                let line = self.dialog_commit(hash).line;
-                (hash.as_str().to_string(), line)
-            })
-    }
-
-    // Commits ordered as in the graph, newest first.
-    fn sort_newest_first(&self, mut hashes: Vec<CommitHash>) -> Vec<CommitHash> {
-        self.repository.sort_newest_first(&mut hashes);
-        hashes
-    }
-
-    // The commands of the commit graph: diff, rebase, merge, checkout, cherry-pick, squash,
-    // revert and reset.
+    // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
         let Some((selected, picked)) = self.graph_selection() else {
             return;
         };
-        let branch = self.current_branch();
-        let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
-        let single = |name: &str| -> Result<(), String> {
-            if picked.is_empty() {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{name} works on the selected commit, clear the picked ones first"
-                ))
-            }
-        };
-        // the picked commits, else the selected one
-        let targets = if picked.is_empty() {
-            vec![selected.clone()]
-        } else {
-            picked.clone()
-        };
-        let dialog = match event {
-            UserEvent::Diff => {
-                if let Err(err) = self.open_compare(selected, picked) {
-                    self.ec.send(AppEvent::NotifyError(err));
-                }
-                return;
-            }
-            UserEvent::Rebase => single("Rebase").and_then(|_| {
-                let branch = branch.ok_or("Check out a branch to rebase it")?;
-                let (onto, label) = self.ref_or_commit(&selected);
-                Ok(GitDialog::rebase(
-                    &branch,
-                    onto,
-                    &label,
-                    self.rebase_auto_stash(),
-                ))
-            }),
-            UserEvent::Merge => single("Merge").and_then(|_| {
-                let (source, label) = self.ref_or_commit(&selected);
-                if Some(&source) == branch.as_ref() {
-                    return Err(format!("{source} is checked out, choose another branch"));
-                }
-                let merge_ff = self.repository.config("merge.ff");
-                Ok(GitDialog::merge(
-                    &branch_label,
-                    source,
-                    &label,
-                    merge_ff.as_deref(),
-                ))
-            }),
-            UserEvent::Checkout => {
-                single("Checkout").map(|_| GitDialog::checkout(self.checkout_targets(&selected)))
-            }
-            UserEvent::CherryPick => {
-                let mut commits = self.sort_newest_first(targets);
-                commits.reverse();
-                let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
-                Ok(GitDialog::cherry_pick(&branch_label, commits))
-            }
-            UserEvent::Squash => self.squash_dialog(&branch_label, targets),
-            UserEvent::Revert => {
-                let commits = self.sort_newest_first(targets);
-                let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
-                Ok(GitDialog::revert(&branch_label, commits))
-            }
-            UserEvent::Reset => single("Reset")
-                .map(|_| GitDialog::reset(&branch_label, self.dialog_commit(&selected))),
-            _ => return,
-        };
-        self.open_dialog(dialog);
+        match graph_command(self.repository, event, selected, picked) {
+            None => {}
+            Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(dialog)),
+            Some(Ok(GraphCommand::Compare {
+                base,
+                target,
+                title,
+            })) => self.open_compare(base, target, title),
+            // the popups tell first that a command is running
+            Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
+            Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
+        }
     }
 
-    // The branches at the commit to check out, and the commit itself.
-    fn checkout_targets(&self, hash: &CommitHash) -> Vec<CheckoutTarget> {
-        let current = self.current_branch();
-        let all_refs = self.repository.all_refs();
-        let local_exists = |name: &str| {
-            all_refs
-                .iter()
-                .any(|r| matches!(r, Ref::Branch { .. }) && r.name() == name)
-        };
-        let mut targets = vec![];
-        for r in self.repository.refs(hash) {
-            match r {
-                Ref::Branch { name, .. } if Some(name) != current.as_ref() => {
-                    targets.push(CheckoutTarget {
-                        label: name.clone(),
-                        args: vec![name.clone()],
-                    });
-                }
-                Ref::RemoteBranch { name, .. } => {
-                    // a new local branch tracking it, unless there is one by that name
-                    let Some((_, local)) = name.split_once('/') else {
-                        continue;
-                    };
-                    if local != "HEAD" && !local_exists(local) {
-                        targets.push(CheckoutTarget {
-                            label: format!("{local} (new, tracking {name})"),
-                            args: vec!["--track".into(), name.clone()],
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        targets.push(CheckoutTarget {
-            label: format!("{} (detached HEAD)", hash.as_short_hash()),
-            args: vec!["--detach".into(), hash.as_str().into()],
-        });
-        targets
-    }
-
-    // Squashing rebases from the parent of the oldest commit's parent, so the history from there
-    // must be a line on the current branch.
-    fn squash_dialog(&self, branch: &str, commits: Vec<CommitHash>) -> Result<GitDialog, String> {
-        let repository = self.repository;
-        let commits = self.sort_newest_first(commits);
-        let oldest = commits.last().ok_or("No commit to squash")?;
-        let short = oldest.as_short_hash();
-        let parent = match repository.parents_hash(oldest)[..] {
-            [] => return Err(format!("{short} is the first commit, it has no parent")),
-            [parent] => parent.clone(),
-            _ => return Err(format!("{short} is a merge commit, it can't be squashed")),
-        };
-        // the parents of a commit at the end of the loaded ones (with `--max-count`) are asked of git;
-        // None when the parent is the first commit, to rebase from the root
-        let base = match repository.commit(&parent) {
-            Some(_) => repository
-                .parents_hash(&parent)
-                .first()
-                .map(|h| (*h).clone()),
-            None => repository.parents_of(parent.as_str())?.into_iter().next(),
-        };
-
-        // what the rebase goes through, in one call
-        let rebased = repository.commits_after(base.as_ref(), "HEAD")?;
-        for hash in &commits {
-            let short = hash.as_short_hash();
-            match rebased.get(hash).map(Vec::len) {
-                None => return Err(format!("{short} is not on {branch}, check it out first")),
-                Some(1) => {}
-                Some(_) => return Err(format!("{short} is a merge commit, it can't be squashed")),
-            }
-        }
-        if rebased.values().any(|parents| parents.len() > 1) {
-            return Err("There are merge commits after them, which squashing would flatten".into());
-        }
-        let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
-        let base = base.map(|h| h.as_str().to_string());
-        Ok(GitDialog::squash(
-            branch,
-            commits,
-            base,
-            self.rebase_auto_stash(),
-        ))
-    }
-
-    // Whether rebasing stashes local changes by default: rebase.autoStash, on when it is not set.
-    fn rebase_auto_stash(&self) -> bool {
-        self.repository
-            .config_bool("rebase.autoStash")
-            .unwrap_or(true)
-    }
-
-    // Shows the changes between two commits in the details: the checked out commit and the
-    // selected (or picked) one, or the two picked ones; the older one is the base.
-    fn open_compare(
-        &mut self,
-        selected: CommitHash,
-        picked: Vec<CommitHash>,
-    ) -> Result<(), String> {
-        let head = || {
-            self.repository
-                .head_commit()
-                .ok_or("Nothing is checked out")
-        };
-        let (a, b) = match picked.as_slice() {
-            [] => (head()?, selected),
-            [one] => (head()?, one.clone()),
-            [one, two] => (one.clone(), two.clone()),
-            more => {
-                return Err(format!(
-                    "Diff compares two commits, {} are picked",
-                    more.len()
-                ))
-            }
-        };
-        if a == b {
-            return Err("That commit is checked out, there is nothing to compare".into());
-        }
-        let [target, base]: [CommitHash; 2] = self
-            .sort_newest_first(vec![a, b])
-            .try_into()
-            .expect("two commits");
-        let title = format!("Diff {} → {}", base.as_short_hash(), target.as_short_hash());
-
+    // Shows the changes from `base` to `target` in the details.
+    fn open_compare(&mut self, base: CommitHash, target: CommitHash, title: String) {
         if !matches!(self.view, View::List(_) | View::Detail(_)) {
-            return Ok(());
+            return;
         }
         let Some(commit_list_state) = self.view.take_list_state() else {
-            return Ok(());
+            return;
         };
         let (commit, changes) = self.repository.commit_detail(&target);
         let refs = self.repository.refs(&target).into_iter().cloned().collect();
@@ -1533,7 +1327,6 @@ impl App<'_> {
         if let View::Detail(ref mut view) = self.view {
             view.start_compare(base, target, title);
         }
-        Ok(())
     }
 
     fn open_help(&mut self) {
@@ -1553,7 +1346,7 @@ impl App<'_> {
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_older_commit(
                 self.repository,
-                self.app_status.view_area,
+                self.shell.app_status.view_area,
                 build_external_command_parameters_and_exec_command,
             );
         }
@@ -1565,7 +1358,7 @@ impl App<'_> {
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_newer_commit(
                 self.repository,
-                self.app_status.view_area,
+                self.shell.app_status.view_area,
                 build_external_command_parameters_and_exec_command,
             );
         }
@@ -1577,7 +1370,7 @@ impl App<'_> {
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_parent_commit(
                 self.repository,
-                self.app_status.view_area,
+                self.shell.app_status.view_area,
                 build_external_command_parameters_and_exec_command,
             );
         }
@@ -1590,7 +1383,7 @@ impl App<'_> {
         match context {
             RefreshViewContext::List { .. } => {}
             RefreshViewContext::Detail { .. } => {
-                let tab = self.parked_detail_tab.take().unwrap_or_default();
+                let tab = self.shell.parked_detail_tab.take().unwrap_or_default();
                 self.open_detail(tab);
             }
             RefreshViewContext::UserCommand {
@@ -1603,18 +1396,18 @@ impl App<'_> {
                 local_changes_context,
                 ..
             } => {
-                self.parked_local_changes = Some(local_changes_context);
+                self.shell.parked_local_changes = Some(local_changes_context);
                 self.show_local_changes_page();
             }
         }
     }
 
     fn clear_status_line(&mut self) {
-        self.app_status.status_line = StatusLine::None;
+        self.shell.app_status.status_line = StatusLine::None;
     }
 
     fn update_status_input(&mut self, message: String, cursor_position: u16, metadata: String) {
-        self.app_status.status_line = StatusLine::Input {
+        self.shell.app_status.status_line = StatusLine::Input {
             message,
             cursor_position,
             metadata,
@@ -1622,11 +1415,11 @@ impl App<'_> {
     }
 
     fn update_status_transient(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::Transient(msg);
+        self.shell.app_status.status_line = StatusLine::Transient(msg);
     }
 
     fn update_search_result(&mut self, message: String, options: String, matched: bool) {
-        self.app_status.status_line = StatusLine::SearchResult {
+        self.shell.app_status.status_line = StatusLine::SearchResult {
             message,
             options,
             matched,
@@ -1634,19 +1427,19 @@ impl App<'_> {
     }
 
     fn info_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationInfo(msg);
+        self.shell.app_status.status_line = StatusLine::NotificationInfo(msg);
     }
 
     fn success_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationSuccess(msg);
+        self.shell.app_status.status_line = StatusLine::NotificationSuccess(msg);
     }
 
     fn warn_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationWarn(msg);
+        self.shell.app_status.status_line = StatusLine::NotificationWarn(msg);
     }
 
     fn error_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationError(msg);
+        self.shell.app_status.status_line = StatusLine::NotificationError(msg);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {

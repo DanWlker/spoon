@@ -370,10 +370,14 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn refresh(&self) {
-        let context = RefreshViewContext::LocalChanges {
+        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+    }
+
+    // What to show again once the repository is reloaded.
+    pub fn refresh_context(&self) -> RefreshViewContext {
+        RefreshViewContext::LocalChanges {
             list_context: ListRefreshViewContext::from(self.as_list_state()),
             local_changes_context: self.context(),
-        };
-        self.tx.send(AppEvent::Refresh(context));
+        }
     }
 }

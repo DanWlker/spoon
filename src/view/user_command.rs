@@ -257,16 +257,19 @@ impl<'a> UserCommandView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
+        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+    }
+
+    // What to show again once the repository is reloaded.
+    pub fn refresh_context(&self) -> RefreshViewContext {
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
         let user_command_context = UserCommandRefreshViewContext {
             n: self.user_command_number,
         };
-        let context = RefreshViewContext::UserCommand {
+        RefreshViewContext::UserCommand {
             list_context,
             user_command_context,
-        };
-        self.tx.send(AppEvent::Refresh(context));
+        }
     }
 }
 

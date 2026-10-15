@@ -178,6 +178,15 @@ impl RefListState {
         }
     }
 
+    // Shows the refs of the reloaded repository, keeping the selection and the opened nodes.
+    pub fn set_refs(&mut self, refs: &[&Ref], local_change_count: usize) {
+        let (selected, opened) = self.current_tree_status();
+        let offset = self.offset;
+        *self = Self::new(refs, local_change_count);
+        self.reset_tree_status(selected, opened);
+        self.offset = offset;
+    }
+
     pub fn current_tree_status(&self) -> (Vec<String>, Vec<Vec<String>>) {
         (self.selected.clone(), self.opened.iter().cloned().collect())
     }

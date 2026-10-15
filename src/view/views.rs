@@ -13,7 +13,6 @@ use crate::{
     },
     widget::{
         commit_list::{CommitListState, SearchRefreshContext},
-        commit_tabs::DetailTab,
         local_changes::LocalChangesState,
     },
 };
@@ -256,6 +255,17 @@ impl<'a> View<'a> {
             View::Help(_) => {}
         }
     }
+
+    // What to show again once the repository is reloaded, None for views without the commit list.
+    pub fn refresh_context(&self) -> Option<RefreshViewContext> {
+        match self {
+            View::List(view) => Some(view.refresh_context()),
+            View::Detail(view) => Some(view.refresh_context()),
+            View::UserCommand(view) => Some(view.refresh_context()),
+            View::LocalChanges(view) => Some(view.refresh_context()),
+            View::Default | View::Help(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -325,15 +335,3 @@ pub struct UserCommandRefreshViewContext {
 }
 
 pub use crate::widget::local_changes::LocalChangesSnapshot as LocalChangesRefreshViewContext;
-
-// What the app keeps besides the view: the sidebar, and the local changes page while the graph is shown.
-#[derive(Debug, Clone)]
-pub struct AppRefreshContext {
-    pub sidebar_selected: Vec<String>,
-    pub sidebar_opened: Vec<Vec<String>>,
-    pub sidebar_focused: bool,
-    pub sidebar_collapsed: bool,
-    pub local_changes: Option<LocalChangesRefreshViewContext>,
-    // the tab of the commit details while they are open
-    pub detail_tab: Option<DetailTab>,
-}

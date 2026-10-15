@@ -564,15 +564,18 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
+        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+    }
+
+    // What to show again once the repository is reloaded.
+    pub fn refresh_context(&self) -> RefreshViewContext {
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
         // the comparison is not kept, it is opened again with the picks
-        let context = if self.is_comparing() {
+        if self.is_comparing() {
             RefreshViewContext::List { list_context }
         } else {
             RefreshViewContext::Detail { list_context }
-        };
-        self.tx.send(AppEvent::Refresh(context));
+        }
     }
 }
 

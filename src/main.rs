@@ -6,6 +6,7 @@ mod event;
 mod external;
 mod git;
 mod graph;
+mod graph_commands;
 mod keybind;
 mod protocol;
 mod search;
@@ -238,8 +239,8 @@ fn main() -> Result<()> {
             Ok(Ret::Quit) => {
                 break Ok(());
             }
-            Ok(Ret::Refresh(request)) => {
-                refresh = Some(request);
+            Ok(Ret::Refresh(context)) => {
+                refresh = Some((app.into_shell(), context));
                 continue;
             }
             Err(e) => {

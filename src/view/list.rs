@@ -315,10 +315,13 @@ impl<'a> ListView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
-        let context = RefreshViewContext::List { list_context };
-        self.tx.send(AppEvent::Refresh(context));
+        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+    }
+
+    // What to show again once the repository is reloaded.
+    pub fn refresh_context(&self) -> RefreshViewContext {
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
+        RefreshViewContext::List { list_context }
     }
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {

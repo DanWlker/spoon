@@ -836,11 +836,14 @@ impl<'a> GitDialogWidget<'a> {
         }
     }
 
-    // The keys of the events, like "j/k", the first of each.
+    // The keys of the events, like "j/k": the shortest of each, as hints are short.
     fn keys(&self, events: &[UserEvent]) -> String {
         let keys: Vec<String> = events
             .iter()
-            .filter_map(|event| self.keybind.keys_for_event(*event).into_iter().next())
+            .filter_map(|event| {
+                let keys = self.keybind.keys_for_event(*event);
+                keys.into_iter().min_by_key(|key| key.chars().count())
+            })
             .map(|key| key.to_lowercase())
             .collect();
         keys.join("/")

@@ -123,6 +123,17 @@ pub struct LocalChangesSnapshot {
     pub commit_draft: Box<CommitDraft>,
 }
 
+impl Default for LocalChangesSnapshot {
+    // the page as it is opened the first time
+    fn default() -> Self {
+        Self {
+            section: LocalChangesSection::Unstaged,
+            selected_path: None,
+            commit_draft: Box::default(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LocalChangesState<'a> {
     repository: &'a Repository,
