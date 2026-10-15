@@ -1327,14 +1327,25 @@ impl App<'_> {
             UserEvent::Rebase => single("Rebase").and_then(|_| {
                 let branch = branch.ok_or("Check out a branch to rebase it")?;
                 let (onto, label) = self.ref_or_commit(&selected);
-                Ok(GitDialog::rebase(&branch, onto, &label))
+                Ok(GitDialog::rebase(
+                    &branch,
+                    onto,
+                    &label,
+                    self.rebase_auto_stash(),
+                ))
             }),
             UserEvent::Merge => single("Merge").and_then(|_| {
                 let (source, label) = self.ref_or_commit(&selected);
                 if Some(&source) == branch.as_ref() {
                     return Err(format!("{source} is checked out, choose another branch"));
                 }
-                Ok(GitDialog::merge(&branch_label, source, &label))
+                let merge_ff = self.repository.config("merge.ff");
+                Ok(GitDialog::merge(
+                    &branch_label,
+                    source,
+                    &label,
+                    merge_ff.as_deref(),
+                ))
             }),
             UserEvent::Checkout => {
                 single("Checkout").map(|_| GitDialog::checkout(self.checkout_targets(&selected)))
@@ -1426,7 +1437,19 @@ impl App<'_> {
         }
         let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
         let base = base.map(|h| h.as_str().to_string());
-        Ok(GitDialog::squash(branch, commits, base))
+        Ok(GitDialog::squash(
+            branch,
+            commits,
+            base,
+            self.rebase_auto_stash(),
+        ))
+    }
+
+    // Whether rebasing stashes local changes by default: rebase.autoStash, on when it is not set.
+    fn rebase_auto_stash(&self) -> bool {
+        self.repository
+            .config_bool("rebase.autoStash")
+            .unwrap_or(true)
     }
 
     // Shows the changes between two commits in the details: the checked out commit and the

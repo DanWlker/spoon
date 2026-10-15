@@ -24,7 +24,7 @@ The default key bindings can be overridden.
 <kbd>f</kbd>, <kbd>p</kbd> and <kbd>P</kbd> open a popup over any page but the help:
 
 - Fetch: the remote to fetch from.
-- Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash`, `rebase.autoStash` checks it).
+- Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, and whether to force push (`--force-with-lease`). A branch without an upstream starts tracking the branch it is pushed to.
 
 In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> toggles a checkbox, <kbd>e</kbd> types a branch name (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
@@ -72,11 +72,11 @@ The older commit is the base. It errors with more than two picked commits. <kbd>
 
 The other commands ask first, in a popup showing what they do and the git commands they run:
 
-- <kbd>r</kbd> rebase: the current branch onto the branch at the selected commit (else the commit), stashing and reapplying local changes (checked by default).
-- <kbd>m</kbd> merge: the branch at the selected commit (else the commit) into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit. Squashing and not committing leave the changes on the local changes page, with the message git prepared.
+- <kbd>r</kbd> rebase: the current branch onto the branch at the selected commit (else the commit), stashing and reapplying local changes (checked by `rebase.autoStash`, or by default when it is not set).
+- <kbd>m</kbd> merge: the branch at the selected commit (else the commit) into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit (`merge.ff` picks the default: `false` a merge commit, `only` fast-forward only). Squashing and not committing leave the changes on the local changes page, with the message git prepared.
 - <kbd>c</kbd> checkout: a branch at the selected commit (a remote branch becomes a new local branch tracking it) or the commit itself (detached). The local changes are kept (git refuses when they conflict), stashed and reapplied, or discarded (untracked files are kept).
 - <kbd>C</kbd> cherry-pick: the picked commits (oldest first), or the selected one, committing them or leaving the changes on the local changes page, optionally appending "(cherry picked from commit …)" to the messages.
-- <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages, with an interactive rebase from there. The commits must be on the current branch, with no merge commits after them.
+- <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages, with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.
 - <kbd>u</kbd> revert: the picked commits (newest first), or the selected one, committing the reverts or leaving them on the local changes page.
 - <kbd>U</kbd> reset: the current branch to the selected commit, mixed (keep the changes, unstaged), soft (keep them staged) or hard (discard them).
 

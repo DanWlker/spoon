@@ -131,6 +131,8 @@ pub struct GitDialog {
     selected: usize,
     // typing into the selected text field
     editing: bool,
+    // the stash checkbox was changed, so it no longer follows the config of how to pull
+    auto_stash_changed: bool,
 }
 
 impl GitDialog {
@@ -143,6 +145,7 @@ impl GitDialog {
             fields: vec![],
             selected: 0,
             editing: false,
+            auto_stash_changed: false,
         }
     }
 
@@ -175,10 +178,11 @@ impl GitDialog {
                     .push((FieldId::Branch, "Branch", Field::text("", vec![])));
                 dialog.update_pull_branch(None);
                 dialog.push_check(FieldId::Rebase, "Rebase instead of merge", info.pull_rebase);
+                let auto_stash = info.auto_stash(info.pull_rebase);
                 dialog.push_check(
                     FieldId::AutoStash,
                     "Stash and reapply local changes",
-                    info.auto_stash,
+                    auto_stash,
                 );
             }
             RemoteAction::Push => {
@@ -205,16 +209,22 @@ impl GitDialog {
     }
 
     // `onto` is what git is given, `onto_label` how it is shown.
-    pub fn rebase(branch: &str, onto: String, onto_label: &str) -> Self {
+    // `auto_stash` is the default of the checkbox, from rebase.autoStash.
+    pub fn rebase(branch: &str, onto: String, onto_label: &str, auto_stash: bool) -> Self {
         let description = format!("Rebased {branch} onto {onto_label}");
         let intro = vec![format!("Rebase {branch} onto {onto_label}")];
         let kind = DialogKind::Rebase { onto, description };
         let mut dialog = Self::with(" Rebase ", "rebase", intro, kind);
-        dialog.push_check(FieldId::AutoStash, "Stash and reapply local changes", true);
+        dialog.push_check(
+            FieldId::AutoStash,
+            "Stash and reapply local changes",
+            auto_stash,
+        );
         dialog
     }
 
-    pub fn merge(branch: &str, source: String, source_label: &str) -> Self {
+    // `merge_ff` is the merge.ff config, which picks the default type.
+    pub fn merge(branch: &str, source: String, source_label: &str, merge_ff: Option<&str>) -> Self {
         let description = format!("Merged {source_label} into {branch}");
         let intro = vec![format!("Merge {source_label} into {branch}")];
         let kind = DialogKind::Merge {
@@ -223,7 +233,12 @@ impl GitDialog {
         };
         let mut dialog = Self::with(" Merge ", "merge", intro, kind);
         let types = MERGE_TYPES.map(String::from).to_vec();
-        dialog.push_choice(FieldId::MergeType, "Type", types, "");
+        let default = match merge_ff {
+            Some("false" | "no" | "off" | "0") => MERGE_TYPES[1],
+            Some("only") => MERGE_TYPES[2],
+            _ => MERGE_TYPES[0],
+        };
+        dialog.push_choice(FieldId::MergeType, "Type", types, default);
         dialog
     }
 
@@ -256,11 +271,21 @@ impl GitDialog {
     }
 
     // `base` is the commit the rebase starts after, None to rebase from the root.
-    pub fn squash(branch: &str, commits: Vec<DialogCommit>, base: Option<String>) -> Self {
+    // `auto_stash` is the default of the checkbox, from rebase.autoStash.
+    pub fn squash(
+        branch: &str,
+        commits: Vec<DialogCommit>,
+        base: Option<String>,
+        auto_stash: bool,
+    ) -> Self {
         let intro = commits_intro(&format!("Squash into their parents, on {branch}"), &commits);
         let kind = DialogKind::Squash { commits, base };
         let mut dialog = Self::with(" Squash ", "squash", intro, kind);
-        dialog.push_check(FieldId::AutoStash, "Stash and reapply local changes", true);
+        dialog.push_check(
+            FieldId::AutoStash,
+            "Stash and reapply local changes",
+            auto_stash,
+        );
         dialog
     }
 
@@ -373,6 +398,18 @@ impl GitDialog {
         }
     }
 
+    // Stashing follows rebase.autoStash when rebasing and merge.autoStash when merging,
+    // until it is changed.
+    fn update_pull_auto_stash(&mut self) {
+        if self.auto_stash_changed {
+            return;
+        }
+        let default = self.info().auto_stash(self.checked(FieldId::Rebase));
+        if let Some(Field::Check(checked)) = self.field_mut(FieldId::AutoStash) {
+            *checked = default;
+        }
+    }
+
     // The remote to push the chosen branch to, then the branch on it.
     fn update_push_remote(&mut self) {
         let branch = self.value(FieldId::LocalBranch);
@@ -433,8 +470,10 @@ impl GitDialog {
                 DialogOutcome::None
             }
             Some(UserEvent::ToggleStage | UserEvent::ToggleSelect) => {
-                if let Some((_, _, Field::Check(checked))) = self.fields.get_mut(self.selected) {
+                if let Some((id, _, Field::Check(checked))) = self.fields.get_mut(self.selected) {
                     *checked = !*checked;
+                    let id = *id;
+                    self.changed(id);
                 }
                 DialogOutcome::None
             }
@@ -484,6 +523,16 @@ impl GitDialog {
             }
             Field::Check(checked) => *checked = !*checked,
         }
+        self.changed_from(id, previous_branch);
+    }
+
+    // Updates the fields that follow the one changed.
+    fn changed(&mut self, id: FieldId) {
+        let previous_branch = self.value(FieldId::Branch);
+        self.changed_from(id, previous_branch);
+    }
+
+    fn changed_from(&mut self, id: FieldId, previous_branch: String) {
         let action = match &self.kind {
             DialogKind::Remote(action, _) => Some(*action),
             _ => None,
@@ -494,6 +543,8 @@ impl GitDialog {
             }
             (Some(RemoteAction::Push), FieldId::LocalBranch) => self.update_push_remote(),
             (Some(RemoteAction::Push), FieldId::Remote) => self.update_push_remote_branch(),
+            (Some(RemoteAction::Pull), FieldId::Rebase) => self.update_pull_auto_stash(),
+            (_, FieldId::AutoStash) => self.auto_stash_changed = true,
             _ => {}
         }
     }
@@ -991,7 +1042,8 @@ mod tests {
             branches: vec!["main".into(), "topic".into()],
             upstreams,
             pull_rebase: true,
-            auto_stash: false,
+            rebase_auto_stash: false,
+            merge_auto_stash: false,
         }
     }
 
@@ -1036,6 +1088,41 @@ mod tests {
             ..info()
         };
         assert!(GitDialog::remote(RemoteAction::Pull, info).is_err());
+    }
+
+    #[test]
+    fn test_pull_auto_stash_follows_config() {
+        let info = RemoteInfo {
+            rebase_auto_stash: true,
+            ..info()
+        };
+        let mut dialog = GitDialog::remote(RemoteAction::Pull, info).unwrap();
+        assert_eq!(args(&dialog), "pull --rebase --autostash origin main");
+
+        // merging follows merge.autoStash, which is not set
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::ToggleStage);
+        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
+
+        // once changed, the choice stays
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::NavigateUp);
+        press(&mut dialog, UserEvent::ToggleStage);
+        assert_eq!(args(&dialog), "pull --rebase --autostash origin main");
+        press(&mut dialog, UserEvent::ToggleStage);
+        assert_eq!(args(&dialog), "pull --no-rebase --autostash origin main");
+    }
+
+    #[test]
+    fn test_merge_type_follows_config() {
+        let dialog = GitDialog::merge("main", "feature".into(), "feature", Some("false"));
+        assert_eq!(args(&dialog), "merge --no-ff --no-edit feature");
+        let dialog = GitDialog::merge("main", "feature".into(), "feature", Some("only"));
+        assert_eq!(args(&dialog), "merge --ff-only feature");
+        let dialog = GitDialog::rebase("main", "feature".into(), "feature", false);
+        assert_eq!(args(&dialog), "rebase --no-autostash feature");
     }
 
     #[test]
@@ -1095,12 +1182,12 @@ mod tests {
 
     #[test]
     fn test_graph_commands() {
-        let mut dialog = GitDialog::rebase("main", "feature".into(), "feature");
+        let mut dialog = GitDialog::rebase("main", "feature".into(), "feature", true);
         assert_eq!(args(&dialog), "rebase --autostash feature");
         press(&mut dialog, UserEvent::ToggleStage);
         assert_eq!(args(&dialog), "rebase --no-autostash feature");
 
-        let mut dialog = GitDialog::merge("main", "feature".into(), "feature");
+        let mut dialog = GitDialog::merge("main", "feature".into(), "feature", None);
         assert_eq!(args(&dialog), "merge --ff --no-edit feature");
         for _ in 0..4 {
             press(&mut dialog, UserEvent::NavigateRight);
@@ -1146,7 +1233,7 @@ mod tests {
         press(&mut dialog, UserEvent::NavigateLeft);
         assert_eq!(args(&dialog), format!("reset --hard {a}"));
 
-        let dialog = GitDialog::squash("main", vec![commit('b')], None);
+        let dialog = GitDialog::squash("main", vec![commit('b')], None, true);
         let task = dialog.command().unwrap();
         assert_eq!(args(&dialog), "rebase -i --autostash --root");
         assert!(task.env.iter().any(|(k, v)| k == "GIT_SEQUENCE_EDITOR"
@@ -1189,7 +1276,7 @@ mod tests {
             line: String::new(),
         }];
         // c3 into c2, rebasing after c1
-        let dialog = GitDialog::squash("main", commits, Some(rev("HEAD~3")));
+        let dialog = GitDialog::squash("main", commits, Some(rev("HEAD~3")), true);
         crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
 
         let log = git(path, &["log", "--format=%s"]);

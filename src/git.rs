@@ -546,10 +546,6 @@ impl Repository {
             }
         }
 
-        let config_bool = |key: &str| {
-            git_output(&self.path, &["config", "--type=bool", "--get", key])
-                .is_ok_and(|v| v.trim() == "true")
-        };
         // pull.rebase may also be "merges" or "interactive", which rebase too
         let pull_rebase = git_output(&self.path, &["config", "--get", "pull.rebase"])
             .is_ok_and(|v| !matches!(v.trim(), "false" | "no" | "off" | "0" | ""));
@@ -564,7 +560,24 @@ impl Repository {
             branches,
             upstreams,
             pull_rebase,
-            auto_stash: config_bool("rebase.autoStash"),
+            rebase_auto_stash: self.config_bool("rebase.autoStash").unwrap_or(false),
+            merge_auto_stash: self.config_bool("merge.autoStash").unwrap_or(false),
+        }
+    }
+
+    // A git config value of the repository, None when it is not set.
+    pub fn config(&self, key: &str) -> Option<String> {
+        git_output(&self.path, &["config", "--get", key])
+            .ok()
+            .map(|v| v.trim().to_string())
+    }
+
+    // A boolean git config value, None when it is not set (or not a boolean).
+    pub fn config_bool(&self, key: &str) -> Option<bool> {
+        match git_output(&self.path, &["config", "--type=bool", "--get", key]) {
+            Ok(v) if v.trim() == "true" => Some(true),
+            Ok(v) if v.trim() == "false" => Some(false),
+            _ => None,
         }
     }
 
@@ -1465,7 +1478,20 @@ pub struct RemoteInfo {
     // local branch -> (remote, branch on the remote)
     pub upstreams: FxHashMap<String, (String, String)>,
     pub pull_rebase: bool,
-    pub auto_stash: bool,
+    // whether pulling stashes local changes, when rebasing and when merging
+    pub rebase_auto_stash: bool,
+    pub merge_auto_stash: bool,
+}
+
+impl RemoteInfo {
+    // Whether pulling stashes local changes by default, by the config of how it pulls.
+    pub fn auto_stash(&self, rebase: bool) -> bool {
+        if rebase {
+            self.rebase_auto_stash
+        } else {
+            self.merge_auto_stash
+        }
+    }
 }
 
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
