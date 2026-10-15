@@ -286,7 +286,7 @@ fn build_lines(
         (vec![UserEvent::FocusPanel(2)], "Show commit info".into()),
         (vec![UserEvent::FocusPanel(3)], "Show changed files and their diff".into()),
         (vec![UserEvent::FocusPanel(4)], "Show all files of the commit with a preview".into()),
-        (vec![UserEvent::NextTab, UserEvent::PreviousTab], "Show the next/previous tab".into()),
+        (vec![UserEvent::NextTab, UserEvent::PreviousTab], "Show the next/previous tab (while a tab has the focus)".into()),
         (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory (changes, files)".into()),
         (vec![UserEvent::Search], "Search files (changes, files)".into()),
         (vec![UserEvent::Filter], "Filter files (changes, files)".into()),

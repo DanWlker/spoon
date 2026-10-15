@@ -395,6 +395,8 @@ fn parse_user_command_number(s: &str) -> Option<usize> {
 pub enum Page {
     // the commit graph, with or without the commit details
     Graph,
+    // a tab of the commit details having the focus, on the graph
+    Details,
     LocalChanges,
 }
 
@@ -410,6 +412,7 @@ impl UserEvent {
             | UserEvent::Squash
             | UserEvent::Revert
             | UserEvent::Reset => Some(Page::Graph),
+            UserEvent::NextTab | UserEvent::PreviousTab => Some(Page::Details),
             UserEvent::ToggleStage
             | UserEvent::Stash
             | UserEvent::Commit

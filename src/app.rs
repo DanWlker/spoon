@@ -272,8 +272,13 @@ impl App<'_> {
                         continue;
                     }
 
-                    // key sequences wait for their next key; typed text (the search input) is no sequence
-                    if !matches!(self.app_status.status_line, StatusLine::Input { .. }) {
+                    // key sequences wait for their next key; typed text (the search input) is no sequence,
+                    // and a key of the page goes first, like [ cycling the tabs of the details
+                    let pages = self.current_pages();
+                    let page_key = self.app_status.pending_keys.is_empty()
+                        && self.ctx.keybind.page_key(&pages, &key).is_some();
+                    if !matches!(self.app_status.status_line, StatusLine::Input { .. }) && !page_key
+                    {
                         let had_pending = !self.app_status.pending_keys.is_empty();
                         self.app_status.pending_keys.push(key);
                         match self
@@ -307,21 +312,17 @@ impl App<'_> {
                         }
                     }
 
-                    let user_event =
-                        self.ctx
-                            .keybind
-                            .get_on(self.current_page(), &key)
-                            .filter(|ue| {
-                                // digits continue a count, and without panels to focus they start one (or are typed)
-                                match ue {
-                                    UserEvent::FocusPanel(n) => {
-                                        self.app_status.numeric_prefix.is_empty()
-                                            && !matches!(self.view, View::Help(_))
-                                            && (*n == 0 || self.view.has_panels())
-                                    }
-                                    _ => true,
-                                }
-                            });
+                    let user_event = self.ctx.keybind.get_on(&pages, &key).filter(|ue| {
+                        // digits continue a count, and without panels to focus they start one (or are typed)
+                        match ue {
+                            UserEvent::FocusPanel(n) => {
+                                self.app_status.numeric_prefix.is_empty()
+                                    && !matches!(self.view, View::Help(_))
+                                    && (*n == 0 || self.view.has_panels())
+                            }
+                            _ => true,
+                        }
+                    });
 
                     if let Some(UserEvent::Cancel) = user_event {
                         if !self.app_status.numeric_prefix.is_empty() {
@@ -1007,14 +1008,16 @@ impl App<'_> {
     }
 
     // The page whose keys apply: none of them while the sidebar has the focus.
-    fn current_page(&self) -> Option<Page> {
+    // The pages whose keys apply, the innermost first: none of them while the sidebar has the focus.
+    fn current_pages(&self) -> Vec<Page> {
         if self.sidebar_focused {
-            return None;
+            return vec![];
         }
-        match self.view {
-            View::List(_) | View::Detail(_) => Some(Page::Graph),
-            View::LocalChanges(_) => Some(Page::LocalChanges),
-            _ => None,
+        match &self.view {
+            View::Detail(view) if !view.is_list_focused() => vec![Page::Details, Page::Graph],
+            View::List(_) | View::Detail(_) => vec![Page::Graph],
+            View::LocalChanges(_) => vec![Page::LocalChanges],
+            _ => vec![],
         }
     }
 
@@ -1167,7 +1170,7 @@ impl App<'_> {
             return;
         };
         // the popups toggle and type like the local changes page
-        let event = self.ctx.keybind.get_on(Some(Page::LocalChanges), &key);
+        let event = self.ctx.keybind.get_on(&[Page::LocalChanges], &key);
         if event == Some(UserEvent::ForceQuit) {
             self.ec.send(AppEvent::Quit);
             return;

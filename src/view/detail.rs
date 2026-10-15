@@ -102,6 +102,10 @@ impl<'a> DetailView<'a> {
         self.as_mut_list_state().clear_picks();
     }
 
+    pub fn is_list_focused(&self) -> bool {
+        self.list_focused
+    }
+
     pub fn is_comparing(&self) -> bool {
         self.compare.is_some()
     }

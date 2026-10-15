@@ -54,7 +54,8 @@ impl KeyBind {
     }
 
     // Overrides the keys and sequences of `patch`; a key of its own takes over the sequences
-    // starting with it, and a sequence takes over the key it starts with.
+    // starting with it, and a sequence takes over the key it starts with. A key of a page only
+    // overrides that page, sequences starting with it still work elsewhere.
     fn merge(&mut self, patch: KeyBind) {
         for (key_event, user_event) in patch.keys {
             // a key for every page takes over the page keys too
@@ -63,20 +64,26 @@ impl KeyBind {
             self.keys.insert(key_event, user_event);
         }
         for ((page, key_event), user_event) in patch.page_keys {
-            self.sequences.retain(|keys, _| keys[0] != key_event);
             self.page_keys.insert((page, key_event), user_event);
         }
         for (key_events, user_event) in patch.sequences {
             self.keys.remove(&key_events[0]);
-            self.page_keys.retain(|(_, key), _| *key != key_events[0]);
             self.sequences.insert(key_events, user_event);
         }
     }
 
-    // The event of the key on the page: its event there, else its event for every page.
-    pub fn get_on(&self, page: Option<Page>, key: &KeyEvent) -> Option<UserEvent> {
-        page.and_then(|page| self.page_keys.get(&(page, *key)))
-            .or_else(|| self.keys.get(key))
+    // The event of the key on the pages, the innermost first: its event on one of them,
+    // else its event for every page.
+    pub fn get_on(&self, pages: &[Page], key: &KeyEvent) -> Option<UserEvent> {
+        self.page_key(pages, key)
+            .or_else(|| self.keys.get(key).copied())
+    }
+
+    // The event of the key on one of the pages only; it comes before the key sequences.
+    pub fn page_key(&self, pages: &[Page], key: &KeyEvent) -> Option<UserEvent> {
+        pages
+            .iter()
+            .find_map(|page| self.page_keys.get(&(*page, *key)))
             .copied()
     }
 
@@ -177,14 +184,10 @@ impl<'de> Deserialize<'de> for KeyBind {
             }
         }
 
-        // a key starting a sequence cannot do something on its own, the sequence could not be typed
+        // a key starting a sequence cannot do something on its own, the sequence could not be typed;
+        // a key of a page can, the sequence is typed on the other pages
         for (keys, user_event) in &keybind.sequences {
-            let page_key_user_event = keybind
-                .page_keys
-                .iter()
-                .find(|((_, key), _)| *key == keys[0])
-                .map(|(_, ue)| ue);
-            if let Some(key_user_event) = keybind.keys.get(&keys[0]).or(page_key_user_event) {
+            if let Some(key_user_event) = keybind.keys.get(&keys[0]) {
                 let msg = format!(
                     "{} starts the key sequence of {user_event:?}, so it cannot map to {key_user_event:?}",
                     key_event_to_string(keys[0])
@@ -540,25 +543,48 @@ mod tests {
         .unwrap();
         // the same key does something else on each page
         assert_eq!(
-            keybind.get_on(Some(Page::LocalChanges), &key('d')),
+            keybind.get_on(&[Page::LocalChanges], &key('d')),
             Some(UserEvent::Discard)
         );
         assert_eq!(
-            keybind.get_on(Some(Page::Graph), &key('d')),
+            keybind.get_on(&[Page::Graph], &key('d')),
             Some(UserEvent::Diff)
         );
-        assert_eq!(keybind.get_on(None, &key('d')), None);
+        assert_eq!(keybind.get_on(&[], &key('d')), None);
         assert_eq!(
-            keybind.get_on(Some(Page::Graph), &key('q')),
+            keybind.get_on(&[Page::Graph], &key('q')),
             Some(UserEvent::Quit)
+        );
+        // the details tabs are on the graph
+        assert_eq!(
+            keybind.get_on(&[Page::Details, Page::Graph], &key('d')),
+            Some(UserEvent::Diff)
         );
 
         // a key for every page takes over the page keys
         let mut merged = keybind.clone();
         merged.merge(toml::from_str(r#"quit = ["d"]"#).unwrap());
         assert_eq!(
-            merged.get_on(Some(Page::Graph), &key('d')),
+            merged.get_on(&[Page::Graph], &key('d')),
             Some(UserEvent::Quit)
+        );
+
+        // a key of a page may start a sequence elsewhere
+        let keybind: KeyBind = toml::from_str(
+            r#"
+            previous_tab = ["["]
+            previous_picked = ["[ v"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            keybind.page_key(&[Page::Details, Page::Graph], &key('[')),
+            Some(UserEvent::PreviousTab)
+        );
+        assert_eq!(keybind.page_key(&[Page::Graph], &key('[')), None);
+        assert_eq!(
+            keybind.match_sequence(&[key('['), key('v')]),
+            SequenceMatch::Complete(UserEvent::PreviousPicked)
         );
 
         // a page cannot map a key twice
