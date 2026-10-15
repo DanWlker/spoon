@@ -71,7 +71,9 @@ impl DiffHunk {
 
     // The file header and this hunk alone, ready for `git apply`.
     pub fn patch(&self) -> String {
-        format!("{}{}{}", self.file_header, self.header, self.lines.concat())
+        // no counts of 0 on the other side: the hunk creates or deletes the file as it is
+        let file_header = partial_file_header(&self.file_header, 0, 0);
+        format!("{file_header}{}{}", self.header, self.lines.concat())
     }
 
     // The hunk as shown in a diff: its header and lines.
@@ -156,6 +158,8 @@ impl DiffHunk {
 
 // A partially applied patch of an added (or deleted) file keeps lines on the other side too,
 // so the file is no longer created (or deleted) by it: turn the header into a modification.
+// A renamed (or copied) file is patched under its new name alone: with the rename, git would
+// look for the old file, or unstage the rename along with the hunk.
 fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) -> String {
     let path_of = |prefix: &str| {
         file_header
@@ -166,9 +170,31 @@ fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) ->
     };
     let new_path = path_of("+++ b/");
     let old_path = path_of("--- a/");
+    let renamed = file_header
+        .lines()
+        .any(|l| l.starts_with("rename from ") || l.starts_with("copy from "));
     file_header
         .split_inclusive('\n')
         .filter_map(|line| {
+            if renamed {
+                const RENAME: [&str; 6] = [
+                    "similarity index",
+                    "dissimilarity index",
+                    "rename from ",
+                    "rename to ",
+                    "copy from ",
+                    "copy to ",
+                ];
+                if RENAME.iter().any(|p| line.starts_with(p)) {
+                    return None;
+                }
+                if line.starts_with("diff --git ") {
+                    return Some(format!("diff --git a/{new_path} b/{new_path}\n"));
+                }
+                if line.starts_with("--- a/") {
+                    return Some(format!("--- a/{new_path}\n"));
+                }
+            }
             if (old_count > 0 && line.starts_with("new file mode"))
                 || (new_count > 0 && line.starts_with("deleted file mode"))
             {

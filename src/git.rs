@@ -1687,9 +1687,9 @@ impl RemoteInfo {
     }
 }
 
-// A fingerprint of the local branches and HEAD, which changes when they are changed from outside
-// the app, like lazygit's `RefsSnapshot`: where each branch points, and the branch checked out
-// or the commit when detached.
+// A fingerprint of the local branches, HEAD and the stashes, which changes when they are changed
+// from outside the app, like lazygit's `RefsSnapshot`: where each branch points, the branch
+// checked out or the commit when detached, and every stash, as the sidebar drops them by position.
 pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
     let refs = git_output(
         path,
@@ -1702,7 +1702,9 @@ pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
     let head = git_output(path, &["symbolic-ref", "-q", "HEAD"])
         .or_else(|_| git_output(path, &["rev-parse", "-q", "--verify", "HEAD"]))
         .unwrap_or_default();
-    Ok(refs + &head)
+    // older stashes are only in the reflog of refs/stash, which for-each-ref doesn't see
+    let stashes = git_output(path, &["stash", "list", "--format=%H"]).unwrap_or_default();
+    Ok(refs + &head + &stashes)
 }
 
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
@@ -2341,6 +2343,76 @@ mod tests {
         repository.apply_patch_to_index(&patch, true).unwrap();
         let staged = git_output(path, &["show", ":é.txt"]).unwrap();
         assert_eq!(staged, "a\n");
+    }
+
+    #[test]
+    fn test_hunks_of_renamed_file() {
+        use crate::test_support::git::GitRepository;
+        use crate::widget::diff::parse_diff;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let numbers: String = (1..=20).map(|n| format!("{n}\n")).collect();
+        std::fs::write(path.join("old.txt"), &numbers).unwrap();
+        repo.add(&["old.txt"]);
+        repo.commit("base", "2024-01-01");
+        git_output(path, &["mv", "old.txt", "new.txt"]).unwrap();
+        let edited = numbers
+            .replace("\n5\n", "\nfive\n")
+            .replace("\n15\n", "\nfifteen\n");
+        std::fs::write(path.join("new.txt"), &edited).unwrap();
+        repo.add(&["new.txt"]);
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+
+        // unstaging a hunk of a staged rename keeps the rename and the other hunk staged
+        let staged = parse_diff(&repository.local_change_diff(&[":/"], false, true, None));
+        assert_eq!(staged.hunks.len(), 2);
+        repository
+            .apply_patch_to_index(&staged.hunks[0].patch(), true)
+            .unwrap();
+        let index = git_output(path, &["show", ":new.txt"]).unwrap();
+        assert_eq!(index, numbers.replace("\n15\n", "\nfifteen\n"));
+        assert!(git_output(path, &["show", ":old.txt"]).is_err());
+
+        // a hunk of a commit renaming the file applies to the file under its new name
+        git_output(path, &["add", "new.txt"]).unwrap();
+        git_output(path, &["commit", "-q", "-m", "rename"]).unwrap();
+        std::fs::write(path.join("new.txt"), &numbers).unwrap();
+        let head = repository.head_commit().unwrap();
+        let base = format!("{}~1", head.as_str());
+        let diff = parse_diff(&repository.diff_between(&base, head.as_str(), &[]));
+        repository
+            .apply_patch_to_worktree(&diff.hunks[0].partial_patch(&[3, 4], false), false)
+            .unwrap();
+        let content = std::fs::read_to_string(path.join("new.txt")).unwrap();
+        assert_eq!(content, numbers.replace("\n5\n", "\nfive\n"));
+    }
+
+    #[test]
+    fn test_refs_snapshot_sees_stashes() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("f"), "a\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        let before = refs_snapshot(path).unwrap();
+        std::fs::write(path.join("f"), "b\n").unwrap();
+        git_output(path, &["stash", "push", "-q"]).unwrap();
+        // a stash made outside the app reloads the sidebar, which drops stashes by position
+        let one = refs_snapshot(path).unwrap();
+        assert_ne!(one, before);
+        std::fs::write(path.join("f"), "c\n").unwrap();
+        git_output(path, &["stash", "push", "-q"]).unwrap();
+        let two = refs_snapshot(path).unwrap();
+        // so does dropping an older one, which leaves refs/stash as it is
+        git_output(path, &["stash", "drop", "-q", "stash@{1}"]).unwrap();
+        assert_ne!(refs_snapshot(path).unwrap(), two);
     }
 
     #[test]
