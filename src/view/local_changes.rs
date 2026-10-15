@@ -344,8 +344,7 @@ impl<'a> LocalChangesView<'a> {
     fn changes_repository(&self, event: UserEvent, key: KeyEvent) -> bool {
         let state = self.as_state();
         if state.is_confirming() {
-            return matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'))
-                || self.confirms_commit(key);
+            return key.code == KeyCode::Enter || self.confirms_commit(key);
         }
         if state.is_typing_stash() {
             return key.code == KeyCode::Enter;

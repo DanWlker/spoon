@@ -73,7 +73,7 @@ pub enum InitialSelection {
 
 // How long the fetch, pull and push popups wait for their key to be pressed again before showing,
 // as a double press runs the command right away.
-const QUICK_RUN_DELAY: Duration = Duration::from_millis(300);
+const QUICK_RUN_DELAY: Duration = Duration::from_millis(200);
 
 pub enum Ret {
     Quit,
@@ -99,14 +99,7 @@ impl AppContext {
     // The keys to find the way around, like bubbles' short help: (key, description).
     pub fn status_hints(&self) -> &[(String, &'static str)] {
         self.status_hints.get_or_init(|| {
-            let key = |event| {
-                self.keybind
-                    .keys_for_event(event)
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default()
-                    .to_lowercase()
-            };
+            let key = |event| self.keybind.short_keys(&[event]);
             [
                 (key(UserEvent::RefList), "switch page"),
                 (key(UserEvent::FocusPanel(0)), "refs"),

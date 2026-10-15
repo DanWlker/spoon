@@ -478,25 +478,44 @@ impl GitDialog {
                 self.change(false);
                 DialogOutcome::None
             }
-            // toggles a checkbox, types into a text field, or picks the next choice
             Some(UserEvent::DialogToggle) => {
-                match self.fields.get(self.selected) {
-                    Some((_, _, Field::Text { .. })) => self.editing = true,
-                    Some(_) => self.change(true),
-                    None => {}
+                if self.can_toggle() {
+                    self.change(true);
                 }
                 DialogOutcome::None
             }
             Some(UserEvent::DialogEdit) => {
-                self.editing = matches!(
-                    self.fields.get(self.selected),
-                    Some((_, _, Field::Text { .. }))
-                );
+                self.editing = self.can_edit();
+                DialogOutcome::None
+            }
+            // toggles when the field can be, else types into it
+            Some(UserEvent::DialogActivate) => {
+                if self.can_toggle() {
+                    self.change(true);
+                } else {
+                    self.editing = self.can_edit();
+                }
                 DialogOutcome::None
             }
             Some(UserEvent::Confirm) => self.run(),
             _ => DialogOutcome::None,
         }
+    }
+
+    // Whether the selected field is a checkbox, or has options to go through.
+    fn can_toggle(&self) -> bool {
+        match self.fields.get(self.selected) {
+            Some((_, _, Field::Check(_) | Field::Choice { .. })) => true,
+            Some((_, _, Field::Text { options, .. })) => !options.is_empty(),
+            None => false,
+        }
+    }
+
+    fn can_edit(&self) -> bool {
+        matches!(
+            self.fields.get(self.selected),
+            Some((_, _, Field::Text { .. }))
+        )
     }
 
     fn run(&self) -> DialogOutcome {
@@ -849,19 +868,6 @@ impl<'a> GitDialogWidget<'a> {
             keybind: &ctx.keybind,
         }
     }
-
-    // The keys of the events, like "j/k": the shortest of each, as hints are short.
-    fn keys(&self, events: &[UserEvent]) -> String {
-        let keys: Vec<String> = events
-            .iter()
-            .filter_map(|event| {
-                let keys = self.keybind.keys_for_event(*event);
-                keys.into_iter().min_by_key(|key| key.chars().count())
-            })
-            .map(|key| key.to_lowercase())
-            .collect();
-        keys.join("/")
-    }
 }
 
 const LABEL_WIDTH: usize = 13;
@@ -875,44 +881,55 @@ impl Widget for GitDialogWidget<'_> {
         let run_events: Vec<UserEvent> = std::iter::once(UserEvent::Confirm)
             .chain(dialog.trigger)
             .collect();
-        let (move_keys, change_keys, toggle_key, run_key, cancel_key) = (
-            self.keys(&[UserEvent::NavigateDown, UserEvent::NavigateUp]),
-            self.keys(&[UserEvent::NavigateLeft, UserEvent::NavigateRight]),
-            self.keys(&[UserEvent::DialogToggle]),
-            self.keys(&run_events),
-            self.keys(&[UserEvent::Cancel]),
+        let keybind = self.keybind;
+        let (move_keys, change_keys, run_key, cancel_key) = (
+            keybind.short_keys(&[UserEvent::NavigateDown, UserEvent::NavigateUp]),
+            keybind.short_keys(&[UserEvent::NavigateLeft, UserEvent::NavigateRight]),
+            keybind.short_keys(&run_events),
+            keybind.short_keys(&[UserEvent::Cancel]),
         );
+        // what the selected field takes: space toggles it when it can, else types into it
+        let (toggle_keys, edit_keys) = match (dialog.can_toggle(), dialog.can_edit()) {
+            (true, true) => (
+                keybind.short_keys(&[UserEvent::DialogActivate, UserEvent::DialogToggle]),
+                keybind.short_keys(&[UserEvent::DialogEdit]),
+            ),
+            (true, false) => (
+                keybind.short_keys(&[UserEvent::DialogActivate, UserEvent::DialogToggle]),
+                String::new(),
+            ),
+            (false, true) => (
+                String::new(),
+                keybind.short_keys(&[UserEvent::DialogActivate, UserEvent::DialogEdit]),
+            ),
+            (false, false) => (String::new(), String::new()),
+        };
         let dim = Style::default().fg(theme.status_input_transient_fg);
-        let has_text = dialog
-            .fields
-            .iter()
-            .any(|(.., f)| matches!(f, Field::Text { .. }));
-        let has_check = dialog
-            .fields
-            .iter()
-            .any(|(.., f)| matches!(f, Field::Check(_)));
         let mut keys = vec![
             (move_keys.as_str(), "move"),
             (change_keys.as_str(), "change"),
+            (toggle_keys.as_str(), "toggle"),
+            (edit_keys.as_str(), "type"),
         ];
-        // the toggle key types into text fields too
-        let toggle = match (has_check, has_text) {
-            (true, true) => "toggle/type",
-            (true, false) => "toggle",
-            (false, true) => "type",
-            (false, false) => "",
-        };
-        if !toggle.is_empty() {
-            keys.push((toggle_key.as_str(), toggle));
-        }
         keys.extend([
             (run_key.as_str(), dialog.verb),
             (cancel_key.as_str(), "cancel"),
         ]);
         keys.retain(|(key, _)| !key.is_empty());
         let keys_hint = key_hints(&keys, theme);
-        // the width stays the same while typing
-        let min_width = keys_hint.width();
+        // the width stays the same while typing, or moving between fields taking other keys
+        let text_field_keys = keybind.short_keys(&[UserEvent::DialogEdit]);
+        let widest = key_hints(&[(text_field_keys.as_str(), "type")], theme).width() + 3;
+        let has_text = dialog
+            .fields
+            .iter()
+            .any(|(.., f)| matches!(f, Field::Text { .. }));
+        let min_width = keys_hint.width()
+            + if has_text && edit_keys.is_empty() {
+                widest
+            } else {
+                0
+            };
         let hint = if dialog.editing {
             key_hints(&[("type", "a branch name"), ("enter/esc", "done")], theme)
         } else {
@@ -1161,25 +1178,40 @@ mod tests {
         let outcome = press(&mut dialog, UserEvent::Pull);
         assert!(matches!(outcome, DialogOutcome::Run(t) if t.running == "Pulling origin/main"));
         let mut dialog = GitDialog::remote(RemoteAction::Fetch, info()).unwrap();
-        assert!(matches!(press(&mut dialog, UserEvent::Push), DialogOutcome::None));
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Push),
+            DialogOutcome::None
+        ));
 
-        // space types into a text field, picks the next choice, toggles a checkbox
+        // space toggles a field that can be: the next choice, the next option of a text field,
+        // a checkbox; else it types, like e
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::DialogActivate);
         assert_eq!(args(&dialog), "pull --rebase --no-autostash fork topic");
-        assert!(!dialog.editing);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::DialogActivate);
         assert_eq!(args(&dialog), "pull --no-rebase --no-autostash fork topic");
         press(&mut dialog, UserEvent::NavigateUp);
+        press(&mut dialog, UserEvent::NavigateUp);
+        press(&mut dialog, UserEvent::NavigateLeft);
+        press(&mut dialog, UserEvent::NavigateDown);
+        // origin has two branches to go through
+        press(&mut dialog, UserEvent::DialogActivate);
+        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin dev");
+        assert!(!dialog.editing);
         press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
+        press(&mut dialog, UserEvent::DialogEdit);
         assert!(dialog.editing);
         // while typing, the key opening the popup is typed
         let typed = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
         dialog.handle_key(Some(UserEvent::Pull), typed);
         assert!(dialog.editing);
-        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash fork topicp");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --no-autostash origin mainp"
+        );
     }
 
     #[test]

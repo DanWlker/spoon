@@ -126,6 +126,26 @@ impl KeyBind {
             .collect()
     }
 
+    // The keys of the events for a hint, like "j/k" or "space/e": the shortest of each, with names
+    // like Enter in lower case (but letters as they are, "A" is shift-a); empty when none is bound.
+    pub fn short_keys(&self, events: &[UserEvent]) -> String {
+        let keys: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                let keys = self.keys_for_event(*event);
+                keys.into_iter().min_by_key(|key| key.chars().count())
+            })
+            .map(|key| {
+                if key.chars().count() > 1 {
+                    key.to_lowercase()
+                } else {
+                    key
+                }
+            })
+            .collect();
+        keys.join("/")
+    }
+
     pub fn user_command_event_numbers(&self) -> Vec<usize> {
         let mut numbers: Vec<usize> = self
             .values()

@@ -805,6 +805,9 @@
         "dialog_edit": {
           "$ref": "#/definitions/keybindArray"
         },
+        "dialog_activate": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "fetch": {
           "$ref": "#/definitions/keybindArray"
         },

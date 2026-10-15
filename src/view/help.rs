@@ -360,8 +360,9 @@ fn build_lines(
     let dialog_helps = vec![
         (vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "Select next/previous field".into()),
         (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Change the selected field".into()),
-        (vec![UserEvent::DialogToggle], "Toggle the checkbox, type into the field, or pick the next choice".into()),
-        (vec![UserEvent::DialogEdit], "Type into the selected text field".into()),
+        (vec![UserEvent::DialogActivate], "Toggle the field if it can be, else type into it".into()),
+        (vec![UserEvent::DialogToggle], "Toggle the checkbox, or go to the next option".into()),
+        (vec![UserEvent::DialogEdit], "Type into the text field".into()),
         (vec![UserEvent::Confirm], "Run the command".into()),
         (vec![UserEvent::Cancel, UserEvent::Close], "Cancel".into()),
     ];

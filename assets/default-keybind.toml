@@ -89,9 +89,11 @@ revert = ["u"]
 # reset the current branch to the selected commit, after confirming
 reset = ["shift-u"]
 
-# in the popups of the git commands: toggle the selected checkbox, type into the selected text field
-dialog_toggle = ["space", "v"]
+# in the popups of the git commands: toggle the selected checkbox or go to the next option (dialog_toggle),
+# type into the selected text field (dialog_edit), or either, toggling when the field can be toggled (dialog_activate)
+dialog_toggle = ["v"]
 dialog_edit = ["e"]
+dialog_activate = ["space"]
 
 # fetch from a remote, chosen in a popup
 fetch = ["f"]

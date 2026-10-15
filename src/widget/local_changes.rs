@@ -15,8 +15,7 @@ use crate::{
     app::AppContext,
     event::UserEvent,
     git::{
-        ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation,
-        Repository,
+        ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository,
     },
     widget::{
         conflict::ConflictView,
@@ -64,11 +63,23 @@ pub enum ExternalRequest {
 }
 
 // An action waiting for the user to confirm it in a popup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ConfirmAction {
     Discard,
     Abort(Operation),
-    Commit,
+    Commit(Box<CommitPreview>),
+}
+
+// The commit to make, shown in the popup confirming it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitPreview {
+    // "Commit to", "Amend the last commit on", "Commit the merge on"
+    action: String,
+    branch: String,
+    amend: bool,
+    subject: String,
+    body: Vec<String>,
+    files: Vec<(LocalChangeStatus, String)>,
 }
 
 // The commit section's contents, kept across refreshes.
@@ -326,32 +337,33 @@ impl<'a> LocalChangesState<'a> {
             Head::Branch { name } => name.clone(),
             _ => "detached HEAD".to_string(),
         };
-        let heading = match (self.amend_base.is_some(), self.operation) {
-            (true, _) => format!("Amend the last commit on {branch}"),
-            (false, Some(operation)) => format!("Commit the {} on {branch}", operation.name()),
-            (false, None) => format!("Commit to {branch}"),
+        let amend = self.amend_base.is_some();
+        let action = match (amend, self.operation) {
+            (true, _) => "Amend the last commit on".to_string(),
+            (false, Some(operation)) => format!("Commit the {} on", operation.name()),
+            (false, None) => "Commit to".to_string(),
         };
-        let mut lines = vec![heading, String::new()];
         let message = self.message.text();
-        let message: Vec<&str> = message.trim_end().lines().collect();
-        lines.extend(message.iter().take(COMMIT_PREVIEW_LINES).map(|l| format!("  {l}")));
-        if message.len() > COMMIT_PREVIEW_LINES {
-            lines.push("  …".into());
-        }
-        lines.push(String::new());
-        let files = &self.changes.staged;
-        lines.push(match files.len() {
-            0 => "No staged changes".to_string(),
-            1 => "1 staged file:".to_string(),
-            n => format!("{n} staged files:"),
-        });
-        for file in files.iter().take(COMMIT_PREVIEW_LINES) {
-            lines.push(format!("  {} {}", status_symbol(file.status), file.path));
-        }
-        if files.len() > COMMIT_PREVIEW_LINES {
-            lines.push(format!("  … and {} more", files.len() - COMMIT_PREVIEW_LINES));
-        }
-        self.confirm = Some((ConfirmAction::Commit, lines.join("\n")));
+        let mut lines = message.trim().lines().map(String::from);
+        let subject = lines.next().unwrap_or_default();
+        // the blank line after the subject is shown as a gap
+        let body: Vec<String> = lines.skip_while(|l| l.trim().is_empty()).collect();
+        let files = self
+            .changes
+            .staged
+            .iter()
+            .map(|f| (f.status, f.path.clone()))
+            .collect();
+        let preview = CommitPreview {
+            action: action.clone(),
+            branch: branch.clone(),
+            amend,
+            subject,
+            body,
+            files,
+        };
+        let prompt = format!("{action} {branch}");
+        self.confirm = Some((ConfirmAction::Commit(Box::new(preview)), prompt));
         Ok(())
     }
 
@@ -580,11 +592,11 @@ impl<'a> LocalChangesState<'a> {
         self.confirm.as_ref().map(|(_, prompt)| prompt.as_str())
     }
 
-    // y or Enter confirms, n or Esc cancels; other keys are ignored.
+    // Enter confirms, Esc cancels; other keys are ignored.
     pub fn handle_confirm_key(&mut self, key: KeyEvent) -> Result<(), String> {
         match key.code {
-            KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.confirm(),
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+            KeyCode::Enter => self.confirm(),
+            KeyCode::Esc => {
                 self.confirm = None;
                 Ok(())
             }
@@ -594,7 +606,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Whether the popup asks to confirm a commit, which the commit key confirms too.
     pub fn is_confirming_commit(&self) -> bool {
-        matches!(self.confirm, Some((ConfirmAction::Commit, _)))
+        matches!(self.confirm, Some((ConfirmAction::Commit(_), _)))
     }
 
     // Runs the action waiting for confirmation.
@@ -603,23 +615,23 @@ impl<'a> LocalChangesState<'a> {
             return Ok(());
         };
         let result = match action {
-                    ConfirmAction::Discard => {
-                        let picked_files = !self.is_diff_focused();
-                        let result = self.discard();
-                        if picked_files && result.is_ok() {
-                            self.clear_picks();
-                        }
-                        result
-                    }
-                    ConfirmAction::Abort(operation) => {
-                        self.needs_refresh = true;
-                        self.repository.abort_operation(operation)
-                    }
-                    // reloads itself
-                    ConfirmAction::Commit => return self.commit(),
-                };
-                self.reload();
+            ConfirmAction::Discard => {
+                let picked_files = !self.is_diff_focused();
+                let result = self.discard();
+                if picked_files && result.is_ok() {
+                    self.clear_picks();
+                }
                 result
+            }
+            ConfirmAction::Abort(operation) => {
+                self.needs_refresh = true;
+                self.repository.abort_operation(operation)
+            }
+            // reloads itself
+            ConfirmAction::Commit(_) => return self.commit(),
+        };
+        self.reload();
+        result
     }
 
     // Unstaged changes are between the index and the working tree, so discarding reverts the working tree.
@@ -1312,7 +1324,10 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         }
         self.render_commit(state, commit_area, buf);
         if let Some((action, prompt)) = &state.confirm {
-            self.render_confirm_popup(*action, prompt, area, buf);
+            match action {
+                ConfirmAction::Commit(preview) => self.render_commit_popup(preview, area, buf),
+                _ => self.render_confirm_popup(action, prompt, area, buf),
+            }
         }
     }
 }
@@ -1507,14 +1522,13 @@ impl LocalChangesPanel<'_> {
             title.push(Span::raw(" · amending ").fg(theme.status_warn_fg));
         }
         if let Some(operation) = state.operation {
-            let (doing, c) = match operation {
-                Operation::Rebase => ("rebasing", "continue"),
-                Operation::Merge => ("merging", "commit"),
-                Operation::CherryPick => ("cherry-picking", "commit"),
-                Operation::Revert => ("reverting", "commit"),
+            let doing = match operation {
+                Operation::Rebase => "rebasing",
+                Operation::Merge => "merging",
+                Operation::CherryPick => "cherry-picking",
+                Operation::Revert => "reverting",
             };
-            let text = format!(" · {doing} (c {c}, C abort) ");
-            title.push(Span::raw(text).fg(theme.status_warn_fg));
+            title.push(Span::raw(format!(" · {doing} ")).fg(theme.status_warn_fg));
         }
         let block = Block::default()
             .borders(Borders::TOP)
@@ -1533,12 +1547,72 @@ impl LocalChangesPanel<'_> {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .style(Style::default().fg(border_fg));
-        if state.is_editing() {
-            message_block = message_block.title(Span::raw(" editing · Esc to stop ").fg(border_fg));
-        }
+        // the keys of the section, like the hints of a popup
+        let hint = self.commit_hints(state, focused);
+        message_block = message_block.title_bottom(Line::from(
+            [vec![Span::raw(" ")], hint.spans, vec![Span::raw(" ")]].concat(),
+        ));
         let text_area = message_block.inner(inner);
         message_block.render(inner, buf);
         self.render_message(state, text_area, buf);
+    }
+
+    // The keys of the commit section: while typing, only how to stop; else what each key does.
+    fn commit_hints(&self, state: &LocalChangesState, focused: bool) -> Line<'static> {
+        let theme = &self.ctx.color_theme;
+        let keybind = &self.ctx.keybind;
+        if state.is_editing() {
+            return key_hints(&[("esc", "stop typing")], theme);
+        }
+        let commit = if state
+            .operation
+            .is_some_and(Operation::continues_without_commit)
+        {
+            "continue"
+        } else if state.amend_base.is_some() {
+            "amend"
+        } else {
+            "commit"
+        };
+        if !focused {
+            let keys = [
+                (keybind.short_keys(&[UserEvent::FocusPanel(3)]), "type"),
+                (keybind.short_keys(&[UserEvent::Commit]), commit),
+            ];
+            let keys: Vec<(&str, &str)> = keys
+                .iter()
+                .filter(|(key, _)| !key.is_empty())
+                .map(|(key, desc)| (key.as_str(), *desc))
+                .collect();
+            return key_hints(&keys, theme);
+        }
+        let amend = if state.amend_base.is_some() {
+            "stop amending"
+        } else {
+            "amend"
+        };
+        let mut keys = vec![
+            (
+                keybind.short_keys(&[UserEvent::ToggleStage, UserEvent::Edit]),
+                "type",
+            ),
+            (
+                keybind.short_keys(&[UserEvent::Confirm, UserEvent::Commit]),
+                commit,
+            ),
+        ];
+        if state.operation.is_some() {
+            keys.push((keybind.short_keys(&[UserEvent::Abort]), "abort"));
+        } else {
+            keys.push((keybind.short_keys(&[UserEvent::ToggleAmend]), amend));
+        }
+        keys.push((keybind.short_keys(&[UserEvent::Cancel]), "back"));
+        let keys: Vec<(&str, &str)> = keys
+            .iter()
+            .filter(|(key, _)| !key.is_empty())
+            .map(|(key, desc)| (key.as_str(), *desc))
+            .collect();
+        key_hints(&keys, theme)
     }
 
     fn render_conflict(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -1660,83 +1734,97 @@ impl LocalChangesPanel<'_> {
 
     fn render_confirm_popup(
         &self,
-        action: ConfirmAction,
+        action: &ConfirmAction,
         prompt: &str,
         area: Rect,
         buf: &mut Buffer,
     ) {
         let theme = &self.ctx.color_theme;
-        // the commit key confirms a commit too
-        let commit_key = self
-            .ctx
-            .keybind
-            .keys_for_event(UserEvent::Commit)
-            .into_iter()
-            .min_by_key(|key| key.chars().count())
-            .map(|key| format!("/{}", key.to_lowercase()))
-            .unwrap_or_default();
-        let (title, confirm_keys, verb, color, warning) = match action {
-            ConfirmAction::Discard => (
-                "Discard changes",
-                "y/enter".to_string(),
-                "discard",
-                theme.status_error_fg,
-                Some("This cannot be undone."),
-            ),
-            ConfirmAction::Abort(_) => (
-                "Abort",
-                "y/enter".to_string(),
-                "abort",
-                theme.status_error_fg,
-                Some("This cannot be undone."),
-            ),
-            ConfirmAction::Commit => (
-                "Commit",
-                format!("y/enter{commit_key}"),
-                "commit",
-                theme.accent_fg,
-                None,
-            ),
+        let (title, verb) = match action {
+            ConfirmAction::Abort(_) => ("Abort", "abort"),
+            _ => ("Discard changes", "discard"),
         };
-        let hint = key_hints(&[(&confirm_keys, verb), ("n/esc", "cancel")], theme);
+        let hint = key_hints(&[("enter", verb), ("esc", "cancel")], theme);
+        let lines = vec![
+            Line::raw(""),
+            Line::raw(prompt.to_string()).fg(theme.fg).bold(),
+            Line::raw("This cannot be undone.").fg(theme.status_error_fg),
+            Line::raw(""),
+            hint,
+        ];
+        render_popup(title, theme.status_error_fg, lines, area, buf, theme);
+    }
 
-        // the first line asks, the others tell more
-        let mut lines: Vec<Line> = prompt
-            .lines()
-            .enumerate()
-            .map(|(i, line)| {
-                let line = Line::raw(line.to_string());
-                if i == 0 {
-                    line.fg(theme.fg).bold()
-                } else {
-                    line.fg(theme.fg)
-                }
-            })
-            .collect();
-        if let Some(warning) = warning {
-            lines.push(Line::raw(warning).fg(theme.status_error_fg));
+    // The commit to make: on which branch, the message, the files; like the popups of git commands.
+    fn render_commit_popup(&self, preview: &CommitPreview, area: Rect, buf: &mut Buffer) {
+        let theme = &self.ctx.color_theme;
+        let dim = Style::default().fg(theme.status_input_transient_fg);
+        let keybind = &self.ctx.keybind;
+        let (title, color) = if preview.amend {
+            ("Amend", theme.status_warn_fg)
+        } else {
+            ("Commit", theme.accent_fg)
+        };
+
+        let mut lines = vec![
+            Line::raw(""),
+            Line::from(vec![
+                Span::raw(format!("{} ", preview.action))
+                    .fg(theme.fg)
+                    .bold(),
+                Span::raw(preview.branch.clone())
+                    .fg(theme.highlight_fg)
+                    .bold(),
+            ]),
+            Line::raw(""),
+        ];
+        // the message beside a bar, like the selected field of a popup
+        let bar = || Span::raw("┃ ").fg(color);
+        lines.push(Line::from(vec![
+            bar(),
+            Span::raw(preview.subject.clone()).fg(theme.fg).bold(),
+        ]));
+        if !preview.body.is_empty() {
+            lines.push(Line::from(bar()));
+        }
+        for line in preview.body.iter().take(COMMIT_PREVIEW_LINES) {
+            lines.push(Line::from(vec![bar(), Span::styled(line.clone(), dim)]));
+        }
+        if preview.body.len() > COMMIT_PREVIEW_LINES {
+            lines.push(Line::from(vec![bar(), Span::styled("…", dim)]));
         }
         lines.push(Line::raw(""));
-        lines.push(hint);
 
-        // text plus padding and borders
-        let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
-        let width = (text_width as u16 + 4).min(area.width);
-        let height = (lines.len() as u16 + 3).min(area.height);
-        let popup = Rect::new(
-            area.x + (area.width.saturating_sub(width)) / 2,
-            area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        );
-        Clear.render(popup, buf);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(Style::default().fg(color).bg(theme.bg))
-            .title(badge(format!(" {title} "), color, theme))
-            .padding(Padding::new(1, 1, 1, 0));
-        Paragraph::new(lines).block(block).render(popup, buf);
+        let count = preview.files.len();
+        lines.push(Line::styled(
+            match count {
+                0 => "No staged changes".to_string(),
+                1 => "1 staged file".to_string(),
+                n => format!("{n} staged files"),
+            },
+            dim,
+        ));
+        for (status, path) in preview.files.iter().take(COMMIT_PREVIEW_LINES) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::raw(status_symbol(*status))
+                    .fg(self.status_color(*status))
+                    .bold(),
+                Span::raw(format!(" {path}")).fg(theme.fg),
+            ]));
+        }
+        if count > COMMIT_PREVIEW_LINES {
+            let more = format!("  … {} more", count - COMMIT_PREVIEW_LINES);
+            lines.push(Line::styled(more, dim));
+        }
+        lines.push(Line::raw(""));
+        let commit_keys = keybind.short_keys(&[UserEvent::Confirm, UserEvent::Commit]);
+        let verb = title.to_lowercase();
+        lines.push(key_hints(
+            &[(&commit_keys, &verb), ("esc", "cancel")],
+            theme,
+        ));
+        render_popup(title, color, lines, area, buf, theme);
     }
 
     fn render_message(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -1791,6 +1879,41 @@ impl LocalChangesPanel<'_> {
             }
         }
     }
+}
+
+// The width of the text of a popup; longer lines are cut.
+const MIN_POPUP_WIDTH: usize = 44;
+const MAX_POPUP_WIDTH: usize = 80;
+
+// A popup in the middle of `area`, with a rounded border of `color` and its title as a badge.
+fn render_popup(
+    title: &str,
+    color: Color,
+    lines: Vec<Line>,
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &crate::color::ColorTheme,
+) {
+    // text plus padding and borders
+    let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
+    let text_width = text_width.clamp(MIN_POPUP_WIDTH, MAX_POPUP_WIDTH);
+    let width = (text_width as u16 + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    Clear.render(popup, buf);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .style(Style::default().fg(theme.fg).bg(theme.bg))
+        .title(badge(format!(" {title} "), color, theme))
+        .padding(Padding::horizontal(1));
+    Paragraph::new(lines).block(block).render(popup, buf);
 }
 
 fn status_symbol(status: LocalChangeStatus) -> &'static str {
@@ -2143,10 +2266,16 @@ mod tests {
         state.message = TextArea::new("first change\n\nbody");
         state.commit_or_continue()?;
         assert!(state.is_confirming_commit());
-        let prompt = state.confirm_prompt().unwrap();
-        assert!(prompt.starts_with("Commit to master"), "{prompt}");
-        assert!(prompt.contains("  first change\n  \n  body"), "{prompt}");
-        assert!(prompt.contains("1 staged file:\n  A a.txt"), "{prompt}");
+        assert_eq!(state.confirm_prompt(), Some("Commit to master"));
+        let Some((ConfirmAction::Commit(preview), _)) = &state.confirm else {
+            panic!("no commit to confirm");
+        };
+        assert_eq!(preview.subject, "first change");
+        assert_eq!(preview.body, vec!["body"]);
+        assert_eq!(
+            preview.files,
+            vec![(LocalChangeStatus::Added, "a.txt".to_string())]
+        );
         assert!(!state.take_needs_refresh());
         state.confirm()?;
         assert!(state.take_needs_refresh());
@@ -2203,13 +2332,13 @@ mod tests {
         state.enter()?;
         state.request_discard();
         assert!(state.is_confirming());
-        state.handle_confirm_key(key(KeyCode::Char('n')))?;
+        state.handle_confirm_key(key(KeyCode::Esc))?;
         assert!(!state.is_confirming());
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, modified);
 
         // discard the first hunk
         state.request_discard();
-        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        state.handle_confirm_key(key(KeyCode::Enter))?;
         let content = fs::read_to_string(repo_path.join("a.txt"))?;
         assert!(content.contains("line 2\n") && content.contains("line twenty-eight\n"));
         assert_eq!(state.diff.hunks.len(), 1);
@@ -2227,7 +2356,7 @@ mod tests {
         state.back();
         select_row(&mut state, "dir");
         state.request_discard();
-        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        state.handle_confirm_key(key(KeyCode::Enter))?;
         assert!(!repo_path.join("dir/u.txt").exists());
 
         // nothing is discarded from the staged section
@@ -2283,7 +2412,7 @@ mod tests {
             state.confirm_prompt(),
             Some("Discard all changes to all files?")
         );
-        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        state.handle_confirm_key(key(KeyCode::Enter))?;
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "a\n");
         assert!(!repo_path.join("u.txt").exists());
@@ -2499,7 +2628,7 @@ mod tests {
             state.confirm_prompt(),
             Some("Discard all changes to 1 picked file?")
         );
-        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        state.handle_confirm_key(key(KeyCode::Enter))?;
         assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
 
         // unstage picked files
@@ -2657,11 +2786,11 @@ mod tests {
             Some("Abort the rebase and go back to where it started?")
         );
         // cancelling keeps rebasing
-        state.handle_confirm_key(key(KeyCode::Char('n')))?;
+        state.handle_confirm_key(key(KeyCode::Esc))?;
         assert_eq!(state.operation, Some(Operation::Rebase));
 
         state.request_abort()?;
-        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        state.handle_confirm_key(key(KeyCode::Enter))?;
         assert!(state.take_needs_refresh());
         assert_eq!(state.operation, None);
         assert!(state.changes.unstaged.is_empty());
@@ -2792,7 +2921,7 @@ mod tests {
             .starts_with("Revert \"feature change\""));
 
         state.request_abort()?;
-        state.handle_confirm_key(key(KeyCode::Char('y')))?;
+        state.handle_confirm_key(key(KeyCode::Enter))?;
         assert_eq!(state.operation, None);
         assert!(state.request_abort().is_err());
         Ok(())

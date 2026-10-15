@@ -263,6 +263,7 @@ pub enum UserEvent {
     Discard,
     DialogToggle,
     DialogEdit,
+    DialogActivate,
     Fetch,
     FetchAll,
     Pull,
@@ -368,6 +369,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "discard" => Ok(UserEvent::Discard),
                         "dialog_toggle" => Ok(UserEvent::DialogToggle),
                         "dialog_edit" => Ok(UserEvent::DialogEdit),
+                        "dialog_activate" => Ok(UserEvent::DialogActivate),
                         "fetch" => Ok(UserEvent::Fetch),
                         "fetch_all" => Ok(UserEvent::FetchAll),
                         "pull" => Ok(UserEvent::Pull),
@@ -439,7 +441,9 @@ impl UserEvent {
             | UserEvent::ToggleAmend
             | UserEvent::Edit
             | UserEvent::Discard => Some(Page::LocalChanges),
-            UserEvent::DialogToggle | UserEvent::DialogEdit => Some(Page::Dialog),
+            UserEvent::DialogToggle | UserEvent::DialogEdit | UserEvent::DialogActivate => {
+                Some(Page::Dialog)
+            }
             _ => None,
         }
     }

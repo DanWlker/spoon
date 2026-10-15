@@ -27,7 +27,7 @@ The default key bindings can be overridden.
 - Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, and whether to force push (`--force-with-lease`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> or <kbd>v</kbd> toggles a checkbox, types into a text field or picks the next choice (`dialog_toggle`), <kbd>e</kbd> also types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
@@ -193,12 +193,12 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
-<kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>y</kbd>, <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>n</kbd> or <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
+<kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
 While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
 Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
 The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
-<kbd>3</kbd> starts typing the message; in the commit section, <kbd>Space</kbd> or <kbd>e</kbd> start typing it again.
+<kbd>3</kbd> starts typing the message; in the commit section, <kbd>Space</kbd> or <kbd>e</kbd> start typing it again. The keys of the section are shown under the message box.
 While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
