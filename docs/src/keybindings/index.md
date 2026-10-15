@@ -1,6 +1,7 @@
 # Keybindings
 
 You can see the keybindings by pressing the `F1` key.
+The status bar shows the keys of what has the focus, like the panel or the popup, as many as fit; not the ones moving around.
 
 The default key bindings can be overridden.
 
@@ -40,12 +41,10 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | ------------------------------------ | -------------------------------------------------- | -------------------------------------------- |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Move down/up                                       | `navigate_down` `navigate_up`                |
 | <kbd>J/K</kbd>                       | Move down/up                                       | `select_down` `select_up`                    |
-| <kbd>Alt-Down</kbd> <kbd>Alt-j</kbd> | Move to parent commit                              | `go_to_parent`                               |
 | <kbd>g/G</kbd>                       | Go to top/bottom                                   | `go_to_top` `go_to_bottom`                   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up                                | `page_down` `page_up`                        |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up                           | `half_page_down` `half_page_up`              |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
-| <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show commit details on the info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
@@ -58,6 +57,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
 | <kbd>U</kbd>                         | Reset the current branch to the selected commit    | `reset`                                      |
+| <kbd>A</kbd>                         | Amend the selected commit with the staged changes  | `amend_commit`                               |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -80,6 +80,7 @@ The other commands ask first, in a popup showing what they do and the git comman
 - <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages, with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.
 - <kbd>u</kbd> revert: the picked commits (newest first), or the selected one, committing the reverts or leaving them on the local changes page.
 - <kbd>U</kbd> reset: the current branch to the selected commit, mixed (keep the changes, unstaged), soft (keep them staged) or hard (discard them).
+- <kbd>A</kbd> amend: puts the staged changes into the selected commit, keeping its message. The last commit is amended in place; an older one gets a fixup commit, which an interactive rebase squashes into it (`git rebase -i --autosquash`), stashing and reapplying the other local changes like rebase. The commits after it must be on the current branch, with no merge commits.
 
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
 The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them.
@@ -97,9 +98,8 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up        | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
-| <kbd>Alt-Down</kbd> <kbd>Alt-j</kbd> | Select parent commit            | `go_to_parent`                  |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
-| <kbd>y/Y</kbd>                       | Copy commit short/full hash     | `short_copy` `full_copy`        |
+| <kbd>y/Y</kbd>                       | Copy commit short/full hash; in the changes and files tabs, the relative/absolute path of the selected file | `short_copy` `full_copy` |
 | <kbd>1</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_1` |
 | <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus (with the commit list focused, they start <kbd>]v</kbd> <kbd>[v</kbd>) | `next_tab` `previous_tab` |
@@ -191,6 +191,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up                                     | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up                                | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
+| <kbd>y/Y</kbd>                       | Copy the relative/absolute path of the selected file         | `short_copy` `full_copy`        |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
 <kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
@@ -198,7 +199,7 @@ While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> cont
 While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
 Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
 The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
-<kbd>3</kbd> starts typing the message; in the commit section, <kbd>Space</kbd> or <kbd>e</kbd> start typing it again. The keys of the section are shown under the message box.
+<kbd>3</kbd> starts typing the message; in the commit section, <kbd>Space</kbd> or <kbd>e</kbd> start typing it again.
 While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
@@ -215,7 +216,6 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up    | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom            | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd>                       | Select older/newer commit   | `select_down` `select_up`       |
-| <kbd>Alt-Down</kbd> <kbd>Alt-j</kbd> | Select parent commit        | `go_to_parent`                  |
 | <kbd>R</kbd>                         | Refresh                     | `refresh`                       |
 
 #### Help

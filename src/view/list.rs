@@ -4,9 +4,9 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::CommitHash,
-    view::{ListRefreshViewContext, RefreshViewContext},
+    view::{graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::{
             commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
@@ -82,11 +82,6 @@ impl<'a> ListView<'a> {
                         self.as_mut_list_state().select_prev();
                     }
                 }
-                UserEvent::GoToParent => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().select_parent();
-                    }
-                }
                 UserEvent::GoToTop => {
                     self.as_mut_list_state().select_first();
                 }
@@ -122,15 +117,6 @@ impl<'a> ListView<'a> {
                     for _ in 0..count {
                         self.as_mut_list_state().scroll_up_half();
                     }
-                }
-                UserEvent::SelectTop => {
-                    self.as_mut_list_state().select_high();
-                }
-                UserEvent::SelectMiddle => {
-                    self.as_mut_list_state().select_middle();
-                }
-                UserEvent::SelectBottom => {
-                    self.as_mut_list_state().select_low();
                 }
                 UserEvent::ShortCopy => {
                     self.copy_commit_short_hash();
@@ -211,6 +197,16 @@ impl<'a> ListView<'a> {
             }
             // Do not return here
         }
+    }
+
+    pub fn key_hints(&self) -> Vec<KeyHint> {
+        let state = self.as_list_state();
+        if let SearchState::Searching { .. } = state.search_state() {
+            return typing_hints(true);
+        }
+        let mut hints = vec![hint(UserEvent::Confirm, "details")];
+        hints.extend(graph_hints(state.picked_commit_hashes().len()));
+        hints
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {

@@ -129,6 +129,11 @@ pub struct CommitChangesState<'a> {
 }
 
 impl<'a> CommitChangesState<'a> {
+    // The path of the selected file or directory, relative to the top of the repository.
+    pub fn selected_path(&self) -> Option<&str> {
+        self.tree.selected().map(|r| r.path.as_str())
+    }
+
     pub fn new(
         repository: &'a Repository,
         commit_hash: CommitHash,
@@ -268,6 +273,11 @@ pub struct CommitFilesState<'a> {
 }
 
 impl<'a> CommitFilesState<'a> {
+    // The path of the selected file or directory, relative to the top of the repository.
+    pub fn selected_path(&self) -> Option<&str> {
+        self.tree.as_ref()?.selected().map(|r| r.path.as_str())
+    }
+
     pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {
         Self {
             repository,

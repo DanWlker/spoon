@@ -22,7 +22,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, EventController, Page, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, EventController, Page, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
@@ -90,25 +90,19 @@ pub struct AppContext {
     pub image_protocol: ImageProtocol,
     // what the git command running in the background is doing, kept across refreshes
     pub running_task: RefCell<Option<String>>,
-    // the keys shown in the idle status bar, found once from the keybinds
-    pub status_hints: std::cell::OnceCell<Vec<(String, &'static str)>>,
+    // the keys of the hints in the status bar, see `short_keys`
+    pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
 }
 
 impl AppContext {
     // Why the repository can't be changed now: a git command is running in the background.
-    // The keys to find the way around, like bubbles' short help: (key, description).
-    pub fn status_hints(&self) -> &[(String, &'static str)] {
-        self.status_hints.get_or_init(|| {
-            let key = |event| self.keybind.short_keys(&[event]);
-            [
-                (key(UserEvent::RefList), "switch page"),
-                (key(UserEvent::FocusPanel(0)), "refs"),
-                (key(UserEvent::HelpToggle), "help"),
-            ]
-            .into_iter()
-            .filter(|(key, _)| !key.is_empty())
-            .collect()
-        })
+    // The keys of the events for a hint, see `KeyBind::short_keys`, found once for each.
+    pub fn short_keys(&self, events: &[UserEvent]) -> String {
+        let mut names = self.key_names.borrow_mut();
+        names
+            .entry(events.to_vec())
+            .or_insert_with(|| self.keybind.short_keys(events))
+            .clone()
     }
 
     pub fn busy_message(&self) -> Option<String> {
@@ -468,9 +462,6 @@ impl App<'_> {
                 AppEvent::SelectNewerCommit => {
                     self.select_newer_commit();
                 }
-                AppEvent::SelectParentCommit => {
-                    self.select_parent_commit();
-                }
                 AppEvent::CopyToClipboard { name, value } => {
                     self.copy_to_clipboard(name, value);
                 }
@@ -546,6 +537,50 @@ impl App<'_> {
         self.flush_pending_graph_uploads()?;
         terminal.draw(|f| self.render(f))?;
         Ok(())
+    }
+
+    // The keys of what has the focus: the popup, the sidebar or the view; then switching pages and
+    // the help. As many as fit in `width`, the first ones being the most useful.
+    fn fit_key_hints(&self, width: usize) -> Line<'static> {
+        let mut hints = if let Some(dialog) = self.visible_dialog() {
+            dialog.key_hints()
+        } else if self.shell.sidebar_focused {
+            vec![
+                hint(UserEvent::Confirm, "open"),
+                hint(UserEvent::FocusPanel(0), "collapse"),
+                hint(UserEvent::ShortCopy, "copy name"),
+                hint(UserEvent::Cancel, "back"),
+            ]
+        } else {
+            self.view.key_hints()
+        };
+        let typing = self.view.is_capturing_keys()
+            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
+        if self.visible_dialog().is_none() && !typing {
+            hints.extend([
+                hint(UserEvent::RefList, "switch page"),
+                hint(UserEvent::HelpToggle, "help"),
+            ]);
+        }
+        let keys: Vec<(String, String)> = hints
+            .into_iter()
+            .map(|(events, description)| (self.ctx.short_keys(&events), description))
+            .filter(|(keys, _)| !keys.is_empty())
+            .collect();
+        let theme = &self.ctx.color_theme;
+        let mut fitted = Line::default();
+        for n in 1..=keys.len() {
+            let keys: Vec<(&str, &str)> = keys[..n]
+                .iter()
+                .map(|(key, description)| (key.as_str(), description.as_str()))
+                .collect();
+            let line = key_hints(&keys, theme);
+            if line.width() > width {
+                break;
+            }
+            fitted = line;
+        }
+        fitted
     }
 
     // What to clear before drawing the frame: the graph images stay on the screen until cleared,
@@ -711,31 +746,30 @@ impl App<'_> {
             }
         }
 
-        if matches!(self.shell.app_status.status_line, StatusLine::None) {
-            if let Some(task) = self.ctx.running_task.borrow().as_ref() {
-                right.push(Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
-            }
-            let picked = self.view.picked_commit_count();
-            if picked > 0 {
-                let commits = if picked == 1 { "commit" } else { "commits" };
-                right.push(
-                    Span::raw(format!(" {picked} {commits} picked "))
-                        .fg(theme.list_picked_fg)
-                        .bg(theme.list_picked_bg)
-                        .bold(),
-                );
-                right.push(Span::raw(" esc to clear ").fg(theme.status_input_transient_fg));
-            }
-            if right.is_empty() {
-                let keys: Vec<(&str, &str)> = self
-                    .ctx
-                    .status_hints()
-                    .iter()
-                    .map(|(key, description)| (key.as_str(), *description))
-                    .collect();
-                right.extend(key_hints(&keys, theme).spans);
-                right.push(Span::raw(" "));
-            }
+        if let Some(task) = self.ctx.running_task.borrow().as_ref() {
+            right.insert(0, Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
+        }
+        let picked = self.view.picked_commit_count();
+        if picked > 0 {
+            let commits = if picked == 1 { "commit" } else { "commits" };
+            right.insert(
+                0,
+                Span::raw(format!(" {picked} {commits} picked "))
+                    .fg(theme.list_picked_fg)
+                    .bg(theme.list_picked_bg)
+                    .bold(),
+            );
+        }
+
+        // the keys of what has the focus, as many as fit, before the rest of the right side
+        let used: usize = left.iter().chain(&right).map(Span::width).sum();
+        let available = (area.width as usize).saturating_sub(used + 2);
+        let hints = self.fit_key_hints(available);
+        if !hints.spans.is_empty() {
+            let at = usize::from(picked > 0);
+            let mut spans = hints.spans;
+            spans.push(Span::raw(" "));
+            right.splice(at..at, spans);
         }
 
         let line = status_bar_line(left, right, area.width);
@@ -1389,18 +1423,6 @@ impl App<'_> {
             view.select_newer_commit();
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_newer_commit(
-                self.repository,
-                self.shell.app_status.view_area,
-                build_external_command_parameters_and_exec_command,
-            );
-        }
-    }
-
-    fn select_parent_commit(&mut self) {
-        if let View::Detail(ref mut view) = self.view {
-            view.select_parent_commit();
-        } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_parent_commit(
                 self.repository,
                 self.shell.app_status.view_area,
                 build_external_command_parameters_and_exec_command,

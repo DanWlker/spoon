@@ -36,7 +36,6 @@ pub enum AppEvent {
     CloseHelp,
     SelectNewerCommit,
     SelectOlderCommit,
-    SelectParentCommit,
     CopyToClipboard {
         name: String,
         value: String,
@@ -215,6 +214,14 @@ impl EventController {
     }
 }
 
+// A hint in the status bar: the events of a key, and what it does.
+pub type KeyHint = (Vec<UserEvent>, String);
+
+// A hint for one event.
+pub fn hint(event: UserEvent, description: &str) -> KeyHint {
+    (vec![event], description.to_string())
+}
+
 // The event triggered by user's key input
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UserEvent {
@@ -231,16 +238,12 @@ pub enum UserEvent {
     SelectDown,
     GoToTop,
     GoToBottom,
-    GoToParent,
     ScrollUp,
     ScrollDown,
     PageUp,
     PageDown,
     HalfPageUp,
     HalfPageDown,
-    SelectTop,
-    SelectMiddle,
-    SelectBottom,
     GoToNext,
     GoToPrevious,
     Confirm,
@@ -276,6 +279,7 @@ pub enum UserEvent {
     Squash,
     Revert,
     Reset,
+    AmendCommit,
     SearchTargetToggle,
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -333,16 +337,12 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "select_down" => Ok(UserEvent::SelectDown),
                         "go_to_top" => Ok(UserEvent::GoToTop),
                         "go_to_bottom" => Ok(UserEvent::GoToBottom),
-                        "go_to_parent" => Ok(UserEvent::GoToParent),
                         "scroll_up" => Ok(UserEvent::ScrollUp),
                         "scroll_down" => Ok(UserEvent::ScrollDown),
                         "page_up" => Ok(UserEvent::PageUp),
                         "page_down" => Ok(UserEvent::PageDown),
                         "half_page_up" => Ok(UserEvent::HalfPageUp),
                         "half_page_down" => Ok(UserEvent::HalfPageDown),
-                        "select_top" => Ok(UserEvent::SelectTop),
-                        "select_middle" => Ok(UserEvent::SelectMiddle),
-                        "select_bottom" => Ok(UserEvent::SelectBottom),
                         "go_to_next" => Ok(UserEvent::GoToNext),
                         "go_to_previous" => Ok(UserEvent::GoToPrevious),
                         "confirm" => Ok(UserEvent::Confirm),
@@ -382,6 +382,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "squash" => Ok(UserEvent::Squash),
                         "revert" => Ok(UserEvent::Revert),
                         "reset" => Ok(UserEvent::Reset),
+                        "amend_commit" => Ok(UserEvent::AmendCommit),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))
@@ -432,7 +433,8 @@ impl UserEvent {
             | UserEvent::CherryPick
             | UserEvent::Squash
             | UserEvent::Revert
-            | UserEvent::Reset => Some(Page::Graph),
+            | UserEvent::Reset
+            | UserEvent::AmendCommit => Some(Page::Graph),
             UserEvent::NextTab | UserEvent::PreviousTab => Some(Page::Details),
             UserEvent::ToggleStage
             | UserEvent::Stash
@@ -455,7 +457,6 @@ impl UserEvent {
                 | UserEvent::NavigateDown
                 | UserEvent::ScrollUp
                 | UserEvent::ScrollDown
-                | UserEvent::GoToParent
                 | UserEvent::PageUp
                 | UserEvent::PageDown
                 | UserEvent::HalfPageUp

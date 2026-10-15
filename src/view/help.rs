@@ -239,7 +239,6 @@ fn build_lines(
     let mut list_helps = vec![
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
-        (vec![UserEvent::GoToParent], "Go to parent".into()),
         (vec![UserEvent::GoToTop], "Go to top".into()),
         (vec![UserEvent::GoToBottom], "Go to bottom".into()),
         (vec![UserEvent::PageDown], "Scroll page down".into()),
@@ -248,9 +247,6 @@ fn build_lines(
         (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
         (vec![UserEvent::ScrollDown], "Scroll down".into()),
         (vec![UserEvent::ScrollUp], "Scroll up".into()),
-        (vec![UserEvent::SelectTop], "Select top of the screen".into()),
-        (vec![UserEvent::SelectMiddle], "Select middle of the screen".into()),
-        (vec![UserEvent::SelectBottom], "Select bottom of the screen".into()),
         (vec![UserEvent::Confirm], "Show commit details".into()),
         (vec![UserEvent::FocusPanel(2)], "Show commit info".into()),
         (vec![UserEvent::FocusPanel(3)], "Show changed files and their diff".into()),
@@ -267,6 +263,7 @@ fn build_lines(
         (vec![UserEvent::Squash], "Squash the picked commits, or the selected one, into their parents".into()),
         (vec![UserEvent::Revert], "Revert the picked commits, or the selected one".into()),
         (vec![UserEvent::Reset], "Reset the current branch to the selected commit".into()),
+        (vec![UserEvent::AmendCommit], "Amend the selected commit with the staged changes".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::SearchTargetToggle], "Toggle search target".into()),
@@ -301,10 +298,9 @@ fn build_lines(
         (vec![UserEvent::GoToBottom], "Go to bottom".into()),
         (vec![UserEvent::SelectDown], "Select older commit".into()),
         (vec![UserEvent::SelectUp], "Select newer commit".into()),
-        (vec![UserEvent::GoToParent], "Select parent commit".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
-        (vec![UserEvent::FullCopy], "Copy commit hash".into()),
+        (vec![UserEvent::ShortCopy], "Copy commit short hash; the relative path in a file tree".into()),
+        (vec![UserEvent::FullCopy], "Copy commit hash; the absolute path in a file tree".into()),
     ];
     detail_helps.extend(user_command_help_items.clone());
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
@@ -354,6 +350,7 @@ fn build_lines(
         (vec![UserEvent::ScrollDown], "Scroll diff down".into()),
         (vec![UserEvent::ScrollUp], "Scroll diff up".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
+        (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the relative/absolute path of the file".into()),
     ];
     let (local_changes_key_lines, local_changes_value_lines) = build_block_lines("Local Changes:", local_changes_helps, color_theme, keybind);
     
@@ -380,7 +377,6 @@ fn build_lines(
         (vec![UserEvent::GoToBottom], "Go to bottom".into()),
         (vec![UserEvent::SelectDown], "Select older commit".into()),
         (vec![UserEvent::SelectUp], "Select newer commit".into()),
-        (vec![UserEvent::GoToParent], "Select parent commit".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::Confirm], "Show commit details".into()),
     ];

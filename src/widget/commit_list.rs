@@ -327,23 +327,6 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn select_parent(&mut self) {
-        if let Some(target_commit) = self.selected_commit_parent_hash().cloned() {
-            if self.commit_hash_set.contains(&target_commit) {
-                while target_commit.as_str() != self.selected_commit_hash().as_str() {
-                    self.select_next();
-                }
-            }
-        }
-    }
-
-    pub fn selected_commit_parent_hash(&self) -> Option<&CommitHash> {
-        self.commits[self.current_selected_index()]
-            .commit
-            .parent_commit_hashes
-            .first()
-    }
-
     pub fn select_prev(&mut self) {
         self.select_visible_index(self.current_selected_index().saturating_sub(1));
     }
@@ -431,26 +414,6 @@ impl<'a> CommitListState<'a> {
         }
         if self.offset > 0 {
             self.select_visible_index(self.current_selected_index());
-        }
-    }
-
-    pub fn select_high(&mut self) {
-        self.selected = 0;
-    }
-
-    pub fn select_middle(&mut self) {
-        if self.total > self.height {
-            self.selected = self.height / 2;
-        } else {
-            self.selected = self.total / 2;
-        }
-    }
-
-    pub fn select_low(&mut self) {
-        if self.total > self.height {
-            self.selected = self.height - 1;
-        } else {
-            self.selected = self.total - 1;
         }
     }
 
@@ -1402,7 +1365,7 @@ mod tests {
                     color_theme: ColorTheme::default(),
                     image_protocol,
                     running_task: Default::default(),
-                    status_hints: Default::default(),
+                    key_names: Default::default(),
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1507,7 +1470,7 @@ mod tests {
                 color_theme: ColorTheme::default(),
                 image_protocol: ImageProtocol::Iterm2,
                 running_task: Default::default(),
-                status_hints: Default::default(),
+                key_names: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
             let mut before = Buffer::empty(area);

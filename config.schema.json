@@ -691,9 +691,6 @@
         "select_down": {
           "$ref": "#/definitions/keybindArray"
         },
-        "go_to_parent": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "go_to_top": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -716,15 +713,6 @@
           "$ref": "#/definitions/keybindArray"
         },
         "half_page_down": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "select_top": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "select_middle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "select_bottom": {
           "$ref": "#/definitions/keybindArray"
         },
         "go_to_next": {
@@ -842,6 +830,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "reset": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "amend_commit": {
           "$ref": "#/definitions/keybindArray"
         }
       },

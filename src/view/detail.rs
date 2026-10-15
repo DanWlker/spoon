@@ -8,9 +8,9 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
-    view::{ListRefreshViewContext, RefreshViewContext},
+    view::{copy_path, graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_detail::{CommitDetail, CommitDetailState},
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
@@ -94,6 +94,42 @@ impl<'a> DetailView<'a> {
         self.list_focused
     }
 
+    pub fn key_hints(&self) -> Vec<KeyHint> {
+        if self.is_typing_query() {
+            return typing_hints(false);
+        }
+        let picked = self.as_list_state().picked_commit_hashes().len();
+        if self.list_focused {
+            let mut hints = graph_hints(picked);
+            if picked == 0 {
+                hints.insert(0, hint(UserEvent::Cancel, "close"));
+            }
+            return hints;
+        }
+        let mut hints = vec![];
+        if picked > 0 {
+            hints.push(hint(UserEvent::Cancel, "clear picks"));
+        } else {
+            hints.push(hint(UserEvent::Cancel, "close"));
+        }
+        if self.compare.is_none() {
+            hints.push((
+                vec![UserEvent::NextTab, UserEvent::PreviousTab],
+                "tab".into(),
+            ));
+        }
+        let copy = vec![UserEvent::ShortCopy, UserEvent::FullCopy];
+        match self.tab {
+            DetailTab::Info => hints.push((copy, "copy hash".into())),
+            DetailTab::Changes | DetailTab::Files => hints.extend([
+                hint(UserEvent::Search, "search"),
+                hint(UserEvent::Filter, "filter"),
+                (copy, "copy path".into()),
+            ]),
+        }
+        hints
+    }
+
     pub fn is_comparing(&self) -> bool {
         self.compare.is_some()
     }
@@ -164,6 +200,22 @@ impl<'a> DetailView<'a> {
             return;
         }
 
+        // in the file trees, y and Y copy the path of the selected file
+        if !self.list_focused {
+            if let UserEvent::ShortCopy | UserEvent::FullCopy = event {
+                let path = match self.tab {
+                    DetailTab::Info => None,
+                    DetailTab::Changes => self.changes_state.selected_path(),
+                    DetailTab::Files => self.files_state.selected_path(),
+                };
+                if let Some(path) = path.map(String::from) {
+                    let full = event == UserEvent::FullCopy;
+                    self.tx.send(copy_path(self.repository, &path, full));
+                    return;
+                }
+            }
+        }
+
         let handled = match self.tab {
             _ if self.list_focused => false,
             DetailTab::Info => false,
@@ -216,9 +268,6 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::SelectUp => {
                 self.tx.send(AppEvent::SelectNewerCommit);
-            }
-            UserEvent::GoToParent => {
-                self.tx.send(AppEvent::SelectParentCommit);
             }
             UserEvent::ShortCopy => {
                 self.copy_commit_short_hash();
@@ -332,7 +381,6 @@ impl<'a> DetailView<'a> {
             UserEvent::NavigateUp | UserEvent::SelectUp => {
                 repeat(state, CommitListState::select_prev)
             }
-            UserEvent::GoToParent => repeat(state, CommitListState::select_parent),
             UserEvent::GoToTop => state.select_first(),
             UserEvent::GoToBottom => state.select_last(),
             UserEvent::PageDown => repeat(state, CommitListState::scroll_down_page),
@@ -341,9 +389,6 @@ impl<'a> DetailView<'a> {
             UserEvent::HalfPageUp => repeat(state, CommitListState::scroll_up_half),
             UserEvent::ScrollDown => repeat(state, CommitListState::scroll_down),
             UserEvent::ScrollUp => repeat(state, CommitListState::scroll_up),
-            UserEvent::SelectTop => state.select_high(),
-            UserEvent::SelectMiddle => state.select_middle(),
-            UserEvent::SelectBottom => state.select_low(),
             UserEvent::ToggleSelect => state.toggle_pick(),
             UserEvent::NextPicked => state.select_next_pick(true),
             UserEvent::PreviousPicked => state.select_next_pick(false),
@@ -519,10 +564,6 @@ impl<'a> DetailView<'a> {
 
     pub fn select_newer_commit(&mut self) {
         self.update_selected_commit(|state| state.select_prev());
-    }
-
-    pub fn select_parent_commit(&mut self) {
-        self.update_selected_commit(|state| state.select_parent());
     }
 
     fn update_selected_commit<F>(&mut self, update_commit_list_state: F)

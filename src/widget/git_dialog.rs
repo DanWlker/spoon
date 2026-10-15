@@ -11,10 +11,9 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    event::UserEvent,
+    event::{KeyHint, UserEvent},
     git::{GitTask, RemoteInfo},
-    keybind::KeyBind,
-    widget::style::{badge, key_hints},
+    widget::style::badge,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +64,12 @@ enum DialogKind {
     Reset {
         commit: DialogCommit,
         branch: String,
+    },
+    // `base` is where the rebase starts, None from the root; no rebase when the commit is HEAD
+    Amend {
+        commit: DialogCommit,
+        base: Option<String>,
+        head: bool,
     },
 }
 
@@ -304,6 +309,37 @@ impl GitDialog {
         dialog
     }
 
+    // Amends `commit` with the staged changes: a fixup commit, then a rebase squashing it in.
+    pub fn amend(
+        branch: &str,
+        commit: DialogCommit,
+        staged: usize,
+        base: Option<String>,
+        head: bool,
+        auto_stash: bool,
+    ) -> Self {
+        let files = if staged == 1 {
+            "1 staged file".to_string()
+        } else {
+            format!("{staged} staged files")
+        };
+        let intro = vec![
+            format!("Amend on {branch}, with the {files}"),
+            format!("  {}", commit.line),
+        ];
+        let kind = DialogKind::Amend { commit, base, head };
+        let mut dialog = Self::with(" Amend ", "amend", intro, kind);
+        // the commits after it are rebased, the last one is amended in place
+        if !head {
+            dialog.push_check(
+                FieldId::AutoStash,
+                "Stash and reapply local changes",
+                auto_stash,
+            );
+        }
+        dialog
+    }
+
     pub fn reset(branch: &str, commit: DialogCommit) -> Self {
         let intro = vec![format!("Reset {branch} to"), format!("  {}", commit.line)];
         let kind = DialogKind::Reset {
@@ -502,6 +538,32 @@ impl GitDialog {
         }
     }
 
+    // The keys of the selected field and the popup, for the status bar.
+    pub fn key_hints(&self) -> Vec<KeyHint> {
+        use UserEvent::*;
+        let h =
+            |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
+        if self.editing {
+            return vec![h(&[Confirm, Cancel], "done typing")];
+        }
+        let mut hints = vec![];
+        // space toggles the field when it can, else types into it
+        match (self.can_toggle(), self.can_edit()) {
+            (true, true) => hints.extend([
+                h(&[DialogActivate, DialogToggle], "toggle"),
+                h(&[DialogEdit], "type"),
+            ]),
+            (true, false) => hints.push(h(&[DialogActivate, DialogToggle], "toggle")),
+            (false, true) => hints.push(h(&[DialogActivate, DialogEdit], "type")),
+            (false, false) => {}
+        }
+        // the key that opened the popup runs it too
+        let run: Vec<UserEvent> = std::iter::once(Confirm).chain(self.trigger).collect();
+        hints.push((run, self.verb.to_string()));
+        hints.push(h(&[Cancel], "cancel"));
+        hints
+    }
+
     // Whether the selected field is a checkbox, or has options to go through.
     fn can_toggle(&self) -> bool {
         match self.fields.get(self.selected) {
@@ -681,6 +743,42 @@ impl GitDialog {
                     ..Default::default()
                 })
             }
+            DialogKind::Amend {
+                commit, head: true, ..
+            } => Ok(GitTask {
+                running: format!("Amending {}", shorten_hash(&commit.hash)),
+                done: format!("Amended {}", shorten_hash(&commit.hash)),
+                ..GitTask::new(
+                    &["commit", "--amend", "--no-edit"],
+                    String::new(),
+                    String::new(),
+                )
+            }),
+            DialogKind::Amend { commit, base, .. } => {
+                let stash = if self.checked(FieldId::AutoStash) {
+                    "--autostash"
+                } else {
+                    "--no-autostash"
+                };
+                // a fixup naming the commit by its hash, which the rebase squashes into it
+                let fixup = format!("fixup! {}", commit.hash);
+                let prepare = ["commit", "--quiet", "-m", &fixup]
+                    .map(String::from)
+                    .to_vec();
+                let mut args = vec!["rebase".to_string(), "-i".into(), "--autosquash".into()];
+                args.push(stash.into());
+                args.push(base.clone().unwrap_or_else(|| "--root".into()));
+                let short = shorten_hash(&commit.hash);
+                Ok(GitTask {
+                    args,
+                    prepare: Some(prepare),
+                    // the todo list is taken as git arranged it
+                    env: vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
+                    running: format!("Amending {short}"),
+                    done: format!("Amended {short}"),
+                    ..Default::default()
+                })
+            }
             DialogKind::Revert { commits } => {
                 let mut args = vec!["revert".to_string(), "--no-edit".into()];
                 if !self.checked(FieldId::Commit) {
@@ -807,12 +905,19 @@ impl GitDialog {
             Ok(task) => task,
             Err(err) => return err,
         };
-        let args: Vec<&str> = task.args.iter().map(|a| shorten_hash(a)).collect();
-        let command = format!("git {}", args.join(" "));
-        if task.stash {
+        let git = |args: &[String]| {
+            let args: Vec<&str> = args.iter().map(|a| shorten_hash(a)).collect();
+            format!("git {}", args.join(" "))
+        };
+        let command = git(&task.args);
+        let command = if task.stash {
             format!("git stash; {command}; git stash pop")
         } else {
             command
+        };
+        match &task.prepare {
+            Some(prepare) => format!("{}; {command}", git(prepare)),
+            None => command,
         }
     }
 }
@@ -857,7 +962,6 @@ fn shorten_hash(arg: &str) -> &str {
 pub struct GitDialogWidget<'a> {
     dialog: &'a GitDialog,
     theme: &'a ColorTheme,
-    keybind: &'a KeyBind,
 }
 
 impl<'a> GitDialogWidget<'a> {
@@ -865,76 +969,21 @@ impl<'a> GitDialogWidget<'a> {
         GitDialogWidget {
             dialog,
             theme: &ctx.color_theme,
-            keybind: &ctx.keybind,
         }
     }
 }
 
 const LABEL_WIDTH: usize = 13;
+// the popups are at least this wide, so they don't change width much between fields
+const MIN_CONTENT_WIDTH: usize = 50;
 // long commit subjects and commands are cut at this width
 const MAX_CONTENT_WIDTH: usize = 90;
 
 impl Widget for GitDialogWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (dialog, theme) = (self.dialog, self.theme);
-        // the key that opened the popup runs it too
-        let run_events: Vec<UserEvent> = std::iter::once(UserEvent::Confirm)
-            .chain(dialog.trigger)
-            .collect();
-        let keybind = self.keybind;
-        let (move_keys, change_keys, run_key, cancel_key) = (
-            keybind.short_keys(&[UserEvent::NavigateDown, UserEvent::NavigateUp]),
-            keybind.short_keys(&[UserEvent::NavigateLeft, UserEvent::NavigateRight]),
-            keybind.short_keys(&run_events),
-            keybind.short_keys(&[UserEvent::Cancel]),
-        );
-        // what the selected field takes: space toggles it when it can, else types into it
-        let (toggle_keys, edit_keys) = match (dialog.can_toggle(), dialog.can_edit()) {
-            (true, true) => (
-                keybind.short_keys(&[UserEvent::DialogActivate, UserEvent::DialogToggle]),
-                keybind.short_keys(&[UserEvent::DialogEdit]),
-            ),
-            (true, false) => (
-                keybind.short_keys(&[UserEvent::DialogActivate, UserEvent::DialogToggle]),
-                String::new(),
-            ),
-            (false, true) => (
-                String::new(),
-                keybind.short_keys(&[UserEvent::DialogActivate, UserEvent::DialogEdit]),
-            ),
-            (false, false) => (String::new(), String::new()),
-        };
         let dim = Style::default().fg(theme.status_input_transient_fg);
-        let mut keys = vec![
-            (move_keys.as_str(), "move"),
-            (change_keys.as_str(), "change"),
-            (toggle_keys.as_str(), "toggle"),
-            (edit_keys.as_str(), "type"),
-        ];
-        keys.extend([
-            (run_key.as_str(), dialog.verb),
-            (cancel_key.as_str(), "cancel"),
-        ]);
-        keys.retain(|(key, _)| !key.is_empty());
-        let keys_hint = key_hints(&keys, theme);
-        // the width stays the same while typing, or moving between fields taking other keys
-        let text_field_keys = keybind.short_keys(&[UserEvent::DialogEdit]);
-        let widest = key_hints(&[(text_field_keys.as_str(), "type")], theme).width() + 3;
-        let has_text = dialog
-            .fields
-            .iter()
-            .any(|(.., f)| matches!(f, Field::Text { .. }));
-        let min_width = keys_hint.width()
-            + if has_text && edit_keys.is_empty() {
-                widest
-            } else {
-                0
-            };
-        let hint = if dialog.editing {
-            key_hints(&[("type", "a branch name"), ("enter/esc", "done")], theme)
-        } else {
-            keys_hint
-        };
+        // the keys are in the status bar
 
         let mut lines = vec![];
         if !dialog.intro.is_empty() {
@@ -1036,14 +1085,13 @@ impl Widget for GitDialogWidget<'_> {
         }
         lines.push(Line::raw(dialog.summary()).patch_style(dim).italic());
         lines.push(Line::raw(""));
-        lines.push(hint);
 
         let content_width = lines
             .iter()
             .map(Line::width)
             .max()
             .unwrap_or_default()
-            .clamp(min_width, MAX_CONTENT_WIDTH.max(min_width));
+            .clamp(MIN_CONTENT_WIDTH, MAX_CONTENT_WIDTH);
         let width = (content_width as u16 + 4).min(area.width);
         let height = (lines.len() as u16 + 2).min(area.height);
         let popup = Rect::new(

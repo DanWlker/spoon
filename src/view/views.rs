@@ -4,7 +4,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{Sender, UserEventWithCount},
+    event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     search::SearchOptions,
     view::{
@@ -13,9 +13,72 @@ use crate::{
     },
     widget::{
         commit_list::{CommitListState, SearchRefreshContext},
+        file_tree::ROOT_PATH,
         local_changes::LocalChangesState,
     },
 };
+
+// The keys of the commit graph, with the commands on the selected or picked commits.
+pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
+    let mut hints = vec![];
+    if picked > 0 {
+        hints.push(hint(UserEvent::Cancel, "clear picks"));
+    }
+    hints.extend([
+        hint(UserEvent::ToggleSelect, "pick"),
+        hint(UserEvent::Diff, "diff"),
+        hint(UserEvent::Checkout, "checkout"),
+        hint(UserEvent::Merge, "merge"),
+        hint(UserEvent::Rebase, "rebase"),
+        hint(UserEvent::CherryPick, "cherry-pick"),
+        hint(UserEvent::Squash, "squash"),
+        hint(UserEvent::AmendCommit, "amend"),
+        hint(UserEvent::Revert, "revert"),
+        hint(UserEvent::Reset, "reset"),
+        hint(UserEvent::Search, "search"),
+        (
+            vec![UserEvent::ShortCopy, UserEvent::FullCopy],
+            "copy hash".into(),
+        ),
+    ]);
+    hints
+}
+
+// The keys while typing a search or filter.
+pub fn typing_hints(searching_commits: bool) -> Vec<KeyHint> {
+    let mut hints = vec![];
+    if searching_commits {
+        hints.extend([
+            hint(UserEvent::SearchTargetToggle, "target"),
+            hint(UserEvent::IgnoreCaseToggle, "ignore case"),
+            hint(UserEvent::FuzzyToggle, "fuzzy"),
+        ]);
+    }
+    hints.extend([
+        hint(UserEvent::Confirm, "apply"),
+        hint(UserEvent::Cancel, "cancel"),
+    ]);
+    hints
+}
+
+// Copies the path of a file in the repository: relative to its top, or absolute with `full`.
+pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
+    // the root row of the local changes stands for the whole repository
+    let relative = if path == ROOT_PATH { "." } else { path };
+    if full {
+        let absolute = repository.path().join(relative);
+        let absolute = absolute.to_string_lossy();
+        AppEvent::CopyToClipboard {
+            name: "Absolute Path".into(),
+            value: absolute.trim_end_matches("/.").to_string(),
+        }
+    } else {
+        AppEvent::CopyToClipboard {
+            name: "Path".into(),
+            value: relative.to_string(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
@@ -103,6 +166,17 @@ impl<'a> View<'a> {
             View::UserCommand(view) => view.graph_image_ids_sorted(),
             View::LocalChanges(view) => view.graph_image_ids_sorted(),
             View::Help(view) => view.graph_image_ids_sorted(),
+        }
+    }
+
+    // The keys of what has the focus in the view, for the status bar; not the ones moving around.
+    pub fn key_hints(&self) -> Vec<KeyHint> {
+        match self {
+            View::List(view) => view.key_hints(),
+            View::Detail(view) => view.key_hints(),
+            View::LocalChanges(view) => view.key_hints(),
+            View::UserCommand(_) | View::Help(_) => vec![hint(UserEvent::Cancel, "close")],
+            View::Default => vec![],
         }
     }
 

@@ -8,9 +8,9 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Page, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, KeyHint, Page, Sender, UserEvent, UserEventWithCount},
     external::{editor_command, merge_tool_command},
-    view::{ListRefreshViewContext, RefreshViewContext},
+    view::{copy_path, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::CommitListState,
         local_changes::{
@@ -241,11 +241,23 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
+            // y and Y copy the path of the selected file
+            UserEvent::ShortCopy | UserEvent::FullCopy if !self.as_state().is_commit_focused() => {
+                if let Some(path) = self.as_state().selected_path() {
+                    let full = event == UserEvent::FullCopy;
+                    let repository = self.as_state().repository();
+                    self.tx.send(copy_path(repository, &path, full));
+                }
+            }
             UserEvent::Refresh => {
                 self.refresh();
             }
             _ => {}
         }
+    }
+
+    pub fn key_hints(&self) -> Vec<KeyHint> {
+        self.as_state().key_hints()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {

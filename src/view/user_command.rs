@@ -106,9 +106,6 @@ impl<'a> UserCommandView<'a> {
             UserEvent::SelectUp => {
                 self.tx.send(AppEvent::SelectNewerCommit);
             }
-            UserEvent::GoToParent => {
-                self.tx.send(AppEvent::SelectParentCommit);
-            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
@@ -209,17 +206,6 @@ impl<'a> UserCommandView<'a> {
     ) {
         self.update_selected_commit(repository, view_area, exec_command, |state| {
             state.select_prev()
-        });
-    }
-
-    pub fn select_parent_commit(
-        &mut self,
-        repository: &Repository,
-        view_area: Rect,
-        exec_command: ExecCommandFn,
-    ) {
-        self.update_selected_commit(repository, view_area, exec_command, |state| {
-            state.select_parent()
         });
     }
 

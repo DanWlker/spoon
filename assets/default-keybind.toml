@@ -8,7 +8,6 @@ navigate_up = ["k", "up"]
 navigate_down = ["j", "down"]
 navigate_right = ["l", "right"]
 navigate_left = ["h", "left"]
-go_to_parent = ["alt-j", "alt-down"]
 select_up = ["shift-k"]
 select_down = ["shift-j"]
 
@@ -20,9 +19,6 @@ page_up = ["ctrl-b", "pageup"]
 page_down = ["ctrl-f", "pagedown"]
 half_page_up = ["ctrl-u"]
 half_page_down = ["ctrl-d"]
-select_top = ["shift-h"]
-select_middle = ["shift-m"]
-select_bottom = ["shift-l"]
 
 go_to_next = ["n"]
 go_to_previous = ["shift-n"]
@@ -88,6 +84,8 @@ squash = ["s"]
 revert = ["u"]
 # reset the current branch to the selected commit, after confirming
 reset = ["shift-u"]
+# amend the selected commit with the staged changes, after confirming
+amend_commit = ["shift-a"]
 
 # in the popups of the git commands: toggle the selected checkbox or go to the next option (dialog_toggle),
 # type into the selected text field (dialog_edit), or either, toggling when the field can be toggled (dialog_activate)

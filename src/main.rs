@@ -197,7 +197,7 @@ fn main() -> Result<()> {
         color_theme,
         image_protocol,
         running_task: Default::default(),
-        status_hints: Default::default(),
+        key_names: Default::default(),
     });
 
     let ec = event::EventController::init();

@@ -13,7 +13,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
-    event::UserEvent,
+    event::{KeyHint, UserEvent},
     git::{
         ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository,
     },
@@ -23,7 +23,7 @@ use crate::{
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
-        style::{badge, key_hints, mark_selected_row, panel_title, tree_panel_width},
+        style::{badge, mark_selected_row, panel_title, tree_panel_width},
         text_area::TextArea,
         tree_query::{highlighted_name, QueryChange, QueryKind, TreeQuery},
     },
@@ -706,6 +706,104 @@ impl<'a> LocalChangesState<'a> {
         }
         self.external_request = Some(ExternalRequest::Editor(path));
         Ok(())
+    }
+
+    // The keys of what has the focus, for the status bar; not the ones moving around.
+    pub fn key_hints(&self) -> Vec<KeyHint> {
+        use UserEvent::*;
+        let h =
+            |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
+        if let Some((action, _)) = &self.confirm {
+            return match action {
+                ConfirmAction::Commit(preview) => {
+                    let verb = if preview.amend { "amend" } else { "commit" };
+                    vec![h(&[Confirm, Commit], verb), h(&[Cancel], "cancel")]
+                }
+                ConfirmAction::Abort(_) => vec![h(&[Confirm], "abort"), h(&[Cancel], "cancel")],
+                ConfirmAction::Discard => {
+                    vec![h(&[Confirm], "discard"), h(&[Cancel], "cancel")]
+                }
+            };
+        }
+        if self.is_typing_stash() {
+            return vec![h(&[Confirm], "stash"), h(&[Cancel], "cancel")];
+        }
+        if self.is_typing_query() {
+            return crate::view::typing_hints(false);
+        }
+        let unstaged = self.section == LocalChangesSection::Unstaged;
+        let stage = if unstaged { "stage" } else { "unstage" };
+        let commit = if self
+            .operation
+            .is_some_and(Operation::continues_without_commit)
+        {
+            "continue"
+        } else if self.amend_base.is_some() {
+            "amend"
+        } else {
+            "commit"
+        };
+        // amending is not available while an operation is in progress, aborting is
+        let amend_or_abort = match (self.operation, self.amend_base.is_some()) {
+            (Some(_), _) => h(&[Abort], "abort"),
+            (None, true) => h(&[ToggleAmend], "stop amending"),
+            (None, false) => h(&[ToggleAmend], "amend"),
+        };
+        let mut hints = match self.focus {
+            Focus::Commit { editing: true } => return vec![h(&[Cancel], "stop typing")],
+            Focus::Commit { editing: false } => vec![
+                h(&[ToggleStage, Edit], "type"),
+                h(&[Confirm, Commit], commit),
+                amend_or_abort,
+                h(&[Cancel], "back"),
+            ],
+            Focus::Conflict => vec![h(&[Confirm], "choose"), h(&[Cancel], "back")],
+            Focus::Hunks | Focus::Lines => {
+                let (deeper, what) = if self.focus == Focus::Hunks {
+                    (vec![h(&[Confirm], "lines")], "hunk")
+                } else {
+                    (vec![], "line")
+                };
+                let mut hints = vec![h(&[ToggleStage], &format!("{stage} {what}"))];
+                if unstaged {
+                    hints.push(h(&[Discard], "discard"));
+                }
+                hints.extend(deeper);
+                hints.push(h(&[Cancel], "back"));
+                hints
+            }
+            Focus::Files => {
+                let mut hints = vec![h(&[ToggleStage], stage)];
+                if self.conflict.is_some() && self.picked().is_empty() {
+                    hints.push(h(&[Confirm], "resolve"));
+                } else {
+                    hints.push(h(&[Confirm], "hunks"));
+                }
+                hints.push(h(&[ToggleSelect], "pick"));
+                if unstaged {
+                    hints.push(h(&[Discard], "discard"));
+                }
+                hints.extend([
+                    h(&[Commit], commit),
+                    amend_or_abort,
+                    h(&[Stash], "stash"),
+                    h(&[Edit], "edit"),
+                    h(&[Search], "search"),
+                    h(&[Filter], "filter"),
+                    h(&[ShortCopy, FullCopy], "copy path"),
+                ]);
+                if !self.picked().is_empty() {
+                    hints.insert(0, h(&[Cancel], "clear picks"));
+                }
+                hints
+            }
+        };
+        hints.retain(|(events, _)| !events.is_empty());
+        hints
+    }
+
+    pub fn repository(&self) -> &'a Repository {
+        self.repository
     }
 
     pub fn toplevel(&self) -> &std::path::Path {
@@ -1543,79 +1641,13 @@ impl LocalChangesPanel<'_> {
         } else {
             theme.divider_fg
         };
-        let mut message_block = Block::default()
+        let message_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .style(Style::default().fg(border_fg));
-        // the keys of the section, like the hints of a popup
-        let hint = self.commit_hints(state, focused);
-        message_block = message_block.title_bottom(Line::from(
-            [vec![Span::raw(" ")], hint.spans, vec![Span::raw(" ")]].concat(),
-        ));
         let text_area = message_block.inner(inner);
         message_block.render(inner, buf);
         self.render_message(state, text_area, buf);
-    }
-
-    // The keys of the commit section: while typing, only how to stop; else what each key does.
-    fn commit_hints(&self, state: &LocalChangesState, focused: bool) -> Line<'static> {
-        let theme = &self.ctx.color_theme;
-        let keybind = &self.ctx.keybind;
-        if state.is_editing() {
-            return key_hints(&[("esc", "stop typing")], theme);
-        }
-        let commit = if state
-            .operation
-            .is_some_and(Operation::continues_without_commit)
-        {
-            "continue"
-        } else if state.amend_base.is_some() {
-            "amend"
-        } else {
-            "commit"
-        };
-        let amend = if state.amend_base.is_some() {
-            "stop amending"
-        } else {
-            "amend"
-        };
-        // amending is not available while an operation is in progress, aborting is
-        let (amend_or_abort_key, amend_or_abort) = if state.operation.is_some() {
-            (keybind.short_keys(&[UserEvent::Abort]), "abort")
-        } else {
-            (keybind.short_keys(&[UserEvent::ToggleAmend]), amend)
-        };
-        if !focused {
-            let keys = [
-                (keybind.short_keys(&[UserEvent::FocusPanel(3)]), "type"),
-                (keybind.short_keys(&[UserEvent::Commit]), commit),
-                (amend_or_abort_key, amend_or_abort),
-            ];
-            let keys: Vec<(&str, &str)> = keys
-                .iter()
-                .filter(|(key, _)| !key.is_empty())
-                .map(|(key, desc)| (key.as_str(), *desc))
-                .collect();
-            return key_hints(&keys, theme);
-        }
-        let mut keys = vec![
-            (
-                keybind.short_keys(&[UserEvent::ToggleStage, UserEvent::Edit]),
-                "type",
-            ),
-            (
-                keybind.short_keys(&[UserEvent::Confirm, UserEvent::Commit]),
-                commit,
-            ),
-        ];
-        keys.push((amend_or_abort_key, amend_or_abort));
-        keys.push((keybind.short_keys(&[UserEvent::Cancel]), "back"));
-        let keys: Vec<(&str, &str)> = keys
-            .iter()
-            .filter(|(key, _)| !key.is_empty())
-            .map(|(key, desc)| (key.as_str(), *desc))
-            .collect();
-        key_hints(&keys, theme)
     }
 
     fn render_conflict(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -1743,17 +1775,15 @@ impl LocalChangesPanel<'_> {
         buf: &mut Buffer,
     ) {
         let theme = &self.ctx.color_theme;
-        let (title, verb) = match action {
-            ConfirmAction::Abort(_) => ("Abort", "abort"),
-            _ => ("Discard changes", "discard"),
+        let title = match action {
+            ConfirmAction::Abort(_) => "Abort",
+            _ => "Discard changes",
         };
-        let hint = key_hints(&[("enter", verb), ("esc", "cancel")], theme);
         let lines = vec![
             Line::raw(""),
             Line::raw(prompt.to_string()).fg(theme.fg).bold(),
             Line::raw("This cannot be undone.").fg(theme.status_error_fg),
             Line::raw(""),
-            hint,
         ];
         render_popup(title, theme.status_error_fg, lines, area, buf, theme);
     }
@@ -1762,7 +1792,6 @@ impl LocalChangesPanel<'_> {
     fn render_commit_popup(&self, preview: &CommitPreview, area: Rect, buf: &mut Buffer) {
         let theme = &self.ctx.color_theme;
         let dim = Style::default().fg(theme.status_input_transient_fg);
-        let keybind = &self.ctx.keybind;
         let (title, color) = if preview.amend {
             ("Amend", theme.status_warn_fg)
         } else {
@@ -1821,12 +1850,6 @@ impl LocalChangesPanel<'_> {
             lines.push(Line::styled(more, dim));
         }
         lines.push(Line::raw(""));
-        let commit_keys = keybind.short_keys(&[UserEvent::Confirm, UserEvent::Commit]);
-        let verb = title.to_lowercase();
-        lines.push(key_hints(
-            &[(&commit_keys, &verb), ("esc", "cancel")],
-            theme,
-        ));
         render_popup(title, color, lines, area, buf, theme);
     }
 

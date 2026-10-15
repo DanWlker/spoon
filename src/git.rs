@@ -1475,6 +1475,8 @@ impl RemoteInfo {
 pub struct GitTask {
     // the arguments of the git command
     pub args: Vec<String>,
+    // a git command run first, before stashing the local changes
+    pub prepare: Option<Vec<String>>,
     // stash the local changes before the command, and reapply them after
     pub stash: bool,
     // talks to a remote
@@ -1503,6 +1505,9 @@ impl GitTask {
 
 // Runs the command of a task, between stashing and reapplying the local changes if it says so.
 pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> {
+    if let Some(prepare) = &task.prepare {
+        run_task_step(path, prepare, task)?;
+    }
     let stashed = task.stash
         && !git_output(path, &["status", "--porcelain"])
             .unwrap_or_default()
