@@ -111,6 +111,9 @@ impl<'a> DetailView<'a> {
         if self.list_focused {
             let mut hints = graph_hints(picked);
             hints.insert(0, hint(UserEvent::Confirm, "details"));
+            if picked == 0 && self.is_comparing() {
+                hints.insert(0, hint(UserEvent::Cancel, "close diff"));
+            }
             return hints;
         }
         let mut hints = vec![];
@@ -255,8 +258,18 @@ impl<'a> DetailView<'a> {
         // the picked commits are cleared before the search, the filter and the details; in the
         // diff or preview, Esc goes back to the files first
         if let UserEvent::Cancel | UserEvent::Close = event {
-            if !self.is_pane_focused() && !self.as_list_state().picked_commit_hashes().is_empty() {
+            let picked = !self.as_list_state().picked_commit_hashes().is_empty();
+            if !self.is_pane_focused() && picked {
                 self.clear_picks();
+                // the diff of the picked commits goes with them
+                if self.is_comparing() {
+                    self.tx.send(AppEvent::CloseDetail);
+                }
+                return;
+            }
+            // a comparison ends from the commit list too, showing the whole graph again
+            if self.list_focused && self.is_comparing() {
+                self.tx.send(AppEvent::CloseDetail);
                 return;
             }
         }
