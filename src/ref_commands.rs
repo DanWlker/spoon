@@ -132,7 +132,21 @@ fn delete_refs(
                 .filter(|name| !repository.is_merged(name))
                 .cloned()
                 .collect();
-            Ok(GitDialog::delete_branches(names, unmerged))
+            // the upstreams still on their remotes
+            let info = repository.remote_info();
+            let mut upstreams: Vec<(String, String)> = names
+                .iter()
+                .filter_map(|name| info.upstreams.get(name))
+                .filter(|(remote, branch)| {
+                    info.remote_branches
+                        .get(remote)
+                        .is_some_and(|branches| branches.contains(branch))
+                })
+                .cloned()
+                .collect();
+            upstreams.sort();
+            upstreams.dedup();
+            Ok(GitDialog::delete_branches(names, unmerged, upstreams))
         }
         RefSection::Remotes => {
             let info = repository.remote_info();
@@ -463,6 +477,22 @@ mod tests {
         assert!(format!("{dialog:?}").contains(r#"unmerged: ["ahead"]"#));
         run(path, UserEvent::DeleteRef, ahead, &[]);
         assert_eq!(branches(), "main \n");
+
+        // a branch deleted with its upstream on the remote, when checked
+        git(path, &["branch", "-q", "up"]);
+        git(path, &["push", "-q", "-u", "origin", "up"]);
+        let up = RefSelection::Ref(Branches, "up".into());
+        run(
+            path,
+            UserEvent::DeleteRef,
+            up,
+            &[Err(UserEvent::DialogToggle)],
+        );
+        assert_eq!(branches(), "main \n");
+        assert_eq!(
+            git(remote_dir.path(), &["branch", "--format=%(refname:short)"]),
+            "main\n"
+        );
 
         // a remote branch, deleted on the remote
         git(path, &["push", "-q", "origin", "main:gone"]);

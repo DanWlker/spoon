@@ -75,10 +75,12 @@ enum DialogKind {
         base: Option<String>,
     },
     CreateBranch,
-    // local branches, with those not merged into HEAD or their upstream
+    // local branches, with those not merged into HEAD or their upstream, and their upstreams
+    // still on their remotes, as (remote, branch), which may be deleted too
     DeleteBranches {
         names: Vec<String>,
         unmerged: Vec<String>,
+        upstreams: Vec<(String, String)>,
     },
     // branches on their remotes, as (remote, branch)
     DeleteRemoteBranches {
@@ -422,12 +424,30 @@ impl GitDialog {
         dialog
     }
 
-    // A local branch, `merged` into HEAD or its upstream; else it warns, as its commits may be lost.
-    // Local branches; `unmerged` are those not merged into HEAD or their upstream.
-    pub fn delete_branches(names: Vec<String>, unmerged: Vec<String>) -> Self {
+    // Local branches; `unmerged` are those not merged into HEAD or their upstream, which it warns
+    // about, as their commits may be lost. `upstreams` (remote, branch) are their upstreams still on
+    // their remotes, which a checkbox deletes too.
+    pub fn delete_branches(
+        names: Vec<String>,
+        unmerged: Vec<String>,
+        upstreams: Vec<(String, String)>,
+    ) -> Self {
         let intro = names_intro("Delete the branch", "Delete the branches", &names);
-        let kind = DialogKind::DeleteBranches { names, unmerged };
-        Self::with(" Delete branch ", "delete", intro, kind)
+        let label = match upstreams.len() {
+            0 => None,
+            1 if names.len() == 1 => Some("Delete its upstream on the remote too"),
+            _ => Some("Delete their upstreams on the remotes too"),
+        };
+        let kind = DialogKind::DeleteBranches {
+            names,
+            unmerged,
+            upstreams,
+        };
+        let mut dialog = Self::with(" Delete branch ", "delete", intro, kind);
+        if let Some(label) = label {
+            dialog.push_check(FieldId::Force, label, false);
+        }
+        dialog
     }
 
     // Branches on their remotes, as (remote, branch).
@@ -992,32 +1012,27 @@ impl GitDialog {
                 ))
             }
             // confirmed with the warning when it isn't merged
-            DialogKind::DeleteBranches { names, .. } => {
+            DialogKind::DeleteBranches {
+                names, upstreams, ..
+            } => {
                 let mut args = vec!["branch".to_string(), "-D".into()];
                 args.extend(names.iter().cloned());
                 let what = names_label("branch", "branches", names);
-                Ok(GitTask {
+                let mut task = GitTask {
                     args,
                     running: format!("Deleting {what}"),
                     done: format!("Deleted {what}"),
                     ..Default::default()
-                })
+                };
+                if self.checked(FieldId::Force) {
+                    task.then = delete_on_remotes(upstreams);
+                    task.remote = true;
+                    task.done = format!("Deleted {what}, also on the remote");
+                }
+                Ok(task)
             }
             DialogKind::DeleteRemoteBranches { branches } => {
-                // one push for the branches of each remote
-                let mut remotes: Vec<&String> = branches.iter().map(|(r, _)| r).collect();
-                remotes.sort();
-                remotes.dedup();
-                let mut commands = remotes.into_iter().map(|remote| {
-                    let mut args = vec!["push".to_string(), remote.clone(), "--delete".into()];
-                    args.extend(
-                        branches
-                            .iter()
-                            .filter(|(r, _)| r == remote)
-                            .map(|(_, b)| b.clone()),
-                    );
-                    args
-                });
+                let mut commands = delete_on_remotes(branches).into_iter();
                 let names: Vec<String> = branches.iter().map(|(r, b)| format!("{r}/{b}")).collect();
                 let what = names_label("branch", "branches", &names);
                 Ok(GitTask {
@@ -1299,17 +1314,33 @@ impl GitDialog {
             DialogKind::DeleteRemoteBranches { .. } => {
                 Some("They are deleted on the remote, for everyone.")
             }
-            DialogKind::DeleteBranches { names, unmerged } if !unmerged.is_empty() => {
-                return Some(match (names.len(), unmerged.as_slice()) {
-                    (1, _) => "It isn't merged, its commits on no other branch are lost.".into(),
-                    (_, [one]) => {
-                        format!("{one} isn't merged, its commits on no other branch are lost.")
+            DialogKind::DeleteBranches {
+                names,
+                unmerged,
+                upstreams,
+            } => {
+                let unmerged = match (names.len(), unmerged.as_slice()) {
+                    (_, []) => None,
+                    (1, _) => {
+                        Some("It isn't merged, its commits on no other branch are lost.".into())
                     }
-                    (_, more) => format!(
+                    (_, [one]) => Some(format!(
+                        "{one} isn't merged, its commits on no other branch are lost."
+                    )),
+                    (_, more) => Some(format!(
                         "{} aren't merged, their commits on no other branch are lost.",
                         more.join(", ")
-                    ),
+                    )),
+                };
+                // the upstream may be another branch, like main
+                let remote = self.checked(FieldId::Force).then(|| {
+                    let names: Vec<String> =
+                        upstreams.iter().map(|(r, b)| format!("{r}/{b}")).collect();
+                    format!("Deletes {} for everyone.", names.join(", "))
                 });
+                // the remote first, which can't be undone here
+                let warnings: Vec<String> = remote.into_iter().chain(unmerged).collect();
+                return (!warnings.is_empty()).then(|| warnings.join(" "));
             }
             DialogKind::DropStashes { .. } => Some("The stashed changes are lost."),
             _ => None,
@@ -1327,7 +1358,12 @@ impl GitDialog {
             let args: Vec<&str> = args.iter().map(|a| shorten_hash(a)).collect();
             format!("git {}", args.join(" "))
         };
-        let command = git(&task.args);
+        // with those run after it
+        let command = std::iter::once(&task.args)
+            .chain(&task.then)
+            .map(|args| git(args))
+            .collect::<Vec<_>>()
+            .join("; ");
         if task.stash {
             format!("git stash; {command}; git stash pop")
         } else {
@@ -1376,6 +1412,26 @@ fn names_label(one: &str, many: &str, names: &[String]) -> String {
             if names.len() == 1 { one } else { many }
         ),
     }
+}
+
+// Deletes the branches on their remotes, as (remote, branch): one push for those of each remote.
+fn delete_on_remotes(branches: &[(String, String)]) -> Vec<Vec<String>> {
+    let mut remotes: Vec<&String> = branches.iter().map(|(r, _)| r).collect();
+    remotes.sort();
+    remotes.dedup();
+    remotes
+        .into_iter()
+        .map(|remote| {
+            let mut args = vec!["push".to_string(), remote.clone(), "--delete".into()];
+            args.extend(
+                branches
+                    .iter()
+                    .filter(|(r, _)| r == remote)
+                    .map(|(_, b)| b.clone()),
+            );
+            args
+        })
+        .collect()
 }
 
 // The number of a stash like "stash@{2}".
