@@ -203,7 +203,8 @@ The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page s
 `Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.
 <kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file).
 
-In the commit graph, <kbd>1</kbd> focuses the commit list and <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> open the details of the selected commit on the info / changes / files tab, so a count before a command can't start with them there (`5j` works, `10j` doesn't).
+In the commit graph, <kbd>1</kbd> focuses the commit list and <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> open the details of the selected commit on the info / changes / files tab.
+Coming back to the commit graph from the local changes page (<kbd>Tab</kbd>), the details open again as they were, with the focus on the commit list.
 While the details are open, <kbd>1</kbd> moves the focus to the commit list above, where moving the selection shows the details of each commit, and <kbd>2</kbd> - <kbd>4</kbd> or <kbd>Enter</kbd> go back to the details; <kbd>Esc</kbd> there clears the picked commits, but doesn't close the details.
 
 #### Local Changes

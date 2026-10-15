@@ -163,6 +163,10 @@ impl<'a> DetailView<'a> {
         hints
     }
 
+    pub fn focus_list(&mut self) {
+        self.list_focused = true;
+    }
+
     // The scope of the keys: the commit list, the diff or preview beside the files, or the rest
     // of the details.
     pub fn scope(&self) -> Scope {

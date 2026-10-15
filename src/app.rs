@@ -7,10 +7,7 @@ use std::{
 
 use ratatui::{
     backend::Backend,
-    crossterm::{
-        event::{KeyCode, KeyEvent},
-        SynchronizedUpdate,
-    },
+    crossterm::{event::KeyEvent, SynchronizedUpdate},
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
@@ -134,7 +131,6 @@ struct FrameLayout {
 #[derive(Debug, Default)]
 struct AppStatus {
     status_line: StatusLine,
-    numeric_prefix: String,
     // the keys pressed so far of a key sequence, like "]" of "]m"
     pending_keys: Vec<KeyEvent>,
     view_area: Rect,
@@ -361,13 +357,7 @@ impl App<'_> {
                             SequenceMatch::Partial => continue,
                             SequenceMatch::Complete(ue) => {
                                 self.shell.app_status.pending_keys.clear();
-                                let event_with_count = process_numeric_prefix(
-                                    &self.shell.app_status.numeric_prefix,
-                                    ue,
-                                    key,
-                                );
-                                self.dispatch(event_with_count, key);
-                                self.shell.app_status.numeric_prefix.clear();
+                                self.dispatch(UserEventWithCount::from_event(ue), key);
                                 continue;
                             }
                             SequenceMatch::None => {
@@ -377,7 +367,6 @@ impl App<'_> {
                                     && self.ctx.keybind.event_in(scope, &key)
                                         == Some(UserEvent::Cancel)
                                 {
-                                    self.shell.app_status.numeric_prefix.clear();
                                     continue;
                                 }
                                 // otherwise the key goes on as usual
@@ -386,56 +375,30 @@ impl App<'_> {
                     }
 
                     let user_event = self.ctx.keybind.event_in(scope, &key).filter(|ue| {
-                        // digits continue a count, and without panels to focus they start one (or are typed)
+                        // digits focus the panels of the page, where it has them
                         match ue {
                             UserEvent::FocusPanel(n) => {
-                                self.shell.app_status.numeric_prefix.is_empty()
-                                    && !matches!(self.view, View::Help(_))
+                                !matches!(self.view, View::Help(_))
                                     && (*n == 0 || self.view.has_panels())
                             }
                             _ => true,
                         }
                     });
 
-                    if let Some(UserEvent::Cancel) = user_event {
-                        if !self.shell.app_status.numeric_prefix.is_empty() {
-                            // Clear numeric prefix and cancel the event
-                            self.shell.app_status.numeric_prefix.clear();
-                            continue;
-                        }
-                    }
-
                     match user_event {
                         Some(UserEvent::ForceQuit) => {
                             self.ec.send(AppEvent::Quit);
                         }
-                        Some(ue) => {
-                            let event_with_count = process_numeric_prefix(
-                                &self.shell.app_status.numeric_prefix,
-                                ue,
-                                key,
-                            );
-                            self.dispatch(event_with_count, key);
-                            self.shell.app_status.numeric_prefix.clear();
-                        }
+                        Some(ue) => self.dispatch(UserEventWithCount::from_event(ue), key),
                         None => {
                             if let StatusLine::Input { .. } = self.shell.app_status.status_line {
                                 // In input mode, pass all key events to the view
                                 // fixme: currently, the only thing that processes key_event is searching the list,
                                 //        so this probably works, but it's not the right process...
-                                self.shell.app_status.numeric_prefix.clear();
                                 self.view.handle_event(
                                     UserEventWithCount::from_event(UserEvent::Unknown),
                                     key,
                                 );
-                            } else if let KeyCode::Char(c) = key.code {
-                                // Accumulate numeric prefix
-                                if c.is_ascii_digit()
-                                    && (c != '0'
-                                        || !self.shell.app_status.numeric_prefix.is_empty())
-                                {
-                                    self.shell.app_status.numeric_prefix.push(c);
-                                }
                             }
                         }
                     }
@@ -720,12 +683,8 @@ impl App<'_> {
 
         match &self.shell.app_status.status_line {
             StatusLine::None => {
-                // the count and the keys of a key sequence typed so far
-                let prefix = format!(
-                    "{}{}",
-                    self.shell.app_status.numeric_prefix,
-                    keys_to_string(&self.shell.app_status.pending_keys)
-                );
+                // the keys of a key sequence typed so far
+                let prefix = keys_to_string(&self.shell.app_status.pending_keys);
                 left.push(Span::raw(prefix).fg(theme.accent_fg).bold());
             }
             StatusLine::Input {
@@ -1281,6 +1240,10 @@ impl App<'_> {
         }
         if let Some(tab) = self.shell.parked_detail_tab.take() {
             self.open_detail(tab);
+            // coming back to the graph, the commit list has the focus
+            if let View::Detail(view) = &mut self.view {
+                view.focus_list();
+            }
         }
     }
 
@@ -1729,23 +1692,6 @@ fn selected_commit_details(
     (commit, changes, refs)
 }
 
-fn process_numeric_prefix(
-    numeric_prefix: &str,
-    user_event: UserEvent,
-    _key_event: KeyEvent,
-) -> UserEventWithCount {
-    if user_event.is_countable() {
-        let count = if numeric_prefix.is_empty() {
-            1
-        } else {
-            numeric_prefix.parse::<usize>().unwrap_or(1)
-        };
-        UserEventWithCount::new(user_event, count)
-    } else {
-        UserEventWithCount::from_event(user_event)
-    }
-}
-
 fn extract_user_command_by_number(
     user_command_number: usize,
     ctx: &AppContext,
@@ -1866,26 +1812,6 @@ mod tests {
             draw(&mut terminal);
             assert_eq!(terminal.backend().buffer(), &Buffer::with_lines(["hello"]));
         }
-    }
-
-    #[rustfmt::skip]
-    #[rstest]
-    #[case("",    UserEvent::NavigateDown, UserEventWithCount::new(UserEvent::NavigateDown, 1))] // no prefix
-    #[case("5",   UserEvent::NavigateUp,   UserEventWithCount::new(UserEvent::NavigateUp, 5))] // with prefix
-    #[case("0",   UserEvent::PageDown,     UserEventWithCount::new(UserEvent::PageDown, 1))] // zero should be converted to 1
-    #[case("42",  UserEvent::ScrollDown,   UserEventWithCount::new(UserEvent::ScrollDown, 42))] // multi-digit number
-    #[case("999", UserEvent::PageDown,     UserEventWithCount::new(UserEvent::PageDown, 999))] // large number
-    #[case("abc", UserEvent::ScrollUp,     UserEventWithCount::new(UserEvent::ScrollUp, 1))] // should fallback to 1
-    #[case("5",   UserEvent::Quit,         UserEventWithCount::new(UserEvent::Quit, 1))] // non-countable event with prefix
-    #[case("",    UserEvent::Confirm,      UserEventWithCount::new(UserEvent::Confirm, 1))] // non-countable event without prefix
-    fn test_process_numeric_prefix(
-        #[case] numeric_prefix: &str,
-        #[case] user_event: UserEvent,
-        #[case] expected: UserEventWithCount,
-    ) {
-        let dummy_key_event = KeyEvent::from(KeyCode::Enter); // KeyEvent is not used in the logic
-        let actual = process_numeric_prefix(numeric_prefix, user_event, dummy_key_event);
-        assert_eq!(actual, expected);
     }
 
     #[test]

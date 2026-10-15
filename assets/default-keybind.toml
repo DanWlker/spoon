@@ -36,8 +36,7 @@ refresh = ["shift-r"]
 # focus the refs sidebar on the left
 focus_panel_0 = ["0"]
 # switch between panels: unstaged/staged/commit in local changes; the commit list and the
-# info/changes/files tabs of the commit details on the graph (opened right away);
-# digits are used as a count prefix in views without panels
+# info/changes/files tabs of the commit details on the graph (opened right away)
 focus_panel_1 = ["1"]
 focus_panel_2 = ["2"]
 focus_panel_3 = ["3"]
