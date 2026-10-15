@@ -7,7 +7,10 @@ use std::{
 
 use ratatui::{
     backend::Backend,
-    crossterm::{event::KeyEvent, SynchronizedUpdate},
+    crossterm::{
+        event::{KeyEvent, MouseEventKind},
+        SynchronizedUpdate,
+    },
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
@@ -17,6 +20,7 @@ use ratatui::{
 use rustc_hash::FxHashMap;
 
 use crate::{
+    layout::{Border, Panel, PanelLayout},
     color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{hint, AppEvent, EventController, KeyHint, UserEvent, UserEventWithCount},
@@ -33,7 +37,9 @@ use crate::{
     protocol::ImageProtocol,
     ref_commands::ref_command,
     search::SearchOptions,
-    view::{LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
+    view::{
+        user_command_height, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind,
+    },
     widget::{
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
@@ -92,6 +98,8 @@ pub struct AppContext {
     pub running_task: RefCell<Option<String>>,
     // the keys of the hints in the status bar, see `short_keys`
     pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
+    // the sizes of the panels, set by the user, kept across refreshes
+    pub layout: RefCell<PanelLayout>,
 }
 
 impl AppContext {
@@ -125,6 +133,8 @@ enum PendingClear {
 struct FrameLayout {
     view: ViewKind,
     sidebar_collapsed: bool,
+    // the sizes of the panels, see `PanelLayout`
+    panels: u64,
     dialog: bool,
 }
 
@@ -451,6 +461,18 @@ impl App<'_> {
                         }
                     }
                 }
+                AppEvent::Mouse(mouse) => {
+                    let mut layout = self.ctx.layout.borrow_mut();
+                    match mouse.kind {
+                        MouseEventKind::Down(_) => {
+                            layout.press(mouse.column, mouse.row);
+                        }
+                        MouseEventKind::Drag(_) => {
+                            layout.drag_to(mouse.column, mouse.row);
+                        }
+                        _ => layout.release(),
+                    }
+                }
                 AppEvent::Resize(w, h) => {
                     let _ = (w, h);
                 }
@@ -632,11 +654,16 @@ impl App<'_> {
         let layout = FrameLayout {
             view: self.view.kind(),
             sidebar_collapsed: self.shell.sidebar_collapsed,
+            panels: self.ctx.layout.borrow().version(),
             dialog: self.visible_dialog().is_some(),
         };
         let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
-            Some(last) if last.sidebar_collapsed != layout.sidebar_collapsed => {
+            // the graph moves
+            Some(last)
+                if last.sidebar_collapsed != layout.sidebar_collapsed
+                    || last.panels != layout.panels =>
+            {
                 PendingClear::Screen
             }
             // images of the graph would cover the popup
@@ -680,6 +707,20 @@ impl App<'_> {
 
         let [view_area, status_line_area] = split_app_areas(f.area());
         let [sidebar_area, view_area] = self.split_sidebar(view_area);
+        // the panels place their borders to drag as they are drawn
+        self.ctx.layout.borrow_mut().clear_borders();
+        if !self.shell.sidebar_collapsed && !sidebar_area.is_empty() {
+            let border = Border {
+                panel: Panel::Sidebar,
+                vertical: true,
+                at: sidebar_area.right() - 1,
+                from: sidebar_area.top(),
+                to: sidebar_area.bottom(),
+                anchor: sidebar_area.left(),
+                forward: true,
+            };
+            self.ctx.layout.borrow_mut().place(border, sidebar_area.width);
+        }
 
         self.update_state(view_area);
 
@@ -849,8 +890,10 @@ impl App<'_> {
         } else if self.shell.sidebar_collapsed {
             COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
-            // leave the page some room on narrow terminals
-            self.ctx.ui_config.refs.width.min(area.width / 3)
+            // leave the page some room on narrow terminals, unless resized
+            let default = self.ctx.ui_config.refs.width.min(area.width / 3);
+            let width = self.ctx.layout.borrow().size(Panel::Sidebar, default);
+            width.clamp(10, area.width.saturating_sub(20).max(10)).min(area.width)
         };
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area)
     }
@@ -1063,6 +1106,13 @@ impl App<'_> {
             return;
         }
         match event {
+            UserEvent::ResizeLeft
+            | UserEvent::ResizeRight
+            | UserEvent::ResizeUp
+            | UserEvent::ResizeDown => {
+                self.move_border(event);
+                return;
+            }
             UserEvent::FocusPanel(0) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
                 if self.shell.sidebar_focused && !self.shell.sidebar_collapsed {
@@ -1587,6 +1637,31 @@ impl App<'_> {
         self.run_graph_command(event, command);
     }
 
+    // Moves the border beside the focused panel with ctrl-left and ctrl-right (the sidebar, or the
+    // files beside a diff), the one above or under it with ctrl-up and ctrl-down.
+    fn move_border(&mut self, event: UserEvent) {
+        let (vertical, step) = match event {
+            UserEvent::ResizeLeft => (true, -2),
+            UserEvent::ResizeRight => (true, 2),
+            UserEvent::ResizeUp => (false, -1),
+            _ => (false, 1),
+        };
+        let sidebar = (!self.shell.sidebar_collapsed).then_some(Panel::Sidebar);
+        let panel = match &self.view {
+            _ if self.shell.sidebar_focused => sidebar.filter(|_| vertical),
+            View::Detail(view) if vertical && view.shows_tree() => Some(Panel::DetailTree),
+            View::Detail(_) if !vertical => Some(Panel::Details),
+            View::UserCommand(_) if !vertical => Some(Panel::UserCommand),
+            View::LocalChanges(_) if vertical => Some(Panel::Files),
+            View::LocalChanges(view) => Some(view.height_panel()),
+            _ if vertical => sidebar,
+            _ => None,
+        };
+        if let Some(panel) = panel {
+            self.ctx.layout.borrow_mut().move_border(panel, step);
+        }
+    }
+
     // Whether a diff of two commits or refs is open, also under the details of one of its commits.
     fn is_diffing(&self) -> bool {
         self.shell.compare.is_some()
@@ -2053,9 +2128,8 @@ fn build_external_command_parameters<'a>(
     }
 
     let area_width = view_area.width.saturating_sub(4); // minus the left and right padding
-    let area_height = (view_area.height.saturating_sub(1))
-        .min(ctx.ui_config.user_command.height)
-        .saturating_sub(1); // minus the top border
+    // minus the top and bottom borders
+    let area_height = user_command_height(ctx, view_area.height).saturating_sub(2);
     Ok(ExternalCommandParameters {
         command,
         target_hash,

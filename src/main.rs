@@ -8,6 +8,7 @@ mod git;
 mod graph;
 mod graph_commands;
 mod keybind;
+mod layout;
 mod protocol;
 mod ref_commands;
 mod search;
@@ -199,6 +200,7 @@ fn main() -> Result<()> {
         image_protocol,
         running_task: Default::default(),
         key_names: Default::default(),
+        layout: Default::default(),
     });
 
     let ec = event::EventController::init();
@@ -240,10 +242,12 @@ fn main() -> Result<()> {
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
-            // the focus coming back reloads what changed meanwhile, like lazygit
+            // the focus coming back reloads what changed meanwhile, like lazygit; the mouse drags
+            // the borders of the panels
             let _ = ratatui::crossterm::execute!(
                 std::io::stdout(),
-                ratatui::crossterm::event::EnableFocusChange
+                ratatui::crossterm::event::EnableFocusChange,
+                ratatui::crossterm::event::EnableMouseCapture
             );
             ec.start_refresher(
                 repository.path().to_path_buf(),
@@ -277,7 +281,8 @@ fn main() -> Result<()> {
 
     let _ = ratatui::crossterm::execute!(
         std::io::stdout(),
-        ratatui::crossterm::event::DisableFocusChange
+        ratatui::crossterm::event::DisableFocusChange,
+        ratatui::crossterm::event::DisableMouseCapture
     );
     ratatui::restore();
     ret.map_err(Into::into)

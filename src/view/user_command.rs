@@ -12,6 +12,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, Ref, Repository},
+    layout::{Border, Panel},
     view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
@@ -140,6 +141,19 @@ impl<'a> UserCommandView<'a> {
         let block = panel_block(true, &self.ctx.color_theme);
         let inner = block.inner(user_command_area);
         f.render_widget(block, user_command_area);
+        let border = Border {
+            panel: Panel::UserCommand,
+            vertical: false,
+            at: user_command_area.top(),
+            from: user_command_area.left(),
+            to: user_command_area.right(),
+            anchor: user_command_area.bottom(),
+            forward: false,
+        };
+        self.ctx
+            .layout
+            .borrow_mut()
+            .place(border, user_command_area.height);
         let commit_user_command =
             CommitUserCommand::new(&self.user_command_output_lines, self.ctx.clone());
         f.render_stateful_widget(
@@ -187,7 +201,7 @@ impl<'a> UserCommandView<'a> {
     }
 
     fn split_areas(&self, area: Rect) -> [Rect; 2] {
-        let user_command_height = (area.height - 1).min(self.ctx.ui_config.user_command.height);
+        let user_command_height = user_command_height(&self.ctx, area.height);
         Layout::vertical([Constraint::Min(0), Constraint::Length(user_command_height)]).areas(area)
     }
 
@@ -261,6 +275,16 @@ impl<'a> UserCommandView<'a> {
             user_command_context,
         }
     }
+}
+
+// The height of the output of a user command under the commit list, in a page `height` high.
+pub fn user_command_height(ctx: &AppContext, height: u16) -> u16 {
+    let default = ctx.ui_config.user_command.height;
+    let user_command_height = ctx.layout.borrow().size(Panel::UserCommand, default);
+    // the commit list keeps a few rows
+    user_command_height
+        .clamp(3, height.saturating_sub(4).max(3))
+        .min(height)
 }
 
 fn build_user_command_output_lines<'a>(

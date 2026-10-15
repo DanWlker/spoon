@@ -7,7 +7,9 @@ use std::{
     thread,
 };
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use serde::{
     de::{self, Deserializer, Visitor},
     Deserialize,
@@ -20,6 +22,8 @@ use crate::{
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    // pressing, dragging and releasing the left button, to drag the borders of the panels
+    Mouse(MouseEvent),
     Resize(usize, usize),
     Quit,
     // opens the details of the selected commit on a tab
@@ -150,6 +154,24 @@ impl EventController {
                         ratatui::crossterm::event::Event::Key(key) => {
                             tx.send(AppEvent::Key(key));
                         }
+                        ratatui::crossterm::event::Event::Mouse(mouse) => match mouse.kind {
+                            // the wheel moves like the arrow keys, as the terminal does without
+                            // the mouse captured
+                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                                let code = if mouse.kind == MouseEventKind::ScrollDown {
+                                    KeyCode::Down
+                                } else {
+                                    KeyCode::Up
+                                };
+                                tx.send(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+                            }
+                            MouseEventKind::Down(MouseButton::Left)
+                            | MouseEventKind::Drag(MouseButton::Left)
+                            | MouseEventKind::Up(MouseButton::Left) => {
+                                tx.send(AppEvent::Mouse(mouse));
+                            }
+                            _ => {}
+                        },
                         ratatui::crossterm::event::Event::Resize(w, h) => {
                             tx.send(AppEvent::Resize(w as usize, h as usize));
                         }
@@ -177,7 +199,8 @@ impl EventController {
         ratatui::crossterm::execute!(
             std::io::stdout(),
             ratatui::crossterm::terminal::EnterAlternateScreen,
-            ratatui::crossterm::event::EnableFocusChange
+            ratatui::crossterm::event::EnableFocusChange,
+            ratatui::crossterm::event::EnableMouseCapture
         )
         .unwrap();
         ratatui::crossterm::terminal::enable_raw_mode().unwrap();
@@ -193,6 +216,7 @@ impl EventController {
         ratatui::crossterm::execute!(
             std::io::stdout(),
             ratatui::crossterm::event::DisableFocusChange,
+            ratatui::crossterm::event::DisableMouseCapture,
             ratatui::crossterm::terminal::LeaveAlternateScreen
         )
         .unwrap();
@@ -295,6 +319,10 @@ pub enum UserEvent {
     Filter,
     UserCommand(usize),
     FocusPanel(usize),
+    ResizeLeft,
+    ResizeRight,
+    ResizeUp,
+    ResizeDown,
     ToggleStage,
     ToggleSelect,
     NextPicked,
@@ -404,6 +432,10 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
                         "fuzzy_toggle" => Ok(UserEvent::FuzzyToggle),
                         "refresh" => Ok(UserEvent::Refresh),
+                        "resize_left" => Ok(UserEvent::ResizeLeft),
+                        "resize_right" => Ok(UserEvent::ResizeRight),
+                        "resize_up" => Ok(UserEvent::ResizeUp),
+                        "resize_down" => Ok(UserEvent::ResizeDown),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
@@ -523,6 +555,10 @@ impl UserEvent {
                 | UserEvent::Refresh
                 | UserEvent::RefList
                 | UserEvent::FocusPanel(_)
+                | UserEvent::ResizeLeft
+                | UserEvent::ResizeRight
+                | UserEvent::ResizeUp
+                | UserEvent::ResizeDown
                 | UserEvent::Fetch
                 | UserEvent::FetchAll
                 | UserEvent::Pull

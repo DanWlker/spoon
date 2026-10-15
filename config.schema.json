@@ -737,6 +737,18 @@
         "refresh": {
           "$ref": "#/definitions/keybindArray"
         },
+        "resize_left": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_right": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "short_copy": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1001,6 +1013,18 @@
           "$ref": "#/definitions/keybindArray"
         },
         "refresh": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_left": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_right": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "resize_down": {
           "$ref": "#/definitions/keybindArray"
         },
         "short_copy": {

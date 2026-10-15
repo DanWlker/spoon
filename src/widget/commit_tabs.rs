@@ -12,6 +12,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     git::{Commit, CommitHash, FileChange, Repository},
+    layout::{Border, Panel},
     widget::style::{badge, mark_selected_row, panel_title, tree_panel_width},
     widget::{
         diff::{diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step},
@@ -635,7 +636,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let theme = &self.ctx.color_theme;
-        let [tree_area, diff_area] = split_tree_and_side(theme, area, buf);
+        let [tree_area, diff_area] = split_tree_and_side(&self.ctx, area, buf);
 
         if state.tree.rows().is_empty() {
             let message = if state.files.is_empty() {
@@ -717,7 +718,7 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let theme = &self.ctx.color_theme;
-        let [tree_area, preview_area] = split_tree_and_side(theme, area, buf);
+        let [tree_area, preview_area] = split_tree_and_side(&self.ctx, area, buf);
 
         if let Some(tree) = &state.tree {
             if tree.rows().is_empty() && tree.filter().is_some() {
@@ -784,8 +785,26 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
 }
 
 // Draws the divider, returning the tree area and the area beside it.
-fn split_tree_and_side(theme: &ColorTheme, inner: Rect, buf: &mut Buffer) -> [Rect; 2] {
-    let tree_width = tree_panel_width(inner.width);
+fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect; 2] {
+    let theme = &ctx.color_theme;
+    let default = tree_panel_width(inner.width);
+    let tree_width = ctx.layout.borrow().size(Panel::DetailTree, default);
+    // both keep some room
+    let tree_width = tree_width
+        .clamp(10, inner.width.saturating_sub(10).max(10))
+        .min(inner.width);
+    if tree_width > 0 {
+        let border = Border {
+            panel: Panel::DetailTree,
+            vertical: true,
+            at: inner.left() + tree_width - 1,
+            from: inner.top(),
+            to: inner.bottom(),
+            anchor: inner.left(),
+            forward: true,
+        };
+        ctx.layout.borrow_mut().place(border, tree_width);
+    }
     let [tree_area, side_area] =
         Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(0)]).areas(inner);
     let tree_block = Block::default()

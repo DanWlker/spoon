@@ -11,6 +11,7 @@ use crate::{
     event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keybind::Scope,
+    layout::{Border, Panel},
     view::{
         copy_path, graph_hints, handle_search_event, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
@@ -215,6 +216,12 @@ impl<'a> DetailView<'a> {
 
     // Whether two commits are compared, also while the details of a commit in the comparison
     // are shown over it.
+    // Whether the files of the changes or files tab have the focus, with the diff or preview
+    // beside them.
+    pub fn shows_tree(&self) -> bool {
+        !self.list_focused && self.tab != DetailTab::Info
+    }
+
     pub fn is_comparing(&self) -> bool {
         self.compare.is_some() || self.parked_compare.is_some()
     }
@@ -462,6 +469,16 @@ impl<'a> DetailView<'a> {
         let panel_area = detail_area;
         let detail_area = block.inner(panel_area);
         f.render_widget(block, panel_area);
+        let border = Border {
+            panel: Panel::Details,
+            vertical: false,
+            at: panel_area.top(),
+            from: panel_area.left(),
+            to: panel_area.right(),
+            anchor: panel_area.bottom(),
+            forward: false,
+        };
+        self.ctx.layout.borrow_mut().place(border, panel_area.height);
 
         match self.tab {
             DetailTab::Info => {
@@ -884,7 +901,9 @@ impl<'a> DetailView<'a> {
     }
 
     fn split_areas(&self, area: Rect) -> [Rect; 2] {
-        let detail_height = (area.height - 1).min(self.ctx.ui_config.detail.height);
+        let height = self.ctx.layout.borrow().size(Panel::Details, self.ctx.ui_config.detail.height);
+        // the commit list keeps a few rows
+        let detail_height = height.clamp(3, area.height.saturating_sub(4).max(3)).min(area.height);
         Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area)
     }
 

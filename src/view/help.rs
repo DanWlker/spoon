@@ -216,6 +216,8 @@ fn build_lines(
         (vec![UserEvent::HelpToggle], "Open help".into()),
         (vec![UserEvent::RefList], "Switch between local changes and the commit graph".into()),
         (vec![UserEvent::FocusPanel(0)], "Focus the refs sidebar, again to shrink/grow it".into()),
+        (vec![UserEvent::ResizeLeft, UserEvent::ResizeRight], "Move the border beside the focused panel (or drag it)".into()),
+        (vec![UserEvent::ResizeUp, UserEvent::ResizeDown], "Move the border above or under the focused panel (or drag it)".into()),
         (vec![UserEvent::Fetch], "Fetch from a remote".into()),
         (vec![UserEvent::FetchAll], "Fetch all remotes".into()),
         (vec![UserEvent::Pull], "Pull a branch of a remote".into()),

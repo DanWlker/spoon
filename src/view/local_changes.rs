@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::{
+    layout::Panel,
     app::AppContext,
     event::{AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     external::{editor_command, merge_tool_command},
@@ -411,6 +412,16 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // The scope of the keys: the diff, or the rest of the page.
+    // The panel whose height changes with ctrl-up and ctrl-down: the unstaged files over the
+    // staged ones from them, else the commit message under the diff.
+    pub fn height_panel(&self) -> Panel {
+        if self.as_state().is_files_focused() {
+            Panel::Unstaged
+        } else {
+            Panel::Commit
+        }
+    }
+
     pub fn scope(&self) -> Scope {
         if self.as_state().is_diff_focused() {
             Scope::LocalChangesDiff

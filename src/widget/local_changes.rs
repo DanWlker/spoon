@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
+    layout::{Border, Panel},
     app::AppContext,
     event::{KeyHint, UserEvent},
     git::{
@@ -1324,6 +1325,10 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    pub fn is_files_focused(&self) -> bool {
+        self.focus == Focus::Files
+    }
+
     // Whether the keys moving in the files apply to them: the conflict panel is beside them.
     fn focus_on_files(&self) -> bool {
         matches!(self.focus, Focus::Files | Focus::Conflict)
@@ -1488,15 +1493,53 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
     type State = LocalChangesState<'a>;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let files_width = tree_panel_width(area.width);
+        let mut layout = self.ctx.layout.borrow_mut();
+        // each keeps some room
+        let files_width = layout
+            .size(Panel::Files, tree_panel_width(area.width))
+            .clamp(10, area.width.saturating_sub(20).max(10))
+            .min(area.width);
         let [files_area, right_area] =
             Layout::horizontal([Constraint::Length(files_width), Constraint::Min(0)]).areas(area);
+        let commit_height = layout
+            .size(Panel::Commit, COMMIT_AREA_HEIGHT)
+            .clamp(3, right_area.height.saturating_sub(3).max(3))
+            .min(right_area.height);
         let [diff_area, commit_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(COMMIT_AREA_HEIGHT)])
+            Layout::vertical([Constraint::Min(0), Constraint::Length(commit_height)])
                 .areas(right_area);
+        let unstaged_height = layout
+            .size(Panel::Unstaged, files_area.height / 2)
+            .clamp(3, files_area.height.saturating_sub(3).max(3))
+            .min(files_area.height);
         let [unstaged_area, staged_area] =
-            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+            Layout::vertical([Constraint::Length(unstaged_height), Constraint::Min(0)])
                 .areas(files_area);
+        let borders = [
+            (Panel::Files, true, files_area, true, files_width),
+            (Panel::Unstaged, false, unstaged_area, true, unstaged_height),
+            (Panel::Commit, false, commit_area, false, commit_height),
+        ];
+        for (panel, vertical, area, forward, size) in borders {
+            let (at, from, to, anchor) = match (vertical, forward) {
+                (true, _) => (area.right() - 1, area.top(), area.bottom(), area.left()),
+                (false, true) => (area.bottom() - 1, area.left(), area.right(), area.top()),
+                (false, false) => (area.top(), area.left(), area.right(), area.bottom()),
+            };
+            let border = Border {
+                panel,
+                vertical,
+                at,
+                from,
+                to,
+                anchor,
+                forward,
+            };
+            if !area.is_empty() {
+                layout.place(border, size);
+            }
+        }
+        drop(layout);
 
         self.render_file_section(state, LocalChangesSection::Unstaged, unstaged_area, buf);
         self.render_file_section(state, LocalChangesSection::Staged, staged_area, buf);

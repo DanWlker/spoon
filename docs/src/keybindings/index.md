@@ -15,10 +15,15 @@ The default key bindings can be overridden.
 | <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
 | <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
 | <kbd>0</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_0` |
+| <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> | Move the border beside the focused panel: the sidebar's, or the one between the files and the diff | `resize_left` `resize_right` |
+| <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
 | <kbd>P</kbd>                   | Push a branch to a remote (chosen in a popup) | `push` |
+
+The borders between the panels can also be dragged with the mouse. The sizes are kept until the app quits.
+With the mouse captured, the terminal selects text while Shift is held.
 
 #### Fetch, pull and push
 

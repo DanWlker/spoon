@@ -1363,6 +1363,7 @@ mod tests {
                     image_protocol,
                     running_task: Default::default(),
                     key_names: Default::default(),
+                    layout: Default::default(),
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1467,6 +1468,7 @@ mod tests {
                 image_protocol: ImageProtocol::Iterm2,
                 running_task: Default::default(),
                 key_names: Default::default(),
+                layout: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
             let mut before = Buffer::empty(area);
