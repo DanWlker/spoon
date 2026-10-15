@@ -332,7 +332,7 @@ fn build_lines(
         (vec![UserEvent::CreateRef], "New remote (on the remotes)".into()),
         (vec![UserEvent::DeleteRef], "Delete the branch or tag, drop the stash".into()),
         (vec![UserEvent::EditRef], "Rename the branch or change its upstream; edit the remote".into()),
-        (vec![UserEvent::ApplyStash], "Apply the stash; open/close a node elsewhere".into()),
+        (vec![UserEvent::ApplyStash], "Apply the selected stash".into()),
         (vec![UserEvent::Merge], "Merge the branch into the current branch".into()),
         (vec![UserEvent::Rebase], "Rebase the current branch onto the branch".into()),
         (vec![UserEvent::Checkout], "Check out the branch or tag".into()),

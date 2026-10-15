@@ -209,20 +209,6 @@ impl<'a> DetailView<'a> {
         true
     }
 
-    // The name of the panel having the focus, for the title of the keys popup.
-    pub fn focus_name(&self) -> &'static str {
-        if self.list_focused {
-            return "Commits";
-        }
-        match self.tab {
-            DetailTab::Changes if self.is_pane_focused() => "Diff",
-            DetailTab::Files if self.is_pane_focused() => "Preview",
-            DetailTab::Info => "Info",
-            DetailTab::Changes => "Changes",
-            DetailTab::Files => "Files",
-        }
-    }
-
     pub fn focus_list(&mut self) {
         self.list_focused = true;
     }

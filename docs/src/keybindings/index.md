@@ -204,7 +204,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
-| <kbd>Space</kbd>                                   | Apply the stash; elsewhere open/close node | `apply_stash` |
+| <kbd>Space</kbd>                                   | Apply the stash | `apply_stash` |
 | <kbd>v</kbd>                                       | Pick/Unpick the ref (only refs of one kind together) | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 

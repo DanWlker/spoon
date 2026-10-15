@@ -1,5 +1,5 @@
 // The keys of the focused panel in a box at the bottom right, after helix's infobox and the
-// helix preset of which-key: the panel as the title, then a key and what it does on each row.
+// helix preset of which-key: a key and what it does on each row.
 
 use ratatui::{
     buffer::Buffer,
@@ -12,15 +12,14 @@ use ratatui::{
 use crate::{color::ColorTheme, widget::style::panel_block};
 
 pub struct KeysPopup<'a> {
-    title: &'a str,
     // the keys, like "j/k", and what they do
     keys: &'a [(String, String)],
     theme: &'a ColorTheme,
 }
 
 impl<'a> KeysPopup<'a> {
-    pub fn new(title: &'a str, keys: &'a [(String, String)], theme: &'a ColorTheme) -> Self {
-        KeysPopup { title, keys, theme }
+    pub fn new(keys: &'a [(String, String)], theme: &'a ColorTheme) -> Self {
+        KeysPopup { keys, theme }
     }
 
     // Its width and height, as big as the keys (with some room for short ones); see `area`.
@@ -34,7 +33,7 @@ impl<'a> KeysPopup<'a> {
             })
             .max()
             .unwrap_or(0)
-            .max(self.title.chars().count() + 2);
+            .max(TITLE.chars().count() + 2);
         // the borders and a space on each side
         let width = (row_width as u16 + 4).max(MIN_WIDTH);
         let height = (self.keys.len() as u16 + 2).min(MAX_HEIGHT);
@@ -57,6 +56,7 @@ impl<'a> KeysPopup<'a> {
     }
 }
 
+const TITLE: &str = "Keys";
 const MIN_WIDTH: u16 = 30;
 const MAX_HEIGHT: u16 = 25;
 const SEPARATOR: &str = " ➜ ";
@@ -82,11 +82,8 @@ impl Widget for KeysPopup<'_> {
                 ])
             })
             .collect();
-        let block = panel_block(true, theme).title(
-            Line::from(format!(" {} ", self.title))
-                .fg(theme.accent_fg)
-                .bold(),
-        );
+        let block = panel_block(true, theme)
+            .title(Line::from(format!(" {TITLE} ")).fg(theme.accent_fg).bold());
         Clear.render(area, buf);
         Paragraph::new(lines)
             .block(block)
@@ -109,7 +106,7 @@ mod tests {
                 "a long description of the key".to_string(),
             ),
         ];
-        let popup = KeysPopup::new("Commits", &keys, &theme);
+        let popup = KeysPopup::new(&keys, &theme);
         // in the bottom right corner, the rows with the borders
         let area = popup.area(Rect::new(0, 0, 100, 40));
         assert_eq!(area, Rect::new(100 - 42, 40 - 4, 42, 4));

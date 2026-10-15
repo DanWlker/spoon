@@ -638,13 +638,8 @@ impl App<'_> {
     // The keys working everywhere, for the status bar: the remotes, switching pages, the keys
     // popup and the help.
     fn global_hints(&self) -> Vec<KeyHint> {
-        let keys = if self.shell.keys_popup {
-            "hide keys"
-        } else {
-            "keys"
-        };
         vec![
-            hint(UserEvent::KeysToggle, keys),
+            hint(UserEvent::KeysToggle, "keys"),
             hint(UserEvent::Push, "push"),
             hint(UserEvent::Pull, "pull"),
             hint(UserEvent::Fetch, "fetch"),
@@ -673,14 +668,6 @@ impl App<'_> {
             return vec![];
         }
         self.shown_keys(self.local_hints())
-    }
-
-    fn keys_popup_title(&self) -> &'static str {
-        if self.shell.sidebar_focused {
-            "Refs"
-        } else {
-            self.view.focus_name()
-        }
     }
 
     // The keys for the status bar (see `keys_are_local`), as many as fit in `width`, the first
@@ -718,9 +705,8 @@ impl App<'_> {
             sidebar_collapsed: self.shell.sidebar_collapsed,
             panels: self.ctx.layout.borrow().version(),
             dialog: self.visible_dialog().is_some(),
-            keys_popup: (!keys.is_empty()).then(|| {
-                KeysPopup::new(self.keys_popup_title(), keys, &self.ctx.color_theme).size()
-            }),
+            keys_popup: (!keys.is_empty())
+                .then(|| KeysPopup::new(keys, &self.ctx.color_theme).size()),
         };
         let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
@@ -808,7 +794,7 @@ impl App<'_> {
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
         if !keys.is_empty() {
-            let popup = KeysPopup::new(self.keys_popup_title(), keys, &self.ctx.color_theme);
+            let popup = KeysPopup::new(keys, &self.ctx.color_theme);
             f.render_widget(popup, app_area);
         }
         if let Some(dialog) = self.visible_dialog() {
@@ -1274,13 +1260,8 @@ impl App<'_> {
             | UserEvent::ApplyStash) => {
                 let selection = self.shell.sidebar.selection();
                 let picked = self.shell.sidebar.picked();
-                match ref_command(self.repository, event, &selection, picked) {
-                    Some(dialog) => self.open_dialog(dialog),
-                    // space opens or closes a folder like enter
-                    None if event == UserEvent::ApplyStash => {
-                        self.shell.sidebar.toggle_node();
-                    }
-                    None => {}
+                if let Some(dialog) = ref_command(self.repository, event, &selection, picked) {
+                    self.open_dialog(dialog);
                 }
             }
             UserEvent::FocusPanel(_) => {

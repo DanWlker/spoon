@@ -194,17 +194,6 @@ impl<'a> View<'a> {
         }
     }
 
-    // The name of the panel having the focus, for the title of the keys popup.
-    pub fn focus_name(&self) -> &'static str {
-        match self {
-            View::Detail(view) => view.focus_name(),
-            View::LocalChanges(view) => view.focus_name(),
-            View::UserCommand(_) => "Command",
-            View::Help(_) => "Help",
-            View::List(_) | View::Default => "Commits",
-        }
-    }
-
     // What the view shows, to tell when the screen must be cleared of the graph images.
     pub fn kind(&self) -> ViewKind {
         match self {

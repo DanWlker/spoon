@@ -289,10 +289,6 @@ impl<'a> LocalChangesView<'a> {
         moved
     }
 
-    pub fn focus_name(&self) -> &'static str {
-        self.as_state().focus_name()
-    }
-
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let panel = LocalChangesPanel::new(self.ctx.clone(), focused);
         f.render_stateful_widget(panel, area, self.as_mut_state());

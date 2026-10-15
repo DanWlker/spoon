@@ -1034,17 +1034,6 @@ impl<'a> LocalChangesState<'a> {
         Ok(true)
     }
 
-    // The name of the panel having the focus, for the title of the keys popup.
-    pub fn focus_name(&self) -> &'static str {
-        match self.focus {
-            Focus::Files if self.section == LocalChangesSection::Unstaged => "Unstaged",
-            Focus::Files => "Staged",
-            Focus::Hunks | Focus::Lines => "Diff",
-            Focus::Conflict => "Conflict",
-            Focus::Commit { .. } => "Commit",
-        }
-    }
-
     // Moves the focus to the files, whose diff shows the row under the cursor again.
     pub fn focus_files(&mut self) {
         self.focus = Focus::Files;
