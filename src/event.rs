@@ -358,6 +358,7 @@ pub enum UserEvent {
     AmendCommit,
     DropCommit,
     CreateTag,
+    CreateBranch,
     BranchOnly,
     CreateRef,
     DeleteRef,
@@ -478,6 +479,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "amend_commit" => Ok(UserEvent::AmendCommit),
                         "drop_commit" => Ok(UserEvent::DropCommit),
                         "create_tag" => Ok(UserEvent::CreateTag),
+                        "create_branch" => Ok(UserEvent::CreateBranch),
                         "branch_only" => Ok(UserEvent::BranchOnly),
                         "create_ref" => Ok(UserEvent::CreateRef),
                         "delete_ref" => Ok(UserEvent::DeleteRef),
@@ -534,6 +536,7 @@ impl UserEvent {
             | UserEvent::AmendCommit
             | UserEvent::DropCommit
             | UserEvent::CreateTag
+            | UserEvent::CreateBranch
             | UserEvent::BranchOnly => Scope::Graph,
             UserEvent::CreateRef
             | UserEvent::DeleteRef

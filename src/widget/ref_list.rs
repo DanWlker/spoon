@@ -292,25 +292,6 @@ impl RefListState {
         self.selected.len() == 1 && self.selected[0] == TREE_LOCAL_CHANGES_ROOT_IDENT
     }
 
-    pub fn selected_branch(&self) -> Option<String> {
-        if self.selected.len() > 1
-            && (self.selected[0] == TREE_BRANCH_ROOT_IDENT
-                || self.selected[0] == TREE_REMOTE_ROOT_IDENT)
-        {
-            self.selected.last().cloned()
-        } else {
-            None
-        }
-    }
-
-    pub fn selected_tag(&self) -> Option<String> {
-        if self.selected.len() > 1 && self.selected[0] == TREE_TAG_ROOT_IDENT {
-            self.selected.last().cloned()
-        } else {
-            None
-        }
-    }
-
     // Shows the refs of the reloaded repository, keeping the selection, the opened nodes and the
     // picked refs still there.
     pub fn set_refs(&mut self, refs: &[&Ref], local_change_count: usize) {

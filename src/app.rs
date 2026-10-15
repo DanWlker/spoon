@@ -1289,6 +1289,8 @@ impl App<'_> {
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
             event @ (UserEvent::CreateRef
+            | UserEvent::CreateBranch
+            | UserEvent::CreateTag
             | UserEvent::DeleteRef
             | UserEvent::EditRef
             | UserEvent::ApplyStash) => {
@@ -1297,9 +1299,10 @@ impl App<'_> {
                 match ref_command(self.repository, event, &selection, picked) {
                     Some(dialog) => self.open_dialog(dialog),
                     // space opens or closes a folder like enter
-                    None => {
+                    None if event == UserEvent::ApplyStash => {
                         self.shell.sidebar.toggle_node();
                     }
+                    None => {}
                 }
             }
             UserEvent::FocusPanel(_) => {
@@ -1350,31 +1353,24 @@ impl App<'_> {
                 if self.repository.remote_info().remotes.contains(&name) =>
             {
                 vec![
-                    hint(UserEvent::CreateRef, "new branch"),
+                    hint(UserEvent::CreateRef, "new remote"),
                     hint(UserEvent::EditRef, "edit remote"),
                 ]
             }
-            RefSelection::Section(Branches | Remotes)
-            | RefSelection::Folder(Branches | Remotes, _) => {
-                vec![hint(UserEvent::CreateRef, "new branch")]
+            RefSelection::Section(Remotes) | RefSelection::Folder(Remotes, _) => {
+                vec![hint(UserEvent::CreateRef, "new remote")]
             }
-            RefSelection::Section(Tags) | RefSelection::Folder(Tags, _) => {
-                vec![hint(UserEvent::CreateRef, "new tag")]
-            }
-            RefSelection::Section(Stashes) | RefSelection::Folder(Stashes, _) => vec![],
+            RefSelection::Section(Branches | Tags | Stashes)
+            | RefSelection::Folder(Branches | Tags | Stashes, _) => vec![],
             RefSelection::Ref(Branches, _) => vec![
-                hint(UserEvent::CreateRef, "new branch"),
                 hint(UserEvent::EditRef, "rename/upstream"),
                 hint(UserEvent::DeleteRef, "delete"),
             ],
             RefSelection::Ref(Remotes, _) => vec![
-                hint(UserEvent::CreateRef, "new branch"),
+                hint(UserEvent::CreateRef, "new remote"),
                 hint(UserEvent::DeleteRef, "delete"),
             ],
-            RefSelection::Ref(Tags, _) => vec![
-                hint(UserEvent::CreateRef, "new tag"),
-                hint(UserEvent::DeleteRef, "delete"),
-            ],
+            RefSelection::Ref(Tags, _) => vec![hint(UserEvent::DeleteRef, "delete")],
             RefSelection::Ref(Stashes, _) => vec![
                 hint(UserEvent::ApplyStash, "apply"),
                 hint(UserEvent::DeleteRef, "drop"),
@@ -1383,6 +1379,8 @@ impl App<'_> {
         // the commands of the graph, on the ref
         if let RefSelection::Ref(Branches | Remotes | Tags, _) = self.shell.sidebar.selection() {
             hints.extend([
+                hint(UserEvent::CreateBranch, "new branch"),
+                hint(UserEvent::CreateTag, "new tag"),
                 hint(UserEvent::Checkout, "checkout"),
                 hint(UserEvent::Merge, "merge"),
                 hint(UserEvent::Rebase, "rebase"),
@@ -1392,12 +1390,12 @@ impl App<'_> {
         if let RefSelection::Ref(..) = self.shell.sidebar.selection() {
             hints.push(hint(UserEvent::ToggleSelect, "pick"));
         }
-        hints.extend([
-            hint(UserEvent::Confirm, "open"),
-            hint(UserEvent::FocusPanel(0), "collapse"),
-            hint(UserEvent::ShortCopy, "copy name"),
-            hint(UserEvent::Cancel, "back"),
-        ]);
+        hints.push(hint(UserEvent::Confirm, "open"));
+        // what copying the name works on, see `copy_sidebar_ref_name`
+        if let RefSelection::Ref(Branches | Remotes | Tags, _) = self.shell.sidebar.selection() {
+            hints.push(hint(UserEvent::ShortCopy, "copy name"));
+        }
+        hints.push(hint(UserEvent::Cancel, "back"));
         hints
     }
 
@@ -1491,12 +1489,12 @@ impl App<'_> {
     }
 
     fn copy_sidebar_ref_name(&self) {
-        let (name, value) = if let Some(branch) = self.shell.sidebar.selected_branch() {
-            ("Branch Name", branch)
-        } else if let Some(tag) = self.shell.sidebar.selected_tag() {
-            ("Tag Name", tag)
-        } else {
-            return;
+        let (name, value) = match self.shell.sidebar.selection() {
+            RefSelection::Ref(RefSection::Branches | RefSection::Remotes, branch) => {
+                ("Branch Name", branch)
+            }
+            RefSelection::Ref(RefSection::Tags, tag) => ("Tag Name", tag),
+            _ => return,
         };
         self.ec.send(AppEvent::CopyToClipboard {
             name: name.into(),

@@ -7,6 +7,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     event::UserEvent,
     git::{CommitHash, Ref, Repository},
+    ref_commands::create_branch,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog},
 };
 
@@ -94,6 +95,9 @@ pub fn graph_command(
         UserEvent::DropCommit => commands.drop(&branch_label, targets),
         UserEvent::CreateTag => {
             single("Tag").map(|_| GitDialog::create_tag(selected.as_short_hash()))
+        }
+        UserEvent::CreateBranch => {
+            single("Branch").map(|_| create_branch(repository, selected.as_short_hash()))
         }
         _ => return None,
     };
@@ -664,6 +668,12 @@ mod tests {
         );
         run(path, tag.unwrap(), "t1");
         assert_eq!(git(&["tag", "--points-at", "topic"]), "t1\n");
+
+        // a branch at a commit of the graph, checked out
+        let branch = command(&repository, UserEvent::CreateBranch, &hashes[2], &[]);
+        run(path, branch, "b1");
+        assert_eq!(git(&["branch", "--show-current"]), "b1\n");
+        assert_eq!(git(&["rev-parse", "HEAD"]).trim(), hashes[2].as_str());
     }
 
     #[test]

@@ -101,12 +101,14 @@ reset = ["shift-u"]
 amend_commit = ["shift-a"]
 # drop the picked commits, or the selected one, after confirming
 drop_commit = ["d"]
-# create a tag at the selected commit
+# create a branch at the selected commit; in the refs sidebar from the selected ref
+create_branch = ["b"]
+# create a tag at the selected commit; in the refs sidebar at the selected ref
 create_tag = ["t"]
 # show only the commits of the current branch (the history of HEAD), or all of them again
 branch_only = ["o"]
 
-# the refs sidebar: create a branch or a tag (by the section selected), delete the selected branch
+# the refs sidebar: create a remote (on the remotes), delete the selected branch
 # or tag or drop the selected stash, rename a branch or change its upstream, apply a stash
 create_ref = ["a"]
 delete_ref = ["d"]

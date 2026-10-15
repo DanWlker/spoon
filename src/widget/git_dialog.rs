@@ -93,6 +93,7 @@ enum DialogKind {
         name: String,
         url: String,
     },
+    AddRemote,
     CreateTag,
     // `remote` is where they may be deleted too
     DeleteTags {
@@ -474,6 +475,19 @@ impl GitDialog {
         dialog
             .fields
             .push((FieldId::Url, "URL", Field::text(url, vec![])));
+        dialog
+    }
+
+    // A new remote, fetched once added, like lazygit.
+    pub fn add_remote() -> Self {
+        let mut dialog = Self::with(" New remote ", "add", vec![], DialogKind::AddRemote);
+        dialog
+            .fields
+            .push((FieldId::Name, "Name", Field::text("", vec![])));
+        dialog
+            .fields
+            .push((FieldId::Url, "URL", Field::text("", vec![])));
+        dialog.editing = true;
         dialog
     }
 
@@ -1063,6 +1077,21 @@ impl GitDialog {
                     then: commands.collect(),
                     running: format!("Saving {new_name}"),
                     done: format!("Saved {new_name}"),
+                    ..Default::default()
+                })
+            }
+            DialogKind::AddRemote => {
+                let name = self.value(FieldId::Name);
+                let url = self.value(FieldId::Url);
+                if name.is_empty() || url.is_empty() {
+                    return Err("Type a name and a URL for the remote".into());
+                }
+                Ok(GitTask {
+                    args: vec!["remote".into(), "add".into(), name.clone(), url],
+                    then: vec![vec!["fetch".into(), name.clone()]],
+                    running: format!("Adding {name}"),
+                    done: format!("Added and fetched {name}"),
+                    remote: true,
                     ..Default::default()
                 })
             }

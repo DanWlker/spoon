@@ -10,8 +10,9 @@ use crate::{
     },
 };
 
-// The popup of `event` on the selected row; None for other events, and for applying on a row
-// that is not a stash.
+// The popup of `event` on the selected row; None for other events, and where it does nothing: a
+// remote created off the remotes, a branch or tag off a branch, remote branch or tag, applying off
+// a stash.
 // `picked` are the refs picked in the sidebar, which deleting works on.
 pub fn ref_command(
     repository: &Repository,
@@ -20,25 +21,21 @@ pub fn ref_command(
     picked: &RefPicks,
 ) -> Option<Result<GitDialog, String>> {
     use RefSection::*;
-    let current = repository.current_branch();
     let dialog = match (event, selection) {
+        // remotes only: branches are created with `CreateBranch`, tags from the graph
         (
             UserEvent::CreateRef,
-            RefSelection::Section(Tags)
-            | RefSelection::Folder(Tags, _)
-            | RefSelection::Ref(Tags, _),
-        ) => Ok(GitDialog::create_tag("HEAD")),
-        (
-            UserEvent::CreateRef,
-            RefSelection::Section(Branches | Remotes) | RefSelection::Folder(Branches | Remotes, _),
-        ) => {
-            let from = current.unwrap_or_else(|| "HEAD".into());
-            Ok(create_branch(repository, &from))
-        }
-        (UserEvent::CreateRef, RefSelection::Ref(Branches | Remotes, name)) => {
+            RefSelection::Section(Remotes)
+            | RefSelection::Folder(Remotes, _)
+            | RefSelection::Ref(Remotes, _),
+        ) => Ok(GitDialog::add_remote()),
+        // from the selected branch, remote branch or tag; nothing on other rows
+        (UserEvent::CreateBranch, RefSelection::Ref(Branches | Remotes | Tags, name)) => {
             Ok(create_branch(repository, name))
         }
-        (UserEvent::CreateRef, _) => Err("Select the branches or the tags to create one".into()),
+        (UserEvent::CreateTag, RefSelection::Ref(Branches | Remotes | Tags, name)) => {
+            Ok(GitDialog::create_tag(name))
+        }
         (UserEvent::DeleteRef, _) if !picked.is_empty() => {
             delete_refs(repository, picked.section, &picked.names)
         }
@@ -142,7 +139,7 @@ fn delete_refs(
 }
 
 // A new branch from `from`, or another local branch.
-fn create_branch(repository: &Repository, from: &str) -> GitDialog {
+pub fn create_branch(repository: &Repository, from: &str) -> GitDialog {
     let mut branches: Vec<String> = repository
         .all_refs()
         .into_iter()
@@ -369,14 +366,14 @@ mod tests {
             )
         };
 
-        // a branch from the current one, checked out
+        // a branch from the selected one, checked out
         use RefSection::*;
         let mut keys = typed("topic");
         keys.push(Err(UserEvent::Confirm));
         run(
             path,
-            UserEvent::CreateRef,
-            RefSelection::Section(Branches),
+            UserEvent::CreateBranch,
+            RefSelection::Ref(Branches, "main".into()),
             &keys,
         );
         assert_eq!(git(path, &["branch", "--show-current"]), "topic\n");
@@ -464,7 +461,24 @@ mod tests {
             "main\n"
         );
 
-        // an annotated tag, pushed, then deleted here and on the remote
+        // a remote, added on the remotes and fetched
+        let mut keys = typed("other");
+        keys.extend([Err(UserEvent::Confirm), Err(UserEvent::NavigateDown)]);
+        keys.push(Err(UserEvent::DialogEdit));
+        keys.extend(typed(remote_dir.path().to_str().unwrap()));
+        run(
+            path,
+            UserEvent::CreateRef,
+            RefSelection::Section(Remotes),
+            &keys,
+        );
+        assert_eq!(git(path, &["remote"]), "origin\nother\n");
+        assert_eq!(
+            git(path, &["rev-parse", "other/main"]),
+            git(path, &["rev-parse", "origin/main"])
+        );
+
+        // an annotated tag at the selected branch, pushed, then deleted here and on the remote
         let mut keys = typed("v1");
         keys.extend([
             Err(UserEvent::Confirm),
@@ -474,12 +488,12 @@ mod tests {
         keys.extend(typed("first"));
         run(
             path,
-            UserEvent::CreateRef,
-            RefSelection::Section(Tags),
+            UserEvent::CreateTag,
+            RefSelection::Ref(Branches, "main".into()),
             &keys,
         );
         assert_eq!(
-            git(path, &["tag", "-n"])
+            git(path, &["tag", "-n", "--points-at", "main"])
                 .split_whitespace()
                 .collect::<Vec<_>>(),
             ["v1", "first"]
@@ -494,6 +508,26 @@ mod tests {
         );
         assert_eq!(git(path, &["tag"]), "");
         assert_eq!(git(remote_dir.path(), &["tag"]), "");
+        // `a` makes remotes only
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        for selection in [RefSelection::Section(Tags), RefSelection::Section(Branches)] {
+            let none = ref_command(
+                &repository,
+                UserEvent::CreateRef,
+                &selection,
+                &RefPicks::default(),
+            );
+            assert!(none.is_none());
+        }
+        // b and t make a branch or tag at a ref only, not on the headers
+        let headers = [RefSelection::Section(Branches), RefSelection::Section(Tags)];
+        for (event, selection) in [UserEvent::CreateBranch, UserEvent::CreateTag]
+            .into_iter()
+            .zip(headers)
+        {
+            let none = ref_command(&repository, event, &selection, &RefPicks::default());
+            assert!(none.is_none());
+        }
 
         // a stash applied with what was staged, kept, then dropped
         std::fs::write(path.join("f"), "2\n").unwrap();
