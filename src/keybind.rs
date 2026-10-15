@@ -169,6 +169,10 @@ impl<'de> Deserialize<'de> for KeyBind {
     {
         let parsed_map = FxHashMap::<UserEvent, Vec<String>>::deserialize(deserializer)?;
         let mut keybind = KeyBind::default();
+        // events that no longer exist are skipped
+        let parsed_map = parsed_map
+            .into_iter()
+            .filter(|(user_event, _)| *user_event != UserEvent::Unknown);
         for (user_event, key_events) in parsed_map {
             for key_event_str in key_events {
                 // keys separated by whitespace are a sequence
@@ -452,6 +456,30 @@ mod tests {
         let actual: KeyBind = toml::from_str(toml).unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_deserialize_old_keybind_names() {
+        // renamed and removed events still load
+        let toml = r#"
+            mark_toggle = ["m"]
+            select_top = ["shift-h"]
+            go_to_parent = ["p"]
+        "#;
+        let keybind: KeyBind = toml::from_str(toml).unwrap();
+        let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty());
+        assert_eq!(
+            keybind
+                .page_keys
+                .values()
+                .chain(keybind.keys.values())
+                .count(),
+            1
+        );
+        assert_eq!(
+            keybind.get_on(&[Page::Graph], &m),
+            Some(UserEvent::ToggleSelect)
+        );
     }
 
     #[test]

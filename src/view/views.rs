@@ -229,15 +229,20 @@ impl<'a> View<'a> {
         }
     }
 
+    // The commit list of a view showing the commit graph.
+    pub fn as_list_state(&self) -> Option<&CommitListState<'a>> {
+        match self {
+            View::List(view) => Some(view.as_list_state()),
+            View::Detail(view) => Some(view.as_list_state()),
+            View::UserCommand(view) => Some(view.as_list_state()),
+            View::Default | View::LocalChanges(_) | View::Help(_) => None,
+        }
+    }
+
     // The number of commits picked in the commit list, shown in the status line.
     pub fn picked_commit_count(&self) -> usize {
-        let list_state = match self {
-            View::List(view) => view.as_list_state(),
-            View::Detail(view) => view.as_list_state(),
-            View::UserCommand(view) => view.as_list_state(),
-            View::Default | View::LocalChanges(_) | View::Help(_) => return 0,
-        };
-        list_state.picked_commit_hashes().len()
+        self.as_list_state()
+            .map_or(0, |state| state.picked_commit_hashes().len())
     }
 
     // Views with numbered panels take digit keys; elsewhere they are a count prefix.

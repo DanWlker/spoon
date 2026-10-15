@@ -226,6 +226,14 @@ impl Repository {
         &self.head
     }
 
+    // The branch checked out, None when HEAD is detached.
+    pub fn current_branch(&self) -> Option<String> {
+        match &self.head {
+            Head::Branch { name } => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
         let changes = if commit.parent_commit_hashes.is_empty() {
@@ -453,19 +461,40 @@ impl Repository {
     }
 
     // Discards the unstaged changes of `tracked` files (restoring them from the index) and deletes `untracked` files.
+    // `conflicted` files, which git cannot restore from the index, go back to HEAD, or are deleted
+    // when HEAD does not have them, like lazygit does.
     pub fn discard_paths(
         &self,
         tracked: &[&str],
         untracked: &[&str],
+        conflicted: &[&str],
     ) -> std::result::Result<(), String> {
+        let mut tracked = tracked.to_vec();
+        let mut untracked = untracked.to_vec();
+        if !conflicted.is_empty() {
+            let mut args = vec!["reset", "--quiet", "--"];
+            args.extend_from_slice(conflicted);
+            run_git(&self.path, &args, None)?;
+            let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
+            args.extend_from_slice(conflicted);
+            let in_head = git_output(&self.path, &args)?;
+            let in_head: Vec<&str> = in_head.split('\0').collect();
+            for path in conflicted {
+                if in_head.contains(path) {
+                    tracked.push(path);
+                } else {
+                    untracked.push(path);
+                }
+            }
+        }
         if !tracked.is_empty() {
             let mut args = vec!["checkout", "--quiet", "--"];
-            args.extend_from_slice(tracked);
+            args.extend_from_slice(&tracked);
             run_git(&self.path, &args, None)?;
         }
         if !untracked.is_empty() {
             let mut args = vec!["clean", "--force", "--quiet", "--"];
-            args.extend_from_slice(untracked);
+            args.extend_from_slice(&untracked);
             run_git(&self.path, &args, None)?;
         }
         Ok(())
@@ -567,16 +596,10 @@ impl Repository {
                     }
                 }
             } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
-                // remote names may contain slashes, the longest matching one owns the branch
-                let owner = remotes
-                    .iter()
-                    .filter(|remote| name.starts_with(&format!("{remote}/")))
-                    .max_by_key(|remote| remote.len());
-                if let Some(owner) = owner {
-                    let branch = &name[owner.len() + 1..];
+                if let Some((owner, branch)) = split_remote_branch(&remotes, name) {
                     if branch != "HEAD" {
                         remote_branches
-                            .entry(owner.clone())
+                            .entry(owner.to_string())
                             .or_default()
                             .push(branch.to_string());
                     }
@@ -585,10 +608,7 @@ impl Repository {
         }
 
         RemoteInfo {
-            current_branch: match &self.head {
-                Head::Branch { name } => Some(name.clone()),
-                _ => None,
-            },
+            current_branch: self.current_branch(),
             remotes,
             remote_branches,
             branches,
@@ -1194,61 +1214,50 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
     diff_summary(path, &format!("{}^", commit_hash.0), &commit_hash.0)
 }
 
+// The remote and the branch on it of a remote branch like "origin/main"; remote names may contain
+// slashes, the longest matching one owns the branch.
+pub fn split_remote_branch<'a>(remotes: &'a [String], name: &'a str) -> Option<(&'a str, &'a str)> {
+    remotes
+        .iter()
+        .filter(|remote| name.starts_with(&format!("{remote}/")))
+        .max_by_key(|remote| remote.len())
+        .map(|remote| (remote.as_str(), &name[remote.len() + 1..]))
+}
+
 fn diff_summary(path: &Path, base: &str, target: &str) -> Vec<FileChange> {
-    git_output(path, &["diff", "--name-status", "-M", base, target])
+    // -z leaves paths as they are, git would quote those with special characters
+    git_output_bytes(path, &["diff", "--name-status", "-z", "-M", base, target])
+        .map(|out| parse_name_status(&out))
         .unwrap_or_default()
-        .lines()
-        .filter_map(parse_name_status_line)
+        .into_iter()
+        .filter_map(|file| match file.status {
+            LocalChangeStatus::Added => Some(FileChange::Add { path: file.path }),
+            LocalChangeStatus::Modified | LocalChangeStatus::TypeChanged => {
+                Some(FileChange::Modify { path: file.path })
+            }
+            LocalChangeStatus::Deleted => Some(FileChange::Delete { path: file.path }),
+            LocalChangeStatus::Renamed | LocalChangeStatus::Copied => Some(FileChange::Move {
+                from: file.orig_path.unwrap_or_default(),
+                to: file.path,
+            }),
+            LocalChangeStatus::Untracked | LocalChangeStatus::Conflicted => None,
+        })
         .collect()
 }
 
-// A line of `git diff --name-status`, like "M\tsrc/a.rs" or "R087\told.rs\tnew.rs".
-fn parse_name_status_line(line: &str) -> Option<FileChange> {
-    let parts: Vec<&str> = line.split('\t').collect();
-    match (parts.first()?.get(..1)?, parts.len()) {
-        ("A", 2) => Some(FileChange::Add {
-            path: parts[1].into(),
-        }),
-        ("M" | "T", 2) => Some(FileChange::Modify {
-            path: parts[1].into(),
-        }),
-        ("D", 2) => Some(FileChange::Delete {
-            path: parts[1].into(),
-        }),
-        ("R" | "C", 3) => Some(FileChange::Move {
-            from: parts[1].into(),
-            to: parts[2].into(),
-        }),
-        _ => None,
-    }
-}
-
 pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
-    let mut cmd = Command::new("git")
-        .arg("ls-tree")
-        .arg("--name-status")
-        .arg("-r") // the empty tree hash
-        .arg(&commit_hash.0)
-        .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
-
-    let reader = BufReader::new(stdout);
-
-    let mut changes = Vec::new();
-
-    for line in reader.lines() {
-        let line = line.unwrap();
-        changes.push(FileChange::Add { path: line });
-    }
-
-    cmd.wait().unwrap();
-
-    changes
+    // -z leaves paths as they are, git would quote those with special characters
+    git_output_bytes(
+        path,
+        &["ls-tree", "-r", "-z", "--name-only", &commit_hash.0],
+    )
+    .unwrap_or_default()
+    .split(|b| *b == b'\0')
+    .filter(|p| !p.is_empty())
+    .map(|p| FileChange::Add {
+        path: String::from_utf8_lossy(p).into_owned(),
+    })
+    .collect()
 }
 
 // The two versions of a conflicted file: what was there (ours) and what is coming in (theirs).
@@ -1870,6 +1879,44 @@ mod tests {
         // the reason is reported, not the hints after it
         let err = run("fetch nowhere").unwrap_err();
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
+    }
+
+    #[test]
+    fn test_diff_summary_special_paths() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("café.txt"), "a\n").unwrap();
+        repo.add(&["café.txt"]);
+        repo.commit("first", "2024-01-01");
+        std::fs::write(path.join("café.txt"), "b\n").unwrap();
+        std::fs::write(path.join("a\tb.txt"), "b\n").unwrap();
+        repo.add(&["café.txt", "a\tb.txt"]);
+        repo.commit("second", "2024-01-02");
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let hashes: Vec<CommitHash> = repository
+            .all_commits()
+            .iter()
+            .map(|c| c.commit_hash.clone())
+            .collect();
+        let paths = |changes: Vec<FileChange>| -> Vec<String> {
+            changes
+                .into_iter()
+                .map(|c| match c {
+                    FileChange::Add { path } | FileChange::Modify { path } => path,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        // as they are, not quoted
+        let mut changed = paths(repository.commit_detail(&hashes[0]).1);
+        changed.sort();
+        assert_eq!(changed, ["a\tb.txt", "café.txt"]);
+        assert_eq!(paths(repository.commit_detail(&hashes[1]).1), ["café.txt"]);
     }
 
     #[test]

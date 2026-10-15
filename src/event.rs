@@ -436,6 +436,12 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "edit_ref" => Ok(UserEvent::EditRef),
                         "apply_stash" => Ok(UserEvent::ApplyStash),
                         "apply_change" => Ok(UserEvent::ApplyChange),
+                        // renamed
+                        "mark_toggle" => Ok(UserEvent::ToggleSelect),
+                        // removed, ignored so configs naming them still load
+                        "go_to_parent" | "select_top" | "select_middle" | "select_bottom" => {
+                            Ok(UserEvent::Unknown)
+                        }
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

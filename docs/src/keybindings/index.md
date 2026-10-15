@@ -51,7 +51,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
-| <kbd>m</kbd>                         | Merge the selected branch into the current branch  | `merge`                                      |
+| <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
 | <kbd>c</kbd>                         | Check out the selected branch or commit            | `checkout`                                   |
 | <kbd>C</kbd>                         | Cherry-pick the picked commits, or the selected one | `cherry_pick`                               |
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
@@ -74,8 +74,8 @@ The older commit is the base. It errors with more than two picked commits. <kbd>
 
 The other commands ask first, in a popup showing what they do and the git commands they run:
 
-- <kbd>r</kbd> rebase: the current branch onto the branch at the selected commit (else the commit), stashing and reapplying local changes (checked by `rebase.autoStash`, or by default when it is not set).
-- <kbd>m</kbd> merge: the branch at the selected commit (else the commit) into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit (`merge.ff` picks the default: `false` a merge commit, `only` fast-forward only). Squashing and not committing leave the changes on the local changes page, with the message git prepared.
+- <kbd>r</kbd> rebase: the current branch onto the selected commit, named by its hash (not a branch or tag at it), stashing and reapplying local changes (checked by `rebase.autoStash`, or by default when it is not set).
+- <kbd>m</kbd> merge: the selected commit, named by its hash (not a branch or tag at it), into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit (`merge.ff` picks the default: `false` a merge commit, `only` fast-forward only). Squashing and not committing leave the changes on the local changes page, with the message git prepared.
 - <kbd>c</kbd> checkout: a branch at the selected commit (a remote branch becomes a new local branch tracking it) or the commit itself (detached). The local changes are kept (git refuses when they conflict), stashed and reapplied, or discarded (untracked files are kept).
 - <kbd>C</kbd> cherry-pick: the picked commits (oldest first), or the selected one, committing them or leaving the changes on the local changes page, optionally appending "(cherry picked from commit …)" to the messages.
 - <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages or keeping the parent's (fixup), with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.

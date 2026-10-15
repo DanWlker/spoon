@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     event::UserEvent,
-    git::{CommitHash, Head, Ref, Repository},
+    git::{CommitHash, Ref, Repository},
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog},
 };
 
@@ -31,7 +31,7 @@ pub fn graph_command(
     picked: Vec<CommitHash>,
 ) -> Option<Result<GraphCommand, String>> {
     let commands = GraphCommands { repository };
-    let branch = commands.current_branch();
+    let branch = repository.current_branch();
     let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
     let single = |name: &str| -> Result<(), String> {
         if picked.is_empty() {
@@ -50,26 +50,24 @@ pub fn graph_command(
     };
     let dialog = match event {
         UserEvent::Diff => return Some(commands.compare(selected, picked)),
+        // both name the commit by its hash, not a branch or tag at it
         UserEvent::Rebase => single("Rebase").and_then(|_| {
             let branch = branch.ok_or("Check out a branch to rebase it")?;
-            let (onto, label) = commands.ref_or_commit(&selected);
+            commands.not_head(&selected, "rebase onto")?;
             Ok(GitDialog::rebase(
                 &branch,
-                onto,
-                &label,
+                selected.as_str().to_string(),
+                selected.as_short_hash(),
                 commands.rebase_auto_stash(),
             ))
         }),
         UserEvent::Merge => single("Merge").and_then(|_| {
-            let (source, label) = commands.ref_or_commit(&selected);
-            if Some(&source) == branch.as_ref() {
-                return Err(format!("{source} is checked out, choose another branch"));
-            }
+            commands.not_head(&selected, "merge")?;
             let merge_ff = repository.config("merge.ff");
             Ok(GitDialog::merge(
                 &branch_label,
-                source,
-                &label,
+                selected.as_str().to_string(),
+                selected.as_short_hash(),
                 merge_ff.as_deref(),
             ))
         }),
@@ -104,13 +102,6 @@ struct GraphCommands<'a> {
 }
 
 impl GraphCommands<'_> {
-    fn current_branch(&self) -> Option<String> {
-        match self.repository.head() {
-            Head::Branch { name } => Some(name.clone()),
-            _ => None,
-        }
-    }
-
     // The commit as a line in a popup: its short hash and subject.
     fn dialog_commit(&self, hash: &CommitHash) -> DialogCommit {
         let subject = self
@@ -124,19 +115,14 @@ impl GraphCommands<'_> {
         }
     }
 
-    // What to give git for a commit, and how to show it: a local branch at it, else a remote
-    // branch, else a tag, else the commit itself.
-    fn ref_or_commit(&self, hash: &CommitHash) -> (String, String) {
-        let refs = self.repository.refs(hash);
-        let find = |f: fn(&Ref) -> bool| refs.iter().find(|r| f(r)).map(|r| r.name().to_string());
-        find(|r| matches!(r, Ref::Branch { .. }))
-            .or_else(|| find(|r| matches!(r, Ref::RemoteBranch { .. })))
-            .or_else(|| find(|r| matches!(r, Ref::Tag { .. })))
-            .map(|name| (name.clone(), name))
-            .unwrap_or_else(|| {
-                let line = self.dialog_commit(hash).line;
-                (hash.as_str().to_string(), line)
-            })
+    // An error when `hash` is the checked-out commit, which there is nothing to `what`.
+    fn not_head(&self, hash: &CommitHash, what: &str) -> Result<(), String> {
+        if self.repository.head_commit().as_ref() == Some(hash) {
+            return Err(format!(
+                "The selected commit is checked out, choose another one to {what}"
+            ));
+        }
+        Ok(())
     }
 
     // Commits ordered as in the graph, newest first.
@@ -154,7 +140,7 @@ impl GraphCommands<'_> {
 
     // The branches at the commit to check out, and the commit itself.
     fn checkout_targets(&self, hash: &CommitHash) -> Vec<CheckoutTarget> {
-        let current = self.current_branch();
+        let current = self.repository.current_branch();
         let all_refs = self.repository.all_refs();
         let local_exists = |name: &str| {
             all_refs
@@ -421,6 +407,15 @@ mod tests {
         );
         let diff = args(command(&repository, UserEvent::Diff, c3, &hashes));
         assert_eq!(diff, "Diff compares two commits, 3 are picked");
+
+        // rebase and merge name the commit by its hash, not the branch at it
+        git.checkout_b("other");
+        let rebase = args(command(&repository, UserEvent::Rebase, c1, &[]));
+        assert_eq!(rebase, format!("rebase --autostash {}", c1.as_str()));
+        let merge = args(command(&repository, UserEvent::Merge, c1, &[]));
+        assert!(merge.ends_with(c1.as_str()), "{merge}");
+        let merge = args(command(&repository, UserEvent::Merge, c3, &[]));
+        assert!(merge.contains("is checked out"), "{merge}");
 
         // commands on the selected commit refuse picked ones
         let reset = args(command(

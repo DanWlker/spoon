@@ -422,7 +422,7 @@ impl<'a> LocalChangesView<'a> {
 
     // Reloads the changes, keeping the selection, for those made outside the app.
     pub fn reload_files(&mut self) {
-        self.as_mut_state().reload();
+        self.as_mut_state().reload_if_changed();
     }
 
     // What to restore of the page, after a refresh or coming back to it.

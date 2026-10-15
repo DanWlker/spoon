@@ -213,9 +213,10 @@ impl<'a> DetailView<'a> {
             }
             return;
         }
-        // the picked commits are cleared before the search, the filter and the details
+        // the picked commits are cleared before the search, the filter and the details; in the
+        // diff or preview, Esc goes back to the files first
         if let UserEvent::Cancel | UserEvent::Close = event {
-            if !self.as_list_state().picked_commit_hashes().is_empty() {
+            if !self.is_pane_focused() && !self.as_list_state().picked_commit_hashes().is_empty() {
                 self.clear_picks();
                 return;
             }
@@ -488,6 +489,11 @@ impl<'a> DetailView<'a> {
         let Some(patch) = self.changes_state.selected_patch() else {
             return;
         };
+        // a running task, like a checkout stashing the changes, works on the working tree too
+        if let Some(message) = self.ctx.busy_message() {
+            self.tx.send(AppEvent::NotifyWarn(message));
+            return;
+        }
         let what = if self.changes_state.is_selecting_lines() {
             "line"
         } else {

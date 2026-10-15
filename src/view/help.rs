@@ -257,7 +257,7 @@ fn build_lines(
         (vec![UserEvent::NextPicked, UserEvent::PreviousPicked], "Go to next/previous picked commit".into()),
         (vec![UserEvent::Diff], "Diff with the checked out commit, or the two picked commits".into()),
         (vec![UserEvent::Rebase], "Rebase the current branch onto the selected commit".into()),
-        (vec![UserEvent::Merge], "Merge the selected branch into the current branch".into()),
+        (vec![UserEvent::Merge], "Merge the selected commit into the current branch".into()),
         (vec![UserEvent::Checkout], "Check out the selected branch or commit".into()),
         (vec![UserEvent::CherryPick], "Cherry-pick the picked commits, or the selected one".into()),
         (vec![UserEvent::Squash], "Squash the picked commits, or the selected one, into their parents".into()),

@@ -682,12 +682,25 @@ impl<'a> LocalChangesState<'a> {
             };
         }
 
-        let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = self
-            .target_files()
-            .into_iter()
-            .partition(|f| f.status == LocalChangeStatus::Untracked);
-        self.repository
-            .discard_paths(&file_paths(&tracked), &file_paths(&untracked))
+        let files = self.target_files();
+        let with_status = |status: Option<LocalChangeStatus>| -> Vec<&str> {
+            files
+                .iter()
+                .filter(|f| match status {
+                    Some(status) => f.status == status,
+                    None => !matches!(
+                        f.status,
+                        LocalChangeStatus::Untracked | LocalChangeStatus::Conflicted
+                    ),
+                })
+                .map(|f| f.path.as_str())
+                .collect()
+        };
+        self.repository.discard_paths(
+            &with_status(None),
+            &with_status(Some(LocalChangeStatus::Untracked)),
+            &with_status(Some(LocalChangeStatus::Conflicted)),
+        )
     }
 
     pub fn commit_draft(&self) -> CommitDraft {
@@ -1099,6 +1112,18 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // Reloads for changes made outside the app, leaving the page as it is (scroll, focus) when
+    // nothing it shows changed.
+    pub fn reload_if_changed(&mut self) {
+        let unchanged = self.load_changes() == self.changes
+            && self.repository.operation_in_progress() == self.operation
+            && self.diff_text() == self.diff.raw
+            && self.load_conflict() == self.conflict;
+        if !unchanged {
+            self.reload();
+        }
+    }
+
     // Reloads the changes, keeping each section's selection on the same path if it still exists,
     // otherwise on the same position, like lazygit does after staging.
     pub fn reload(&mut self) {
@@ -1366,6 +1391,12 @@ impl<'a> LocalChangesState<'a> {
     }
 
     fn load_diff(&mut self) {
+        let diff = self.diff_text();
+        self.set_diff(&diff);
+    }
+
+    // The diff of the picked files, else of the selected row.
+    fn diff_text(&self) -> String {
         let staged = self.section == LocalChangesSection::Staged;
         let base = self.amend_base.as_deref();
         if self.diff_of_picked {
@@ -1385,33 +1416,36 @@ impl<'a> LocalChangesState<'a> {
                     base,
                 ));
             }
-            self.set_diff(&diff);
-            return;
+            return diff;
         }
-        let diff = self.selected_row().map(|row| {
-            let untracked = row
-                .file_index
-                .is_some_and(|i| self.files()[i].status == LocalChangeStatus::Untracked);
-            // a directory shows only the files passing the filter
-            let paths = if row.is_dir() && self.query().filter().is_some() {
-                file_paths(&self.row_files(row))
-            } else {
-                vec![row.path.as_str()]
-            };
-            self.repository
-                .local_change_diff(&paths, untracked, staged, base)
-        });
-        self.set_diff(&diff.unwrap_or_default());
+        self.selected_row()
+            .map(|row| {
+                let untracked = row
+                    .file_index
+                    .is_some_and(|i| self.files()[i].status == LocalChangeStatus::Untracked);
+                // a directory shows only the files passing the filter
+                let paths = if row.is_dir() && self.query().filter().is_some() {
+                    file_paths(&self.row_files(row))
+                } else {
+                    vec![row.path.as_str()]
+                };
+                self.repository
+                    .local_change_diff(&paths, untracked, staged, base)
+            })
+            .unwrap_or_default()
     }
 
-    fn set_diff(&mut self, diff: &str) {
-        let conflicted = self
-            .selected_row()
+    // The two sides of the selected file, when it is conflicted.
+    fn load_conflict(&self) -> Option<ConflictView> {
+        self.selected_row()
             .and_then(|row| row.file_index)
             .and_then(|i| self.files().get(i))
             .filter(|f| f.status == LocalChangeStatus::Conflicted && !self.diff_of_picked)
-            .map(|f| f.path.clone());
-        self.conflict = conflicted.map(|path| ConflictView::load(self.repository, &path));
+            .map(|f| ConflictView::load(self.repository, &f.path))
+    }
+
+    fn set_diff(&mut self, diff: &str) {
+        self.conflict = self.load_conflict();
         // the diff or conflict selected before is gone, the commit section stays
         if !self.is_commit_focused() {
             self.focus = Focus::Files;
@@ -2954,6 +2988,66 @@ mod tests {
         state.reload();
         select_row(state, "a.txt");
         state.toggle_stage().unwrap();
+    }
+
+    #[test]
+    fn test_reload_if_changed() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), numbered_lines(30))?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        fs::write(
+            repo_path.join("a.txt"),
+            numbered_lines(30).replace("line 2\n", "two\n"),
+        )?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        state.scroll_diff_down(3);
+
+        // nothing changed: the diff stays scrolled
+        state.reload_if_changed();
+        assert_eq!(state.cursor.offset, 3);
+
+        // the file changed: the diff is loaded again
+        fs::write(
+            repo_path.join("a.txt"),
+            numbered_lines(30).replace("line 3\n", "three\n"),
+        )?;
+        state.reload_if_changed();
+        assert_eq!(state.cursor.offset, 0);
+        assert!(state.diff.raw.contains("+three"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_discard_conflicted() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        fs::write(repo_path.join("c.txt"), "c\n")?;
+        git_stdout(repo_path, &["add", "c.txt"]);
+        git_stdout(repo_path, &["commit", "-m", "c"]);
+        git_stdout(repo_path, &["merge", "feature"]);
+        fs::write(repo_path.join("c.txt"), "changed\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        // all files: the conflicted a.txt goes back to HEAD, the others are discarded too
+        state.request_discard();
+        assert_eq!(
+            state.confirm_prompt(),
+            Some("Discard all changes to all files?")
+        );
+        state.handle_confirm_key(key(KeyCode::Enter))?;
+        assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "master\n");
+        assert_eq!(fs::read_to_string(repo_path.join("c.txt"))?, "c\n");
+        assert!(state.changes.unstaged.is_empty());
+        Ok(())
     }
 
     #[test]

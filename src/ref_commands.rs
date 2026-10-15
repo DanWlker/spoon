@@ -3,7 +3,7 @@
 
 use crate::{
     event::UserEvent,
-    git::{Head, Ref, Repository},
+    git::{split_remote_branch, Ref, Repository},
     widget::{
         git_dialog::GitDialog,
         ref_list::{RefSection, RefSelection},
@@ -18,10 +18,7 @@ pub fn ref_command(
     selection: &RefSelection,
 ) -> Option<Result<GitDialog, String>> {
     use RefSection::*;
-    let current = match repository.head() {
-        Head::Branch { name } => Some(name.clone()),
-        _ => None,
-    };
+    let current = repository.current_branch();
     let dialog = match (event, selection) {
         (UserEvent::CreateRef, RefSelection::Section(Tags) | RefSelection::Ref(Tags, _)) => {
             Ok(GitDialog::create_tag("HEAD"))
@@ -45,12 +42,8 @@ pub fn ref_command(
         }
         (UserEvent::DeleteRef, RefSelection::Ref(Remotes, name)) => {
             let info = repository.remote_info();
-            // remote names may contain slashes, the longest matching one owns the branch
-            info.remotes
-                .iter()
-                .filter(|remote| name.starts_with(&format!("{remote}/")))
-                .max_by_key(|remote| remote.len())
-                .map(|remote| GitDialog::delete_remote_branch(remote, &name[remote.len() + 1..]))
+            split_remote_branch(&info.remotes, name)
+                .map(|(remote, branch)| GitDialog::delete_remote_branch(remote, branch))
                 .ok_or_else(|| format!("No remote has {name}"))
         }
         (UserEvent::DeleteRef, RefSelection::Ref(Tags, name)) => {

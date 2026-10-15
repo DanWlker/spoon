@@ -909,11 +909,8 @@ impl App<'_> {
     }
 
     fn open_user_command_inline(&mut self, user_command_number: usize) {
-        let commit_list_state = match self.view {
-            View::List(ref mut view) => view.as_list_state(),
-            View::Detail(ref mut view) => view.as_list_state(),
-            View::UserCommand(ref mut view) => view.as_list_state(),
-            _ => return,
+        let Some(commit_list_state) = self.view.as_list_state() else {
+            return;
         };
         let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
         let result = build_external_command_parameters_and_exec_command(
@@ -927,9 +924,6 @@ impl App<'_> {
         match result {
             Ok(output) => {
                 // take list state only when the command execution is successful, to avoid losing the state when the command fails
-                if let View::LocalChanges(_) = self.view {
-                    return;
-                }
                 let Some(commit_list_state) = self.view.take_list_state() else {
                     return;
                 };
@@ -948,11 +942,8 @@ impl App<'_> {
     }
 
     fn open_user_command_silent(&mut self, user_command_number: usize) {
-        let commit_list_state = match self.view {
-            View::List(ref mut view) => view.as_list_state(),
-            View::Detail(ref mut view) => view.as_list_state(),
-            View::UserCommand(ref mut view) => view.as_list_state(),
-            _ => return,
+        let Some(commit_list_state) = self.view.as_list_state() else {
+            return;
         };
         let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
         let result = build_external_command_parameters_and_exec_command(
@@ -976,11 +967,8 @@ impl App<'_> {
     }
 
     fn open_user_command_suspend(&mut self, user_command_number: usize) {
-        let commit_list_state = match self.view {
-            View::List(ref mut view) => view.as_list_state(),
-            View::Detail(ref mut view) => view.as_list_state(),
-            View::UserCommand(ref mut view) => view.as_list_state(),
-            _ => return,
+        let Some(commit_list_state) = self.view.as_list_state() else {
+            return;
         };
         let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
         match build_external_command_parameters(
@@ -1378,6 +1366,8 @@ impl App<'_> {
 
     fn finish_task(&mut self, task: GitTask, result: Result<(), String>) {
         *self.ctx.running_task.borrow_mut() = None;
+        // the page under the help shows the outcome, which could not be refreshed under it
+        self.close_help();
         let typing = self.view.is_capturing_keys()
             || matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if result.is_ok() && task.uses_picks {
