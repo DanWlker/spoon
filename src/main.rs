@@ -9,6 +9,7 @@ mod graph;
 mod graph_commands;
 mod keybind;
 mod protocol;
+mod ref_commands;
 mod search;
 mod view;
 mod widget;

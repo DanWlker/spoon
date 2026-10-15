@@ -49,7 +49,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show commit details on the info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
 | <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
-| <kbd>d</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
+| <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected branch into the current branch  | `merge`                                      |
 | <kbd>c</kbd>                         | Check out the selected branch or commit            | `checkout`                                   |
@@ -58,6 +58,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
 | <kbd>U</kbd>                         | Reset the current branch to the selected commit    | `reset`                                      |
 | <kbd>A</kbd>                         | Amend the selected commit on the local changes page | `amend_commit`                              |
+| <kbd>d</kbd>                         | Drop the picked commits, or the selected one       | `drop_commit`                                |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -68,7 +69,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 
 #### Commands on the commit graph
 
-<kbd>d</kbd> shows the files changed between two commits and their diff in the details, like the changes tab: the checked out commit and the selected one (or the picked one), or the two picked commits.
+<kbd>D</kbd> shows the files changed between two commits and their diff in the details, like the changes tab: the checked out commit and the selected one (or the picked one), or the two picked commits.
 The older commit is the base. It errors with more than two picked commits. <kbd>Esc</kbd> closes it.
 
 The other commands ask first, in a popup showing what they do and the git commands they run:
@@ -77,11 +78,13 @@ The other commands ask first, in a popup showing what they do and the git comman
 - <kbd>m</kbd> merge: the branch at the selected commit (else the commit) into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit (`merge.ff` picks the default: `false` a merge commit, `only` fast-forward only). Squashing and not committing leave the changes on the local changes page, with the message git prepared.
 - <kbd>c</kbd> checkout: a branch at the selected commit (a remote branch becomes a new local branch tracking it) or the commit itself (detached). The local changes are kept (git refuses when they conflict), stashed and reapplied, or discarded (untracked files are kept).
 - <kbd>C</kbd> cherry-pick: the picked commits (oldest first), or the selected one, committing them or leaving the changes on the local changes page, optionally appending "(cherry picked from commit …)" to the messages.
-- <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages, with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.
+- <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages or keeping the parent's (fixup), with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.
+- <kbd>d</kbd> drop: removes the picked commits, or the selected one, and their changes, with an interactive rebase; the commits after them are rebuilt on top, stashing and reapplying local changes like rebase.
 - <kbd>u</kbd> revert: the picked commits (newest first), or the selected one, committing the reverts or leaving them on the local changes page.
 - <kbd>U</kbd> reset: the current branch to the selected commit, mixed (keep the changes, unstaged), soft (keep them staged) or hard (discard them).
 - <kbd>A</kbd> amend: edits the selected commit on the local changes page, where amending is turned on: its changes are staged, combined with what is staged, and its message is in the message box, both to change. For the last commit it opens right away; an older one asks first, then an interactive rebase stops at it (`edit`), stashing and reapplying the local changes like rebase. Committing (<kbd>c</kbd>) amends it and goes on with the rebase; <kbd>C</kbd> aborts. The commits after it must be on the current branch, with no merge commits.
 
+Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
 The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them.
 
@@ -156,6 +159,18 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
+| <kbd>a</kbd>                                       | New branch (on the branches and remotes) or tag (on the tags) | `create_ref` |
+| <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash | `delete_ref` |
+| <kbd>e</kbd>                                       | Rename the branch or change its upstream | `edit_ref`   |
+| <kbd>Space</kbd>                                   | Apply the stash; elsewhere open/close node | `apply_stash` |
+
+The commands on the refs ask first, in a popup:
+
+- <kbd>a</kbd> on the branches: a new branch from the selected branch (or remote branch, which it then tracks), else from the current branch, checking it out or not. The start can be typed, or chosen among the branches with <kbd>v</kbd>.
+- <kbd>a</kbd> on the tags: a new tag at `HEAD` (or a revision typed), annotated when it has a message.
+- <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from the remote too); and drops a stash.
+- <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none).
+- <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
 
 The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page shows what is selected:
 `Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.

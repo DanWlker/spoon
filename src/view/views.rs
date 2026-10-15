@@ -33,6 +33,7 @@ pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
         hint(UserEvent::CherryPick, "cherry-pick"),
         hint(UserEvent::Squash, "squash"),
         hint(UserEvent::AmendCommit, "amend"),
+        hint(UserEvent::DropCommit, "drop"),
         hint(UserEvent::Revert, "revert"),
         hint(UserEvent::Reset, "reset"),
         hint(UserEvent::Search, "search"),
@@ -361,6 +362,15 @@ pub enum RefreshViewContext {
 }
 
 impl RefreshViewContext {
+    pub fn list_context_mut(&mut self) -> &mut ListRefreshViewContext {
+        match self {
+            RefreshViewContext::List { list_context }
+            | RefreshViewContext::Detail { list_context }
+            | RefreshViewContext::UserCommand { list_context, .. }
+            | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
+        }
+    }
+
     pub fn list_context(&self) -> &ListRefreshViewContext {
         match self {
             RefreshViewContext::List { list_context }

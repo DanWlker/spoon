@@ -834,6 +834,21 @@
         },
         "amend_commit": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "drop_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "create_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "delete_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "edit_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "apply_stash": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {

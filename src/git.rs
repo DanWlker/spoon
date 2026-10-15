@@ -336,6 +336,38 @@ impl Repository {
             .collect())
     }
 
+    // How many commits `head` is after `commit`, on the history of `head`.
+    pub fn count_after(
+        &self,
+        commit: &CommitHash,
+        head: &str,
+    ) -> std::result::Result<usize, String> {
+        let range = format!("{}..{head}", commit.as_str());
+        let out = git_output(&self.path, &["rev-list", "--count", &range, "--"])?;
+        out.trim().parse().map_err(|e| format!("{e}"))
+    }
+
+    // Whether the local branch is merged into HEAD, or into its upstream.
+    pub fn is_merged(&self, branch: &str) -> bool {
+        let merged_into = |target: &str| {
+            let branch = format!("refs/heads/{branch}");
+            git_output(
+                &self.path,
+                &["merge-base", "--is-ancestor", &branch, target],
+            )
+            .is_ok()
+        };
+        merged_into("HEAD") || merged_into(&format!("{branch}@{{upstream}}"))
+    }
+
+    // The commit a revision like "HEAD~2" names.
+    pub fn resolve(&self, revision: &str) -> Option<CommitHash> {
+        let revision = format!("{revision}^{{commit}}");
+        git_output(&self.path, &["rev-parse", "--verify", "--quiet", &revision])
+            .ok()
+            .map(|hash| CommitHash::from(hash.trim()))
+    }
+
     // The commits after `base` (all of them when None) up to `head`, with their parents.
     pub fn commits_after(
         &self,
@@ -1494,6 +1526,10 @@ pub struct GitTask {
     pub uses_picks: bool,
     // leaves changes to commit, so the local changes page is shown once it is done
     pub show_local_changes: bool,
+    // more commands run after it, when it succeeded
+    pub then: Vec<Vec<String>>,
+    // the commit to select once it is done, like "HEAD~2", as rewriting the history changes its hash
+    pub select: Option<String>,
 }
 
 impl GitTask {
@@ -1505,6 +1541,43 @@ impl GitTask {
             ..Default::default()
         }
     }
+
+    // An interactive rebase of the commits after `base` (all of them when None), its todo list
+    // changed by the sed `expressions`, see `todo_action`.
+    pub fn rebase_todo(base: Option<&str>, auto_stash: bool, expressions: &[String]) -> Self {
+        let stash = if auto_stash {
+            "--autostash"
+        } else {
+            "--no-autostash"
+        };
+        let editor = std::iter::once("sed -i.bak -E".to_string())
+            .chain(expressions.iter().map(|e| format!("-e '{e}'")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let env = [
+            ("GIT_SEQUENCE_EDITOR", editor.as_str()),
+            // the todo list names the commits with full hashes
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "core.abbrev"),
+            ("GIT_CONFIG_VALUE_0", "40"),
+        ];
+        GitTask {
+            args: ["rebase", "-i", stash, base.unwrap_or("--root")]
+                .map(String::from)
+                .to_vec(),
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+}
+
+// A sed expression turning the pick of the commit (a full hash) in a rebase todo list into
+// `action`, like "squash" or "drop".
+pub fn todo_action(hash: &str, action: &str) -> String {
+    format!("s/^(pick|p) {hash} /{action} {hash} /")
 }
 
 // Runs the command of a task, between stashing and reapplying the local changes if it says so.
@@ -1521,7 +1594,12 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     }
     let pop = || run_task_step(path, &["stash", "pop"].map(String::from), task);
 
-    match run_task_step(path, &task.args, task) {
+    let run = || {
+        std::iter::once(&task.args)
+            .chain(&task.then)
+            .try_for_each(|args| run_task_step(path, args, task))
+    };
+    match run() {
         Ok(()) => {}
         Err(err) if stashed => {
             // nothing changed, the local changes go back

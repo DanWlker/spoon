@@ -280,6 +280,11 @@ pub enum UserEvent {
     Revert,
     Reset,
     AmendCommit,
+    DropCommit,
+    CreateRef,
+    DeleteRef,
+    EditRef,
+    ApplyStash,
     SearchTargetToggle,
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -383,6 +388,11 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "revert" => Ok(UserEvent::Revert),
                         "reset" => Ok(UserEvent::Reset),
                         "amend_commit" => Ok(UserEvent::AmendCommit),
+                        "drop_commit" => Ok(UserEvent::DropCommit),
+                        "create_ref" => Ok(UserEvent::CreateRef),
+                        "delete_ref" => Ok(UserEvent::DeleteRef),
+                        "edit_ref" => Ok(UserEvent::EditRef),
+                        "apply_stash" => Ok(UserEvent::ApplyStash),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))
@@ -420,6 +430,8 @@ pub enum Page {
     LocalChanges,
     // a popup confirming a git command, like fetch or merge
     Dialog,
+    // the refs sidebar having the focus
+    Refs,
 }
 
 impl UserEvent {
@@ -434,7 +446,12 @@ impl UserEvent {
             | UserEvent::Squash
             | UserEvent::Revert
             | UserEvent::Reset
-            | UserEvent::AmendCommit => Some(Page::Graph),
+            | UserEvent::AmendCommit
+            | UserEvent::DropCommit => Some(Page::Graph),
+            UserEvent::CreateRef
+            | UserEvent::DeleteRef
+            | UserEvent::EditRef
+            | UserEvent::ApplyStash => Some(Page::Refs),
             UserEvent::NextTab | UserEvent::PreviousTab => Some(Page::Details),
             UserEvent::ToggleStage
             | UserEvent::Stash

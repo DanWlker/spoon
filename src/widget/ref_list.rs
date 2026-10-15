@@ -25,6 +25,25 @@ const TREE_REMOTE_ROOT_TEXT: &str = "Remotes";
 const TREE_TAG_ROOT_TEXT: &str = "Tags";
 const TREE_STASH_ROOT_TEXT: &str = "Stashes";
 
+// The sections of the sidebar under the local changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefSection {
+    Branches,
+    Remotes,
+    Tags,
+    Stashes,
+}
+
+// What is selected in the sidebar, for its commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefSelection {
+    LocalChanges,
+    // a section, or a folder in it
+    Section(RefSection),
+    // a ref, by its full name: "main", "origin/main", "v1.0", "stash@{0}"
+    Ref(RefSection, String),
+}
+
 #[derive(Debug)]
 pub struct RefListState {
     roots: Vec<RefTreeNode>,
@@ -152,6 +171,25 @@ impl RefListState {
                     row.name = name;
                 }
             }
+        }
+    }
+
+    pub fn selection(&self) -> RefSelection {
+        let section = match self.selected[0].as_str() {
+            TREE_BRANCH_ROOT_IDENT => RefSection::Branches,
+            TREE_REMOTE_ROOT_IDENT => RefSection::Remotes,
+            TREE_TAG_ROOT_IDENT => RefSection::Tags,
+            TREE_STASH_ROOT_IDENT => RefSection::Stashes,
+            _ => return RefSelection::LocalChanges,
+        };
+        let is_ref = self.selected.len() > 1
+            && self
+                .visible_rows
+                .iter()
+                .any(|row| row.identifier == self.selected && !row.has_children);
+        match self.selected.last() {
+            Some(name) if is_ref => RefSelection::Ref(section, name.clone()),
+            _ => RefSelection::Section(section),
         }
     }
 
@@ -503,8 +541,16 @@ fn sort_tag_tree_nodes(nodes: &mut [RefTreeNode]) {
     });
 }
 
+// By their index, stash@{2} before stash@{10}.
 fn sort_stash_tree_nodes(nodes: &mut [RefTreeNode]) {
-    nodes.sort_by(|a, b| a.identifier.cmp(&b.identifier));
+    let index = |node: &RefTreeNode| {
+        node.identifier
+            .trim_start_matches("stash@{")
+            .trim_end_matches('}')
+            .parse::<usize>()
+            .unwrap_or(usize::MAX)
+    };
+    nodes.sort_by_key(index);
 }
 
 fn parse_semantic_version_tag(tag: &str) -> Option<Version> {

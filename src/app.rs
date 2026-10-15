@@ -22,7 +22,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{hint, AppEvent, EventController, Page, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, EventController, KeyHint, Page, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
@@ -32,6 +32,7 @@ use crate::{
     graph_commands::{graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
+    ref_commands::ref_command,
     search::SearchOptions,
     view::{LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
     widget::{
@@ -39,7 +40,7 @@ use crate::{
         commit_tabs::DetailTab,
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
         local_changes::LocalChangesState,
-        ref_list::{RefList, RefListState},
+        ref_list::{RefList, RefListState, RefSection, RefSelection},
         style::{badge, key_hints},
     },
 };
@@ -545,12 +546,7 @@ impl App<'_> {
         let mut hints = if let Some(dialog) = self.visible_dialog() {
             dialog.key_hints()
         } else if self.shell.sidebar_focused {
-            vec![
-                hint(UserEvent::Confirm, "open"),
-                hint(UserEvent::FocusPanel(0), "collapse"),
-                hint(UserEvent::ShortCopy, "copy name"),
-                hint(UserEvent::Cancel, "back"),
-            ]
+            self.sidebar_hints()
         } else {
             self.view.key_hints()
         };
@@ -1090,6 +1086,19 @@ impl App<'_> {
                 self.set_sidebar_focused(false);
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
+            event @ (UserEvent::CreateRef
+            | UserEvent::DeleteRef
+            | UserEvent::EditRef
+            | UserEvent::ApplyStash) => {
+                let selection = self.shell.sidebar.selection();
+                match ref_command(self.repository, event, &selection) {
+                    Some(dialog) => self.open_dialog(dialog),
+                    // space opens or closes a folder like enter
+                    None => {
+                        self.shell.sidebar.toggle_node();
+                    }
+                }
+            }
             UserEvent::FocusPanel(_) => {
                 // a panel of the page
                 self.set_sidebar_focused(false);
@@ -1099,10 +1108,10 @@ impl App<'_> {
         }
     }
 
-    // The pages whose keys apply, the innermost first: none of them while the sidebar has the focus.
+    // The pages whose keys apply, the innermost first.
     fn current_pages(&self) -> Vec<Page> {
         if self.shell.sidebar_focused {
-            return vec![];
+            return vec![Page::Refs];
         }
         match &self.view {
             View::Detail(view) if !view.is_list_focused() => vec![Page::Details, Page::Graph],
@@ -1110,6 +1119,43 @@ impl App<'_> {
             View::LocalChanges(_) => vec![Page::LocalChanges],
             _ => vec![],
         }
+    }
+
+    // The commands on the selected row of the sidebar, then moving about.
+    fn sidebar_hints(&self) -> Vec<KeyHint> {
+        use RefSection::*;
+        let mut hints = match self.shell.sidebar.selection() {
+            RefSelection::LocalChanges => vec![],
+            RefSelection::Section(Branches | Remotes) => {
+                vec![hint(UserEvent::CreateRef, "new branch")]
+            }
+            RefSelection::Section(Tags) => vec![hint(UserEvent::CreateRef, "new tag")],
+            RefSelection::Section(Stashes) => vec![],
+            RefSelection::Ref(Branches, _) => vec![
+                hint(UserEvent::CreateRef, "new branch"),
+                hint(UserEvent::EditRef, "rename/upstream"),
+                hint(UserEvent::DeleteRef, "delete"),
+            ],
+            RefSelection::Ref(Remotes, _) => vec![
+                hint(UserEvent::CreateRef, "new branch"),
+                hint(UserEvent::DeleteRef, "delete"),
+            ],
+            RefSelection::Ref(Tags, _) => vec![
+                hint(UserEvent::CreateRef, "new tag"),
+                hint(UserEvent::DeleteRef, "delete"),
+            ],
+            RefSelection::Ref(Stashes, _) => vec![
+                hint(UserEvent::ApplyStash, "apply"),
+                hint(UserEvent::DeleteRef, "drop"),
+            ],
+        };
+        hints.extend([
+            hint(UserEvent::Confirm, "open"),
+            hint(UserEvent::FocusPanel(0), "collapse"),
+            hint(UserEvent::ShortCopy, "copy name"),
+            hint(UserEvent::Cancel, "back"),
+        ]);
+        hints
     }
 
     fn set_sidebar_focused(&mut self, focused: bool) {
@@ -1317,6 +1363,13 @@ impl App<'_> {
         // the command may have changed files or stopped on conflicts, even when it failed;
         // refreshing would interrupt typing, so then it waits for a manual refresh
         if let Some(mut context) = self.view.refresh_context().filter(|_| !typing) {
+            // the rewritten commit stays selected
+            let select = task.select.as_deref().filter(|_| result.is_ok());
+            if let Some(hash) = select.and_then(|revision| self.repository.resolve(revision)) {
+                let list_context = context.list_context_mut();
+                list_context.commit_hash = hash.as_str().to_string();
+                list_context.scroll_to_top = false;
+            }
             if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
                 // the page opens once the repository is reloaded
                 let snapshot = self.shell.parked_local_changes.take().unwrap_or_default();
