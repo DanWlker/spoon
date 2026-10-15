@@ -11,7 +11,7 @@ use semver::Version;
 
 use crate::{
     app::AppContext,
-    git::Ref,
+    git::{split_remote_branch, Ref},
     widget::style::{mark_selected_row, panel_block, panel_title},
 };
 
@@ -114,11 +114,12 @@ pub struct RefListState {
 }
 
 impl RefListState {
-    pub fn new(refs: &[&Ref], local_change_count: usize) -> Self {
+    // `remotes` are the names of the remotes, the folders of their branches.
+    pub fn new(refs: &[&Ref], remotes: &[String], local_change_count: usize) -> Self {
         let selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
         let opened = HashSet::from([vec![TREE_BRANCH_ROOT_IDENT.into()]]);
         let mut state = Self {
-            roots: build_ref_tree_nodes(refs, local_change_count),
+            roots: build_ref_tree_nodes(refs, remotes, local_change_count),
             visible_rows: Vec::new(),
             selected,
             opened,
@@ -294,11 +295,11 @@ impl RefListState {
 
     // Shows the refs of the reloaded repository, keeping the selection, the opened nodes and the
     // picked refs still there.
-    pub fn set_refs(&mut self, refs: &[&Ref], local_change_count: usize) {
+    pub fn set_refs(&mut self, refs: &[&Ref], remotes: &[String], local_change_count: usize) {
         let (selected, opened) = self.current_tree_status();
         let offset = self.offset;
         let mut picked = std::mem::take(&mut self.picked);
-        *self = Self::new(refs, local_change_count);
+        *self = Self::new(refs, remotes, local_change_count);
         self.reset_tree_status(selected, opened);
         self.offset = offset;
         picked.names.retain(|name| {
@@ -521,7 +522,11 @@ impl StatefulWidget for RefList {
     }
 }
 
-fn build_ref_tree_nodes(refs: &[&Ref], local_change_count: usize) -> Vec<RefTreeNode> {
+fn build_ref_tree_nodes(
+    refs: &[&Ref],
+    remotes: &[String],
+    local_change_count: usize,
+) -> Vec<RefTreeNode> {
     let mut branch_refs = Vec::new();
     let mut remote_refs = Vec::new();
     let mut tag_refs = Vec::new();
@@ -537,12 +542,11 @@ fn build_ref_tree_nodes(refs: &[&Ref], local_change_count: usize) -> Vec<RefTree
     }
 
     let mut branch_nodes = refs_to_ref_tree_nodes(branch_refs);
-    let mut remote_nodes = refs_to_ref_tree_nodes(remote_refs);
+    let remote_nodes = remotes_to_ref_tree_nodes(remote_refs, remotes);
     let mut tag_nodes = refs_to_ref_tree_nodes(tag_refs);
     let mut stash_nodes = refs_to_stash_ref_tree_nodes(stash_refs);
 
     sort_branch_tree_nodes(&mut branch_nodes);
-    sort_branch_tree_nodes(&mut remote_nodes);
     sort_tag_tree_nodes(&mut tag_nodes);
     sort_stash_tree_nodes(&mut stash_nodes);
 
@@ -607,6 +611,46 @@ fn refs_to_stash_ref_tree_nodes(ref_name_messages: Vec<(String, String)>) -> Vec
         nodes.push(node);
     }
     nodes
+}
+
+// A folder for each remote, named in full even with a '/' in its name, with its branches in
+// folders by the '/' in their names; then the branches of no remote known, like those of a
+// removed one, in folders by every '/'.
+fn remotes_to_ref_tree_nodes(ref_names: Vec<String>, remotes: &[String]) -> Vec<RefTreeNode> {
+    let mut by_remote: Vec<(String, Vec<String>)> =
+        remotes.iter().map(|r| (r.clone(), vec![])).collect();
+    let mut unknown = vec![];
+    for name in ref_names {
+        match split_remote_branch(remotes, &name) {
+            Some((remote, branch)) => {
+                let i = remotes.iter().position(|r| r == remote).unwrap();
+                by_remote[i].1.push(branch.to_string());
+            }
+            None => unknown.push(name),
+        }
+    }
+    let mut nodes: Vec<RefTreeNode> = by_remote
+        .into_iter()
+        .filter(|(_, branches)| !branches.is_empty())
+        .map(|(remote, branches)| {
+            let mut children = refs_to_ref_tree_nodes(branches);
+            sort_branch_tree_nodes(&mut children);
+            prefix_identifiers(&mut children, &remote);
+            RefTreeNode::new(remote.clone(), remote, children)
+        })
+        .collect();
+    let mut unknown = refs_to_ref_tree_nodes(unknown);
+    sort_branch_tree_nodes(&mut unknown);
+    nodes.extend(unknown);
+    nodes
+}
+
+// The identifiers of the nodes under the folder `prefix`, which are their full names.
+fn prefix_identifiers(nodes: &mut [RefTreeNode], prefix: &str) {
+    for node in nodes {
+        node.identifier = format!("{prefix}/{}", node.identifier);
+        prefix_identifiers(&mut node.children, prefix);
+    }
 }
 
 fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
@@ -702,7 +746,7 @@ mod tests {
         };
         let (a, b) = (branch("a"), branch("b"));
         let refs = [&a, &b, &tag];
-        let mut state = RefListState::new(&refs, 0);
+        let mut state = RefListState::new(&refs, &[], 0);
         state.select_branches();
         state.select_next();
         state.toggle_pick().unwrap();
@@ -716,10 +760,57 @@ mod tests {
         );
         assert!(state.toggle_pick().unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
-        state.set_refs(&[&a, &tag], 0);
+        state.set_refs(&[&a, &tag], &[], 0);
         assert_eq!(state.picked().names, ["a"]);
         state.clear_picks();
         state.toggle_pick().unwrap();
         assert_eq!(state.picked().section, RefSection::Tags);
+    }
+
+    #[test]
+    fn test_remote_folders() {
+        let remote = |name: &str| Ref::RemoteBranch {
+            name: name.into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let refs = [
+            remote("team/origin/main"),
+            remote("team/origin/feature/x"),
+            remote("origin/main"),
+            remote("gone/main"),
+        ];
+        let refs: Vec<&Ref> = refs.iter().collect();
+        let remotes = ["origin".to_string(), "team/origin".to_string()];
+        let nodes = remotes_to_ref_tree_nodes(
+            refs.iter().map(|r| r.name().to_string()).collect(),
+            &remotes,
+        );
+        let tree = |nodes: &[RefTreeNode]| -> Vec<(String, String)> {
+            nodes
+                .iter()
+                .map(|n| (n.identifier.clone(), n.name.clone()))
+                .collect()
+        };
+        // a folder for each remote, named in full, then the branches of no remote known
+        assert_eq!(
+            tree(&nodes),
+            [
+                ("origin".into(), "origin".into()),
+                ("team/origin".into(), "team/origin".into()),
+                ("gone".into(), "gone".into()),
+            ]
+        );
+        // the branches of a remote by their full names, in folders by the rest
+        assert_eq!(
+            tree(&nodes[1].children),
+            [
+                ("team/origin/feature".into(), "feature".into()),
+                ("team/origin/main".into(), "main".into()),
+            ]
+        );
+        assert_eq!(
+            tree(&nodes[1].children[0].children),
+            [("team/origin/feature/x".into(), "x".into())]
+        );
     }
 }

@@ -295,12 +295,14 @@ impl<'a> App<'a> {
         let loaded_refs = refs_snapshot(repository.path()).ok();
         let mut shell = match shell {
             Some(mut shell) => {
-                shell.sidebar.set_refs(&refs, local_change_count);
+                shell
+                    .sidebar
+                    .set_refs(&refs, repository.remotes(), local_change_count);
                 shell.refs_snapshot = loaded_refs;
                 shell
             }
             None => AppShell {
-                sidebar: RefListState::new(&refs, local_change_count),
+                sidebar: RefListState::new(&refs, repository.remotes(), local_change_count),
                 sidebar_focused: false,
                 sidebar_collapsed: false,
                 parked_local_changes: None,

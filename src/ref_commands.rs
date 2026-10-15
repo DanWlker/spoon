@@ -47,7 +47,7 @@ pub fn ref_command_applies(
         ),
         UserEvent::EditRef => match selection {
             RefSelection::Ref(Branches, _) => true,
-            RefSelection::Folder(Remotes, name) => repository.remote_info().remotes.contains(name),
+            RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => false,
         },
         UserEvent::ApplyStash => matches!(selection, RefSelection::Ref(Stashes, _)),

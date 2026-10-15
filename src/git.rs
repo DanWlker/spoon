@@ -119,6 +119,8 @@ pub struct Repository {
 
     ref_map: RefMap,
     head: Head,
+    // the names of the remotes, sorted, as loaded
+    remotes: Vec<String>,
     // to preserve order of the original commits from `git log`, we store the commit hashes
     commit_hashes: Vec<CommitHash>,
 }
@@ -177,6 +179,7 @@ impl Repository {
             commit_hashes,
         );
         repository.git_dir = git_dir;
+        repository.remotes = load_remotes(path);
         repository.loaded_local_changes = Some(load_local_changes(path)).into();
         Ok(repository)
     }
@@ -199,8 +202,15 @@ impl Repository {
             children_map,
             ref_map,
             head,
+            remotes: Vec::new(),
             commit_hashes,
         }
+    }
+
+    // The names of the remotes when the repository was loaded, without running git, see
+    // `remote_info` for those of now.
+    pub fn remotes(&self) -> &[String] {
+        &self.remotes
     }
 
     pub fn commit(&self, commit_hash: &CommitHash) -> Option<&Commit> {
@@ -1257,6 +1267,17 @@ fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
     } else {
         None
     }
+}
+
+// The names of the remotes, sorted.
+fn load_remotes(path: &Path) -> Vec<String> {
+    let mut remotes: Vec<String> = git_output(path, &["remote"])
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect();
+    remotes.sort();
+    remotes
 }
 
 fn get_current_branch(path: &Path) -> Option<String> {
