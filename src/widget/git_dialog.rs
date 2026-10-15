@@ -1340,7 +1340,7 @@ impl GitDialog {
                 });
                 // the remote first, which can't be undone here
                 let warnings: Vec<String> = remote.into_iter().chain(unmerged).collect();
-                return (!warnings.is_empty()).then(|| warnings.join(" "));
+                return (!warnings.is_empty()).then(|| warnings.join("\n"));
             }
             DialogKind::DropStashes { .. } => Some("The stashed changes are lost."),
             _ => None,
@@ -1579,7 +1579,8 @@ impl Widget for GitDialogWidget<'_> {
             lines.push(line);
         }
         lines.push(Line::raw(""));
-        if let Some(warning) = dialog.warning() {
+        // a line for each
+        for warning in dialog.warning().iter().flat_map(|w| w.lines()) {
             lines.push(
                 Line::raw(format!("! {warning}"))
                     .fg(theme.status_warn_fg)
