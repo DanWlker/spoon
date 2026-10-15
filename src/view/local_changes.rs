@@ -264,6 +264,13 @@ impl<'a> LocalChangesView<'a> {
                     self.tx.send(copy_path(repository, &path, full));
                 }
             }
+            UserEvent::Ignore if self.as_state().is_files_focused() => {
+                match self.as_mut_state().ignore_selected() {
+                    Ok(message) if message.is_empty() => {}
+                    Ok(message) => self.tx.send(AppEvent::NotifySuccess(message)),
+                    Err(err) => self.tx.send(AppEvent::NotifyError(err)),
+                }
+            }
             UserEvent::Refresh => {
                 self.refresh();
             }

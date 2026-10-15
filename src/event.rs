@@ -373,6 +373,7 @@ pub enum UserEvent {
     Refresh,
     ShortCopy,
     FullCopy,
+    Ignore,
     Unknown,
 }
 
@@ -451,6 +452,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "keys_toggle" => Ok(UserEvent::KeysToggle),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
+                        "ignore" => Ok(UserEvent::Ignore),
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
                         "toggle_select" => Ok(UserEvent::ToggleSelect),
                         "next_picked" => Ok(UserEvent::NextPicked),

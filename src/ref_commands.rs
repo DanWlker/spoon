@@ -40,7 +40,12 @@ pub fn ref_command_applies(
         UserEvent::BranchOnly => true,
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
         UserEvent::ToggleSelect => matches!(selection, RefSelection::Ref(..)) || !picked.is_empty(),
-        UserEvent::DeleteRef => matches!(selection, RefSelection::Ref(..)) || !picked.is_empty(),
+        UserEvent::DeleteRef => match selection {
+            RefSelection::Ref(..) => true,
+            // a remote, removed
+            RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
+            _ => !picked.is_empty(),
+        },
         UserEvent::Diff if !picked.is_empty() => picked.section != Stashes,
         // the others work on the selected row alone
         _ if !picked.is_empty() => {
@@ -50,12 +55,7 @@ pub fn ref_command_applies(
                     UserEvent::CreateRef | UserEvent::EditRef | UserEvent::ApplyStash
                 ))
         }
-        UserEvent::CreateRef => matches!(
-            selection,
-            RefSelection::Section(Remotes)
-                | RefSelection::Folder(Remotes, _)
-                | RefSelection::Ref(Remotes, _)
-        ),
+        UserEvent::CreateRef => adds_remote(repository, selection),
         UserEvent::EditRef => match selection {
             RefSelection::Ref(Branches, _) => true,
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
@@ -78,14 +78,16 @@ pub fn ref_command(
     use RefSection::*;
     let dialog = match (event, selection) {
         // remotes only: branches and tags are created with the commands of the graph
-        (
-            UserEvent::CreateRef,
-            RefSelection::Section(Remotes)
-            | RefSelection::Folder(Remotes, _)
-            | RefSelection::Ref(Remotes, _),
-        ) => Ok(GitDialog::add_remote()),
+        (UserEvent::CreateRef, _) if adds_remote(repository, selection) => {
+            Ok(GitDialog::add_remote())
+        }
         (UserEvent::DeleteRef, _) if !picked.is_empty() => {
             delete_refs(repository, picked.section, &picked.names)
+        }
+        (UserEvent::DeleteRef, RefSelection::Folder(Remotes, name))
+            if repository.remotes().contains(name) =>
+        {
+            Ok(GitDialog::remove_remote(name))
         }
         (UserEvent::DeleteRef, RefSelection::Ref(section, name)) => {
             delete_refs(repository, *section, std::slice::from_ref(name))
@@ -118,6 +120,17 @@ pub fn ref_command(
         _ => return None,
     };
     Some(dialog)
+}
+
+// Whether a remote is added on the selected row: a remote, like removing one, or the remotes
+// header while there are none, to add the first.
+fn adds_remote(repository: &Repository, selection: &RefSelection) -> bool {
+    let remotes = repository.remotes();
+    match selection {
+        RefSelection::Folder(RefSection::Remotes, name) => remotes.contains(name),
+        RefSelection::Section(RefSection::Remotes) => remotes.is_empty(),
+        _ => false,
+    }
 }
 
 // Deletes the refs of a section: local branches (not the checked-out one), branches on their
@@ -257,6 +270,36 @@ mod tests {
 
     fn typed(text: &str) -> Vec<Result<char, UserEvent>> {
         text.chars().map(Ok).collect()
+    }
+
+    #[test]
+    fn test_first_remote_from_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q"]);
+        git(
+            path,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a",
+            ],
+        );
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let header = RefSelection::Section(RefSection::Remotes);
+        let none = RefPicks::default();
+        assert!(ref_command_applies(
+            &repository,
+            UserEvent::CreateRef,
+            &header,
+            &none
+        ));
     }
 
     #[test]
@@ -526,7 +569,7 @@ mod tests {
         run(
             path,
             UserEvent::CreateRef,
-            RefSelection::Section(Remotes),
+            RefSelection::Folder(Remotes, "origin".into()),
             &keys,
         );
         assert_eq!(git(path, &["remote"]), "origin\nother\n");
@@ -568,14 +611,30 @@ mod tests {
                 "{event:?}"
             );
         }
+        // a remote is added on a remote, like it is removed; the header only adds the first
         assert!(!applies(UserEvent::CreateRef, main(), &none));
         assert!(applies(
+            UserEvent::CreateRef,
+            RefSelection::Folder(Remotes, "other".into()),
+            &none
+        ));
+        assert!(!applies(
             UserEvent::CreateRef,
             RefSelection::Section(Remotes),
             &none
         ));
+        assert!(!applies(
+            UserEvent::CreateRef,
+            RefSelection::Ref(Remotes, "origin/main".into()),
+            &none
+        ));
         assert!(applies(
             UserEvent::EditRef,
+            RefSelection::Folder(Remotes, "other".into()),
+            &none
+        ));
+        assert!(applies(
+            UserEvent::DeleteRef,
             RefSelection::Folder(Remotes, "other".into()),
             &none
         ));
@@ -632,5 +691,15 @@ mod tests {
             &RefPicks::default()
         )
         .is_none());
+
+        // a remote removed, with its remote branches
+        run(
+            path,
+            UserEvent::DeleteRef,
+            RefSelection::Folder(Remotes, "other".into()),
+            &[],
+        );
+        assert_eq!(git(path, &["remote"]), "origin\n");
+        assert_eq!(git(path, &["branch", "-r", "--list", "other/*"]), "");
     }
 }

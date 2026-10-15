@@ -124,6 +124,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash; in the changes and files tabs, the relative/absolute path of the selected file | `short_copy` `full_copy` |
+| <kbd>i</kbd>                         | Add the selected file or directory to `.gitignore`, in the changes and files tabs | `ignore` |
 | <kbd>1</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_1` |
 | <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus (with the commit list focused, they start <kbd>]v</kbd> <kbd>[v</kbd>) | `next_tab` `previous_tab` |
@@ -185,6 +186,8 @@ Nothing is reloaded while a git command runs, a popup is open, or something is b
 On the local changes page, <kbd>v</kbd> picks files and directories (highlighted, with the count in the panel title).
 A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file.
 
+<kbd>i</kbd> adds the selected file or directory to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
+
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor, and <kbd>Enter</kbd> shows their combined diff to stage or unstage their hunks and lines.
 <kbd>s</kbd> asks for a stash message in the status line (it may be empty), and stashes including untracked files.
 
@@ -201,10 +204,10 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
-| <kbd>a</kbd>                                       | New remote (on the remotes) | `create_ref` |
+| <kbd>a</kbd>                                       | New remote (on a remote; on the remotes header while there are none) | `create_ref` |
 | <kbd>b</kbd>                                       | New branch from the selected branch, remote branch or tag | `create_branch` |
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |
-| <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash | `delete_ref` |
+| <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
 | <kbd>Space</kbd>                                   | Apply the stash | `apply_stash` |
 | <kbd>v</kbd>                                       | Pick/Unpick the ref (only refs of one kind together) | `toggle_select` |
@@ -213,11 +216,11 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 The commands on the refs ask first, in a popup:
 
 - <kbd>b</kbd>: a new branch from the selected branch, remote branch or tag (nothing on the other rows), checking it out or not. The start can be typed, or chosen among the branches with <kbd>v</kbd>.
-- <kbd>a</kbd> on the remotes: a new remote, with its name and URL, fetched once added.
+- <kbd>a</kbd> on a remote (like `origin`, under the remotes), or on the remotes header while there are none: a new remote, with its name and URL, fetched once added.
 - <kbd>t</kbd>: a new tag at the selected branch, remote branch or tag (nothing on the other rows), annotated when it has a message. Where it goes can be typed.
 - <kbd>v</kbd> picks refs, all of one kind: branches, remote branches, tags or stashes (picking another kind warns; <kbd>Esc</kbd> clears the picks first). The title of the sidebar shows how many are picked. <kbd>d</kbd> then deletes (or drops) all of them in one popup, and <kbd>D</kbd> diffs the two picked refs.
 - <kbd>D</kbd> diffs two refs: the two picked ones (the first picked is the base), else the current branch and the picked or selected one. The changes between them open in the details, like <kbd>D</kbd> on the graph, and the commit graph shows only the history of the two (its title says which); closing the comparison shows all of it again.
-- <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream; a checkbox deletes its upstream on the remote too, when it is still there), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from a remote too, `origin` or else the first one, named in the popup); and drops a stash.
+- <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream; a checkbox deletes its upstream on the remote too, when it is still there), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from a remote too, `origin` or else the first one, named in the popup); and drops a stash. On a remote (like `origin`, under the remotes) it removes the remote, with its remote branches here; nothing changes on the remote itself.
 - <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
 - the commands of the commit graph work on the selected branch, remote branch or tag: <kbd>m</kbd> merges it into the current branch and <kbd>r</kbd> rebases the current branch onto it (by its name), <kbd>c</kbd> checks it out (a tag detached); <kbd>b</kbd> and <kbd>t</kbd> make a branch or tag from it; the others, like <kbd>D</kbd> diff, work on the commit it points at. The keys of the sidebar come first (<kbd>d</kbd> deletes the ref, it doesn't drop the commit).
 - <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
@@ -251,6 +254,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>/</kbd>                         | Search files<br>Search the diff, while it has the focus      | `search`                        |
 | <kbd>?</kbd>                         | Filter files                                                 | `filter`                        |
 | <kbd>y/Y</kbd>                       | Copy the relative/absolute path of the file<br>Copy the line or hunk (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
+| <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below)        | `ignore`                        |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |

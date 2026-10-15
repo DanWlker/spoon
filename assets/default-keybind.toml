@@ -108,7 +108,7 @@ create_tag = ["t"]
 # show only the commits of the current branch (the history of HEAD), or all of them again
 branch_only = ["o"]
 
-# the refs sidebar: create a remote (on the remotes), delete the selected branch
+# the refs sidebar: create a remote (on a remote, or on the remotes header while there are none), delete the selected branch
 # or tag or drop the selected stash, rename a branch or change its upstream, apply a stash
 create_ref = ["a"]
 delete_ref = ["d"]
@@ -133,3 +133,5 @@ push = ["shift-p"]
 # copy part of information, ex: copy the short commit hash not all
 short_copy = ["y"]
 full_copy = ["shift-y"]
+# add the selected file or directory to the .gitignore at the top of the repository
+ignore = ["i"]

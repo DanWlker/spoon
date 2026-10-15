@@ -583,6 +583,38 @@ impl Repository {
         Ok(())
     }
 
+    // Adds the file or directory (`dir`) at `path` to the .gitignore at the top of the working
+    // tree, anchored there. Returns what to tell: a tracked path stays tracked, ignoring only
+    // keeps untracked files out.
+    pub fn ignore_path(&self, path: &str, dir: bool) -> std::result::Result<String, String> {
+        if path == ":/" {
+            return Err("The whole repository can't be ignored, choose a file or directory".into());
+        }
+        let pattern = gitignore_pattern(path, dir);
+        let file = self.path.join(".gitignore");
+        let content = std::fs::read_to_string(&file).unwrap_or_default();
+        if content.lines().any(|line| line == pattern) {
+            return Ok(format!("{pattern} is already in .gitignore"));
+        }
+        let separator = if content.is_empty() || content.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        std::fs::write(&file, format!("{content}{separator}{pattern}\n"))
+            .map_err(|e| format!("failed to write .gitignore: {e}"))?;
+        let specs = pathspecs(&[path]);
+        let tracked =
+            git_output(&self.path, &["ls-files", "--", &specs[0]]).is_ok_and(|out| !out.is_empty());
+        Ok(if tracked {
+            format!(
+                "Added {pattern} to .gitignore; it is tracked, so git still follows its changes"
+            )
+        } else {
+            format!("Added {pattern} to .gitignore")
+        })
+    }
+
     // Applies `patch` to the working tree, `reverse` to undo the changes in it.
     pub fn apply_patch_to_worktree(
         &self,
@@ -920,6 +952,26 @@ impl Repository {
         args.push("-");
         run_git(&self.path, &args, Some(patch))
     }
+}
+
+// The .gitignore line matching only `path` from the top: the characters git reads as a pattern
+// escaped, and a directory ending with "/".
+fn gitignore_pattern(path: &str, dir: bool) -> String {
+    let mut pattern = String::from("/");
+    for c in path.chars() {
+        if matches!(c, '*' | '?' | '[' | '\\' | '!' | '#') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    // trailing spaces are dropped unless escaped
+    let spaces = pattern.len() - pattern.trim_end_matches(' ').len();
+    pattern.truncate(pattern.len() - spaces);
+    pattern.push_str(&"\\ ".repeat(spaces));
+    if dir {
+        pattern.push('/');
+    }
+    pattern
 }
 
 // A boolean as git reads it in its config, None when it isn't one.
@@ -2395,6 +2447,37 @@ mod tests {
             .unwrap();
         let content = std::fs::read_to_string(path.join("new.txt")).unwrap();
         assert_eq!(content, numbers.replace("\n5\n", "\nfive\n"));
+    }
+
+    #[test]
+    fn test_ignore_path() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join(".gitignore"), "*.log").unwrap();
+        std::fs::create_dir(path.join("build")).unwrap();
+        for file in ["a[1].txt", "build/out", "keep.txt", "t.txt"] {
+            std::fs::write(path.join(file), "x").unwrap();
+        }
+        repo.add(&["t.txt"]);
+        repo.commit("t", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+
+        repository.ignore_path("a[1].txt", false).unwrap();
+        repository.ignore_path("build", true).unwrap();
+        let tracked = repository.ignore_path("t.txt", false).unwrap();
+        assert!(tracked.contains("tracked"), "{tracked}");
+        let again = repository.ignore_path("build", true).unwrap();
+        assert!(again.contains("already"), "{again}");
+        let content = std::fs::read_to_string(path.join(".gitignore")).unwrap();
+        assert_eq!(content, "*.log\n/a\\[1].txt\n/build/\n/t.txt\n");
+        // git ignores exactly them: keep.txt shows, a[1].txt and build/ don't
+        let status = git_output(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
+        assert_eq!(status, "?? .gitignore\n?? keep.txt\n");
+        assert_eq!(gitignore_pattern("#x ", false), "/\\#x\\ ");
     }
 
     #[test]

@@ -785,6 +785,9 @@
         "full_copy": {
           "$ref": "#/definitions/keybindArray"
         },
+        "ignore": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "filter": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1079,6 +1082,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "full_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "ignore": {
           "$ref": "#/definitions/keybindArray"
         },
         "filter": {

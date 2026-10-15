@@ -96,6 +96,9 @@ enum DialogKind {
         url: String,
     },
     AddRemote,
+    RemoveRemote {
+        name: String,
+    },
     CreateTag,
     // `remote` is where they may be deleted too
     DeleteTags {
@@ -549,6 +552,15 @@ impl GitDialog {
     }
 
     // `remote` is where they may be deleted too, when there are remotes.
+    // Removes a remote, and its remote branches from this repository.
+    pub fn remove_remote(name: &str) -> Self {
+        let intro = vec![format!("Remove the remote {name}")];
+        let kind = DialogKind::RemoveRemote {
+            name: name.to_string(),
+        };
+        Self::with(" Remove remote ", "remove", intro, kind)
+    }
+
     pub fn delete_tags(names: Vec<String>, remote: Option<String>) -> Self {
         let intro = names_intro("Delete the tag", "Delete the tags", &names);
         // named, as it may not be the remote meant: origin, else the first one
@@ -1130,6 +1142,11 @@ impl GitDialog {
                     ..Default::default()
                 })
             }
+            DialogKind::RemoveRemote { name } => Ok(GitTask::new(
+                &["remote", "remove", name],
+                format!("Removing {name}"),
+                format!("Removed {name}"),
+            )),
             DialogKind::CreateTag => {
                 let name = self.value(FieldId::Name);
                 let message = self.value(FieldId::Message);
@@ -1347,6 +1364,9 @@ impl GitDialog {
             }
             DialogKind::DeleteRemoteBranches { .. } => {
                 Some("They are deleted on the remote, for everyone.")
+            }
+            DialogKind::RemoveRemote { .. } => {
+                Some("Its branches here and the upstreams set to them go; the remote is untouched.")
             }
             DialogKind::DeleteBranches {
                 names,

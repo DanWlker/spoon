@@ -307,7 +307,7 @@ impl RefListState {
             && self
                 .visible_rows
                 .iter()
-                .any(|row| row.identifier == self.selected && !row.has_children);
+                .any(|row| row.identifier == self.selected && !row.folder);
         match self.selected.last() {
             Some(name) if is_ref => RefSelection::Ref(section, name.clone()),
             Some(path) if self.selected.len() > 1 => RefSelection::Folder(section, path.clone()),
@@ -385,6 +385,8 @@ struct VisibleRefRow {
     name: String,
     depth: usize,
     has_children: bool,
+    // a section, a folder or a remote, even without children
+    folder: bool,
     separator: bool,
 }
 
@@ -402,6 +404,7 @@ fn collect_visible_rows(
             name: node.name.clone(),
             depth: parent.len(),
             has_children: !node.children.is_empty(),
+            folder: node.folder || !node.children.is_empty(),
             separator: false,
         });
         if parent.is_empty() && node.identifier == TREE_LOCAL_CHANGES_ROOT_IDENT {
@@ -411,6 +414,7 @@ fn collect_visible_rows(
                 name: String::new(),
                 depth: 0,
                 has_children: false,
+                folder: false,
                 separator: true,
             });
         }
@@ -510,7 +514,7 @@ impl StatefulWidget for RefList {
             let (text_x, _) =
                 buf.set_stringn(inner.x, y, prefix, inner.width as usize, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
-            let picked = !row.has_children
+            let picked = !row.folder
                 && row.identifier.len() > 1
                 && RefSection::of_root(&row.identifier[0]).is_some_and(|section| {
                     state
@@ -641,6 +645,8 @@ struct RefTreeNode {
     identifier: String,
     name: String,
     children: Vec<RefTreeNode>,
+    // a remote, a folder even without branches; others are folders when they have children
+    folder: bool,
 }
 
 impl RefTreeNode {
@@ -649,6 +655,7 @@ impl RefTreeNode {
             identifier,
             name,
             children,
+            folder: false,
         }
     }
 }
@@ -660,6 +667,7 @@ fn refs_to_stash_ref_tree_nodes(ref_name_messages: Vec<(String, String)>) -> Vec
             identifier: name.clone(),
             name: message.to_string(),
             children: Vec::new(),
+            folder: false,
         };
         nodes.push(node);
     }
@@ -682,14 +690,17 @@ fn remotes_to_ref_tree_nodes(ref_names: Vec<String>, remotes: &[String]) -> Vec<
             None => unknown.push(name),
         }
     }
+    // every remote, so one not fetched yet can still be edited or removed
     let mut nodes: Vec<RefTreeNode> = by_remote
         .into_iter()
-        .filter(|(_, branches)| !branches.is_empty())
         .map(|(remote, branches)| {
             let mut children = refs_to_ref_tree_nodes(branches);
             sort_branch_tree_nodes(&mut children);
             prefix_identifiers(&mut children, &remote);
-            RefTreeNode::new(remote.clone(), remote, children)
+            RefTreeNode {
+                folder: true,
+                ..RefTreeNode::new(remote.clone(), remote, children)
+            }
         })
         .collect();
     let mut unknown = refs_to_ref_tree_nodes(unknown);
@@ -728,6 +739,7 @@ fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
                     identifier: identifier.clone(),
                     name: part.to_string(),
                     children: Vec::new(),
+                    folder: false,
                 };
                 current_nodes.push(node);
                 current_nodes = current_nodes.last_mut().unwrap().children.as_mut();
@@ -892,5 +904,20 @@ mod tests {
             tree(&nodes[1].children[0].children),
             [("team/origin/feature/x".into(), "x".into())]
         );
+
+        // a remote not fetched yet is still a folder, to edit or remove it
+        let mut state = RefListState::new(&[], &["new".to_string()], 0);
+        while !matches!(
+            state.selection(),
+            RefSelection::Section(RefSection::Remotes)
+        ) {
+            state.select_next();
+        }
+        state.open_node();
+        state.select_next();
+        assert!(matches!(
+            state.selection(),
+            RefSelection::Folder(RefSection::Remotes, name) if name == "new"
+        ));
     }
 }

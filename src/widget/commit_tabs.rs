@@ -144,6 +144,12 @@ impl<'a> CommitChangesState<'a> {
         self.tree.selected().map(|r| r.path.as_str())
     }
 
+    // The selected path, and whether it is a directory.
+    pub fn selected_entry(&self) -> Option<(&str, bool)> {
+        let row = self.tree.selected()?;
+        Some((row.path.as_str(), row.file_index.is_none()))
+    }
+
     pub fn new(
         repository: &'a Repository,
         commit_hash: CommitHash,
@@ -394,6 +400,12 @@ impl<'a> CommitFilesState<'a> {
     // The path of the selected file or directory, relative to the top of the repository.
     pub fn selected_path(&self) -> Option<&str> {
         self.tree.as_ref()?.selected().map(|r| r.path.as_str())
+    }
+
+    // The selected path, and whether it is a directory.
+    pub fn selected_entry(&self) -> Option<(&str, bool)> {
+        let row = self.tree.as_ref()?.selected()?;
+        Some((row.path.as_str(), row.file_index.is_none()))
     }
 
     pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {

@@ -299,6 +299,7 @@ fn build_lines(
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash; the relative path in a file tree".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash; the absolute path in a file tree".into()),
+        (vec![UserEvent::Ignore], "Add the file or directory to .gitignore, in a file tree".into()),
     ];
     detail_helps.extend(user_command_help_items.clone());
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
@@ -360,6 +361,7 @@ fn build_lines(
         (vec![UserEvent::ScrollUp], "Scroll diff up".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the relative/absolute path of the file".into()),
+        (vec![UserEvent::Ignore], "Add the file or directory to .gitignore".into()),
     ];
     let (local_changes_key_lines, local_changes_value_lines) = build_block_lines("Local Changes:", local_changes_helps, color_theme, keybind);
     

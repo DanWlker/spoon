@@ -200,6 +200,7 @@ impl<'a> DetailView<'a> {
                 hint(UserEvent::Search, "search"),
                 hint(UserEvent::Filter, "filter"),
                 (copy, "copy path".into()),
+                hint(UserEvent::Ignore, "ignore"),
             ]),
         }
         hints
@@ -408,6 +409,25 @@ impl<'a> DetailView<'a> {
                 if let Some(path) = path.map(String::from) {
                     let full = event == UserEvent::FullCopy;
                     self.tx.send(copy_path(self.repository, &path, full));
+                    return;
+                }
+            }
+            // i adds the selected file or directory to .gitignore
+            if event == UserEvent::Ignore {
+                let entry = match self.tab {
+                    DetailTab::Info => None,
+                    DetailTab::Changes => self.changes_state.selected_entry(),
+                    DetailTab::Files => self.files_state.selected_entry(),
+                };
+                if let Some((path, dir)) = entry {
+                    let event = match self.repository.ignore_path(path, dir) {
+                        Ok(message) => {
+                            self.tx.send(AppEvent::LocalChangesChanged);
+                            AppEvent::NotifySuccess(message)
+                        }
+                        Err(err) => AppEvent::NotifyError(err),
+                    };
+                    self.tx.send(event);
                     return;
                 }
             }

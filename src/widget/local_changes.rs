@@ -903,6 +903,7 @@ impl<'a> LocalChangesState<'a> {
                     h(&[Search], "search"),
                     h(&[Filter], "filter"),
                     h(&[ShortCopy, FullCopy], "copy path"),
+                    h(&[Ignore], "ignore"),
                 ]);
                 if !self.picked().is_empty() {
                     hints.insert(0, h(&[Cancel], "clear picks"));
@@ -916,6 +917,18 @@ impl<'a> LocalChangesState<'a> {
 
     pub fn repository(&self) -> &'a Repository {
         self.repository
+    }
+
+    // Adds the selected file or directory to .gitignore; returns what to tell.
+    pub fn ignore_selected(&mut self) -> Result<String, String> {
+        let Some(row) = self.selected_row() else {
+            return Ok(String::new());
+        };
+        let message = self
+            .repository
+            .ignore_path(&row.path, row.file_index.is_none())?;
+        self.reload();
+        Ok(message)
     }
 
     pub fn toplevel(&self) -> &std::path::Path {
