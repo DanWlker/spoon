@@ -14,9 +14,9 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Repository},
     widget::style::{badge, mark_selected_row, panel_title, tree_panel_width},
     widget::{
-        diff::{diff_line_count, diff_lines, parse_diff, ParsedDiff},
-        file_tree::{keeps, FileTree, FileTreeRow, FileTreeState},
-        tree_query::highlighted_name,
+        diff::{diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step},
+        file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
+        tree_query::{find_around, highlight_match, highlighted_name, match_range},
     },
 };
 
@@ -104,6 +104,15 @@ pub fn render_compare_title(
     Line::from(spans).render(area, buf);
 }
 
+// What has the focus in the changes tab: the files, or the hunks or lines of the diff beside them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum ChangesFocus {
+    #[default]
+    Files,
+    Hunks,
+    Lines,
+}
+
 // A file changed by a commit, as listed in the changes tab.
 #[derive(Debug)]
 struct ChangedFile {
@@ -124,8 +133,8 @@ pub struct CommitChangesState<'a> {
     tree: FileTreeState,
     // loaded lazily, only while the tab is shown
     diff: Option<ParsedDiff>,
-    diff_offset: usize,
-    diff_height: usize,
+    focus: ChangesFocus,
+    cursor: DiffCursor,
 }
 
 impl<'a> CommitChangesState<'a> {
@@ -183,8 +192,8 @@ impl<'a> CommitChangesState<'a> {
             files,
             tree,
             diff: None,
-            diff_offset: 0,
-            diff_height: 0,
+            focus: ChangesFocus::default(),
+            cursor: DiffCursor::default(),
         }
     }
 
@@ -218,7 +227,8 @@ impl<'a> CommitChangesState<'a> {
             None => String::new(),
         };
         self.diff = Some(parse_diff(&diff));
-        self.diff_offset = 0;
+        self.focus = ChangesFocus::Files;
+        self.cursor.reset();
     }
 
     // Applies a tree operation, reloading the diff when the selection changed.
@@ -232,15 +242,110 @@ impl<'a> CommitChangesState<'a> {
     }
 
     pub fn scroll_diff_down(&mut self, n: usize) {
-        self.diff_offset = self.diff_offset.saturating_add(n);
+        self.cursor.scroll_down(n);
     }
 
     pub fn scroll_diff_up(&mut self, n: usize) {
-        self.diff_offset = self.diff_offset.saturating_sub(n);
+        self.cursor.scroll_up(n);
     }
 
     pub fn diff_page_height(&self) -> usize {
-        self.diff_height.max(1)
+        self.cursor.page_height()
+    }
+
+    pub fn is_diff_focused(&self) -> bool {
+        self.focus != ChangesFocus::Files
+    }
+
+    pub fn is_selecting_lines(&self) -> bool {
+        self.focus == ChangesFocus::Lines
+    }
+
+    // Goes one level deeper, like on the local changes page: files -> hunks -> lines of the
+    // selected hunk. Returns false when the diff has no hunk.
+    pub fn enter(&mut self) -> bool {
+        let Some(diff) = &self.diff else {
+            return false;
+        };
+        match self.focus {
+            ChangesFocus::Files if self.cursor.select_hunk(diff, 0) => {
+                self.focus = ChangesFocus::Hunks
+            }
+            ChangesFocus::Hunks if self.cursor.enter_lines(diff) => {
+                self.focus = ChangesFocus::Lines
+            }
+            ChangesFocus::Files => return false,
+            _ => {}
+        }
+        true
+    }
+
+    // Goes one level back: lines -> hunks -> files. Returns false when already at the files.
+    pub fn back(&mut self) -> bool {
+        match self.focus {
+            ChangesFocus::Files => return false,
+            ChangesFocus::Hunks => self.focus = ChangesFocus::Files,
+            ChangesFocus::Lines => {
+                self.focus = ChangesFocus::Hunks;
+                // the cursor may have moved into another hunk
+                if let Some(diff) = &self.diff {
+                    self.cursor.select_hunk(diff, self.cursor.hunk);
+                }
+            }
+        }
+        true
+    }
+
+    // Moves the selected hunk or line in the diff.
+    pub fn step(&mut self, step: Step) {
+        let Some(diff) = &self.diff else {
+            return;
+        };
+        match self.focus {
+            ChangesFocus::Files => {}
+            ChangesFocus::Hunks => self.cursor.move_hunk(diff, step),
+            ChangesFocus::Lines => self.cursor.move_line(diff, step),
+        }
+    }
+
+    // The patch of the selected hunk or line, to apply to the working tree.
+    pub fn selected_patch(&self) -> Option<String> {
+        let diff = self.diff.as_ref()?;
+        match self.focus {
+            ChangesFocus::Files => None,
+            ChangesFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
+            ChangesFocus::Lines => self.cursor.line_patch(diff, false),
+        }
+    }
+
+    // The selected line as in the file, or the selected hunk as a diff, to copy.
+    pub fn selected_text(&self) -> Option<String> {
+        let diff = self.diff.as_ref()?;
+        match self.focus {
+            ChangesFocus::Files => None,
+            ChangesFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::text),
+            ChangesFocus::Lines => self.cursor.line_text(diff),
+        }
+    }
+
+    // Selects a row of the diff matching `query`, see `DiffCursor::search`. Returns false when
+    // nothing matches.
+    pub fn search_diff(&mut self, query: &str, direction: SearchDirection) -> bool {
+        let Some(diff) = &self.diff else {
+            return false;
+        };
+        let lines = self.focus == ChangesFocus::Lines;
+        match self.cursor.search(diff, query, direction, lines) {
+            Some(changed) => {
+                self.focus = if changed {
+                    ChangesFocus::Lines
+                } else {
+                    ChangesFocus::Hunks
+                };
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -268,8 +373,11 @@ pub struct CommitFilesState<'a> {
     // the tree of the previously shown commit, whose expanded directories and selection are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
-    preview_offset: usize,
-    preview_height: usize,
+    // the selected line of the preview while it has the focus, and its scroll
+    preview_focused: bool,
+    cursor: DiffCursor,
+    // the line the search last matched, where the next one starts from
+    search_row: Option<usize>,
 }
 
 impl<'a> CommitFilesState<'a> {
@@ -288,8 +396,9 @@ impl<'a> CommitFilesState<'a> {
             tree: None,
             previous_tree: None,
             preview: None,
-            preview_offset: 0,
-            preview_height: 0,
+            preview_focused: false,
+            cursor: DiffCursor::default(),
+            search_row: None,
         }
     }
 
@@ -362,19 +471,91 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn scroll_preview_down(&mut self, n: usize) {
-        self.preview_offset = self.preview_offset.saturating_add(n);
+        self.cursor.scroll_down(n);
     }
 
     pub fn scroll_preview_up(&mut self, n: usize) {
-        self.preview_offset = self.preview_offset.saturating_sub(n);
+        self.cursor.scroll_up(n);
     }
 
     pub fn preview_page_height(&self) -> usize {
-        self.preview_height.max(1)
+        self.cursor.page_height()
+    }
+
+    pub fn is_preview_focused(&self) -> bool {
+        self.preview_focused
+    }
+
+    fn text_lines(&self) -> Option<&[String]> {
+        match &self.preview {
+            Some(FilePreview::Text(lines)) if !lines.is_empty() => Some(lines),
+            _ => None,
+        }
+    }
+
+    // Moves the focus into the preview of a file, on the first line shown; false when it has no text.
+    pub fn enter(&mut self) -> bool {
+        if self.preview_focused || self.text_lines().is_none() {
+            return self.preview_focused;
+        }
+        self.preview_focused = true;
+        self.cursor.line = self.cursor.offset;
+        true
+    }
+
+    // Moves the focus back to the files; false when it is there.
+    pub fn back(&mut self) -> bool {
+        std::mem::take(&mut self.preview_focused)
+    }
+
+    pub fn step(&mut self, step: Step) {
+        let Some(last) = self.text_lines().map(|l| l.len() - 1) else {
+            return;
+        };
+        let line = match step {
+            Step::Next => self.cursor.line + 1,
+            Step::Prev => self.cursor.line.saturating_sub(1),
+            Step::First => 0,
+            Step::Last => last,
+        };
+        self.select_line(line.min(last));
+        self.search_row = None;
+    }
+
+    fn select_line(&mut self, line: usize) {
+        self.cursor.line = line;
+        self.cursor.scroll_to(line..line + 1);
+    }
+
+    // The selected line of the preview, to copy.
+    pub fn selected_text(&self) -> Option<String> {
+        let lines = self.text_lines().filter(|_| self.preview_focused)?;
+        lines.get(self.cursor.line).cloned()
+    }
+
+    // Selects the line of the preview matching `query`, around from the last match; false when
+    // nothing matches.
+    pub fn search_preview(&mut self, query: &str, direction: SearchDirection) -> bool {
+        let Some(lines) = self.text_lines() else {
+            return false;
+        };
+        let start = self.search_row.unwrap_or(self.cursor.line);
+        let found = find_around(lines.len(), start, direction, |i| {
+            match_range(&lines[i], query).is_some()
+        });
+        let Some(line) = found else {
+            return false;
+        };
+        self.preview_focused = true;
+        self.select_line(line);
+        self.search_row = Some(line);
+        true
     }
 
     fn load_preview(&mut self) {
-        self.preview_offset = 0;
+        self.preview_focused = false;
+        self.cursor.reset();
+        self.search_row = None;
         let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
             return;
@@ -389,10 +570,11 @@ impl<'a> CommitFilesState<'a> {
         {
             // the same heuristic as git: a NUL byte near the start means binary
             Ok(bytes) if bytes.iter().take(8000).any(|b| *b == 0) => FilePreview::Binary,
+            // as in the file, to copy; tabs are expanded when shown
             Ok(bytes) => FilePreview::Text(
                 String::from_utf8_lossy(&bytes)
                     .lines()
-                    .map(|line| line.replace('\t', "    "))
+                    .map(String::from)
                     .collect(),
             ),
             Err(err) => FilePreview::Error(err),
@@ -432,14 +614,17 @@ pub struct CommitChanges<'a> {
     ctx: Rc<AppContext>,
     // highlighted in the names
     search: Option<String>,
+    // highlighted in the diff
+    diff_search: Option<String>,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CommitChanges<'_> {
-    pub fn new(ctx: Rc<AppContext>, search: Option<&str>) -> Self {
+    pub fn new(ctx: Rc<AppContext>, search: Option<&str>, diff_search: Option<&str>) -> Self {
         Self {
             ctx,
             search: search.map(String::from),
+            diff_search: diff_search.map(String::from),
             _marker: std::marker::PhantomData,
         }
     }
@@ -480,18 +665,29 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
                 }
             };
             let (rows, cursor) = (state.tree.rows(), state.tree.cursor());
-            render_rows_with_cursor(rows, line, cursor, theme, tree_area, buf);
+            let tree_focused = !state.is_diff_focused();
+            render_rows_with_cursor(rows, line, cursor, tree_focused, theme, tree_area, buf);
         }
 
-        let height = diff_area.height as usize;
-        state.diff_height = height;
         let count = state.diff.as_ref().map_or(0, diff_line_count);
-        state.diff_offset = state.diff_offset.min(count.saturating_sub(height));
-        let offset = state.diff_offset;
-        let lines = match &state.diff {
-            Some(diff) => diff_lines(diff, theme, offset..offset + height),
-            None => Vec::new(),
+        let range = state.cursor.fit(count, diff_area.height as usize);
+        let Some(diff) = &state.diff else {
+            return;
         };
+        let mut lines = diff_lines(diff, theme, range.clone());
+        let highlighted = match state.focus {
+            ChangesFocus::Files => 0..0,
+            focus => state.cursor.highlighted(diff, focus == ChangesFocus::Lines),
+        };
+        let highlight_style = Style::default().bg(theme.list_selected_bg);
+        for (row, line) in range.zip(lines.iter_mut()) {
+            if highlighted.contains(&row) {
+                line.style = line.style.patch(highlight_style);
+            }
+            if let Some(query) = &self.diff_search {
+                highlight_match(line, query, theme);
+            }
+        }
         Paragraph::new(lines).fg(theme.fg).render(diff_area, buf);
     }
 }
@@ -500,14 +696,17 @@ pub struct CommitFiles<'a> {
     ctx: Rc<AppContext>,
     // highlighted in the names
     search: Option<String>,
+    // highlighted in the preview
+    preview_search: Option<String>,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CommitFiles<'_> {
-    pub fn new(ctx: Rc<AppContext>, search: Option<&str>) -> Self {
+    pub fn new(ctx: Rc<AppContext>, search: Option<&str>, preview_search: Option<&str>) -> Self {
         Self {
             ctx,
             search: search.map(String::from),
+            preview_search: preview_search.map(String::from),
             _marker: std::marker::PhantomData,
         }
     }
@@ -534,28 +733,41 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                     Line::from(spans)
                 }
             };
-            render_rows_with_cursor(tree.rows(), line, tree.cursor(), theme, tree_area, buf);
+            let focused = !state.preview_focused;
+            render_rows_with_cursor(
+                tree.rows(),
+                line,
+                tree.cursor(),
+                focused,
+                theme,
+                tree_area,
+                buf,
+            );
         }
 
-        state.preview_height = preview_area.height as usize;
         let dim = |text: String| vec![Line::raw(text).fg(theme.status_input_transient_fg)];
         let lines = match &state.preview {
             Some(FilePreview::Text(lines)) => {
                 // only the visible lines are built, files can be long
                 let width = lines.len().to_string().len();
-                let max_offset = lines.len().saturating_sub(state.preview_height);
-                state.preview_offset = state.preview_offset.min(max_offset);
-                let visible: Vec<Line> = lines
+                let range = state.cursor.fit(lines.len(), preview_area.height as usize);
+                let highlight_style = Style::default().bg(theme.list_selected_bg);
+                let visible: Vec<Line> = lines[range.start.min(lines.len())..]
                     .iter()
-                    .enumerate()
-                    .skip(state.preview_offset)
-                    .take(state.preview_height)
-                    .map(|(i, line)| {
-                        Line::from(vec![
+                    .zip(range)
+                    .map(|(line, i)| {
+                        let mut line = Line::from(vec![
                             Span::raw(format!("{:>width$} ", i + 1))
                                 .fg(theme.status_input_transient_fg),
-                            Span::raw(line.clone()),
-                        ])
+                            Span::raw(line.replace('\t', "    ")),
+                        ]);
+                        if let Some(query) = &self.preview_search {
+                            highlight_match(&mut line, query, theme);
+                        }
+                        if state.preview_focused && i == state.cursor.line {
+                            line.style = line.style.patch(highlight_style);
+                        }
+                        line
                     })
                     .collect();
                 Paragraph::new(visible)
@@ -615,6 +827,7 @@ fn render_rows_with_cursor<'a>(
     rows: &'a [FileTreeRow],
     line: impl Fn(&'a FileTreeRow) -> Line<'a>,
     cursor: usize,
+    focused: bool,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
@@ -628,7 +841,7 @@ fn render_rows_with_cursor<'a>(
     Paragraph::new(lines).fg(theme.fg).render(area, buf);
 
     if let Ok(y) = u16::try_from(cursor - offset) {
-        mark_selected_row(buf, area, area.y + y, true, theme);
+        mark_selected_row(buf, area, area.y + y, focused, theme);
     }
 }
 
@@ -802,6 +1015,98 @@ mod tests {
                 .iter()
                 .all(|r| r.is_dir() || listed(&hashes[i]).contains(&r.path)));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_diff_focus() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        let lines: Vec<String> = (1..=20).map(|n| format!("line {n}\n")).collect();
+        fs::write(repo_path.join("f"), lines.concat())?;
+        git.add(&["f"]);
+        git.commit("first", "2024-01-01");
+        let mut changed = lines.clone();
+        changed[1] = "two\n".into();
+        changed[17] = "eighteen\n".into();
+        fs::write(repo_path.join("f"), changed.concat())?;
+        git.add(&["f"]);
+        git.commit("second", "2024-01-02");
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let second = repository.all_commits()[0].commit_hash.clone();
+        let (_, changes) = repository.commit_detail(&second);
+        let mut state = CommitChangesState::new(&repository, second, &changes);
+        state.ensure_loaded();
+
+        // enter goes into the hunks, then the lines of the selected one; back goes out
+        assert!(!state.is_diff_focused());
+        assert!(state.enter());
+        assert_eq!(
+            state.selected_text().unwrap().lines().nth(2),
+            Some("-line 2")
+        );
+        state.step(Step::Next);
+        assert!(state.selected_text().unwrap().contains("+eighteen"));
+        state.enter();
+        assert!(state.is_selecting_lines());
+        assert_eq!(state.selected_text().as_deref(), Some("line 18"));
+        state.step(Step::Next);
+        assert_eq!(state.selected_text().as_deref(), Some("eighteen"));
+        assert!(state.back() && state.back() && !state.back());
+
+        // searching selects the line matched, around from the last match
+        assert!(!state.search_diff("TWO", SearchDirection::Current));
+        assert!(state.search_diff("two", SearchDirection::Current));
+        assert_eq!(state.selected_text().as_deref(), Some("two"));
+        assert!(state.search_diff("line 1", SearchDirection::Next));
+        assert!(state.search_diff("line 1", SearchDirection::Previous));
+
+        // applying the added line to a working tree going back to the first commit
+        fs::write(repo_path.join("f"), lines.concat())?;
+        state.search_diff("eighteen", SearchDirection::Current);
+        let patch = state.selected_patch().unwrap();
+        repository.apply_patch_to_worktree(&patch, false)?;
+        let mut expected = lines.clone();
+        expected.insert(18, "eighteen\n".into());
+        assert_eq!(fs::read_to_string(repo_path.join("f"))?, expected.concat());
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_focus() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("f"), "one\n\ttwo\nthree\n")?;
+        git.add(&["f"]);
+        git.commit("first", "2024-01-01");
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let commit = repository.all_commits()[0].clone();
+        let (_, changes) = repository.commit_detail(&commit.commit_hash);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes);
+        state.ensure_loaded();
+
+        // enter focuses the preview on its first line, lines are copied as in the file
+        assert!(state.enter() && state.is_preview_focused());
+        assert_eq!(state.selected_text().as_deref(), Some("one"));
+        state.step(Step::Next);
+        assert_eq!(state.selected_text().as_deref(), Some("\ttwo"));
+        state.step(Step::Last);
+        state.step(Step::Next);
+        assert_eq!(state.selected_text().as_deref(), Some("three"));
+
+        // searching goes around from the last match
+        assert!(state.search_preview("o", SearchDirection::Next));
+        assert_eq!(state.selected_text().as_deref(), Some("one"));
+        assert!(state.search_preview("o", SearchDirection::Next));
+        assert_eq!(state.selected_text().as_deref(), Some("\ttwo"));
+        assert!(!state.search_preview("zzz", SearchDirection::Next));
+        assert!(state.back() && !state.back());
+        assert_eq!(state.selected_text(), None);
         Ok(())
     }
 }

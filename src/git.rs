@@ -248,6 +248,15 @@ impl Repository {
 
     // The local changes as they were when the repository was loaded the first time it is called,
     // so the sidebar and the page share one `git status`, and as they are now after that.
+    // Loads the local changes again after the working tree changed, for the local changes page to
+    // show them; returns how many there are.
+    pub fn reload_local_changes(&self) -> usize {
+        let changes = self.local_changes();
+        let count = changes.count();
+        *self.loaded_local_changes.borrow_mut() = Some(changes);
+        count
+    }
+
     pub fn take_loaded_local_changes(&self) -> LocalChanges {
         self.loaded_local_changes
             .take()
@@ -1506,6 +1515,24 @@ impl RemoteInfo {
             self.merge_auto_stash
         }
     }
+}
+
+// A fingerprint of the local branches and HEAD, which changes when they are changed from outside
+// the app, like lazygit's `RefsSnapshot`: where each branch points, and the branch checked out
+// or the commit when detached.
+pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
+    let refs = git_output(
+        path,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads",
+        ],
+    )?;
+    let head = git_output(path, &["symbolic-ref", "-q", "HEAD"])
+        .or_else(|_| git_output(path, &["rev-parse", "-q", "--verify", "HEAD"]))
+        .unwrap_or_default();
+    Ok(refs + &head)
 }
 
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.

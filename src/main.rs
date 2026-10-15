@@ -224,6 +224,16 @@ fn main() -> Result<()> {
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
+            // the focus coming back reloads what changed meanwhile, like lazygit
+            let _ = ratatui::crossterm::execute!(
+                std::io::stdout(),
+                ratatui::crossterm::event::EnableFocusChange
+            );
+            ec.start_refresher(
+                repository.path().to_path_buf(),
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(10),
+            );
         }
 
         let mut app = App::new(
@@ -250,6 +260,10 @@ fn main() -> Result<()> {
         }
     };
 
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableFocusChange
+    );
     ratatui::restore();
     ret.map_err(Into::into)
 }

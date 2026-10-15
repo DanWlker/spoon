@@ -5,7 +5,13 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::color::ColorTheme;
+use crate::{
+    color::ColorTheme,
+    widget::{
+        file_tree::SearchDirection,
+        tree_query::{find_around, match_range},
+    },
+};
 
 #[derive(Debug, Default)]
 pub struct ParsedDiff {
@@ -32,6 +38,11 @@ impl DiffHunk {
     // The file header and this hunk alone, ready for `git apply`.
     pub fn patch(&self) -> String {
         format!("{}{}{}", self.file_header, self.header, self.lines.concat())
+    }
+
+    // The hunk as shown in a diff: its header and lines.
+    pub fn text(&self) -> String {
+        format!("{}{}", self.header, self.lines.concat())
     }
 
     // A patch applying only the `selected` lines (indices into `lines`) of this hunk.
@@ -137,6 +148,210 @@ fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) ->
             }
         })
         .collect()
+}
+
+// A move of the selection in a diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Next,
+    Prev,
+    First,
+    Last,
+}
+
+// The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
+// commit changes select the same way.
+#[derive(Debug, Default, Clone)]
+pub struct DiffCursor {
+    pub hunk: usize,
+    // a row of `ParsedDiff::rows`, a change of the hunk
+    pub line: usize,
+    pub offset: usize,
+    // of the last render, 0 before it
+    pub height: usize,
+    // the row the search last matched, where the next one starts from
+    search_row: Option<usize>,
+}
+
+impl DiffCursor {
+    // Back to the top of another diff.
+    pub fn reset(&mut self) {
+        *self = DiffCursor {
+            height: self.height,
+            ..Default::default()
+        };
+    }
+
+    // Selects a hunk, the last one past the end, showing it; false when there is none.
+    pub fn select_hunk(&mut self, diff: &ParsedDiff, index: usize) -> bool {
+        let Some(last) = diff.hunks.len().checked_sub(1) else {
+            return false;
+        };
+        self.hunk = index.min(last);
+        // show the whole hunk, or at least its beginning
+        self.scroll_to(diff.hunks[self.hunk].rows.clone());
+        true
+    }
+
+    // Selects a row, in the hunk containing it.
+    pub fn select_line(&mut self, diff: &ParsedDiff, row: usize) {
+        self.line = row;
+        if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
+            self.hunk = index;
+        }
+        self.scroll_to(row..row + 1);
+    }
+
+    // Selects the first change of the selected hunk; false when it has none.
+    pub fn enter_lines(&mut self, diff: &ParsedDiff) -> bool {
+        let Some(hunk) = diff.hunks.get(self.hunk) else {
+            return false;
+        };
+        match hunk.rows.clone().find(|&r| diff.rows[r].is_change()) {
+            Some(row) => {
+                self.select_line(diff, row);
+                true
+            }
+            None => false,
+        }
+    }
+
+    // Selects the row matching `query` in `direction` from the last match, else from the selection:
+    // the changed line it is on, else its hunk. Returns whether that is a changed line, None when
+    // nothing matches.
+    pub fn search(
+        &mut self,
+        diff: &ParsedDiff,
+        query: &str,
+        direction: SearchDirection,
+        lines: bool,
+    ) -> Option<bool> {
+        let selected = if lines {
+            self.line
+        } else {
+            diff.hunks.get(self.hunk).map_or(0, |h| h.rows.start)
+        };
+        let start = self.search_row.unwrap_or(selected);
+        let row = find_around(diff.rows.len(), start, direction, |r| {
+            match_range(&diff.rows[r].text, query).is_some()
+        })?;
+        let changed = diff.rows[row].is_change();
+        if changed {
+            self.select_line(diff, row);
+        } else {
+            if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
+                self.hunk = index;
+            }
+            self.scroll_to(row..row + 1);
+        }
+        self.search_row = Some(row);
+        Some(changed)
+    }
+
+    pub fn move_hunk(&mut self, diff: &ParsedDiff, step: Step) {
+        self.search_row = None;
+        let index = match step {
+            Step::Next => self.hunk + 1,
+            Step::Prev => self.hunk.saturating_sub(1),
+            Step::First => 0,
+            Step::Last => usize::MAX,
+        };
+        self.select_hunk(diff, index);
+    }
+
+    // Moves between the changed lines, across hunks.
+    pub fn move_line(&mut self, diff: &ParsedDiff, step: Step) {
+        self.search_row = None;
+        let mut changed = changed_rows(diff);
+        let row = match step {
+            Step::Next => changed.find(|&r| r > self.line),
+            Step::Prev => changed.rfind(|&r| r < self.line),
+            Step::First => changed.next(),
+            Step::Last => changed.last(),
+        };
+        if let Some(row) = row {
+            self.select_line(diff, row);
+        }
+    }
+
+    // Selects the changed line at or after `row`, else the last one; for a diff reloaded after
+    // the line was staged.
+    pub fn select_line_near(&mut self, diff: &ParsedDiff, row: usize) -> bool {
+        let row = changed_rows(diff)
+            .find(|&r| r >= row)
+            .or_else(|| changed_rows(diff).last());
+        if let Some(row) = row {
+            self.select_line(diff, row);
+        }
+        row.is_some()
+    }
+
+    pub fn scroll_to(&mut self, rows: Range<usize>) {
+        let height = self.height;
+        // before the first render the height is unknown
+        if height == 0 || rows.start < self.offset || rows.len() > height {
+            self.offset = rows.start;
+        } else if rows.end > self.offset + height {
+            self.offset = rows.end - height;
+        }
+    }
+
+    pub fn scroll_down(&mut self, n: usize) {
+        self.offset = self.offset.saturating_add(n);
+    }
+
+    pub fn scroll_up(&mut self, n: usize) {
+        self.offset = self.offset.saturating_sub(n);
+    }
+
+    pub fn page_height(&self) -> usize {
+        self.height.max(1)
+    }
+
+    // Keeps the offset within the `count` lines shown in `height`; the rows to render.
+    pub fn fit(&mut self, count: usize, height: usize) -> Range<usize> {
+        self.height = height;
+        self.offset = self.offset.min(count.saturating_sub(height));
+        self.offset..self.offset + height
+    }
+
+    // The rows highlighted: the selected line, else the selected hunk.
+    pub fn highlighted(&self, diff: &ParsedDiff, lines: bool) -> Range<usize> {
+        if lines {
+            self.line..self.line + 1
+        } else {
+            diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone())
+        }
+    }
+
+    pub fn selected_hunk<'d>(&self, diff: &'d ParsedDiff) -> Option<&'d DiffHunk> {
+        diff.hunks.get(self.hunk)
+    }
+
+    // A patch of the selected line alone, see `DiffHunk::partial_patch`.
+    pub fn line_patch(&self, diff: &ParsedDiff, reverse: bool) -> Option<String> {
+        let hunk = self.selected_hunk(diff)?;
+        // the hunk header occupies the first row, its lines follow
+        let line = self.line.checked_sub(hunk.rows.start + 1)?;
+        Some(hunk.partial_patch(&[line], reverse))
+    }
+
+    // The text of the selected line as in the file, without its +/- and line ending.
+    pub fn line_text(&self, diff: &ParsedDiff) -> Option<String> {
+        let hunk = self.selected_hunk(diff)?;
+        let line = hunk
+            .lines
+            .get(self.line.checked_sub(hunk.rows.start + 1)?)?;
+        Some(line.get(1..)?.trim_end_matches(['\n', '\r']).to_string())
+    }
+}
+
+fn changed_rows(diff: &ParsedDiff) -> impl DoubleEndedIterator<Item = usize> + '_ {
+    diff.rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.is_change())
+        .map(|(i, _)| i)
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -1,11 +1,11 @@
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent},
     style::Stylize,
-    text::Span,
+    text::{Line, Span},
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use crate::color::ColorTheme;
+use crate::{color::ColorTheme, widget::file_tree::SearchDirection};
 
 // Searching (`/`) and filtering (`?`) a file tree by path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +156,46 @@ pub fn match_range(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
         lower.find(&query.to_lowercase())?
     };
     Some(start..start + query.len())
+}
+
+// The row of the `count` matching, in `direction` around from `start` (the row of the last match,
+// or the selection); every row is tried once.
+pub fn find_around(
+    count: usize,
+    start: usize,
+    direction: SearchDirection,
+    matches: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let start = start.min(count - 1);
+    let row = |i: usize| match direction {
+        SearchDirection::Current => (start + i) % count,
+        SearchDirection::Next => (start + 1 + i) % count,
+        SearchDirection::Previous => (start + count * 2 - 1 - i) % count,
+    };
+    (0..count).map(row).find(|&r| matches(r))
+}
+
+// Highlights the match of `query` in the last span of a line, its text after any line numbers.
+pub fn highlight_match(line: &mut Line<'_>, query: &str, theme: &ColorTheme) {
+    let Some(text) = line.spans.pop() else {
+        return;
+    };
+    let Some(matched) = match_range(&text.content, query) else {
+        line.spans.push(text);
+        return;
+    };
+    let style = text.style;
+    let content = text.content.to_string();
+    line.spans.extend([
+        Span::styled(content[..matched.start].to_string(), style),
+        Span::styled(content[matched.clone()].to_string(), style)
+            .fg(theme.list_match_fg)
+            .bg(theme.list_match_bg),
+        Span::styled(content[matched.end..].to_string(), style),
+    ]);
 }
 
 // The spans of a file or directory name, with the match of `search` highlighted.

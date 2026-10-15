@@ -27,6 +27,14 @@ pub enum AppEvent {
     CloseUserCommand,
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),
+    // the working tree changed, the count of the local changes in the sidebar is updated
+    LocalChangesChanged,
+    // the local changes are reloaded every few seconds, for those made outside the app
+    FilesTick,
+    // where the local branches and HEAD point, every few seconds, see `git::refs_snapshot`
+    RefsSnapshot(String),
+    // the terminal got the focus back, everything is reloaded
+    FocusGained,
     // a git command running in the background finished
     TaskFinished {
         task: GitTask,
@@ -143,6 +151,9 @@ impl EventController {
                         ratatui::crossterm::event::Event::Resize(w, h) => {
                             tx.send(AppEvent::Resize(w as usize, h as usize));
                         }
+                        ratatui::crossterm::event::Event::FocusGained => {
+                            tx.send(AppEvent::FocusGained);
+                        }
                         _ => {}
                     },
                     Err(e) => {
@@ -163,7 +174,8 @@ impl EventController {
     pub fn resume(&self) {
         ratatui::crossterm::execute!(
             std::io::stdout(),
-            ratatui::crossterm::terminal::EnterAlternateScreen
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            ratatui::crossterm::event::EnableFocusChange
         )
         .unwrap();
         ratatui::crossterm::terminal::enable_raw_mode().unwrap();
@@ -178,6 +190,7 @@ impl EventController {
         ratatui::crossterm::terminal::disable_raw_mode().unwrap();
         ratatui::crossterm::execute!(
             std::io::stdout(),
+            ratatui::crossterm::event::DisableFocusChange,
             ratatui::crossterm::terminal::LeaveAlternateScreen
         )
         .unwrap();
@@ -194,6 +207,34 @@ impl EventController {
         while let Ok(true) = ratatui::crossterm::event::poll(std::time::Duration::from_millis(0)) {
             let _ = ratatui::crossterm::event::read();
         }
+    }
+
+    // Checks for changes made outside the app like lazygit's refresher: the branches and HEAD every
+    // `refs_interval`, the local changes every `files_interval` (a multiple of it).
+    pub fn start_refresher(
+        &self,
+        path: std::path::PathBuf,
+        refs_interval: std::time::Duration,
+        files_interval: std::time::Duration,
+    ) {
+        let tx = self.tx.clone();
+        let files_every = (files_interval.as_millis() / refs_interval.as_millis()).max(1);
+        thread::spawn(move || {
+            // stops once the app quits and the events are no longer received
+            let mut tick = 0u128;
+            loop {
+                thread::sleep(refs_interval);
+                tick += 1;
+                if let Ok(snapshot) = crate::git::refs_snapshot(&path) {
+                    if tx.tx.send(AppEvent::RefsSnapshot(snapshot)).is_err() {
+                        break;
+                    }
+                }
+                if tick.is_multiple_of(files_every) && tx.tx.send(AppEvent::FilesTick).is_err() {
+                    break;
+                }
+            }
+        });
     }
 
     pub fn sender(&self) -> Sender {
@@ -285,6 +326,7 @@ pub enum UserEvent {
     DeleteRef,
     EditRef,
     ApplyStash,
+    ApplyChange,
     SearchTargetToggle,
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -393,6 +435,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "edit_ref" => Ok(UserEvent::EditRef),
                         "apply_stash" => Ok(UserEvent::ApplyStash),
+                        "apply_change" => Ok(UserEvent::ApplyChange),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))
@@ -452,7 +495,9 @@ impl UserEvent {
             | UserEvent::DeleteRef
             | UserEvent::EditRef
             | UserEvent::ApplyStash => Some(Page::Refs),
-            UserEvent::NextTab | UserEvent::PreviousTab => Some(Page::Details),
+            UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ApplyChange => {
+                Some(Page::Details)
+            }
             UserEvent::ToggleStage
             | UserEvent::Stash
             | UserEvent::Commit

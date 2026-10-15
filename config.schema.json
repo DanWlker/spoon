@@ -849,6 +849,9 @@
         },
         "apply_stash": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "apply_change": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {

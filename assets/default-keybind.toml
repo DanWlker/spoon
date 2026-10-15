@@ -54,6 +54,8 @@ previous_picked = ["[ v"]
 # elsewhere these keys start the sequences above
 next_tab = ["]"]
 previous_tab = ["["]
+# apply the selected hunk or line of a commit's diff to the working tree, in the changes tab
+apply_change = ["space"]
 # stash local changes, or only the selected files
 stash = ["s"]
 # commit (or amend), or continue the rebase in progress

@@ -18,6 +18,7 @@ use crate::{
             render_compare_title, render_tab_titles, CommitChanges, CommitChangesState,
             CommitFiles, CommitFilesState, DetailTab,
         },
+        diff::Step,
         file_tree::{FileTreeState, SearchDirection},
         tree_query::{QueryChange, QueryKind, TreeQuery},
     },
@@ -33,6 +34,8 @@ pub struct DetailView<'a> {
     // kept while moving between commits
     changes_query: TreeQuery,
     files_query: TreeQuery,
+    // searching the diff of the changes tab, or the preview of the files tab, while it has the focus
+    pane_query: TreeQuery,
 
     commit: Commit,
     changes: Vec<FileChange>,
@@ -66,6 +69,7 @@ impl<'a> DetailView<'a> {
             files_state: CommitFilesState::new(repository, &commit, &changes),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
+            pane_query: TreeQuery::default(),
             commit,
             changes,
             refs,
@@ -101,16 +105,40 @@ impl<'a> DetailView<'a> {
         let picked = self.as_list_state().picked_commit_hashes().len();
         if self.list_focused {
             let mut hints = graph_hints(picked);
-            if picked == 0 {
-                hints.insert(0, hint(UserEvent::Cancel, "close"));
-            }
+            hints.insert(0, hint(UserEvent::Confirm, "details"));
             return hints;
         }
         let mut hints = vec![];
+        if self.is_pane_focused() && self.tab == DetailTab::Changes {
+            let lines = self.changes_state.is_selecting_lines();
+            if !lines {
+                hints.push(hint(UserEvent::Confirm, "select lines"));
+            }
+            let what = if lines { "line" } else { "hunk" };
+            hints.extend([
+                hint(UserEvent::ApplyChange, "apply to working tree"),
+                hint(UserEvent::ShortCopy, &format!("copy {what}")),
+                hint(UserEvent::Search, "search"),
+                hint(UserEvent::Cancel, "back"),
+            ]);
+            return hints;
+        }
+        if self.is_pane_focused() {
+            return vec![
+                hint(UserEvent::ShortCopy, "copy line"),
+                hint(UserEvent::Search, "search"),
+                hint(UserEvent::Cancel, "back"),
+            ];
+        }
         if picked > 0 {
             hints.push(hint(UserEvent::Cancel, "clear picks"));
         } else {
             hints.push(hint(UserEvent::Cancel, "close"));
+        }
+        match self.tab {
+            DetailTab::Changes => hints.push(hint(UserEvent::Confirm, "select hunks")),
+            DetailTab::Files => hints.push(hint(UserEvent::Confirm, "select lines")),
+            DetailTab::Info => {}
         }
         if self.compare.is_none() {
             hints.push((
@@ -200,6 +228,15 @@ impl<'a> DetailView<'a> {
             return;
         }
 
+        // the diff or preview beside the files only takes its own keys, and those of the whole app
+        let app_wide = matches!(
+            event,
+            UserEvent::HelpToggle | UserEvent::Refresh | UserEvent::UserCommand(_)
+        );
+        if self.is_pane_focused() && !app_wide {
+            self.handle_pane_event(event, count);
+            return;
+        }
         // in the file trees, y and Y copy the path of the selected file
         if !self.list_focused {
             if let UserEvent::ShortCopy | UserEvent::FullCopy = event {
@@ -306,12 +343,14 @@ impl<'a> DetailView<'a> {
             }
             DetailTab::Changes => {
                 let search = self.changes_query.search();
-                let commit_changes = CommitChanges::new(self.ctx.clone(), search);
+                let diff_search = self.pane_query.search();
+                let commit_changes = CommitChanges::new(self.ctx.clone(), search, diff_search);
                 f.render_stateful_widget(commit_changes, detail_area, &mut self.changes_state);
             }
             DetailTab::Files => {
                 let search = self.files_query.search();
-                let commit_files = CommitFiles::new(self.ctx.clone(), search);
+                let preview_search = self.pane_query.search();
+                let commit_files = CommitFiles::new(self.ctx.clone(), search, preview_search);
                 f.render_stateful_widget(commit_files, detail_area, &mut self.files_state);
             }
         }
@@ -350,10 +389,127 @@ impl<'a> DetailView<'a> {
 }
 
 impl<'a> DetailView<'a> {
-    // Returns whether the event was handled by the changes tab.
+    // Whether the diff of the changes tab, or the preview of the files tab, has the focus.
+    fn is_pane_focused(&self) -> bool {
+        !self.list_focused
+            && match self.tab {
+                DetailTab::Info => false,
+                DetailTab::Changes => self.changes_state.is_diff_focused(),
+                DetailTab::Files => self.files_state.is_preview_focused(),
+            }
+    }
+
+    // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
+    // copying and applying (the search is handled before); others are ignored.
+    fn handle_pane_event(&mut self, event: UserEvent, count: usize) {
+        let step = match event {
+            UserEvent::NavigateDown => Some(Step::Next),
+            UserEvent::NavigateUp => Some(Step::Prev),
+            UserEvent::GoToTop => Some(Step::First),
+            UserEvent::GoToBottom => Some(Step::Last),
+            _ => None,
+        };
+        let count = if matches!(step, Some(Step::Next | Step::Prev)) {
+            count
+        } else {
+            1
+        };
+        match self.tab {
+            DetailTab::Changes => {
+                let state = &mut self.changes_state;
+                if let Some(step) = step {
+                    (0..count).for_each(|_| state.step(step));
+                    return;
+                }
+                match event {
+                    UserEvent::Confirm => {
+                        state.enter();
+                    }
+                    UserEvent::Cancel | UserEvent::Close => {
+                        state.back();
+                    }
+                    UserEvent::ApplyChange => self.apply_change(),
+                    UserEvent::ShortCopy => {
+                        let name = if state.is_selecting_lines() {
+                            "Line"
+                        } else {
+                            "Hunk"
+                        };
+                        if let Some(text) = state.selected_text() {
+                            self.copy_to_clipboard(name.into(), text);
+                        }
+                    }
+                    _ => {
+                        let page = self.changes_state.diff_page_height();
+                        self.scroll_changes_diff(event, count, page);
+                    }
+                }
+            }
+            DetailTab::Files => {
+                let state = &mut self.files_state;
+                if let Some(step) = step {
+                    (0..count).for_each(|_| state.step(step));
+                    return;
+                }
+                match event {
+                    UserEvent::Cancel | UserEvent::Close => {
+                        state.back();
+                    }
+                    UserEvent::ShortCopy => {
+                        if let Some(text) = state.selected_text() {
+                            self.copy_to_clipboard("Line".into(), text);
+                        }
+                    }
+                    _ => {
+                        self.handle_files_event(event, count);
+                    }
+                }
+            }
+            DetailTab::Info => {}
+        }
+    }
+
+    // Returns whether the event was handled by the files of the changes tab.
     fn handle_changes_event(&mut self, event: UserEvent, count: usize) -> bool {
+        let page = self.changes_state.diff_page_height();
+        // into the diff; a directory without one opens or closes
+        if event == UserEvent::Confirm && self.changes_state.enter() {
+            return true;
+        }
+        if event == UserEvent::ApplyChange || self.scroll_changes_diff(event, count, page) {
+            return true;
+        }
         let state = &mut self.changes_state;
-        let page = state.diff_page_height();
+        handle_tree_event(event, count, |f| state.update_tree(f))
+    }
+
+    // Applies the selected hunk or line of the diff to the working tree.
+    fn apply_change(&self) {
+        let Some(patch) = self.changes_state.selected_patch() else {
+            return;
+        };
+        let what = if self.changes_state.is_selecting_lines() {
+            "line"
+        } else {
+            "hunk"
+        };
+        let event = match self.repository.apply_patch_to_worktree(&patch, false) {
+            Ok(()) => {
+                self.tx.send(AppEvent::LocalChangesChanged);
+                AppEvent::NotifySuccess(format!("Applied the {what} to the working tree"))
+            }
+            // git names the lines that differ, which tells little more
+            Err(_) => AppEvent::NotifyError(format!(
+                "The {what} doesn't apply to the working tree, the file differs there"
+            )),
+        };
+        self.tx.send(event);
+    }
+
+    // Scrolls the diff of the changes tab, from the files or the diff; returns whether the event
+    // was a scroll.
+    fn scroll_changes_diff(&mut self, event: UserEvent, count: usize, page: usize) -> bool {
+        let state = &mut self.changes_state;
         match event {
             UserEvent::ScrollDown => state.scroll_diff_down(count),
             UserEvent::ScrollUp => state.scroll_diff_up(count),
@@ -361,7 +517,7 @@ impl<'a> DetailView<'a> {
             UserEvent::PageUp => state.scroll_diff_up(page * count),
             UserEvent::HalfPageDown => state.scroll_diff_down(page / 2 * count),
             UserEvent::HalfPageUp => state.scroll_diff_up(page / 2 * count),
-            _ => return handle_tree_event(event, count, |f| state.update_tree(f)),
+            _ => return false,
         }
         true
     }
@@ -397,6 +553,8 @@ impl<'a> DetailView<'a> {
                 self.list_focused = false;
                 return true;
             }
+            // the details stay open; they are closed from them
+            UserEvent::Cancel | UserEvent::Close => return true,
             _ => return false,
         }
         if *self.as_list_state().selected_commit_hash() != before {
@@ -405,17 +563,22 @@ impl<'a> DetailView<'a> {
         true
     }
 
-    // Returns whether the event was handled by the files tab.
+    // Returns whether the event was handled by the files tab: scrolling the preview from the files
+    // or the preview, and the files.
     fn handle_files_event(&mut self, event: UserEvent, count: usize) -> bool {
         let state = &mut self.files_state;
         let page = state.preview_page_height();
+        let preview_focused = state.is_preview_focused();
         match event {
+            // into the preview of a file; a directory opens or closes
+            UserEvent::Confirm if !preview_focused && state.enter() => {}
             UserEvent::ScrollDown => state.scroll_preview_down(count),
             UserEvent::ScrollUp => state.scroll_preview_up(count),
             UserEvent::PageDown => state.scroll_preview_down(page * count),
             UserEvent::PageUp => state.scroll_preview_up(page * count),
             UserEvent::HalfPageDown => state.scroll_preview_down(page / 2 * count),
             UserEvent::HalfPageUp => state.scroll_preview_up(page / 2 * count),
+            _ if preview_focused => return false,
             _ => return handle_tree_event(event, count, |f| state.update_tree(f)),
         }
         true
@@ -438,6 +601,9 @@ impl<'a> DetailView<'a> {
 
     // The search and filter of the current tab, which has a file tree.
     fn query(&self) -> Option<&TreeQuery> {
+        if self.is_pane_focused() {
+            return Some(&self.pane_query);
+        }
         match self.tab {
             DetailTab::Info => None,
             DetailTab::Changes => Some(&self.changes_query),
@@ -446,6 +612,9 @@ impl<'a> DetailView<'a> {
     }
 
     fn query_mut(&mut self) -> Option<&mut TreeQuery> {
+        if self.is_pane_focused() {
+            return Some(&mut self.pane_query);
+        }
         match self.tab {
             DetailTab::Info => None,
             DetailTab::Changes => Some(&mut self.changes_query),
@@ -455,11 +624,14 @@ impl<'a> DetailView<'a> {
 
     // Starts, steps through and clears the search and filter; returns whether the event was handled.
     fn handle_query_event(&mut self, event: UserEvent) -> bool {
+        // the diff is searched, not filtered
+        let in_diff = self.is_pane_focused();
         let Some(query) = self.query_mut() else {
             return false;
         };
         match event {
             UserEvent::Search => query.start(QueryKind::Search),
+            UserEvent::Filter if in_diff => return true,
             UserEvent::Filter => query.start(QueryKind::Filter),
             UserEvent::GoToNext | UserEvent::GoToPrevious => {
                 let direction = if event == UserEvent::GoToNext {
@@ -505,6 +677,19 @@ impl<'a> DetailView<'a> {
         let Some(search) = self.query().and_then(TreeQuery::search).map(String::from) else {
             return;
         };
+        if self.is_pane_focused() {
+            let found = match self.tab {
+                DetailTab::Changes => self.changes_state.search_diff(&search, direction),
+                DetailTab::Files => self.files_state.search_preview(&search, direction),
+                DetailTab::Info => true,
+            };
+            // while typing, the status line shows the query instead
+            if !found && !self.is_typing_query() {
+                self.tx
+                    .send(AppEvent::NotifyWarn(format!("No match for {search}")));
+            }
+            return;
+        }
         match self.tab {
             DetailTab::Info => {}
             DetailTab::Changes => self

@@ -27,7 +27,9 @@ use crate::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
     },
-    git::{run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository},
+    git::{
+        refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository,
+    },
     graph::GraphImageManager,
     graph_commands::{graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, SequenceMatch},
@@ -160,6 +162,9 @@ pub struct AppShell {
     // what the last frame showed, None before the first
     last_frame: Option<FrameLayout>,
     app_status: AppStatus,
+    // the branches and HEAD as loaded, see `git::refs_snapshot`, so the app's own changes are not
+    // taken for outside ones
+    refs_snapshot: Option<String>,
 }
 
 #[derive(Debug)]
@@ -228,9 +233,11 @@ impl<'a> App<'a> {
 
         let refs = repository.all_refs();
         let local_change_count = repository.loaded_local_change_count();
+        let loaded_refs = refs_snapshot(repository.path()).ok();
         let shell = match shell {
             Some(mut shell) => {
                 shell.sidebar.set_refs(&refs, local_change_count);
+                shell.refs_snapshot = loaded_refs;
                 shell
             }
             None => AppShell {
@@ -243,6 +250,7 @@ impl<'a> App<'a> {
                 dialog_reveal: None,
                 last_frame: None,
                 app_status: AppStatus::default(),
+                refs_snapshot: loaded_refs,
             },
         };
 
@@ -451,6 +459,23 @@ impl App<'_> {
                 AppEvent::TaskFinished { task, result } => {
                     self.finish_task(task, result);
                 }
+                AppEvent::LocalChangesChanged => {
+                    let count = self.repository.reload_local_changes();
+                    self.shell.sidebar.set_local_change_count(count);
+                }
+                AppEvent::FilesTick if !self.refresh_paused() => self.reload_files(),
+                AppEvent::RefsSnapshot(snapshot) if !self.refresh_paused() => {
+                    self.check_refs(snapshot);
+                }
+                // what changed meanwhile, without reloading everything when nothing did
+                AppEvent::FocusGained if !self.refresh_paused() => {
+                    self.reload_files();
+                    if let Ok(snapshot) = refs_snapshot(self.repository.path()) {
+                        self.check_refs(snapshot);
+                    }
+                }
+                // checked again on the next tick
+                AppEvent::FilesTick | AppEvent::RefsSnapshot(_) | AppEvent::FocusGained => {}
                 AppEvent::OpenHelp => {
                     self.open_help();
                 }
@@ -1114,7 +1139,8 @@ impl App<'_> {
             return vec![Page::Refs];
         }
         match &self.view {
-            View::Detail(view) if !view.is_list_focused() => vec![Page::Details, Page::Graph],
+            // the commands of the graph act on the commit list, so only while it has the focus
+            View::Detail(view) if !view.is_list_focused() => vec![Page::Details],
             View::List(_) | View::Detail(_) => vec![Page::Graph],
             View::LocalChanges(_) => vec![Page::LocalChanges],
             _ => vec![],
@@ -1422,6 +1448,37 @@ impl App<'_> {
             // the popups tell first that a command is running
             Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
+        }
+    }
+
+    // Whether reloading in the background would get in the way, like lazygit pausing its refreshes:
+    // while a git command runs, a popup is open or something is being typed or confirmed.
+    fn refresh_paused(&self) -> bool {
+        self.ctx.busy_message().is_some()
+            || self.shell.dialog.is_some()
+            || self.view.is_capturing_keys()
+            || matches!(self.view, View::Help(_))
+            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
+    }
+
+    // Reloads everything when the branches or HEAD changed since they were loaded, from outside the
+    // app, like lazygit.
+    fn check_refs(&mut self, snapshot: String) {
+        let previous = self.shell.refs_snapshot.replace(snapshot);
+        if previous.is_some_and(|p| Some(&p) != self.shell.refs_snapshot.as_ref()) {
+            self.view.refresh();
+        }
+    }
+
+    // Reloads the local changes, made outside the app too: the page showing them, else their
+    // count in the sidebar.
+    fn reload_files(&mut self) {
+        match &mut self.view {
+            View::LocalChanges(view) => view.reload_files(),
+            _ => {
+                let count = self.repository.reload_local_changes();
+                self.shell.sidebar.set_local_change_count(count);
+            }
         }
     }
 

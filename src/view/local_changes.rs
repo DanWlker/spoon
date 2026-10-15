@@ -88,6 +88,34 @@ impl<'a> LocalChangesView<'a> {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
+        // the diff only takes its own keys, not those of the files beside it
+        if self.as_state().is_diff_focused() {
+            match event {
+                UserEvent::ToggleSelect
+                | UserEvent::NextPicked
+                | UserEvent::PreviousPicked
+                | UserEvent::Filter
+                | UserEvent::FullCopy
+                | UserEvent::NavigateLeft
+                | UserEvent::NavigateRight => return,
+                UserEvent::ShortCopy => {
+                    if let Some(text) = self.as_state().selected_diff_text() {
+                        let name = if self.as_state().is_selecting_lines() {
+                            "Line"
+                        } else {
+                            "Hunk"
+                        };
+                        self.tx.send(AppEvent::CopyToClipboard {
+                            name: name.into(),
+                            value: text,
+                        });
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if self.as_state().is_conflict_focused() {
             // the sides are side by side, the tools below them
             let direction = match event {
@@ -124,7 +152,10 @@ impl<'a> LocalChangesView<'a> {
                 // then clear the picked files, then the search, then the filter;
                 // the page itself is left with tab, not closed
                 let state = self.as_mut_state();
-                let _ = state.back() || state.clear_picks() || state.clear_query();
+                let _ = state.clear_diff_query()
+                    || state.back()
+                    || state.clear_picks()
+                    || state.clear_query();
             }
             UserEvent::ToggleSelect => {
                 self.as_mut_state().toggle_pick();
@@ -387,6 +418,11 @@ impl<'a> LocalChangesView<'a> {
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
         }
+    }
+
+    // Reloads the changes, keeping the selection, for those made outside the app.
+    pub fn reload_files(&mut self) {
+        self.as_mut_state().reload();
     }
 
     // What to restore of the page, after a refresh or coming back to it.
