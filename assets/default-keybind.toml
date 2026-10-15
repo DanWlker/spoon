@@ -33,10 +33,10 @@ ignore_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
 refresh = ["shift-r"]
 # move the border beside or above the focused panel, resizing it (borders can be dragged too)
-resize_left = ["ctrl-left"]
-resize_right = ["ctrl-right"]
-resize_up = ["ctrl-up"]
-resize_down = ["ctrl-down"]
+resize_left = ["ctrl-left", "ctrl-h"]
+resize_right = ["ctrl-right", "ctrl-l"]
+resize_up = ["ctrl-up", "ctrl-k"]
+resize_down = ["ctrl-down", "ctrl-j"]
 
 # focus the refs sidebar on the left
 focus_panel_0 = ["0"]
