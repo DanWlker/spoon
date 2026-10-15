@@ -17,6 +17,7 @@ use crate::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::DetailTab,
         commit_user_command::{CommitUserCommand, CommitUserCommandState},
+        style::panel_block,
     },
 };
 
@@ -136,11 +137,14 @@ impl<'a> UserCommandView<'a> {
         let ctx = self.ctx.clone();
         render_commit_list_panel(f, list_area, self.as_mut_list_state(), ctx, false);
 
+        let block = panel_block(true, &self.ctx.color_theme);
+        let inner = block.inner(user_command_area);
+        f.render_widget(block, user_command_area);
         let commit_user_command =
             CommitUserCommand::new(&self.user_command_output_lines, self.ctx.clone());
         f.render_stateful_widget(
             commit_user_command,
-            user_command_area,
+            inner,
             &mut self.commit_user_command_state,
         );
     }

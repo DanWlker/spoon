@@ -17,7 +17,7 @@ use ratatui::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    color::{ColorTheme, GraphColorSet},
+    color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{hint, AppEvent, EventController, KeyHint, UserEvent, UserEventWithCount},
     external::{
@@ -218,7 +218,6 @@ impl<'a> App<'a> {
     pub fn new(
         repository: &'a Repository,
         graph_image_manager: GraphImageManager<'a>,
-        graph_color_set: &'a GraphColorSet,
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
@@ -244,20 +243,16 @@ impl<'a> App<'a> {
                 for r in &refs {
                     ref_name_to_commit_index_map.insert(r.name(), i);
                 }
-                let (pos_x, _) = graph.commit_pos_map[&commit.commit_hash];
-                let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
                 // comparing two refs, both are shown alike
                 let on_head = comparing_refs || head_history.contains(&commit.commit_hash);
-                CommitInfo::new(commit, refs, graph_color, on_head)
+                CommitInfo::new(commit, refs, on_head)
             })
             .collect();
         let graph_cell_width = graph_image_manager.graph_cell_width();
-        let head = repository.head();
         let mut commit_list_state = CommitListState::new(
             commits,
             graph_image_manager,
             graph_cell_width,
-            head,
             ref_name_to_commit_index_map,
             SearchOptions {
                 target: ctx.core_config.search.target,
@@ -283,7 +278,7 @@ impl<'a> App<'a> {
         let refs = repository.all_refs();
         let local_change_count = repository.loaded_local_change_count();
         let loaded_refs = refs_snapshot(repository.path()).ok();
-        let shell = match shell {
+        let mut shell = match shell {
             Some(mut shell) => {
                 shell.sidebar.set_refs(&refs, local_change_count);
                 shell.refs_snapshot = loaded_refs;
@@ -305,6 +300,7 @@ impl<'a> App<'a> {
                 compare: None,
             },
         };
+        shell.sidebar.set_tracking(repository.branch_tracking());
 
         let mut app = Self {
             repository,
@@ -704,31 +700,33 @@ impl App<'_> {
 }
 
 impl App<'_> {
-    // A bar after lipgloss's status bar: the page and the branch as badges, then the message,
-    // and on the right what runs in the background and the picked commits.
+    // A bar after a neovim statusline: the page as a rounded pill like a mode, the branch, then
+    // the message, or what runs in the background, or the repository; on the right the keys of
+    // what has the focus and the position in the commit list.
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let theme = &self.ctx.color_theme;
         let bar = Style::default()
             .fg(theme.status_bar_fg)
             .bg(theme.status_bar_bg);
-        let page = match &self.view {
-            _ if self.shell.sidebar_focused => "REFS",
-            View::LocalChanges(_) => "CHANGES",
-            View::UserCommand(_) => "COMMAND",
-            View::Help(_) => "HELP",
-            _ => "GRAPH",
+        let (page, color) = match &self.view {
+            _ if self.shell.sidebar_focused => ("REFS", theme.status_warn_fg),
+            View::LocalChanges(_) => ("CHANGES", theme.status_success_fg),
+            View::UserCommand(_) => ("COMMAND", theme.highlight_fg),
+            View::Help(_) => ("HELP", theme.highlight_fg),
+            _ => ("GRAPH", theme.accent_fg),
         };
+        // the first letter only on narrow terminals, like the mode
+        let page = if area.width < 115 { &page[..1] } else { page };
         let branch = match self.repository.head() {
             Head::Branch { name } => name.clone(),
             Head::Detached { target } => format!("{} (detached)", target.as_short_hash()),
             Head::None => "no commits".into(),
         };
         let mut left = vec![
-            badge(format!(" {page} "), theme.accent_fg, theme),
-            Span::raw(format!(" {branch} "))
-                .fg(theme.status_bar_fg)
-                .bg(theme.divider_fg),
-            Span::raw(" "),
+            Span::raw(" \u{e0b6}").fg(color),
+            Span::raw(page).fg(theme.accent_text_fg).bg(color).bold(),
+            Span::raw("\u{e0b4}").fg(color),
+            Span::raw(format!("   \u{e725} {branch}   ")).fg(theme.fg),
         ];
         let left_width: usize = left.iter().map(Span::width).sum();
         let mut right = vec![];
@@ -737,7 +735,21 @@ impl App<'_> {
             StatusLine::None => {
                 // the keys of a key sequence typed so far
                 let prefix = keys_to_string(&self.shell.app_status.pending_keys);
-                left.push(Span::raw(prefix).fg(theme.accent_fg).bold());
+                if !prefix.is_empty() {
+                    left.push(Span::raw(format!("{prefix} ")).fg(theme.accent_fg).bold());
+                }
+                // what runs in the background, else where the repository is
+                match self.ctx.running_task.borrow().as_ref() {
+                    Some(task) => left.push(Span::raw(format!("󱥸 {task}…")).fg(theme.highlight_fg)),
+                    None => {
+                        // shortened like neovim's pathshorten when it would crowd the keys
+                        let mut path = home_relative(self.repository.path());
+                        if path.chars().count() > area.width as usize / 4 {
+                            path = shorten_path(&path);
+                        }
+                        left.push(Span::raw(format!("󰉋 {path}")).fg(theme.status_bar_fg));
+                    }
+                }
             }
             StatusLine::Input {
                 message, metadata, ..
@@ -784,8 +796,19 @@ impl App<'_> {
             }
         }
 
-        if let Some(task) = self.ctx.running_task.borrow().as_ref() {
+        // with a message, what runs in the background goes to the right
+        let message = !matches!(self.shell.app_status.status_line, StatusLine::None);
+        if let Some(task) = self.ctx.running_task.borrow().as_ref().filter(|_| message) {
             right.insert(0, Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
+        }
+        // the selected commit and how many there are, like the line and column
+        if let Some(state) = self.view.as_list_state() {
+            let (selected, total) = state.position();
+            right.push(
+                Span::raw(format!("[{selected}/{total}] "))
+                    .fg(theme.status_input_transient_fg)
+                    .italic(),
+            );
         }
 
         // the keys of what has the focus, as many as fit, before the rest of the right side
@@ -835,7 +858,7 @@ impl App<'_> {
 }
 
 // " [0] " and the border on its right
-const COLLAPSED_SIDEBAR_WIDTH: u16 = 6;
+const COLLAPSED_SIDEBAR_WIDTH: u16 = 7;
 
 fn split_app_areas(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area)
@@ -1488,6 +1511,10 @@ impl App<'_> {
             self.view.refresh();
             return;
         }
+        if event == UserEvent::Diff && self.is_diffing() {
+            self.notify_already_diffing();
+            return;
+        }
         let Some((selected, picked)) = self.graph_selection() else {
             return;
         };
@@ -1500,6 +1527,10 @@ impl App<'_> {
     fn handle_sidebar_graph_event(&mut self, event: UserEvent) {
         if event == UserEvent::BranchOnly {
             self.handle_graph_event(event);
+            return;
+        }
+        if event == UserEvent::Diff && self.is_diffing() {
+            self.notify_already_diffing();
             return;
         }
         if event == UserEvent::Diff {
@@ -1544,6 +1575,18 @@ impl App<'_> {
         };
         let command = ref_graph_command(self.repository, event, &name, target);
         self.run_graph_command(event, command);
+    }
+
+    // Whether a diff of two commits or refs is open, also under the details of one of its commits.
+    fn is_diffing(&self) -> bool {
+        self.shell.compare.is_some()
+            || self.shell.compare_request.is_some()
+            || matches!(&self.view, View::Detail(view) if view.is_comparing())
+    }
+
+    fn notify_already_diffing(&self) {
+        let msg = "A diff is open, close it first (esc) to diff others".to_string();
+        self.ec.send(AppEvent::NotifyWarn(msg));
     }
 
     // The refs to diff from the sidebar: the two picked ones, else HEAD and the picked or
@@ -1842,6 +1885,33 @@ impl App<'_> {
     }
 }
 
+// The path with the home directory as ~, like a shell prompt.
+fn home_relative(path: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match home.as_deref().and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+// The directories of the path by their first letter, like "~/p/spoon".
+fn shorten_path(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    let last = parts.len().saturating_sub(1);
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| match part.chars().next() {
+            // hidden directories keep the letter after the dot
+            Some('.') if i < last => part.chars().take(2).collect(),
+            Some(c) if i < last => c.to_string(),
+            _ => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 // The spans on the left, then those on the right, aligned to the right edge when they fit.
 fn status_bar_line(
     mut left: Vec<Span<'static>>,
@@ -1988,6 +2058,13 @@ mod tests {
             draw(&mut terminal);
             assert_eq!(terminal.backend().buffer(), &Buffer::with_lines(["hello"]));
         }
+    }
+
+    #[test]
+    fn test_shorten_path() {
+        assert_eq!(shorten_path("~/projects/spoon"), "~/p/spoon");
+        assert_eq!(shorten_path("/tmp/.cache/dr"), "/t/.c/dr");
+        assert_eq!(shorten_path("~"), "~");
     }
 
     #[test]

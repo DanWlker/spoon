@@ -587,6 +587,27 @@ impl Repository {
         }
     }
 
+    // The commits each local branch with an upstream has that it lacks (ahead, to push) and the
+    // other way round (behind, to pull), by branch name.
+    pub fn branch_tracking(&self) -> FxHashMap<String, (usize, usize)> {
+        let format = "--format=%(refname:short)%00%(upstream:track,nobracket)";
+        let refs = git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
+        refs.lines()
+            .filter_map(|line| {
+                let (name, track) = line.split_once('\0')?;
+                // like "ahead 2, behind 1", empty when in sync or without an upstream
+                let count = |what: &str| {
+                    track
+                        .split(", ")
+                        .find_map(|part| part.strip_prefix(what)?.trim().parse().ok())
+                        .unwrap_or(0)
+                };
+                let counts = (count("ahead "), count("behind "));
+                (counts != (0, 0)).then(|| (name.to_string(), counts))
+            })
+            .collect()
+    }
+
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
     pub fn remote_info(&self) -> RemoteInfo {
         // the remotes and the settings of pulling, in one call
@@ -1939,6 +1960,15 @@ mod tests {
         // the reason is reported, not the hints after it
         let err = run("fetch nowhere").unwrap_err();
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
+
+        // in sync, then two commits to push and, once they are pushed and one undone, one to pull
+        assert!(repository.branch_tracking().is_empty());
+        repo.commit("second", "2024-01-02");
+        repo.commit("third", "2024-01-03");
+        assert_eq!(repository.branch_tracking()["master"], (2, 0));
+        run("push origin master:main").unwrap();
+        git_output(&work, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        assert_eq!(repository.branch_tracking()["master"], (0, 1));
     }
 
     #[test]

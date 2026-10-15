@@ -4,14 +4,15 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
-    widgets::{Block, Borders, Padding, StatefulWidget},
+    widgets::{Padding, StatefulWidget},
 };
+use rustc_hash::FxHashMap;
 use semver::Version;
 
 use crate::{
     app::AppContext,
     git::Ref,
-    widget::style::{mark_selected_row, panel_title},
+    widget::style::{mark_selected_row, panel_block, panel_title},
 };
 
 const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
@@ -108,6 +109,8 @@ pub struct RefListState {
     offset: usize,
     scroll_to_selection: bool,
     picked: RefPicks,
+    // the commits to push and to pull of the local branches with an upstream, by name
+    tracking: FxHashMap<String, (usize, usize)>,
 }
 
 impl RefListState {
@@ -122,9 +125,15 @@ impl RefListState {
             offset: 0,
             scroll_to_selection: true,
             picked: RefPicks::default(),
+            tracking: FxHashMap::default(),
         };
         state.rebuild_visible_rows();
         state
+    }
+
+    // The commits ahead of and behind the upstream of each local branch, shown beside them.
+    pub fn set_tracking(&mut self, tracking: FxHashMap<String, (usize, usize)>) {
+        self.tracking = tracking;
     }
 
     pub fn picked(&self) -> &RefPicks {
@@ -431,9 +440,7 @@ impl StatefulWidget for RefList {
             n if self.collapsed => n.to_string(),
             n => format!("{n} picked"),
         };
-        let block = Block::default()
-            .borders(Borders::TOP | Borders::RIGHT)
-            .style(Style::default().fg(theme.divider_fg))
+        let block = panel_block(self.focused, theme)
             .title(panel_title(label, &picked, self.focused, theme))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
@@ -501,7 +508,26 @@ impl StatefulWidget for RefList {
             } else {
                 item_style
             };
-            buf.set_stringn(text_x, y, &row.name, remaining as usize, style);
+            // a local branch: the commits to push and to pull, after its name
+            let tracking = (row.depth > 0 && row.identifier[0] == TREE_BRANCH_ROOT_IDENT)
+                .then(|| state.tracking.get(&row.identifier[row.identifier.len() - 1]))
+                .flatten();
+            let mut counts = vec![];
+            if let Some(&(ahead, behind)) = tracking {
+                if ahead > 0 {
+                    counts.push((format!("↑{ahead}"), theme.status_success_fg));
+                }
+                if behind > 0 {
+                    counts.push((format!("↓{behind}"), theme.status_warn_fg));
+                }
+            }
+            let counts_width: usize = counts.iter().map(|(c, _)| c.chars().count() + 1).sum();
+            let name_width = (remaining as usize).saturating_sub(counts_width);
+            let (mut x, _) = buf.set_stringn(text_x, y, &row.name, name_width, style);
+            for (count, fg) in counts {
+                let width = inner.right().saturating_sub(x + 1) as usize;
+                (x, _) = buf.set_stringn(x + 1, y, count, width, Style::default().fg(fg));
+            }
             // the selection only shows while moving in the sidebar
             if self.focused && row.identifier == state.selected {
                 mark_selected_row(buf, inner, y, true, theme);

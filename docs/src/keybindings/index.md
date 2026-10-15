@@ -72,7 +72,9 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 #### Commands on the commit graph
 
 <kbd>D</kbd> shows the files changed between two commits and their diff in the details, like the changes tab: the checked out commit and the selected one (or the picked one), or the two picked commits.
-The older commit is the base. It errors with more than two picked commits. <kbd>Esc</kbd> closes it.
+The older commit is the base. It errors with more than two picked commits. <kbd>Esc</kbd> closes it, from the commit list too, and clears the picks.
+While a diff is open, of commits or of refs from the sidebar, no other is started: <kbd>D</kbd> and picking are refused until it is closed.
+<kbd>Enter</kbd> on the commit list shows the details of the selected commit over the diff; <kbd>Esc</kbd> goes back to the diff, and another <kbd>Esc</kbd> closes it.
 
 The other commands ask first, in a popup showing what they do and the git commands they run:
 

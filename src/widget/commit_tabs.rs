@@ -783,14 +783,8 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
     }
 }
 
-// Draws the top border and the divider, returning the tree area and the area beside it.
-fn split_tree_and_side(theme: &ColorTheme, area: Rect, buf: &mut Buffer) -> [Rect; 2] {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .style(Style::default().fg(theme.divider_fg));
-    let inner = block.inner(area);
-    block.render(area, buf);
-
+// Draws the divider, returning the tree area and the area beside it.
+fn split_tree_and_side(theme: &ColorTheme, inner: Rect, buf: &mut Buffer) -> [Rect; 2] {
     let tree_width = tree_panel_width(inner.width);
     let [tree_area, side_area] =
         Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(0)]).areas(inner);

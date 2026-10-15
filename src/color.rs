@@ -29,8 +29,6 @@ pub struct ColorTheme {
     pub list_ref_tag_fg: RatatuiColor,
     #[default(FUCHSIA)]
     pub list_ref_stash_fg: RatatuiColor,
-    #[default(CYAN)]
-    pub list_head_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub list_subject_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
@@ -109,7 +107,7 @@ pub struct ColorTheme {
     pub highlight_fg: RatatuiColor,
     #[default(STATUS_BAR_FG)]
     pub status_bar_fg: RatatuiColor,
-    #[default(STATUS_BAR_BG)]
+    #[default(RatatuiColor::Reset)]
     pub status_bar_bg: RatatuiColor,
 }
 
@@ -120,13 +118,11 @@ const CREAM: RatatuiColor = RatatuiColor::Rgb(0xFF, 0xFD, 0xF5);
 const GREEN: RatatuiColor = RatatuiColor::Rgb(0x02, 0xBF, 0x87);
 const RED: RatatuiColor = RatatuiColor::Rgb(0xED, 0x56, 0x7A);
 const YELLOW: RatatuiColor = RatatuiColor::Rgb(0xEC, 0xCB, 0x6E);
-const CYAN: RatatuiColor = RatatuiColor::Rgb(0x6E, 0xC8, 0xF0);
 const MUTED: RatatuiColor = RatatuiColor::Rgb(0x62, 0x62, 0x62);
 const SUBTLE: RatatuiColor = RatatuiColor::Rgb(0x3A, 0x3A, 0x3A);
 const INK: RatatuiColor = RatatuiColor::Rgb(0x1E, 0x1E, 0x24);
 const SELECTION_BG: RatatuiColor = RatatuiColor::Rgb(0x35, 0x31, 0x4C);
 const STATUS_BAR_FG: RatatuiColor = RatatuiColor::Rgb(0xC1, 0xC6, 0xB2);
-const STATUS_BAR_BG: RatatuiColor = RatatuiColor::Rgb(0x2A, 0x2A, 0x2E);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphColor {
@@ -147,10 +143,6 @@ impl GraphColor {
 
     pub fn to_image_color(self) -> image::Rgba<u8> {
         image::Rgba([self.r, self.g, self.b, self.a])
-    }
-
-    pub fn to_ratatui_color(self) -> RatatuiColor {
-        RatatuiColor::Rgb(self.r, self.g, self.b)
     }
 
     fn transparent() -> Self {
@@ -181,10 +173,6 @@ impl GraphColorSet {
             edge_color,
             background_color,
         }
-    }
-
-    pub fn get(&self, index: usize) -> GraphColor {
-        self.colors[index % self.colors.len()]
     }
 }
 

@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Padding, Paragraph, StatefulWidget, Widget},
 };
 
 use crate::{
@@ -86,7 +86,7 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let (mut label_lines, mut value_lines) = self.contents(area);
 
-        let content_area_height = area.height as usize - 1; // minus the top border
+        let content_area_height = area.height as usize;
         self.update_state(state, value_lines.len(), content_area_height);
 
         label_lines = label_lines.into_iter().skip(state.offset).collect();
@@ -102,10 +102,7 @@ impl CommitDetail<'_> {
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
             .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::left(2)),
+                Block::default().padding(Padding::left(1)),
             );
         paragraph.render(area, buf);
     }
@@ -114,10 +111,7 @@ impl CommitDetail<'_> {
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
             .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::new(1, 2, 0, 0)),
+                Block::default().padding(Padding::new(1, 1, 0, 0)),
             );
         paragraph.render(area, buf);
     }

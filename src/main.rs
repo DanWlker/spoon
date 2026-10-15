@@ -255,7 +255,6 @@ fn main() -> Result<()> {
         let mut app = App::new(
             &repository,
             graph_image_manager,
-            &graph_color_set,
             initial_selection,
             ctx.clone(),
             &ec,

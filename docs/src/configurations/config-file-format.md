@@ -76,7 +76,6 @@ list_ref_branch_fg = "#02bf87"
 list_ref_remote_branch_fg = "#ed567a"
 list_ref_tag_fg = "#eccb6e"
 list_ref_stash_fg = "#f780e2"
-list_head_fg = "#6ec8f0"
 list_subject_fg = "reset"
 list_name_fg = "reset"
 list_hash_fg = "reset"
@@ -111,7 +110,7 @@ accent_fg = "#7571f9"
 accent_text_fg = "#fffdf5"
 highlight_fg = "#f780e2"
 status_bar_fg = "#c1c6b2"
-status_bar_bg = "#2a2a2e"
+status_bar_bg = "reset"
 
 [keybind]
 # See the separate Custom Keybindings section for details.

@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, StatefulWidget, Widget},
+    widgets::{List, ListItem, StatefulWidget, Widget},
     Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -19,11 +19,11 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
-    git::{Commit, CommitHash, Head, Ref},
+    git::{Commit, CommitHash, Ref},
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{SearchOptions, SearchTarget},
-    widget::style::panel_title,
+    widget::style::{panel_block, panel_title},
 };
 
 static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default().respect_case());
@@ -34,17 +34,15 @@ const ELLIPSIS: &str = "...";
 pub struct CommitInfo<'a> {
     commit: &'a Commit,
     refs: Vec<&'a Ref>,
-    graph_color: Color,
     // on the history of HEAD; the other commits are dimmed
     on_head: bool,
 }
 
 impl<'a> CommitInfo<'a> {
-    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, graph_color: Color, on_head: bool) -> Self {
+    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, on_head: bool) -> Self {
         Self {
             commit,
             refs,
-            graph_color,
             on_head,
         }
     }
@@ -194,7 +192,6 @@ pub struct CommitListState<'a> {
     commit_hash_set: FxHashSet<&'a CommitHash>,
     graph_image_manager: GraphImageManager<'a>,
     graph_cell_width: u16,
-    head: &'a Head,
 
     ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
 
@@ -219,7 +216,6 @@ impl<'a> CommitListState<'a> {
         commits: Vec<CommitInfo<'a>>,
         graph_image_manager: GraphImageManager<'a>,
         graph_cell_width: u16,
-        head: &'a Head,
         ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
         search_options: SearchOptions,
         scrolloff: usize,
@@ -231,7 +227,6 @@ impl<'a> CommitListState<'a> {
             commit_hash_set,
             graph_image_manager,
             graph_cell_width,
-            head,
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_options,
@@ -493,6 +488,11 @@ impl<'a> CommitListState<'a> {
 
     fn current_selected_index(&self) -> usize {
         self.offset + self.selected
+    }
+
+    // The selected commit, counting from 1, and how many there are.
+    pub fn position(&self) -> (usize, usize) {
+        (self.current_selected_index() + 1, self.total)
     }
 
     pub fn current_list_status(&self) -> (usize, usize, usize) {
@@ -783,7 +783,7 @@ pub struct CommitList<'a> {
 
 // The rows of the commit list under the border of its panel.
 pub fn commit_list_inner_height(height: u16) -> usize {
-    height.saturating_sub(1) as usize
+    height.saturating_sub(2) as usize
 }
 
 // The commit list as the first panel of the graph: under a top border titled with its number,
@@ -801,10 +801,7 @@ pub fn render_commit_list_panel<'a>(
         0 => {}
         n => notes.push(format!("{n} picked")),
     }
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .style(Style::default().fg(theme.divider_fg))
-        .title(panel_title(
+    let block = panel_block(focused, theme).title(panel_title(
             "[1] Commits",
             &notes.join(" · "),
             focused,
@@ -908,7 +905,8 @@ impl CommitList<'_> {
         }
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
-            .map(|(_, commit_info)| ListItem::new("│".fg(commit_info.graph_color)))
+            // a plain divider: the colors of the branches are in the graph
+            .map(|_| ListItem::new("│".fg(self.ctx.color_theme.divider_fg)))
             .collect();
         Widget::render(List::new(items), area, buf)
     }
@@ -923,7 +921,6 @@ impl CommitList<'_> {
             .map(|(i, commit_info)| {
                 let mut spans = refs_spans(
                     commit_info,
-                    state.head,
                     &state.search_matches[state.offset + i].refs,
                     &self.ctx.color_theme,
                 );
@@ -1087,18 +1084,13 @@ impl CommitList<'_> {
     }
 }
 
-// The refs at the commit as labels with a background: the checked-out branch stands out, the
-// other branches, remote branches, tags and stashes are tinted with their colors.
+// The refs at the commit as labels tinted with their colors: branches, remote branches, tags and
+// stashes.
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo,
-    head: &'a Head,
     refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
     color_theme: &'a ColorTheme,
 ) -> Vec<Span<'a>> {
-    let current = match head {
-        Head::Branch { name } => Some(name),
-        _ => None,
-    };
     let mut spans = vec![];
     for r in &commit_info.refs {
         let (name, color) = match r {
@@ -1107,12 +1099,7 @@ fn refs_spans<'a>(
             Ref::Tag { name, .. } => (name, color_theme.list_ref_tag_fg),
             Ref::Stash { name, .. } => (name, color_theme.list_ref_stash_fg),
         };
-        let is_current = matches!(r, Ref::Branch { .. }) && Some(name) == current;
-        let style = if is_current {
-            ref_label_style(color_theme.list_head_fg, true)
-        } else {
-            ref_label_style(color, false)
-        };
+        let style = ref_label_style(color);
         let fg = style.fg.unwrap_or_default();
         let bg = style.bg.unwrap_or_default();
         let label = format!(" {name} ");
@@ -1141,10 +1128,9 @@ fn refs_spans<'a>(
 }
 
 // A ref label in `color`: solid for the checked-out branch, else the color on a dark tint of it.
-fn ref_label_style(color: Color, current: bool) -> Style {
+fn ref_label_style(color: Color) -> Style {
     let style = Style::default().add_modifier(Modifier::BOLD);
     match color {
-        _ if current => style.fg(LABEL_INK).bg(color),
         Color::Rgb(r, g, b) => {
             let [ir, ig, ib] = [0x1E_u16, 0x1E, 0x24];
             let tint = |c: u8, base: u16| ((c as u16 * 3 + base * 7) / 10) as u8;
@@ -1274,7 +1260,7 @@ mod tests {
     use crate::{
         color::GraphColorSet,
         config::{CoreConfig, GraphColorConfig, UiConfig},
-        git::Repository,
+        git::{Head, Repository},
         graph::{calc_graph, CellWidthType, GraphImageWidthMode, GraphStyle},
         keybind::KeyBind,
         protocol::ImageProtocol,
@@ -1336,7 +1322,6 @@ mod tests {
                 CommitInfo::new(
                     commit,
                     repository.refs(&commit.commit_hash),
-                    Color::Reset,
                     true,
                 )
             })
@@ -1345,7 +1330,6 @@ mod tests {
             commit_infos,
             graph_image_manager,
             0,
-            repository.head(),
             FxHashMap::default(),
             SearchOptions::default(),
             0,
@@ -1467,7 +1451,6 @@ mod tests {
     #[test]
     fn test_pick_only_changes_row_colors() {
         with_commit_list_state(&["first", "second", "third"], |state| {
-            state.commits[0].graph_color = Color::Green;
             let mut ui_config = UiConfig::default();
             ui_config.list.columns = vec![
                 UserListColumnType::Marker,
@@ -1497,7 +1480,7 @@ mod tests {
 
             // the marker column is unchanged, the text of the picked row is recolored
             assert_eq!(after[(0, 0)].symbol(), "│");
-            assert_eq!(after[(0, 0)].fg, Color::Green);
+            assert_eq!(after[(0, 0)].fg, ctx.color_theme.divider_fg);
             assert_eq!(after[(2, 0)].bg, ctx.color_theme.list_picked_bg);
             assert_eq!(after[(2, 0)].fg, ctx.color_theme.list_picked_fg);
             for x in 0..area.width {

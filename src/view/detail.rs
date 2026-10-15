@@ -25,6 +25,7 @@ use crate::{
             CommitFiles, CommitFilesState, DetailTab,
         },
         diff::Step,
+        style::panel_block,
         file_tree::{FileTreeState, SearchDirection},
         tree_query::{QueryChange, QueryKind, TreeQuery},
     },
@@ -48,6 +49,8 @@ pub struct DetailView<'a> {
     refs: Vec<Ref>,
     // comparing two commits: only their changes are shown, under this title
     compare: Option<String>,
+    // the comparison, set aside while the details of a commit in it are shown
+    parked_compare: Option<(String, CommitChangesState<'a>)>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
     list_focused: bool,
     repository: &'a Repository,
@@ -80,6 +83,7 @@ impl<'a> DetailView<'a> {
             changes,
             refs,
             compare: None,
+            parked_compare: None,
             list_focused: false,
             repository,
             ctx,
@@ -110,8 +114,18 @@ impl<'a> DetailView<'a> {
         }
         if self.list_focused {
             let mut hints = graph_hints(picked);
+            if self.is_comparing() {
+                // no other diff until this one is closed, which clears the picks too
+                hints.retain(|(events, _)| {
+                    !events.iter().any(|e| {
+                        matches!(e, UserEvent::ToggleSelect | UserEvent::Diff | UserEvent::Cancel)
+                    })
+                });
+            }
             hints.insert(0, hint(UserEvent::Confirm, "details"));
-            if picked == 0 && self.is_comparing() {
+            if self.parked_compare.is_some() {
+                hints.insert(0, hint(UserEvent::Cancel, "back to diff"));
+            } else if self.is_comparing() {
                 hints.insert(0, hint(UserEvent::Cancel, "close diff"));
             }
             return hints;
@@ -138,7 +152,11 @@ impl<'a> DetailView<'a> {
                 hint(UserEvent::Cancel, "back"),
             ];
         }
-        if picked > 0 {
+        if self.parked_compare.is_some() {
+            hints.push(hint(UserEvent::Cancel, "back to diff"));
+        } else if self.is_comparing() {
+            hints.push(hint(UserEvent::Cancel, "close diff"));
+        } else if picked > 0 {
             hints.push(hint(UserEvent::Cancel, "clear picks"));
         } else {
             hints.push(hint(UserEvent::Cancel, "close"));
@@ -189,8 +207,40 @@ impl<'a> DetailView<'a> {
         )
     }
 
+    // Whether two commits are compared, also while the details of a commit in the comparison
+    // are shown over it.
     pub fn is_comparing(&self) -> bool {
+        self.compare.is_some() || self.parked_compare.is_some()
+    }
+
+    // Whether the comparison is shown.
+    fn shows_compare(&self) -> bool {
         self.compare.is_some()
+    }
+
+    // Shows the details of the selected commit over the comparison, which comes back with Esc.
+    fn park_compare(&mut self) {
+        let Some(title) = self.compare.take() else {
+            return;
+        };
+        let changes = std::mem::replace(
+            &mut self.changes_state,
+            CommitChangesState::new(self.repository, self.commit.commit_hash.clone(), &[]),
+        );
+        self.parked_compare = Some((title, changes));
+        self.update_selected_commit(|_| {});
+        self.show_tab(DetailTab::Info);
+    }
+
+    fn unpark_compare(&mut self) {
+        let Some((title, changes)) = self.parked_compare.take() else {
+            return;
+        };
+        self.compare = Some(title);
+        self.changes_state = changes;
+        self.tab = DetailTab::Changes;
+        self.list_focused = true;
+        self.load_tab();
     }
 
     pub fn tab(&self) -> DetailTab {
@@ -238,7 +288,7 @@ impl<'a> DetailView<'a> {
         }
         if let UserEvent::NextTab | UserEvent::PreviousTab = event {
             // the comparison only has changes; the focus stays where it is
-            if !self.is_comparing() {
+            if !self.shows_compare() {
                 self.tab = self.tab.cycle(event == UserEvent::NextTab);
                 self.load_tab();
             }
@@ -247,9 +297,11 @@ impl<'a> DetailView<'a> {
         if let UserEvent::FocusPanel(n) = event {
             if n == 1 {
                 self.list_focused = true;
-            } else if self.is_comparing() {
-                // the comparison only has changes
-                self.list_focused = false;
+            } else if self.shows_compare() {
+                // the comparison only has changes, in [2]
+                if n == 2 {
+                    self.list_focused = false;
+                }
             } else if let Some(tab) = DetailTab::from_number(n) {
                 self.show_tab(tab);
             }
@@ -258,8 +310,13 @@ impl<'a> DetailView<'a> {
         // the picked commits are cleared before the search, the filter and the details; in the
         // diff or preview, Esc goes back to the files first
         if let UserEvent::Cancel | UserEvent::Close = event {
+            // back from the details of a commit to the comparison
+            if self.list_focused && self.parked_compare.is_some() {
+                self.unpark_compare();
+                return;
+            }
             let picked = !self.as_list_state().picked_commit_hashes().is_empty();
-            if !self.is_pane_focused() && picked {
+            if !self.is_pane_focused() && picked && self.parked_compare.is_none() {
                 self.clear_picks();
                 // the diff of the picked commits goes with them
                 if self.is_comparing() {
@@ -371,6 +428,11 @@ impl<'a> DetailView<'a> {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
             }
+            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close
+                if self.parked_compare.is_some() =>
+            {
+                self.unpark_compare();
+            }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseDetail);
             }
@@ -387,6 +449,13 @@ impl<'a> DetailView<'a> {
         let ctx = self.ctx.clone();
         let list_focused = page_focused && self.list_focused;
         render_commit_list_panel(f, list_area, self.as_mut_list_state(), ctx, list_focused);
+
+        // one panel for the tabs, the titles go over its top border
+        let focused = page_focused && !self.list_focused;
+        let block = panel_block(focused, &self.ctx.color_theme);
+        let panel_area = detail_area;
+        let detail_area = block.inner(panel_area);
+        f.render_widget(block, panel_area);
 
         match self.tab {
             DetailTab::Info => {
@@ -407,9 +476,8 @@ impl<'a> DetailView<'a> {
                 f.render_stateful_widget(commit_files, detail_area, &mut self.files_state);
             }
         }
-        // each tab draws a top border, the titles go over it
         let indicator = self.query().and_then(TreeQuery::indicator);
-        let focused = page_focused && !self.list_focused;
+        let detail_area = panel_area;
         match &self.compare {
             // the panel 2, like the tabs
             Some(title) => render_compare_title(
@@ -584,6 +652,8 @@ impl<'a> DetailView<'a> {
     // Moves in the commit list while it has the focus, showing the details of the selected commit;
     // returns whether the event was handled.
     fn handle_list_event(&mut self, event: UserEvent, count: usize) -> bool {
+        let (comparing, shows_compare) = (self.is_comparing(), self.shows_compare());
+        let tx = self.tx.clone();
         let state = self.as_mut_list_state();
         let before = state.selected_commit_hash().clone();
         let repeat = |state: &mut CommitListState<'a>, f: fn(&mut CommitListState<'a>)| {
@@ -604,9 +674,19 @@ impl<'a> DetailView<'a> {
             UserEvent::HalfPageUp => repeat(state, CommitListState::scroll_up_half),
             UserEvent::ScrollDown => repeat(state, CommitListState::scroll_down),
             UserEvent::ScrollUp => repeat(state, CommitListState::scroll_up),
+            UserEvent::ToggleSelect if comparing => {
+                let msg = "Close the diff first (esc) to pick other commits".to_string();
+                tx.send(AppEvent::NotifyWarn(msg));
+                return true;
+            }
             UserEvent::ToggleSelect => state.toggle_pick(),
             UserEvent::NextPicked => state.select_next_pick(true),
             UserEvent::PreviousPicked => state.select_next_pick(false),
+            // the details of the selected commit, over the comparison
+            UserEvent::Confirm if shows_compare => {
+                self.park_compare();
+                return true;
+            }
             UserEvent::Confirm => {
                 // into the details
                 self.list_focused = false;
@@ -816,7 +896,7 @@ impl<'a> DetailView<'a> {
     {
         let commit_list_state = self.as_mut_list_state();
         update_commit_list_state(commit_list_state);
-        if self.is_comparing() {
+        if self.shows_compare() {
             // the comparison stays, the selection only moves in the list
             return;
         }

@@ -23,7 +23,7 @@ use crate::{
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
-        style::{badge, mark_selected_row, panel_title, tree_panel_width},
+        style::{badge, mark_selected_row, panel_block, panel_title, tree_panel_width},
         text_area::TextArea,
         tree_query::{highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery},
     },
@@ -1515,8 +1515,8 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
     }
 }
 
-// top border, message box with 3 lines and its borders
-const COMMIT_AREA_HEIGHT: u16 = 1 + 5;
+// the message with 3 lines and the borders
+const COMMIT_AREA_HEIGHT: u16 = 3 + 2;
 
 impl LocalChangesPanel<'_> {
     fn render_file_section(
@@ -1543,9 +1543,7 @@ impl LocalChangesPanel<'_> {
         }
         extras.extend(state.query_indicator(section));
         let label = format!("[{number}] {name} ({})", files.len());
-        let block = Block::default()
-            .borders(Borders::TOP | Borders::RIGHT)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+        let block = panel_block(focused, &self.ctx.color_theme)
             .title(panel_title(
                 &label,
                 &extras.join(" · "),
@@ -1639,13 +1637,12 @@ impl LocalChangesPanel<'_> {
             Focus::Hunks => "select hunks",
             _ => "",
         };
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+        let diff_focused = self.focused && state.is_diff_focused();
+        let block = panel_block(diff_focused, &self.ctx.color_theme)
             .title(panel_title(
                 &title,
                 mode,
-                self.focused && state.is_diff_focused(),
+                diff_focused,
                 &self.ctx.color_theme,
             ))
             .padding(Padding::horizontal(1));
@@ -1712,25 +1709,11 @@ impl LocalChangesPanel<'_> {
             };
             title.push(Span::raw(format!(" · {doing} ")).fg(theme.status_warn_fg));
         }
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(theme.divider_fg))
+        let block = panel_block(focused, theme)
             .title(Line::from(title))
             .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
+        let text_area = block.inner(area);
         block.render(area, buf);
-
-        let border_fg = if focused {
-            theme.accent_fg
-        } else {
-            theme.divider_fg
-        };
-        let message_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(Style::default().fg(border_fg));
-        let text_area = message_block.inner(inner);
-        message_block.render(inner, buf);
         self.render_message(state, text_area, buf);
     }
 
@@ -1740,9 +1723,7 @@ impl LocalChangesPanel<'_> {
         };
         let theme = &self.ctx.color_theme;
         let path = state.selected_path().unwrap_or_default();
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(theme.divider_fg))
+        let block = panel_block(self.focused && state.is_conflict_focused(), theme)
             .title(Line::from(vec![
                 Span::raw(format!(" {path} ")).fg(theme.fg),
                 badge(" conflicted ", theme.status_error_fg, theme),
@@ -1845,7 +1826,7 @@ impl LocalChangesPanel<'_> {
                     .fg(theme.accent_text_fg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme.fg).bg(theme.status_bar_bg)
+                Style::default().fg(theme.fg).bg(theme.divider_fg)
             };
             Paragraph::new(Line::styled(text, style)).render(tool_area, buf);
         }

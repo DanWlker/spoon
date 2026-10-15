@@ -6,6 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
+    widgets::{Block, BorderType},
 };
 
 use crate::color::ColorTheme;
@@ -22,6 +23,19 @@ pub fn panel_title(label: &str, extra: &str, focused: bool, theme: &ColorTheme) 
         spans.push(Span::raw(format!(" {extra} ")).fg(theme.highlight_fg));
     }
     Line::from(spans)
+}
+
+// A panel after lazygit's: a rounded border all around, in the accent color while it has the
+// focus.
+pub fn panel_block<'a>(focused: bool, theme: &ColorTheme) -> Block<'a> {
+    let fg = if focused {
+        theme.accent_fg
+    } else {
+        theme.divider_fg
+    };
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(fg))
 }
 
 // Text on a colored background, like the title of the focused panel.

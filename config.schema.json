@@ -471,11 +471,6 @@
           "description": "Color for stashes in the commit list.",
           "default": "#f780e2"
         },
-        "list_head_fg": {
-          "type": "string",
-          "description": "Background of the label of the checked-out branch in the commit list.",
-          "default": "#6ec8f0"
-        },
         "list_subject_fg": {
           "type": "string",
           "description": "Color for the commit subject in the commit list.",
@@ -649,7 +644,7 @@
         "status_bar_bg": {
           "type": "string",
           "description": "Background color of the status bar.",
-          "default": "#2a2a2e"
+          "default": "reset"
         }
       },
       "additionalProperties": false

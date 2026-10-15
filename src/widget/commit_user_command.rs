@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::Line,
-    widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Padding, Paragraph, StatefulWidget, Widget},
 };
 
 use crate::app::AppContext;
@@ -65,7 +65,7 @@ impl StatefulWidget for CommitUserCommand<'_> {
     type State = CommitUserCommandState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let content_area_height = area.height as usize - 1; // minus the top border
+        let content_area_height = area.height as usize;
         self.update_state(state, self.lines.len(), content_area_height);
 
         self.render_user_command_lines(area, buf, state);
@@ -83,16 +83,13 @@ impl CommitUserCommand<'_> {
             .lines
             .iter()
             .skip(state.offset)
-            .take(area.height as usize - 1)
+            .take(area.height as usize)
             .cloned()
             .collect::<Vec<_>>();
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
             .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::horizontal(2)),
+                Block::default().padding(Padding::horizontal(1)),
             );
         paragraph.render(area, buf);
     }
