@@ -22,7 +22,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{hint, AppEvent, EventController, KeyHint, Page, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, EventController, KeyHint, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
@@ -32,7 +32,7 @@ use crate::{
     },
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
-    keybind::{keys_to_string, KeyBind, SequenceMatch},
+    keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
     protocol::ImageProtocol,
     ref_commands::ref_command,
     search::SearchOptions,
@@ -334,8 +334,11 @@ impl App<'_> {
                         continue;
                     }
 
+                    let scope = self.current_scope();
                     if self.view.is_capturing_keys() {
-                        if let Some(UserEvent::ForceQuit) = self.ctx.keybind.get(&key) {
+                        if let Some(UserEvent::ForceQuit) =
+                            self.ctx.keybind.event_in(Scope::Global, &key)
+                        {
                             self.ec.send(AppEvent::Quit);
                         } else {
                             let event = UserEventWithCount::from_event(UserEvent::Unknown);
@@ -344,20 +347,16 @@ impl App<'_> {
                         continue;
                     }
 
-                    // key sequences wait for their next key; typed text (the search input) is no sequence,
-                    // and a key of the page goes first, like [ cycling the tabs of the details
-                    let pages = self.current_pages();
-                    let page_key = self.shell.app_status.pending_keys.is_empty()
-                        && self.ctx.keybind.page_key(&pages, &key).is_some();
-                    if !matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
-                        && !page_key
-                    {
+                    // key sequences wait for their next key, typed text (the search input) is no
+                    // sequence; the focused scope decides, like ] cycling the tabs of the details
+                    // where elsewhere it starts "] v"
+                    if !matches!(self.shell.app_status.status_line, StatusLine::Input { .. }) {
                         let had_pending = !self.shell.app_status.pending_keys.is_empty();
                         self.shell.app_status.pending_keys.push(key);
                         match self
                             .ctx
                             .keybind
-                            .match_sequence(&self.shell.app_status.pending_keys)
+                            .resolve(scope, &self.shell.app_status.pending_keys)
                         {
                             SequenceMatch::Partial => continue,
                             SequenceMatch::Complete(ue) => {
@@ -375,7 +374,8 @@ impl App<'_> {
                                 self.shell.app_status.pending_keys.clear();
                                 // Esc only cancels the started sequence
                                 if had_pending
-                                    && self.ctx.keybind.get(&key) == Some(&UserEvent::Cancel)
+                                    && self.ctx.keybind.event_in(scope, &key)
+                                        == Some(UserEvent::Cancel)
                                 {
                                     self.shell.app_status.numeric_prefix.clear();
                                     continue;
@@ -385,7 +385,7 @@ impl App<'_> {
                         }
                     }
 
-                    let user_event = self.ctx.keybind.get_on(&pages, &key).filter(|ue| {
+                    let user_event = self.ctx.keybind.event_in(scope, &key).filter(|ue| {
                         // digits continue a count, and without panels to focus they start one (or are typed)
                         match ue {
                             UserEvent::FocusPanel(n) => {
@@ -1037,7 +1037,7 @@ impl App<'_> {
             return;
         }
         // on the sidebar, they work on its selected ref, see `handle_sidebar_event`
-        if event.page() == Some(Page::Graph) && !self.shell.sidebar_focused {
+        if event.home_scope() == Scope::Graph && !self.shell.sidebar_focused {
             self.handle_graph_event(event);
             return;
         }
@@ -1124,23 +1124,21 @@ impl App<'_> {
                 self.set_sidebar_focused(false);
                 self.view.handle_event(event_with_count, key);
             }
-            event if event.page() == Some(Page::Graph) => self.handle_sidebar_graph_event(event),
+            event if event.home_scope() == Scope::Graph => self.handle_sidebar_graph_event(event),
             _ => {}
         }
     }
 
-    // The pages whose keys apply, the innermost first.
-    fn current_pages(&self) -> Vec<Page> {
+    // The scope of the keys, where the focus is, see `Scope`.
+    fn current_scope(&self) -> Scope {
         if self.shell.sidebar_focused {
-            // the commands of the graph work on the selected branch or tag, after the sidebar's own
-            return vec![Page::Refs, Page::Graph];
+            return Scope::Sidebar;
         }
         match &self.view {
-            // the commands of the graph act on the commit list, so only while it has the focus
-            View::Detail(view) if !view.is_list_focused() => vec![Page::Details],
-            View::List(_) | View::Detail(_) => vec![Page::Graph],
-            View::LocalChanges(_) => vec![Page::LocalChanges],
-            _ => vec![],
+            View::List(_) => Scope::CommitList,
+            View::Detail(view) => view.scope(),
+            View::LocalChanges(view) => view.scope(),
+            _ => Scope::Global,
         }
     }
 
@@ -1346,7 +1344,7 @@ impl App<'_> {
         let Some(dialog) = self.shell.dialog.as_mut() else {
             return;
         };
-        let event = self.ctx.keybind.get_on(&[Page::Dialog], &key);
+        let event = self.ctx.keybind.event_in(Scope::Dialog, &key);
         if event == Some(UserEvent::ForceQuit) {
             self.ec.send(AppEvent::Quit);
             return;

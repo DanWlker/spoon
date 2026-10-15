@@ -1,40 +1,149 @@
-use std::ops::{Deref, DerefMut};
-
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rustc_hash::FxHashMap;
 use serde::{de::Deserializer, Deserialize};
 
-use crate::event::{Page, UserEvent};
+use crate::event::UserEvent;
 
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
-// Single keys, and sequences of keys pressed one after another (written separated by spaces, like "] m").
-// The events of a page (see `UserEvent::page`) are kept apart, so pages can use the same key differently.
+// Where keys are bound: the parts of the app that can have the focus, nested. A key is looked up
+// from the focused scope outward, the first scope binding it wins, so a scope overrides the keys of
+// those around it; and each scope takes from around it only the events it lets through (see
+// `Scope::passes`), like the diff beside the files, which takes the keys of the whole app only.
+//
+// global
+// ├─ graph                  the commands of the commit graph, bound here
+// │  ├─ sidebar             the refs; the commands of the graph work on the selected ref
+// │  ├─ commit_list
+// │  └─ details             not the commands of the graph
+// │     └─ details_pane     the diff or preview beside the files
+// ├─ local_changes
+// │  └─ local_changes_diff
+// └─ dialog                 the popups of the git commands
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Scope {
+    Global,
+    Graph,
+    Sidebar,
+    CommitList,
+    Details,
+    DetailsPane,
+    LocalChanges,
+    LocalChangesDiff,
+    Dialog,
+}
+
+impl Scope {
+    const ALL: [Scope; 9] = [
+        Scope::Global,
+        Scope::Graph,
+        Scope::Sidebar,
+        Scope::CommitList,
+        Scope::Details,
+        Scope::DetailsPane,
+        Scope::LocalChanges,
+        Scope::LocalChangesDiff,
+        Scope::Dialog,
+    ];
+
+    pub fn parent(self) -> Option<Scope> {
+        match self {
+            Scope::Global => None,
+            Scope::Graph | Scope::LocalChanges | Scope::Dialog => Some(Scope::Global),
+            Scope::Sidebar | Scope::CommitList | Scope::Details => Some(Scope::Graph),
+            Scope::DetailsPane => Some(Scope::Details),
+            Scope::LocalChangesDiff => Some(Scope::LocalChanges),
+        }
+    }
+
+    // Whether the event of a key bound around this scope works in it.
+    fn passes(self, event: UserEvent) -> bool {
+        match self {
+            // the commands of the graph act on the commit list, not on the details
+            Scope::Details => event.home_scope() != Scope::Graph,
+            // the diff or preview takes its own keys, moving in it, and those of the whole app
+            Scope::DetailsPane => {
+                event.is_app_wide()
+                    || matches!(
+                        event,
+                        UserEvent::NavigateUp
+                            | UserEvent::NavigateDown
+                            | UserEvent::GoToTop
+                            | UserEvent::GoToBottom
+                            | UserEvent::ScrollUp
+                            | UserEvent::ScrollDown
+                            | UserEvent::PageUp
+                            | UserEvent::PageDown
+                            | UserEvent::HalfPageUp
+                            | UserEvent::HalfPageDown
+                            | UserEvent::Confirm
+                            | UserEvent::Cancel
+                            | UserEvent::Close
+                            | UserEvent::Search
+                            | UserEvent::GoToNext
+                            | UserEvent::GoToPrevious
+                            | UserEvent::ShortCopy
+                            | UserEvent::NextTab
+                            | UserEvent::PreviousTab
+                            | UserEvent::ApplyChange
+                    )
+            }
+            // not the keys of the files beside it
+            Scope::LocalChangesDiff => !matches!(
+                event,
+                UserEvent::ToggleSelect
+                    | UserEvent::NextPicked
+                    | UserEvent::PreviousPicked
+                    | UserEvent::Filter
+                    | UserEvent::FullCopy
+                    | UserEvent::NavigateLeft
+                    | UserEvent::NavigateRight
+            ),
+            _ => true,
+        }
+    }
+
+    // The scope and those around it, the innermost first.
+    pub fn chain(self) -> impl Iterator<Item = Scope> {
+        std::iter::successors(Some(self), |scope| scope.parent())
+    }
+
+    // Whether `self` is `scope` or inside it.
+    fn within(self, scope: Scope) -> bool {
+        self.chain().any(|s| s == scope)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Scope::Global => "global",
+            Scope::Graph => "graph",
+            Scope::Sidebar => "sidebar",
+            Scope::CommitList => "commit_list",
+            Scope::Details => "details",
+            Scope::DetailsPane => "details_pane",
+            Scope::LocalChanges => "local_changes",
+            Scope::LocalChangesDiff => "local_changes_diff",
+            Scope::Dialog => "dialog",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Scope> {
+        Scope::ALL.into_iter().find(|scope| scope.name() == name)
+    }
+}
+
+// Single keys, and sequences of keys pressed one after another (written separated by spaces, like
+// "] m"), of each scope.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeyBind {
-    keys: FxHashMap<KeyEvent, UserEvent>,
-    page_keys: FxHashMap<(Page, KeyEvent), UserEvent>,
-    sequences: FxHashMap<Vec<KeyEvent>, UserEvent>,
+    keys: FxHashMap<(Scope, KeyEvent), UserEvent>,
+    sequences: FxHashMap<(Scope, Vec<KeyEvent>), UserEvent>,
 }
 
-impl Deref for KeyBind {
-    type Target = FxHashMap<KeyEvent, UserEvent>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.keys
-    }
-}
-
-impl DerefMut for KeyBind {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.keys
-    }
-}
-
-// How the keys pressed so far match the key sequences.
+// How the keys pressed so far match the bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SequenceMatch {
-    // no sequence starts with them
+    // nothing is bound to them
     None,
     // they start a sequence, waiting for the next key
     Partial,
@@ -53,72 +162,78 @@ impl KeyBind {
         keybind
     }
 
-    // Overrides the keys and sequences of `patch`; a key of its own takes over the sequences
-    // starting with it, and a sequence takes over the key it starts with. A key of a page only
-    // overrides that page, sequences starting with it still work elsewhere.
+    // Overrides with the keys and sequences of `patch`: a key bound in a scope replaces what that
+    // key did in it and in the scopes inside it, sequences starting with it included; a sequence
+    // replaces the key it starts with in its scope.
     fn merge(&mut self, patch: KeyBind) {
-        for (key_event, user_event) in patch.keys {
-            // a key for every page takes over the page keys too
-            self.sequences.retain(|keys, _| keys[0] != key_event);
-            self.page_keys.retain(|(_, key), _| *key != key_event);
-            self.keys.insert(key_event, user_event);
+        for (scope, key_event) in patch.keys.keys() {
+            self.keys
+                .retain(|(s, key), _| !(s.within(*scope) && key == key_event));
+            self.sequences
+                .retain(|(s, keys), _| !(s.within(*scope) && keys[0] == *key_event));
         }
-        for ((page, key_event), user_event) in patch.page_keys {
-            self.page_keys.insert((page, key_event), user_event);
+        for (scope, key_events) in patch.sequences.keys() {
+            self.keys.remove(&(*scope, key_events[0]));
         }
-        for (key_events, user_event) in patch.sequences {
-            self.keys.remove(&key_events[0]);
-            self.sequences.insert(key_events, user_event);
+        self.keys.extend(patch.keys);
+        self.sequences.extend(patch.sequences);
+    }
+
+    // What the keys pressed so far do in `scope`: from it outward, the first scope binding them (or
+    // a sequence starting with them) to an event that works in `scope`.
+    pub fn resolve(&self, scope: Scope, pressed: &[KeyEvent]) -> SequenceMatch {
+        // the events bound around a scope work in it when every scope on the way lets them through
+        let mut passes: Vec<Scope> = vec![];
+        let allowed = |event: &UserEvent, passes: &[Scope]| passes.iter().all(|s| s.passes(*event));
+        for s in scope.chain() {
+            if let [key] = pressed {
+                if let Some(event) = self.keys.get(&(s, *key)).filter(|e| allowed(e, &passes)) {
+                    return SequenceMatch::Complete(*event);
+                }
+            }
+            if let Some(event) = self
+                .sequences
+                .get(&(s, pressed.to_vec()))
+                .filter(|e| allowed(e, &passes))
+            {
+                return SequenceMatch::Complete(*event);
+            }
+            if self.sequences.iter().any(|((seq_scope, keys), event)| {
+                *seq_scope == s && keys.starts_with(pressed) && allowed(event, &passes)
+            }) {
+                return SequenceMatch::Partial;
+            }
+            passes.push(s);
+        }
+        SequenceMatch::None
+    }
+
+    // The event of a single key in `scope`, see `resolve`.
+    pub fn event_in(&self, scope: Scope, key: &KeyEvent) -> Option<UserEvent> {
+        match self.resolve(scope, std::slice::from_ref(key)) {
+            SequenceMatch::Complete(event) => Some(event),
+            _ => None,
         }
     }
 
-    // The event of the key on the pages, the innermost first: its event on one of them,
-    // else its event for every page.
-    pub fn get_on(&self, pages: &[Page], key: &KeyEvent) -> Option<UserEvent> {
-        self.page_key(pages, key)
-            .or_else(|| self.keys.get(key).copied())
-    }
-
-    // The event of the key on one of the pages only; it comes before the key sequences.
-    pub fn page_key(&self, pages: &[Page], key: &KeyEvent) -> Option<UserEvent> {
-        pages
-            .iter()
-            .find_map(|page| self.page_keys.get(&(*page, *key)))
-            .copied()
-    }
-
-    // Matches the keys pressed so far against the key sequences.
-    pub fn match_sequence(&self, pressed: &[KeyEvent]) -> SequenceMatch {
-        if let Some(user_event) = self.sequences.get(pressed) {
-            return SequenceMatch::Complete(*user_event);
-        }
-        if self.sequences.keys().any(|keys| keys.starts_with(pressed)) {
-            SequenceMatch::Partial
-        } else {
-            SequenceMatch::None
-        }
-    }
-
+    // The keys bound to the event, in any scope.
     pub fn keys_for_event(&self, user_event: UserEvent) -> Vec<String> {
         let mut key_events: Vec<KeyEvent> = self
+            .keys
             .iter()
             .filter(|(_, ue)| **ue == user_event)
-            .map(|(ke, _)| *ke)
-            .chain(
-                self.page_keys
-                    .iter()
-                    .filter(|(_, ue)| **ue == user_event)
-                    .map(|((_, ke), _)| *ke),
-            )
+            .map(|((_, ke), _)| *ke)
             .collect();
         key_events.sort_by(|a, b| a.partial_cmp(b).unwrap()); // At least when used for key bindings, it doesn't seem to be a problem...
+        key_events.dedup();
         let mut sequences: Vec<&Vec<KeyEvent>> = self
             .sequences
             .iter()
             .filter(|(_, ue)| **ue == user_event)
-            .map(|(keys, _)| keys)
+            .map(|((_, keys), _)| keys)
             .collect();
         sequences.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sequences.dedup();
         key_events
             .into_iter()
             .map(key_event_to_string)
@@ -148,6 +263,7 @@ impl KeyBind {
 
     pub fn user_command_event_numbers(&self) -> Vec<usize> {
         let mut numbers: Vec<usize> = self
+            .keys
             .values()
             .filter_map(|ue| {
                 if let UserEvent::UserCommand(n) = ue {
@@ -158,8 +274,56 @@ impl KeyBind {
             })
             .collect();
         numbers.sort_unstable();
+        numbers.dedup();
         numbers
     }
+
+    // Binds the keys of `key_events` (sequences when separated by spaces) to the event in `scope`.
+    fn bind(
+        &mut self,
+        scope: Scope,
+        user_event: UserEvent,
+        key_events: &[String],
+    ) -> Result<(), String> {
+        for key_event_str in key_events {
+            let parsed: Result<Vec<KeyEvent>, String> = key_event_str
+                .split_whitespace()
+                .map(parse_key_event)
+                .collect();
+            let mut keys = match parsed {
+                Ok(keys) if !keys.is_empty() => keys,
+                Ok(_) => return Err(format!("{key_event_str:?} is not a valid key event: empty")),
+                Err(s) => return Err(format!("{key_event_str:?} is not a valid key event: {s:}")),
+            };
+            let conflict = if keys.len() == 1 {
+                self.keys.insert((scope, keys.remove(0)), user_event)
+            } else {
+                self.sequences.insert((scope, keys), user_event)
+            };
+            if let Some(conflict_user_event) = conflict {
+                return Err(format!(
+                    "{key_event_str:?} map to multiple events in {}: {user_event:?}, {conflict_user_event:?}",
+                    scope.name()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+// The keybind table: `event = [keys]`, bound in the event's own scope (see
+// `UserEvent::home_scope`), and tables of scopes, `[keybind.details_pane]`, binding in them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KeyBindEntry {
+    Keys(Vec<String>),
+    Scope(FxHashMap<String, Vec<String>>),
+}
+
+fn parse_user_event(name: &str) -> Result<UserEvent, String> {
+    use serde::de::{value::StrDeserializer, IntoDeserializer};
+    let deserializer: StrDeserializer<serde::de::value::Error> = name.into_deserializer();
+    UserEvent::deserialize(deserializer).map_err(|e| e.to_string())
 }
 
 impl<'de> Deserialize<'de> for KeyBind {
@@ -167,56 +331,44 @@ impl<'de> Deserialize<'de> for KeyBind {
     where
         D: Deserializer<'de>,
     {
-        let parsed_map = FxHashMap::<UserEvent, Vec<String>>::deserialize(deserializer)?;
+        let parsed_map = FxHashMap::<String, KeyBindEntry>::deserialize(deserializer)?;
         let mut keybind = KeyBind::default();
-        // events that no longer exist are skipped
-        let parsed_map = parsed_map
-            .into_iter()
-            .filter(|(user_event, _)| *user_event != UserEvent::Unknown);
-        for (user_event, key_events) in parsed_map {
-            for key_event_str in key_events {
-                // keys separated by whitespace are a sequence
-                let parsed: Result<Vec<KeyEvent>, String> = key_event_str
-                    .split_whitespace()
-                    .map(parse_key_event)
-                    .collect();
-                let mut keys = match parsed {
-                    Ok(keys) if !keys.is_empty() => keys,
-                    Ok(_) => {
-                        let msg = format!("{key_event_str:?} is not a valid key event: empty");
-                        return Err(serde::de::Error::custom(msg));
-                    }
-                    Err(s) => {
-                        let msg = format!("{key_event_str:?} is not a valid key event: {s:}");
-                        return Err(serde::de::Error::custom(msg));
-                    }
-                };
-                let conflict = if keys.len() == 1 {
-                    match user_event.page() {
-                        Some(page) => keybind.page_keys.insert((page, keys.remove(0)), user_event),
-                        None => keybind.keys.insert(keys.remove(0), user_event),
-                    }
-                } else {
-                    keybind.sequences.insert(keys, user_event)
-                };
-                if let Some(conflict_user_event) = conflict {
-                    let msg = format!(
-                        "{key_event_str:?} map to multiple events: {user_event:?}, {conflict_user_event:?}"
-                    );
-                    return Err(serde::de::Error::custom(msg));
+        let error = serde::de::Error::custom;
+        for (name, entry) in parsed_map {
+            let bindings = match entry {
+                KeyBindEntry::Keys(keys) => {
+                    let user_event = parse_user_event(&name).map_err(error)?;
+                    vec![(user_event.home_scope(), user_event, keys)]
+                }
+                KeyBindEntry::Scope(table) => {
+                    let scope = Scope::from_name(&name)
+                        .ok_or_else(|| error(format!("Unknown keybind scope: {name}")))?;
+                    table
+                        .into_iter()
+                        .map(|(event_name, keys)| {
+                            parse_user_event(&event_name).map(|event| (scope, event, keys))
+                        })
+                        .collect::<Result<Vec<_>, String>>()
+                        .map_err(error)?
+                }
+            };
+            for (scope, user_event, keys) in bindings {
+                // events that no longer exist are skipped
+                if user_event != UserEvent::Unknown {
+                    keybind.bind(scope, user_event, &keys).map_err(error)?;
                 }
             }
         }
 
-        // a key starting a sequence cannot do something on its own, the sequence could not be typed;
-        // a key of a page can, the sequence is typed on the other pages
-        for (keys, user_event) in &keybind.sequences {
-            if let Some(key_user_event) = keybind.keys.get(&keys[0]) {
+        // a key starting a sequence cannot do something on its own in the same scope, the sequence
+        // could not be typed; a scope inside it can bind the key, the sequence is typed elsewhere
+        for ((scope, keys), user_event) in &keybind.sequences {
+            if let Some(key_user_event) = keybind.keys.get(&(*scope, keys[0])) {
                 let msg = format!(
                     "{} starts the key sequence of {user_event:?}, so it cannot map to {key_user_event:?}",
                     key_event_to_string(keys[0])
                 );
-                return Err(serde::de::Error::custom(msg));
+                return Err(error(msg));
             }
         }
 
@@ -399,57 +551,56 @@ mod tests {
         let expected = KeyBind {
             keys: [
                 (
-                    KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty())),
                     UserEvent::NavigateUp,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty())),
                     UserEvent::NavigateDown,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::Down, KeyModifiers::empty())),
                     UserEvent::NavigateDown,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
                     UserEvent::NavigateLeft,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT)),
                     UserEvent::NavigateLeft,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT)),
                     UserEvent::NavigateLeft,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
                     UserEvent::NavigateRight,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT)),
                     UserEvent::NavigateRight,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())),
                     UserEvent::Quit,
                 ),
                 (
-                    KeyEvent::new(KeyCode::F(12), KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::F(12), KeyModifiers::empty())),
                     UserEvent::Quit,
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty())),
                     UserEvent::UserCommand(1),
                 ),
                 (
-                    KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty()),
+                    (Scope::Global, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty())),
                     UserEvent::UserCommand(10),
                 ),
             ]
             .into_iter()
             .collect(),
-            page_keys: FxHashMap::default(),
             sequences: FxHashMap::default(),
         };
 
@@ -467,24 +618,19 @@ mod tests {
             go_to_parent = ["p"]
         "#;
         let keybind: KeyBind = toml::from_str(toml).unwrap();
-        let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty());
+        assert_eq!(keybind.keys.len(), 1);
         assert_eq!(
-            keybind
-                .page_keys
-                .values()
-                .chain(keybind.keys.values())
-                .count(),
-            1
-        );
-        assert_eq!(
-            keybind.get_on(&[Page::Graph], &m),
+            keybind.event_in(Scope::CommitList, &key('m')),
             Some(UserEvent::ToggleSelect)
         );
     }
 
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty())
+    }
+
     #[test]
     fn test_key_sequences() {
-        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
         let keybind: KeyBind = toml::from_str(
             r#"
             go_to_next = ["] m", "g n"]
@@ -492,16 +638,17 @@ mod tests {
         "#,
         )
         .unwrap();
-        assert_eq!(keybind.match_sequence(&[key(']')]), SequenceMatch::Partial);
+        let global = |keys: &[KeyEvent]| keybind.resolve(Scope::Global, keys);
+        assert_eq!(global(&[key(']')]), SequenceMatch::Partial);
         assert_eq!(
-            keybind.match_sequence(&[key(']'), key('m')]),
+            global(&[key(']'), key('m')]),
             SequenceMatch::Complete(UserEvent::GoToNext)
         );
+        assert_eq!(global(&[key(']'), key('x')]), SequenceMatch::None);
         assert_eq!(
-            keybind.match_sequence(&[key(']'), key('x')]),
-            SequenceMatch::None
+            global(&[key('q')]),
+            SequenceMatch::Complete(UserEvent::Quit)
         );
-        assert_eq!(keybind.match_sequence(&[key('q')]), SequenceMatch::None);
         assert_eq!(
             keybind.keys_for_event(UserEvent::GoToNext),
             vec!["]m", "gn"]
@@ -529,13 +676,103 @@ mod tests {
         )
         .unwrap();
         defaults.merge(custom);
-        assert_eq!(defaults.match_sequence(&[key(']')]), SequenceMatch::None);
-        assert_eq!(defaults.get(&key(']')), Some(&UserEvent::Quit));
-        assert_eq!(defaults.get(&key('g')), None);
         assert_eq!(
-            defaults.match_sequence(&[key('g'), key('g')]),
+            defaults.resolve(Scope::Global, &[key(']')]),
+            SequenceMatch::Complete(UserEvent::Quit)
+        );
+        assert_eq!(defaults.event_in(Scope::Global, &key('g')), None);
+        assert_eq!(
+            defaults.resolve(Scope::Global, &[key('g'), key('g')]),
             SequenceMatch::Complete(UserEvent::GoToTop)
         );
+    }
+
+    #[test]
+    fn test_scopes() {
+        let keybind: KeyBind = toml::from_str(
+            r#"
+            discard = ["d"]
+            drop_commit = ["d"]
+            delete_ref = ["d"]
+            quit = ["q"]
+            toggle_select = ["v"]
+            short_copy = ["y"]
+            apply_change = ["space"]
+            previous_tab = ["["]
+            previous_picked = ["[ v"]
+        "#,
+        )
+        .unwrap();
+        let on = |scope, c| keybind.event_in(scope, &key(c));
+        // the same key does something else in each scope, and nothing elsewhere
+        assert_eq!(on(Scope::LocalChanges, 'd'), Some(UserEvent::Discard));
+        assert_eq!(on(Scope::CommitList, 'd'), Some(UserEvent::DropCommit));
+        assert_eq!(on(Scope::Global, 'd'), None);
+        // the sidebar overrides the graph's key, and takes its other keys
+        assert_eq!(on(Scope::Sidebar, 'd'), Some(UserEvent::DeleteRef));
+        // the keys of the whole app work everywhere
+        assert_eq!(on(Scope::DetailsPane, 'q'), Some(UserEvent::Quit));
+        // the details don't take the commands of the graph, the pane only its own keys
+        assert_eq!(on(Scope::Details, 'd'), None);
+        assert_eq!(on(Scope::Details, 'v'), Some(UserEvent::ToggleSelect));
+        assert_eq!(on(Scope::DetailsPane, 'v'), None);
+        assert_eq!(on(Scope::DetailsPane, 'y'), Some(UserEvent::ShortCopy));
+        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty());
+        assert_eq!(
+            keybind.event_in(Scope::DetailsPane, &space),
+            Some(UserEvent::ApplyChange)
+        );
+        assert_eq!(on(Scope::LocalChangesDiff, 'v'), None);
+        assert_eq!(on(Scope::LocalChangesDiff, 'd'), Some(UserEvent::Discard));
+
+        // a key of an inner scope comes before a sequence starting with it around it
+        assert_eq!(on(Scope::Details, '['), Some(UserEvent::PreviousTab));
+        assert_eq!(
+            keybind.resolve(Scope::CommitList, &[key('[')]),
+            SequenceMatch::Partial
+        );
+        assert_eq!(
+            keybind.resolve(Scope::CommitList, &[key('['), key('v')]),
+            SequenceMatch::Complete(UserEvent::PreviousPicked)
+        );
+
+        // a key bound around a scope takes over the keys inside it
+        let mut merged = keybind.clone();
+        merged.merge(toml::from_str(r#"quit = ["d"]"#).unwrap());
+        assert_eq!(
+            merged.event_in(Scope::CommitList, &key('d')),
+            Some(UserEvent::Quit)
+        );
+        assert_eq!(
+            merged.event_in(Scope::Sidebar, &key('d')),
+            Some(UserEvent::Quit)
+        );
+
+        // a table binds in its scope only
+        let mut merged = keybind.clone();
+        merged.merge(
+            toml::from_str(
+                r#"[details_pane]
+                quit = ["y"]"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            merged.event_in(Scope::DetailsPane, &key('y')),
+            Some(UserEvent::Quit)
+        );
+        assert_eq!(
+            merged.event_in(Scope::Details, &key('y')),
+            Some(UserEvent::ShortCopy)
+        );
+        assert!(toml::from_str::<KeyBind>("[nowhere]\nquit = [\"q\"]").is_err());
+
+        // a scope cannot map a key twice
+        assert!(toml::from_str::<KeyBind>(
+            r#"diff = ["d"]
+reset = ["d"]"#
+        )
+        .is_err());
     }
 
     #[rustfmt::skip]
@@ -576,70 +813,5 @@ mod tests {
 
         let key_event = KeyEvent::new(KeyCode::F(12), KeyModifiers::empty());
         assert_eq!(key_event_to_string(key_event), "F12");
-    }
-
-    #[test]
-    fn test_page_keys() {
-        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
-        let keybind: KeyBind = toml::from_str(
-            r#"
-            discard = ["d"]
-            diff = ["d"]
-            quit = ["q"]
-        "#,
-        )
-        .unwrap();
-        // the same key does something else on each page
-        assert_eq!(
-            keybind.get_on(&[Page::LocalChanges], &key('d')),
-            Some(UserEvent::Discard)
-        );
-        assert_eq!(
-            keybind.get_on(&[Page::Graph], &key('d')),
-            Some(UserEvent::Diff)
-        );
-        assert_eq!(keybind.get_on(&[], &key('d')), None);
-        assert_eq!(
-            keybind.get_on(&[Page::Graph], &key('q')),
-            Some(UserEvent::Quit)
-        );
-        // the details tabs are on the graph
-        assert_eq!(
-            keybind.get_on(&[Page::Details, Page::Graph], &key('d')),
-            Some(UserEvent::Diff)
-        );
-
-        // a key for every page takes over the page keys
-        let mut merged = keybind.clone();
-        merged.merge(toml::from_str(r#"quit = ["d"]"#).unwrap());
-        assert_eq!(
-            merged.get_on(&[Page::Graph], &key('d')),
-            Some(UserEvent::Quit)
-        );
-
-        // a key of a page may start a sequence elsewhere
-        let keybind: KeyBind = toml::from_str(
-            r#"
-            previous_tab = ["["]
-            previous_picked = ["[ v"]
-        "#,
-        )
-        .unwrap();
-        assert_eq!(
-            keybind.page_key(&[Page::Details, Page::Graph], &key('[')),
-            Some(UserEvent::PreviousTab)
-        );
-        assert_eq!(keybind.page_key(&[Page::Graph], &key('[')), None);
-        assert_eq!(
-            keybind.match_sequence(&[key('['), key('v')]),
-            SequenceMatch::Complete(UserEvent::PreviousPicked)
-        );
-
-        // a page cannot map a key twice
-        assert!(toml::from_str::<KeyBind>(
-            r#"diff = ["d"]
-reset = ["d"]"#
-        )
-        .is_err());
     }
 }

@@ -656,7 +656,273 @@
     },
     "keybind": {
       "type": "object",
-      "description": "Keybinding settings. Each property is an action, and its value is an array of key sequences.",
+      "description": "Keybinding settings. Each property is an action, and its value is an array of key sequences, bound in the action's own scope; a table named after a scope binds actions in that scope only.",
+      "properties": {
+        "force_quit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "quit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "help_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "cancel": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "close": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "navigate_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "navigate_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "navigate_right": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "navigate_left": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "select_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "select_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "go_to_top": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "go_to_bottom": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "scroll_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "scroll_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "page_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "page_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "half_page_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "half_page_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "go_to_next": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "go_to_previous": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "confirm": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "ref_list": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "search": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "search_target_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "ignore_case_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fuzzy_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "refresh": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "short_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "full_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "filter": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_stage": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_select": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "next_picked": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_picked": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "next_tab": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_tab": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "stash": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "abort": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_amend": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "edit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "discard": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dialog_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dialog_edit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dialog_activate": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fetch": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fetch_all": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "pull": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "push": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "diff": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "rebase": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "merge": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "checkout": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "cherry_pick": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "squash": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "revert": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "reset": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "amend_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "drop_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "create_tag": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "branch_only": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "create_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "delete_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "edit_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "apply_stash": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "apply_change": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "global": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "graph": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "sidebar": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "commit_list": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "details": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "details_pane": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "local_changes": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "local_changes_diff": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "dialog": {
+          "$ref": "#/definitions/keybindScope"
+        }
+      },
+      "patternProperties": {
+        "^user_command_[0-9]+$": {
+          "description": "Keybinding to toggle a specific user command view, where the number corresponds to the command in 'core.user_command'.",
+          "$ref": "#/definitions/keybindArray"
+        },
+        "^focus_panel_[0-9]+$": {
+          "description": "Keybinding to focus a specific panel in views with multiple panels, such as unstaged (1), staged (2) and commit (3) in local changes.",
+          "$ref": "#/definitions/keybindArray"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "keybindArray": {
+      "type": "array",
+      "description": "An array of key sequences for an action. Examples: [\"q\"], [\"ctrl-c\"], [\"j\", \"down\"]",
+      "items": {
+        "type": "string"
+      }
+    },
+    "userListColumnType": {
+      "type": "string",
+      "enum": [
+        "graph",
+        "marker",
+        "subject",
+        "name",
+        "hash",
+        "date"
+      ]
+    },
+    "keybindScope": {
+      "type": "object",
+      "description": "The keys of a scope, overriding those of the scopes around it.",
       "properties": {
         "force_quit": {
           "$ref": "#/definitions/keybindArray"
@@ -871,27 +1137,6 @@
         }
       },
       "additionalProperties": false
-    }
-  },
-  "additionalProperties": false,
-  "definitions": {
-    "keybindArray": {
-      "type": "array",
-      "description": "An array of key sequences for an action. Examples: [\"q\"], [\"ctrl-c\"], [\"j\", \"down\"]",
-      "items": {
-        "type": "string"
-      }
-    },
-    "userListColumnType": {
-      "type": "string",
-      "enum": [
-        "graph",
-        "marker",
-        "subject",
-        "name",
-        "hash",
-        "date"
-      ]
     }
   }
 }

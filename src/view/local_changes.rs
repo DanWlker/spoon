@@ -8,8 +8,9 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, KeyHint, Page, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     external::{editor_command, merge_tool_command},
+    keybind::Scope,
     view::{copy_path, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::CommitListState,
@@ -88,32 +89,21 @@ impl<'a> LocalChangesView<'a> {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
-        // the diff only takes its own keys, not those of the files beside it
-        if self.as_state().is_diff_focused() {
-            match event {
-                UserEvent::ToggleSelect
-                | UserEvent::NextPicked
-                | UserEvent::PreviousPicked
-                | UserEvent::Filter
-                | UserEvent::FullCopy
-                | UserEvent::NavigateLeft
-                | UserEvent::NavigateRight => return,
-                UserEvent::ShortCopy => {
-                    if let Some(text) = self.as_state().selected_diff_text() {
-                        let name = if self.as_state().is_selecting_lines() {
-                            "Line"
-                        } else {
-                            "Hunk"
-                        };
-                        self.tx.send(AppEvent::CopyToClipboard {
-                            name: name.into(),
-                            value: text,
-                        });
-                    }
-                    return;
-                }
-                _ => {}
+        // the diff copies its hunk or line; it doesn't get the keys of the files beside it, see
+        // `Scope::LocalChangesDiff`
+        if self.as_state().is_diff_focused() && event == UserEvent::ShortCopy {
+            if let Some(text) = self.as_state().selected_diff_text() {
+                let name = if self.as_state().is_selecting_lines() {
+                    "Line"
+                } else {
+                    "Hunk"
+                };
+                self.tx.send(AppEvent::CopyToClipboard {
+                    name: name.into(),
+                    value: text,
+                });
             }
+            return;
         }
 
         if self.as_state().is_conflict_focused() {
@@ -384,7 +374,7 @@ impl<'a> LocalChangesView<'a> {
     // Whether the key is the commit key, while the popup asks to confirm a commit.
     fn confirms_commit(&self, key: KeyEvent) -> bool {
         self.as_state().is_confirming_commit()
-            && self.ctx.keybind.get_on(&[Page::LocalChanges], &key) == Some(UserEvent::Commit)
+            && self.ctx.keybind.event_in(Scope::LocalChanges, &key) == Some(UserEvent::Commit)
     }
 
     // Whether the key may change the repository: staging, discarding, stashing, committing,
@@ -417,6 +407,15 @@ impl<'a> LocalChangesView<'a> {
         }
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
+        }
+    }
+
+    // The scope of the keys: the diff, or the rest of the page.
+    pub fn scope(&self) -> Scope {
+        if self.as_state().is_diff_focused() {
+            Scope::LocalChangesDiff
+        } else {
+            Scope::LocalChanges
         }
     }
 

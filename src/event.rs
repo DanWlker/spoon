@@ -13,7 +13,9 @@ use serde::{
     Deserialize,
 };
 
-use crate::{git::GitTask, view::RefreshViewContext, widget::commit_tabs::DetailTab};
+use crate::{
+    git::GitTask, keybind::Scope, view::RefreshViewContext, widget::commit_tabs::DetailTab,
+};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -473,23 +475,11 @@ fn parse_user_command_number(s: &str) -> Option<usize> {
     None
 }
 
-// The page an event belongs to; events of different pages may share a key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Page {
-    // the commit graph, with or without the commit details
-    Graph,
-    // a tab of the commit details having the focus, on the graph
-    Details,
-    LocalChanges,
-    // a popup confirming a git command, like fetch or merge
-    Dialog,
-    // the refs sidebar having the focus
-    Refs,
-}
-
 impl UserEvent {
-    // None for the events of every page, which a key maps to on all of them.
-    pub fn page(&self) -> Option<Page> {
+    // The scope a key of the event is bound in, when the keybind doesn't say: the keys of most
+    // events work everywhere, those of the commands of a part of the app in that part only, so
+    // the same key can do something else elsewhere. See `Scope`.
+    pub fn home_scope(&self) -> Scope {
         match self {
             UserEvent::Diff
             | UserEvent::Rebase
@@ -502,26 +492,43 @@ impl UserEvent {
             | UserEvent::AmendCommit
             | UserEvent::DropCommit
             | UserEvent::CreateTag
-            | UserEvent::BranchOnly => Some(Page::Graph),
+            | UserEvent::BranchOnly => Scope::Graph,
             UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
-            | UserEvent::ApplyStash => Some(Page::Refs),
-            UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ApplyChange => {
-                Some(Page::Details)
-            }
+            | UserEvent::ApplyStash => Scope::Sidebar,
+            UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ApplyChange => Scope::Details,
             UserEvent::ToggleStage
             | UserEvent::Stash
             | UserEvent::Commit
             | UserEvent::Abort
             | UserEvent::ToggleAmend
             | UserEvent::Edit
-            | UserEvent::Discard => Some(Page::LocalChanges),
+            | UserEvent::Discard => Scope::LocalChanges,
             UserEvent::DialogToggle | UserEvent::DialogEdit | UserEvent::DialogActivate => {
-                Some(Page::Dialog)
+                Scope::Dialog
             }
-            _ => None,
+            _ => Scope::Global,
         }
+    }
+
+    // The events of the whole app, which work wherever the focus is: quitting, help, refreshing,
+    // switching pages and panels, the remotes and the user commands.
+    pub fn is_app_wide(&self) -> bool {
+        matches!(
+            self,
+            UserEvent::ForceQuit
+                | UserEvent::Quit
+                | UserEvent::HelpToggle
+                | UserEvent::Refresh
+                | UserEvent::RefList
+                | UserEvent::FocusPanel(_)
+                | UserEvent::Fetch
+                | UserEvent::FetchAll
+                | UserEvent::Pull
+                | UserEvent::Push
+                | UserEvent::UserCommand(_)
+        )
     }
 
     pub fn is_countable(&self) -> bool {

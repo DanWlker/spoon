@@ -10,6 +10,7 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
+    keybind::Scope,
     view::{
         copy_path, graph_hints, handle_search_event, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
@@ -99,10 +100,6 @@ impl<'a> DetailView<'a> {
         self.as_mut_list_state().clear_picks();
     }
 
-    pub fn is_list_focused(&self) -> bool {
-        self.list_focused
-    }
-
     pub fn key_hints(&self) -> Vec<KeyHint> {
         if self.is_typing_query() {
             return typing_hints(false);
@@ -164,6 +161,18 @@ impl<'a> DetailView<'a> {
             ]),
         }
         hints
+    }
+
+    // The scope of the keys: the commit list, the diff or preview beside the files, or the rest
+    // of the details.
+    pub fn scope(&self) -> Scope {
+        if self.list_focused {
+            Scope::CommitList
+        } else if self.is_pane_focused() {
+            Scope::DetailsPane
+        } else {
+            Scope::Details
+        }
     }
 
     fn is_searching_list(&self) -> bool {
@@ -255,12 +264,9 @@ impl<'a> DetailView<'a> {
             return;
         }
 
-        // the diff or preview beside the files only takes its own keys, and those of the whole app
-        let app_wide = matches!(
-            event,
-            UserEvent::HelpToggle | UserEvent::Refresh | UserEvent::UserCommand(_)
-        );
-        if self.is_pane_focused() && !app_wide {
+        // the diff or preview beside the files gets only its own keys and those of the whole app
+        // (see `Scope::DetailsPane`), which go on below
+        if self.is_pane_focused() && !event.is_app_wide() {
             self.handle_pane_event(event, count);
             return;
         }
@@ -344,6 +350,9 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
+            }
+            UserEvent::Quit => {
+                self.tx.send(AppEvent::Quit);
             }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseDetail);

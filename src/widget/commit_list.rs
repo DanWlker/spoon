@@ -343,10 +343,10 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_last(&mut self) {
-        self.selected = (self.height - 1).min(self.total - 1);
-        if self.height < self.total {
-            self.offset = self.total - self.height;
-        }
+        // the last rows fill the list, from the top when they all fit
+        let height = self.height.max(1);
+        self.selected = (height - 1).min(self.total - 1);
+        self.offset = self.total.saturating_sub(height);
     }
 
     pub fn scroll_down(&mut self) {

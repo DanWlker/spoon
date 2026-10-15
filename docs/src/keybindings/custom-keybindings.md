@@ -58,10 +58,48 @@ After the first keys, the status line shows them while waiting for the next one;
 A key cannot both start a sequence and be bound on its own, since the sequence could not be typed.
 Binding a key on its own in your config replaces the default sequences starting with it, and binding a sequence replaces the default binding of its first key.
 
-### Keys of a page
+### Scopes
 
-The commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) and of the local changes page (`toggle_stage`, `stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) only apply on their page, so the two pages can use the same key for different commands, like <kbd>d</kbd> for `diff` and `discard`. Likewise `dialog_toggle` and `dialog_edit` only apply in the popups of the git commands.
-A key bound to any other event applies on every page, and takes over the keys of the pages.
-The tabs of the commit details are a page inside the commit graph: `next_tab` and `previous_tab` apply while a tab has the focus, and the commands of the commit graph apply there too.
+Keys are bound in scopes, the parts of the app that can have the focus, nested:
 
-A key of a page may also start a key sequence: on its page it acts right away, elsewhere it starts the sequence. For example <kbd>]</kbd> shows the next tab of the details, while <kbd>]</kbd> <kbd>v</kbd> goes to the next picked commit in the commit list.
+```
+global
+├─ graph                  the commands of the commit graph
+│  ├─ sidebar             the refs
+│  ├─ commit_list
+│  └─ details             the tabs of the commit details
+│     └─ details_pane     the diff or preview beside the files
+├─ local_changes
+│  └─ local_changes_diff
+└─ dialog                 the popups of the git commands
+```
+
+A key is looked up from the scope having the focus outward: the first scope binding it wins, so a scope can use a key differently from those around it.
+Each scope takes the keys of the scopes around it, except:
+
+- `details` doesn't take the commands of the graph, which act on the commit list.
+- `details_pane` takes only moving in it, scrolling, `confirm`, `cancel`, `close`, the search, `short_copy`, the tabs and `apply_change`, and the keys of the whole app: quitting, help, refresh, switching pages and panels, fetch, pull, push and the user commands.
+- `local_changes_diff` doesn't take the keys of the files beside it: `toggle_select`, `next_picked`, `previous_picked`, `filter`, `full_copy`, `navigate_left` and `navigate_right`.
+
+An event written in `[keybind]` is bound in its own scope:
+the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) in `graph`;
+those of the refs (`create_ref`, `delete_ref`, `edit_ref`, `apply_stash`) in `sidebar`;
+those of the local changes page (`toggle_stage`, `stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) in `local_changes`;
+`next_tab`, `previous_tab` and `apply_change` in `details`;
+`dialog_toggle`, `dialog_edit` and `dialog_activate` in `dialog`;
+and the others in `global`, working everywhere.
+So <kbd>d</kbd> is `drop_commit` on the commit list, `delete_ref` on the sidebar (which overrides the graph's key) and `discard` on the local changes page.
+
+A table of a scope binds keys in that scope only, overriding those around it:
+
+```toml
+[keybind]
+quit = ["q"]
+
+# in the diff or preview beside the files, y quits instead of copying
+[keybind.details_pane]
+quit = ["y"]
+```
+
+A key bound in your config replaces what that key did by default in its scope and in the scopes inside it.
+A key of an inner scope may also start a key sequence around it: there it acts right away, elsewhere it starts the sequence. For example <kbd>]</kbd> shows the next tab of the details, while <kbd>]</kbd> <kbd>v</kbd> goes to the next picked commit in the commit list.
