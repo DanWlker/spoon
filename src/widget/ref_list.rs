@@ -531,7 +531,15 @@ impl StatefulWidget for RefList {
             // a local branch: the commits to push and to pull, after its name
             let branch = (row.depth > 0 && row.identifier[0] == TREE_BRANCH_ROOT_IDENT)
                 .then(|| row.identifier[row.identifier.len() - 1].as_str());
-            let tracking = branch.and_then(|branch| state.tracking.get(branch));
+            // what runs on it, like lazygit's "Pushing |", in place of its counts
+            let task = self.ctx.running_task.borrow();
+            let running = task
+                .as_ref()
+                .and_then(|task| task.branch_status.as_ref())
+                .filter(|status| branch == Some(status.branch.as_str()));
+            let tracking = branch
+                .filter(|_| running.is_none())
+                .and_then(|branch| state.tracking.get(branch));
             let mut counts = vec![];
             if let Some(&(ahead, behind)) = tracking {
                 if ahead > 0 {
@@ -541,14 +549,16 @@ impl StatefulWidget for RefList {
                     counts.push((format!("↓{behind}"), theme.status_warn_fg));
                 }
             }
-            // what runs on it, like lazygit's "Pushing |"
-            let task = self.ctx.running_task.borrow();
-            let running = task
-                .as_ref()
-                .and_then(|task| task.branch_status.as_ref())
-                .filter(|(name, _)| branch == Some(name.as_str()));
-            if let Some((_, status)) = running {
-                counts.push((format!("{status} {}", spinner()), theme.highlight_fg));
+            if let Some(status) = running {
+                // shortened to "↑ ∙●∙" when the name leaves no room for "Pushing ∙●∙"
+                let room = (remaining as usize).saturating_sub(row.name.chars().count() + 1);
+                let label = format!("{} {}", status.label, spinner());
+                let label = if label.chars().count() <= room {
+                    label
+                } else {
+                    format!("{} {}", status.short, spinner())
+                };
+                counts.push((label, theme.highlight_fg));
             }
             let counts_width: usize = counts.iter().map(|(c, _)| c.chars().count() + 1).sum();
             let name_width = (remaining as usize).saturating_sub(counts_width);

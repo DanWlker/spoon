@@ -12,7 +12,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     event::{KeyHint, UserEvent},
-    git::{todo_action, GitTask, RemoteInfo},
+    git::{todo_action, BranchStatus, GitTask, RemoteInfo},
     widget::style::badge,
 };
 
@@ -222,6 +222,10 @@ impl GitDialog {
     pub fn remote(action: RemoteAction, info: RemoteInfo) -> Result<Self, String> {
         if info.remotes.is_empty() {
             return Err("No remotes configured".into());
+        }
+        // git would merge into the detached HEAD, a commit no branch keeps
+        if action == RemoteAction::Pull && info.current_branch.is_none() {
+            return Err("Check out a branch to pull into it".into());
         }
         let (title, verb, trigger) = match action {
             RemoteAction::Fetch => (" Fetch ", "fetch", UserEvent::Fetch),
@@ -1266,7 +1270,11 @@ impl GitDialog {
                     .info()
                     .current_branch
                     .clone()
-                    .map(|current| (current, "Pulling".to_string()));
+                    .map(|branch| BranchStatus {
+                        branch,
+                        label: "Pulling".into(),
+                        short: "↓",
+                    });
                 (
                     args,
                     format!("Pulling {remote}/{branch}"),
@@ -1299,7 +1307,11 @@ impl GitDialog {
                 } else {
                     "Pushing"
                 };
-                branch_status = Some((branch.clone(), force.to_string()));
+                branch_status = Some(BranchStatus {
+                    branch: branch.clone(),
+                    label: force.into(),
+                    short: "↑",
+                });
                 (
                     args,
                     format!("{force} {branch} to {remote}/{remote_branch}"),
@@ -1693,6 +1705,16 @@ mod tests {
     }
 
     #[test]
+    fn test_no_pull_while_detached() {
+        let detached = RemoteInfo {
+            current_branch: None,
+            ..info()
+        };
+        assert!(GitDialog::remote(RemoteAction::Pull, detached.clone()).is_err());
+        assert!(GitDialog::remote(RemoteAction::Fetch, detached).is_ok());
+    }
+
+    #[test]
     fn test_delete_tags_names_the_remote() {
         let dialog = GitDialog::delete_tags(vec!["v1".into()], Some("fork".into()));
         assert_eq!(dialog.fields[0].1, "Delete them from fork too");
@@ -1780,7 +1802,8 @@ mod tests {
         };
         assert_eq!(task.running, "Pulling origin/main");
         // the sidebar shows it beside the checked-out branch
-        assert_eq!(task.branch_status, Some(("main".into(), "Pulling".into())));
+        let status = task.branch_status.unwrap();
+        assert_eq!((status.branch.as_str(), status.short), ("main", "↓"));
         let mut dialog = GitDialog::remote(RemoteAction::Fetch, info()).unwrap();
         assert!(matches!(
             press(&mut dialog, UserEvent::Push),

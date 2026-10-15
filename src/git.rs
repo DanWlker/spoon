@@ -1729,9 +1729,16 @@ pub struct GitTask {
     pub then: Vec<Vec<String>>,
     // the commit to select once it is done, like "HEAD~2", as rewriting the history changes its hash
     pub select: Option<String>,
-    // the local branch it pushes or pulls and how, ("main", "Pushing"), shown beside it in the
-    // sidebar while it runs, like lazygit
-    pub branch_status: Option<(String, String)>,
+    // the local branch it pushes or pulls, shown beside it in the sidebar while it runs, like lazygit
+    pub branch_status: Option<BranchStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchStatus {
+    pub branch: String,
+    // "Pushing", and "↑" where that doesn't fit
+    pub label: String,
+    pub short: &'static str,
 }
 
 impl GitTask {
