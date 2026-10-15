@@ -999,6 +999,10 @@ impl GitDialog {
                 if name.is_empty() {
                     return Err("Type a name for the branch".into());
                 }
+                // git would read it as an option, `-D` deleting the branch it starts from
+                if name.starts_with('-') {
+                    return Err("A branch name can't start with -".into());
+                }
                 let from = if from.is_empty() { "HEAD".into() } else { from };
                 let args = if self.checked(FieldId::Checkout) {
                     ["checkout", "-b", &name, &from]
@@ -1123,6 +1127,10 @@ impl GitDialog {
                 let at = self.value(FieldId::At);
                 if name.is_empty() {
                     return Err("Type a name for the tag".into());
+                }
+                // git would read it as an option, `-d` deleting the tag it is made at
+                if name.starts_with('-') {
+                    return Err("A tag name can't start with -".into());
                 }
                 let at = if at.is_empty() { "HEAD".into() } else { at };
                 let mut args = vec!["tag"];
@@ -1436,7 +1444,8 @@ fn delete_on_remotes(branches: &[(String, String)]) -> Vec<Vec<String>> {
                 branches
                     .iter()
                     .filter(|(r, _)| r == remote)
-                    .map(|(_, b)| b.clone()),
+                    // in full, as a tag of the same name makes the short one ambiguous
+                    .map(|(_, b)| format!("refs/heads/{b}")),
             );
             args
         })
@@ -1676,6 +1685,22 @@ mod tests {
             hash: n.to_string().repeat(40),
             line: format!("{n} subject"),
         }
+    }
+
+    #[test]
+    fn test_names_starting_with_dash_are_refused() {
+        // `git branch --no-track -D feature` would delete feature
+        let mut dialog = GitDialog::create_branch("feature", vec!["feature".into()]);
+        dialog.handle_key(None, key(KeyCode::Char('-')));
+        dialog.handle_key(None, key(KeyCode::Char('D')));
+        assert!(dialog.command().is_err());
+        let mut dialog = GitDialog::create_tag("v1");
+        dialog.handle_key(None, key(KeyCode::Char('-')));
+        dialog.handle_key(None, key(KeyCode::Char('d')));
+        assert!(dialog.command().is_err());
+        dialog.handle_key(None, key(KeyCode::Home));
+        dialog.handle_key(None, key(KeyCode::Delete));
+        assert_eq!(args(&dialog), "tag d v1");
     }
 
     #[test]

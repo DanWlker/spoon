@@ -603,11 +603,10 @@ impl Repository {
         if !message.is_empty() {
             args.extend(["--message", message]);
         }
+        let specs = pathspecs(paths);
         if !paths.is_empty() {
             args.push("--");
-            let paths = pathspecs(paths);
-            args.extend(paths.iter().map(String::as_str));
-            return run_git(&self.path, &args, None);
+            args.extend(specs.iter().map(String::as_str));
         }
         run_git(&self.path, &args, None)
     }
@@ -774,23 +773,26 @@ impl Repository {
     ) -> std::result::Result<(), String> {
         let ours = self.stage_blob(path, ConflictSide::Ours.stage());
         let theirs = self.stage_blob(path, ConflictSide::Theirs.stage());
+        // literal, so resolving `x*.txt` leaves `xa.txt` alone
+        let spec = pathspecs(&[path]);
+        let spec = spec[0].as_str();
         let (Some(ours), Some(theirs)) = (ours, theirs) else {
             // one side deleted the file: it is kept as it is on the side taken
             let kept = self.stage_blob(path, side.stage()).is_some();
             return if kept {
-                run_git(&self.path, &["checkout", side.option(), "--", path], None)
-                    .and_then(|_| run_git(&self.path, &["add", "--", path], None))
+                run_git(&self.path, &["checkout", side.option(), "--", spec], None)
+                    .and_then(|_| run_git(&self.path, &["add", "--", spec], None))
             } else {
-                run_git(&self.path, &["rm", "--quiet", "--", path], None)
+                run_git(&self.path, &["rm", "--quiet", "--", spec], None)
             };
         };
         match self.merge_file_favoring(path, side, ours, theirs) {
             Some(merged) => std::fs::write(self.path.join(path), merged)
                 .map_err(|e| format!("failed to write {path}: {e}"))?,
             // a binary file can't be merged by lines, so it is taken whole
-            None => run_git(&self.path, &["checkout", side.option(), "--", path], None)?,
+            None => run_git(&self.path, &["checkout", side.option(), "--", spec], None)?,
         }
-        run_git(&self.path, &["add", "--", path], None)
+        run_git(&self.path, &["add", "--", spec], None)
     }
 
     // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`.
@@ -1588,8 +1590,11 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
 
 // A diff in the format it is parsed in, and applied back as a patch: ignoring user config that
 // changes it, like colors, external diff tools or other prefixes. Files converted to text to diff
-// them are shown so, without hunks to apply, see `ParsedDiff::drop_converted`.
-const PATCH_DIFF_ARGS: [&str; 5] = [
+// them are shown so, without hunks to apply, see `ParsedDiff::drop_converted`. Paths are not
+// quoted, so `+++ b/é.txt` names the file as it is (tabs and quotes in names still are).
+const PATCH_DIFF_ARGS: [&str; 7] = [
+    "-c",
+    "core.quotePath=false",
     "diff",
     "--no-color",
     "--no-ext-diff",
@@ -2282,6 +2287,60 @@ mod tests {
         let content = std::fs::read_to_string(path.join("f")).unwrap();
         assert_eq!(content, lines("ONE", "NINE-ours"));
         assert!(repository.local_changes().unstaged.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_conflict_only_touches_its_file() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("x*.txt"), "base\n").unwrap();
+        std::fs::write(path.join("xa.txt"), "keep\n").unwrap();
+        repo.add(&["."]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        std::fs::write(path.join("x*.txt"), "theirs\n").unwrap();
+        repo.add(&["."]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("x*.txt"), "ours\n").unwrap();
+        repo.add(&["."]);
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+        std::fs::write(path.join("xa.txt"), "unsaved\n").unwrap();
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        repository
+            .resolve_conflict("x*.txt", ConflictSide::Ours)
+            .unwrap();
+        // a file the name matches as a pattern keeps its changes
+        let content = std::fs::read_to_string(path.join("xa.txt")).unwrap();
+        assert_eq!(content, "unsaved\n");
+    }
+
+    #[test]
+    fn test_unstage_lines_of_added_unicode_file() {
+        use crate::test_support::git::GitRepository;
+        use crate::widget::diff::parse_diff;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("base", "2024-01-01");
+        std::fs::write(path.join("é.txt"), "a\nb\n").unwrap();
+        repo.add(&["é.txt"]);
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let diff = parse_diff(&repository.local_change_diff(&["é.txt"], false, true, None));
+        // unstaging the second line keeps the file staged with the first
+        let patch = diff.hunks[0].partial_patch(&[1], true);
+        repository.apply_patch_to_index(&patch, true).unwrap();
+        let staged = git_output(path, &["show", ":é.txt"]).unwrap();
+        assert_eq!(staged, "a\n");
     }
 
     #[test]
