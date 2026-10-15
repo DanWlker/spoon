@@ -232,6 +232,9 @@ impl<'a> App<'a> {
         let graph = graph_image_manager.graph();
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let head_history = repository.head_history();
+        let comparing_refs = shell
+            .as_ref()
+            .is_some_and(|s| s.compare_request.is_some() || s.compare.is_some());
         let commits = graph
             .commits
             .iter()
@@ -243,7 +246,8 @@ impl<'a> App<'a> {
                 }
                 let (pos_x, _) = graph.commit_pos_map[&commit.commit_hash];
                 let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
-                let on_head = head_history.contains(&commit.commit_hash);
+                // comparing two refs, both are shown alike
+                let on_head = comparing_refs || head_history.contains(&commit.commit_hash);
                 CommitInfo::new(commit, refs, graph_color, on_head)
             })
             .collect();
@@ -783,27 +787,15 @@ impl App<'_> {
         if let Some(task) = self.ctx.running_task.borrow().as_ref() {
             right.insert(0, Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
         }
-        let picked = self.view.picked_commit_count();
-        if picked > 0 {
-            let commits = if picked == 1 { "commit" } else { "commits" };
-            right.insert(
-                0,
-                Span::raw(format!(" {picked} {commits} picked "))
-                    .fg(theme.list_picked_fg)
-                    .bg(theme.list_picked_bg)
-                    .bold(),
-            );
-        }
 
         // the keys of what has the focus, as many as fit, before the rest of the right side
         let used: usize = left.iter().chain(&right).map(Span::width).sum();
         let available = (area.width as usize).saturating_sub(used + 2);
         let hints = self.fit_key_hints(available);
         if !hints.spans.is_empty() {
-            let at = usize::from(picked > 0);
             let mut spans = hints.spans;
             spans.push(Span::raw(" "));
-            right.splice(at..at, spans);
+            right.splice(0..0, spans);
         }
 
         let line = status_bar_line(left, right, area.width);

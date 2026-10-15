@@ -241,11 +241,6 @@ impl<'a> View<'a> {
         }
     }
 
-    // The number of commits picked in the commit list, shown in the status line.
-    pub fn picked_commit_count(&self) -> usize {
-        self.as_list_state()
-            .map_or(0, |state| state.picked_commit_hashes().len())
-    }
 
     // Views with numbered panels take digit keys; elsewhere they are a count prefix.
     // In the commit list, they open the details on that tab.

@@ -398,8 +398,9 @@ impl<'a> DetailView<'a> {
         let indicator = self.query().and_then(TreeQuery::indicator);
         let focused = page_focused && !self.list_focused;
         match &self.compare {
+            // the panel 2, like the tabs
             Some(title) => render_compare_title(
-                title,
+                &format!("[2] {title}"),
                 focused,
                 indicator,
                 &self.ctx.color_theme,
