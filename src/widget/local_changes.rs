@@ -1574,10 +1574,22 @@ impl LocalChangesPanel<'_> {
         } else {
             "commit"
         };
+        let amend = if state.amend_base.is_some() {
+            "stop amending"
+        } else {
+            "amend"
+        };
+        // amending is not available while an operation is in progress, aborting is
+        let (amend_or_abort_key, amend_or_abort) = if state.operation.is_some() {
+            (keybind.short_keys(&[UserEvent::Abort]), "abort")
+        } else {
+            (keybind.short_keys(&[UserEvent::ToggleAmend]), amend)
+        };
         if !focused {
             let keys = [
                 (keybind.short_keys(&[UserEvent::FocusPanel(3)]), "type"),
                 (keybind.short_keys(&[UserEvent::Commit]), commit),
+                (amend_or_abort_key, amend_or_abort),
             ];
             let keys: Vec<(&str, &str)> = keys
                 .iter()
@@ -1586,11 +1598,6 @@ impl LocalChangesPanel<'_> {
                 .collect();
             return key_hints(&keys, theme);
         }
-        let amend = if state.amend_base.is_some() {
-            "stop amending"
-        } else {
-            "amend"
-        };
         let mut keys = vec![
             (
                 keybind.short_keys(&[UserEvent::ToggleStage, UserEvent::Edit]),
@@ -1601,11 +1608,7 @@ impl LocalChangesPanel<'_> {
                 commit,
             ),
         ];
-        if state.operation.is_some() {
-            keys.push((keybind.short_keys(&[UserEvent::Abort]), "abort"));
-        } else {
-            keys.push((keybind.short_keys(&[UserEvent::ToggleAmend]), amend));
-        }
+        keys.push((amend_or_abort_key, amend_or_abort));
         keys.push((keybind.short_keys(&[UserEvent::Cancel]), "back"));
         let keys: Vec<(&str, &str)> = keys
             .iter()
