@@ -592,6 +592,10 @@ impl App<'_> {
         } else {
             self.view.key_hints()
         };
+        // what waits for the operation in progress is left out, see `blocked_by_operation`
+        if self.visible_dialog().is_none() && self.repository.operation_in_progress().is_some() {
+            hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
+        }
         let typing = self.view.is_capturing_keys()
             || matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if self.visible_dialog().is_none() && !typing {
@@ -700,9 +704,9 @@ impl App<'_> {
 }
 
 impl App<'_> {
-    // A bar after a neovim statusline: the page as a rounded pill like a mode, the branch, then
-    // the message, or what runs in the background, or the repository; on the right the keys of
-    // what has the focus and the position in the commit list.
+    // A bar after a neovim statusline: the page as a rounded pill like a mode, then the message,
+    // or what runs in the background, or the repository; on the right the keys of what has the
+    // focus and the position in the commit list.
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let theme = &self.ctx.color_theme;
         let bar = Style::default()
@@ -717,16 +721,11 @@ impl App<'_> {
         };
         // the first letter only on narrow terminals, like the mode
         let page = if area.width < 115 { &page[..1] } else { page };
-        let branch = match self.repository.head() {
-            Head::Branch { name } => name.clone(),
-            Head::Detached { target } => format!("{} (detached)", target.as_short_hash()),
-            Head::None => "no commits".into(),
-        };
         let mut left = vec![
             Span::raw(" \u{e0b6}").fg(color),
             Span::raw(page).fg(theme.accent_text_fg).bg(color).bold(),
             Span::raw("\u{e0b4}").fg(color),
-            Span::raw(format!("   \u{e725} {branch}   ")).fg(theme.fg),
+            Span::raw("   "),
         ];
         let left_width: usize = left.iter().map(Span::width).sum();
         let mut right = vec![];
@@ -1358,6 +1357,7 @@ impl App<'_> {
     fn handle_remote_event(&mut self, event: UserEvent) -> bool {
         let action = match event {
             UserEvent::Fetch => RemoteAction::Fetch,
+            UserEvent::Pull if self.blocked_by_operation(event) => return true,
             UserEvent::Pull => RemoteAction::Pull,
             UserEvent::Push => RemoteAction::Push,
             UserEvent::FetchAll => {
@@ -1505,6 +1505,13 @@ impl App<'_> {
 
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
+        if self.blocked_by_operation(event) {
+            return;
+        }
+        if event == UserEvent::BranchOnly && self.is_diffing() {
+            self.notify_already_diffing();
+            return;
+        }
         if event == UserEvent::BranchOnly {
             // the commits are loaded again, of the current branch or of all
             self.shell.branch_only = !self.shell.branch_only;
@@ -1525,6 +1532,9 @@ impl App<'_> {
     // The commands of the commit graph on the branch, remote branch or tag selected in the
     // sidebar, see `ref_graph_command`.
     fn handle_sidebar_graph_event(&mut self, event: UserEvent) {
+        if self.blocked_by_operation(event) {
+            return;
+        }
         if event == UserEvent::BranchOnly {
             self.handle_graph_event(event);
             return;
@@ -1585,8 +1595,25 @@ impl App<'_> {
     }
 
     fn notify_already_diffing(&self) {
-        let msg = "A diff is open, close it first (esc) to diff others".to_string();
+        let msg = "A diff is open, close it first (esc)".to_string();
         self.ec.send(AppEvent::NotifyWarn(msg));
+    }
+
+    // Whether `event` moves or rewrites HEAD while a rebase, merge, cherry-pick or revert waits to
+    // be continued or aborted, which git refuses or tangles up; tells so when it does.
+    fn blocked_by_operation(&self, event: UserEvent) -> bool {
+        let Some(operation) = moves_head(event)
+            .then(|| self.repository.operation_in_progress())
+            .flatten()
+        else {
+            return false;
+        };
+        let msg = format!(
+            "A {} is in progress, continue or abort it on the local changes page first",
+            operation.name()
+        );
+        self.ec.send(AppEvent::NotifyWarn(msg));
+        true
     }
 
     // The refs to diff from the sidebar: the two picked ones, else HEAD and the picked or
@@ -1883,6 +1910,22 @@ impl App<'_> {
             }
         }
     }
+}
+
+// Whether `event` moves or rewrites HEAD, which waits while an operation is in progress.
+fn moves_head(event: UserEvent) -> bool {
+    matches!(
+        event,
+        UserEvent::Rebase
+            | UserEvent::Merge
+            | UserEvent::Checkout
+            | UserEvent::CherryPick
+            | UserEvent::Squash
+            | UserEvent::Revert
+            | UserEvent::AmendCommit
+            | UserEvent::DropCommit
+            | UserEvent::Pull
+    )
 }
 
 // The path with the home directory as ~, like a shell prompt.

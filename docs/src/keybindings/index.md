@@ -76,6 +76,8 @@ The older commit is the base. It errors with more than two picked commits. <kbd>
 While a diff is open, of commits or of refs from the sidebar, no other is started: <kbd>D</kbd> and picking are refused until it is closed.
 <kbd>Enter</kbd> on the commit list shows the details of the selected commit over the diff; <kbd>Esc</kbd> goes back to the diff, and another <kbd>Esc</kbd> closes it.
 
+While a rebase, merge, cherry-pick or revert is stopped (on conflicts, or to edit a commit), the commands that move or rewrite HEAD wait until it is continued or aborted on the local changes page: rebase, merge, checkout, cherry-pick, squash, revert, amend, drop and pull are refused, and their keys are left out of the status bar.
+
 The other commands ask first, in a popup showing what they do and the git commands they run:
 
 - <kbd>r</kbd> rebase: the current branch onto the selected commit, named by its hash (not a branch or tag at it), stashing and reapplying local changes (checked by `rebase.autoStash`, or by default when it is not set).

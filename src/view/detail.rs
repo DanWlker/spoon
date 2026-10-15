@@ -118,7 +118,13 @@ impl<'a> DetailView<'a> {
                 // no other diff until this one is closed, which clears the picks too
                 hints.retain(|(events, _)| {
                     !events.iter().any(|e| {
-                        matches!(e, UserEvent::ToggleSelect | UserEvent::Diff | UserEvent::Cancel)
+                        matches!(
+                            e,
+                            UserEvent::ToggleSelect
+                                | UserEvent::Diff
+                                | UserEvent::BranchOnly
+                                | UserEvent::Cancel
+                        )
                     })
                 });
             }
