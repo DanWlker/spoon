@@ -329,6 +329,8 @@ fn build_lines(
         (vec![UserEvent::Merge], "Merge the branch into the current branch".into()),
         (vec![UserEvent::Rebase], "Rebase the current branch onto the branch".into()),
         (vec![UserEvent::Checkout], "Check out the branch or tag".into()),
+        (vec![UserEvent::ToggleSelect], "Pick/Unpick the ref, refs of one kind together".into()),
+        (vec![UserEvent::Diff], "Diff the two picked refs, or the current branch with the ref".into()),
     ];
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs Sidebar:", refs_helps, color_theme, keybind);
 

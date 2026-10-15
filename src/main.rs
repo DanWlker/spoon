@@ -206,11 +206,23 @@ fn main() -> Result<()> {
     let mut terminal = None;
 
     let ret = loop {
-        let head_only = refresh
+        let revisions = refresh
             .as_ref()
-            .is_some_and(|(shell, _): &(app::AppShell, _)| shell.branch_only);
-        let repository =
-            git::Repository::load_scoped(Path::new("."), order, max_count, mailmap, head_only)?;
+            .and_then(|(shell, _): &(app::AppShell, _)| shell.graph_revisions());
+        let load = |revisions: Option<&[String]>| {
+            git::Repository::load_scoped(Path::new("."), order, max_count, mailmap, revisions)
+        };
+        let repository = match load(revisions.as_deref()) {
+            Ok(repository) => repository,
+            // the refs shown may be gone, then all are shown again
+            Err(_) if revisions.is_some() => {
+                if let Some((shell, _)) = refresh.as_mut() {
+                    shell.reset_graph_filter();
+                }
+                load(None)?
+            }
+            Err(e) => return Err(e),
+        };
 
         let graph = graph::calc_graph(&repository, primary_branch.as_deref());
 

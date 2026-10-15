@@ -131,28 +131,29 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
     ) -> Result<Self> {
-        Self::load_scoped(path, sort, max_count, mailmap, false)
+        Self::load_scoped(path, sort, max_count, mailmap, None)
     }
 
-    // `head_only` loads the history of HEAD alone, else that of every branch, tag and stash.
+    // `revisions` loads only their history, like ["HEAD"] for the current branch; else that of
+    // every branch, tag and stash.
     pub fn load_scoped(
         path: &Path,
         sort: SortCommit,
         max_count: Option<usize>,
         mailmap: bool,
-        head_only: bool,
+        revisions: Option<&[String]>,
     ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
 
         let (mut ref_map, head) = load_refs(path);
 
-        let stashes = if head_only {
+        let stashes = if revisions.is_some() {
             vec![]
         } else {
             load_all_stashes(path, mailmap)
         };
-        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, head_only);
+        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, revisions);
         if commits.is_empty() {
             return Err("no commits in the repository".into());
         }
@@ -886,7 +887,7 @@ fn load_all_commits(
     stashes: &[Commit],
     max_count: Option<usize>,
     mailmap: bool,
-    head_only: bool,
+    revisions: Option<&[String]>,
 ) -> Vec<Commit> {
     let mut cmd = Command::new("git");
     cmd.arg("log");
@@ -899,25 +900,35 @@ fn load_all_commits(
     .arg("--date=iso-strict")
     .arg("-z"); // use NUL as a delimiter
 
-    // exclude stashes and other refs
-    if !head_only {
-        cmd.arg("--branches").arg("--remotes").arg("--tags");
-    }
-
-    // commits that are reachable from the stashes
-    stashes.iter().for_each(|stash| {
-        cmd.arg(stash.parent_commit_hashes[0].as_str());
-    });
-
-    if !matches!(head, Head::None) {
-        cmd.arg("HEAD");
-    }
-
     if let Some(n) = max_count {
         cmd.arg("--max-count").arg(n.to_string());
     }
 
-    cmd.current_dir(path).stdout(Stdio::piped());
+    match revisions {
+        Some(revisions) => {
+            cmd.args(revisions);
+        }
+        None => {
+            // exclude stashes and other refs
+            cmd.arg("--branches").arg("--remotes").arg("--tags");
+
+            // commits that are reachable from the stashes
+            stashes.iter().for_each(|stash| {
+                cmd.arg(stash.parent_commit_hashes[0].as_str());
+            });
+
+            if !matches!(head, Head::None) {
+                cmd.arg("HEAD");
+            }
+        }
+    }
+    // the revisions are not paths
+    cmd.arg("--");
+
+    // an unknown revision only leaves the history empty
+    cmd.current_dir(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
     let mut process = cmd.spawn().unwrap();
 
@@ -1962,8 +1973,10 @@ mod tests {
         // all commits, the other branch's off the history of HEAD
         let all = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         assert_eq!(subjects(&all), ["main", "-other", "base"]);
+        let head = ["HEAD".to_string()];
         let head_only =
-            Repository::load_scoped(path, SortCommit::Chronological, None, false, true).unwrap();
+            Repository::load_scoped(path, SortCommit::Chronological, None, false, Some(&head))
+                .unwrap();
         assert_eq!(subjects(&head_only), ["main", "base"]);
     }
 

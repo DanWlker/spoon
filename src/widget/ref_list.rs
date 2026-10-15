@@ -34,6 +34,59 @@ pub enum RefSection {
     Stashes,
 }
 
+impl RefSection {
+    fn of_root(identifier: &str) -> Option<RefSection> {
+        match identifier {
+            TREE_BRANCH_ROOT_IDENT => Some(RefSection::Branches),
+            TREE_REMOTE_ROOT_IDENT => Some(RefSection::Remotes),
+            TREE_TAG_ROOT_IDENT => Some(RefSection::Tags),
+            TREE_STASH_ROOT_IDENT => Some(RefSection::Stashes),
+            _ => None,
+        }
+    }
+
+    // What the refs of the section are, like "branches".
+    pub fn plural(self) -> &'static str {
+        match self {
+            RefSection::Branches => "branches",
+            RefSection::Remotes => "remote branches",
+            RefSection::Tags => "tags",
+            RefSection::Stashes => "stashes",
+        }
+    }
+}
+
+// The refs picked in the sidebar, all of one section so the commands on them make sense, in the
+// order they were picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefPicks {
+    pub section: RefSection,
+    pub names: Vec<String>,
+}
+
+impl Default for RefPicks {
+    fn default() -> Self {
+        Self {
+            section: RefSection::Branches,
+            names: vec![],
+        }
+    }
+}
+
+impl RefPicks {
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    fn contains(&self, section: RefSection, name: &str) -> bool {
+        self.section == section && self.names.iter().any(|n| n == name)
+    }
+}
+
 // What is selected in the sidebar, for its commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefSelection {
@@ -54,6 +107,7 @@ pub struct RefListState {
     opened: HashSet<Vec<String>>,
     offset: usize,
     scroll_to_selection: bool,
+    picked: RefPicks,
 }
 
 impl RefListState {
@@ -67,9 +121,42 @@ impl RefListState {
             opened,
             offset: 0,
             scroll_to_selection: true,
+            picked: RefPicks::default(),
         };
         state.rebuild_visible_rows();
         state
+    }
+
+    pub fn picked(&self) -> &RefPicks {
+        &self.picked
+    }
+
+    // Picks or unpicks the selected ref; refs of another section than the picked ones can't be
+    // picked with them.
+    pub fn toggle_pick(&mut self) -> Result<(), String> {
+        let RefSelection::Ref(section, name) = self.selection() else {
+            return Err("Select a branch, a tag or a stash to pick it".into());
+        };
+        if self.picked.is_empty() {
+            self.picked.section = section;
+        } else if self.picked.section != section {
+            return Err(format!(
+                "Only {} can be picked with the picked {}, esc clears them",
+                self.picked.section.plural(),
+                self.picked.section.plural()
+            ));
+        }
+        match self.picked.names.iter().position(|n| *n == name) {
+            Some(i) => {
+                self.picked.names.remove(i);
+            }
+            None => self.picked.names.push(name),
+        }
+        Ok(())
+    }
+
+    pub fn clear_picks(&mut self) {
+        self.picked.names.clear();
     }
 
     pub fn select_next(&mut self) {
@@ -177,12 +264,8 @@ impl RefListState {
     }
 
     pub fn selection(&self) -> RefSelection {
-        let section = match self.selected[0].as_str() {
-            TREE_BRANCH_ROOT_IDENT => RefSection::Branches,
-            TREE_REMOTE_ROOT_IDENT => RefSection::Remotes,
-            TREE_TAG_ROOT_IDENT => RefSection::Tags,
-            TREE_STASH_ROOT_IDENT => RefSection::Stashes,
-            _ => return RefSelection::LocalChanges,
+        let Some(section) = RefSection::of_root(&self.selected[0]) else {
+            return RefSelection::LocalChanges;
         };
         let is_ref = self.selected.len() > 1
             && self
@@ -219,13 +302,28 @@ impl RefListState {
         }
     }
 
-    // Shows the refs of the reloaded repository, keeping the selection and the opened nodes.
+    // Shows the refs of the reloaded repository, keeping the selection, the opened nodes and the
+    // picked refs still there.
     pub fn set_refs(&mut self, refs: &[&Ref], local_change_count: usize) {
         let (selected, opened) = self.current_tree_status();
         let offset = self.offset;
+        let mut picked = std::mem::take(&mut self.picked);
         *self = Self::new(refs, local_change_count);
         self.reset_tree_status(selected, opened);
         self.offset = offset;
+        picked.names.retain(|name| {
+            refs.iter().any(|r| {
+                r.name() == name
+                    && matches!(
+                        (r, picked.section),
+                        (Ref::Branch { .. }, RefSection::Branches)
+                            | (Ref::RemoteBranch { .. }, RefSection::Remotes)
+                            | (Ref::Tag { .. }, RefSection::Tags)
+                            | (Ref::Stash { .. }, RefSection::Stashes)
+                    )
+            })
+        });
+        self.picked = picked;
     }
 
     pub fn current_tree_status(&self) -> (Vec<String>, Vec<Vec<String>>) {
@@ -328,10 +426,15 @@ impl StatefulWidget for RefList {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let theme = &self.ctx.color_theme;
         let label = if self.collapsed { "[0]" } else { "[0] Refs" };
+        let picked = match state.picked.len() {
+            0 => String::new(),
+            n if self.collapsed => n.to_string(),
+            n => format!("{n} picked"),
+        };
         let block = Block::default()
             .borders(Borders::TOP | Borders::RIGHT)
             .style(Style::default().fg(theme.divider_fg))
-            .title(panel_title(label, "", self.focused, theme))
+            .title(panel_title(label, &picked, self.focused, theme))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         ratatui::widgets::Widget::render(block, area, buf);
@@ -382,7 +485,18 @@ impl StatefulWidget for RefList {
             let (text_x, _) =
                 buf.set_stringn(inner.x, y, prefix, inner.width as usize, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
-            let style = if row.depth == 0 {
+            let picked = !row.has_children
+                && row.identifier.len() > 1
+                && RefSection::of_root(&row.identifier[0]).is_some_and(|section| {
+                    state
+                        .picked
+                        .contains(section, &row.identifier[row.identifier.len() - 1])
+                });
+            let style = if picked {
+                Style::default()
+                    .fg(theme.list_picked_fg)
+                    .bg(theme.list_picked_bg)
+            } else if row.depth == 0 {
                 root_style
             } else {
                 item_style
@@ -559,4 +673,42 @@ fn sort_stash_tree_nodes(nodes: &mut [RefTreeNode]) {
 fn parse_semantic_version_tag(tag: &str) -> Option<Version> {
     let tag = tag.trim_start_matches('v');
     Version::parse(tag).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_picks_of_one_section() {
+        let branch = |name: &str| Ref::Branch {
+            name: name.into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let tag = Ref::Tag {
+            name: "v1".into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let (a, b) = (branch("a"), branch("b"));
+        let refs = [&a, &b, &tag];
+        let mut state = RefListState::new(&refs, 0);
+        state.select_branches();
+        state.select_next();
+        state.toggle_pick().unwrap();
+        state.select_next();
+        state.toggle_pick().unwrap();
+        assert_eq!(state.picked().names, ["a", "b"]);
+        // a tag can't be picked with branches
+        state.reset_tree_status(
+            vec![TREE_TAG_ROOT_IDENT.into(), "v1".into()],
+            vec![vec![TREE_TAG_ROOT_IDENT.into()]],
+        );
+        assert!(state.toggle_pick().unwrap_err().contains("Only branches"));
+        // the picks stay through a reload, without those gone
+        state.set_refs(&[&a, &tag], 0);
+        assert_eq!(state.picked().names, ["a"]);
+        state.clear_picks();
+        state.toggle_pick().unwrap();
+        assert_eq!(state.picked().section, RefSection::Tags);
+    }
 }

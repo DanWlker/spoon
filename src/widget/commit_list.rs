@@ -205,8 +205,8 @@ pub struct CommitListState<'a> {
 
     // commits picked with space for commands on several commits, in the order they were picked
     picked_commit_hashes: Vec<CommitHash>,
-    // only the commits of the current branch are loaded
-    branch_only: bool,
+    // what part of the history is loaded, like "main only", when not all of it
+    filter_note: Option<String>,
     selected: usize,
     offset: usize,
     total: usize,
@@ -238,7 +238,7 @@ impl<'a> CommitListState<'a> {
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); total],
             picked_commit_hashes: Vec::new(),
-            branch_only: false,
+            filter_note: None,
             selected: 0,
             offset: 0,
             total,
@@ -511,8 +511,8 @@ impl<'a> CommitListState<'a> {
         self.selected = index - self.offset;
     }
 
-    pub fn set_branch_only(&mut self, branch_only: bool) {
-        self.branch_only = branch_only;
+    pub fn set_filter_note(&mut self, note: Option<String>) {
+        self.filter_note = note;
     }
 
     pub fn select_ref(&mut self, ref_name: &str) {
@@ -796,13 +796,7 @@ pub fn render_commit_list_panel<'a>(
     focused: bool,
 ) {
     let theme = &ctx.color_theme;
-    let mut notes = vec![];
-    if state.branch_only {
-        notes.push(match state.head {
-            Head::Branch { name } => format!("{name} only"),
-            _ => "HEAD only".to_string(),
-        });
-    }
+    let mut notes: Vec<String> = state.filter_note.iter().cloned().collect();
     match state.picked_commit_hashes().len() {
         0 => {}
         n => notes.push(format!("{n} picked")),

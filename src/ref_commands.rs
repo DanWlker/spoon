@@ -6,16 +6,18 @@ use crate::{
     git::{split_remote_branch, Ref, Repository},
     widget::{
         git_dialog::GitDialog,
-        ref_list::{RefSection, RefSelection},
+        ref_list::{RefPicks, RefSection, RefSelection},
     },
 };
 
 // The popup of `event` on the selected row; None for other events, and for applying on a row
 // that is not a stash.
+// `picked` are the refs picked in the sidebar, which deleting works on.
 pub fn ref_command(
     repository: &Repository,
     event: UserEvent,
     selection: &RefSelection,
+    picked: &RefPicks,
 ) -> Option<Result<GitDialog, String>> {
     use RefSection::*;
     let current = repository.current_branch();
@@ -37,35 +39,12 @@ pub fn ref_command(
             Ok(create_branch(repository, name))
         }
         (UserEvent::CreateRef, _) => Err("Select the branches or the tags to create one".into()),
-        (UserEvent::DeleteRef, RefSelection::Ref(Branches, name)) => {
-            if Some(name) == current.as_ref() {
-                Err(format!(
-                    "{name} is checked out, check out another branch to delete it"
-                ))
-            } else {
-                Ok(GitDialog::delete_branch(name, repository.is_merged(name)))
-            }
+        (UserEvent::DeleteRef, _) if !picked.is_empty() => {
+            delete_refs(repository, picked.section, &picked.names)
         }
-        (UserEvent::DeleteRef, RefSelection::Ref(Remotes, name)) => {
-            let info = repository.remote_info();
-            split_remote_branch(&info.remotes, name)
-                .map(|(remote, branch)| GitDialog::delete_remote_branch(remote, branch))
-                .ok_or_else(|| format!("No remote has {name}"))
+        (UserEvent::DeleteRef, RefSelection::Ref(section, name)) => {
+            delete_refs(repository, *section, std::slice::from_ref(name))
         }
-        (UserEvent::DeleteRef, RefSelection::Ref(Tags, name)) => {
-            let info = repository.remote_info();
-            let remote = info
-                .remotes
-                .iter()
-                .find(|r| *r == "origin")
-                .or(info.remotes.first())
-                .cloned();
-            Ok(GitDialog::delete_tag(name, remote))
-        }
-        (UserEvent::DeleteRef, RefSelection::Ref(Stashes, name)) => Ok(GitDialog::drop_stash(
-            name,
-            &stash_message(repository, name),
-        )),
         (UserEvent::DeleteRef, _) => Err("Select a branch, a tag or a stash to delete it".into()),
         (UserEvent::EditRef, RefSelection::Ref(Branches, name)) => {
             let info = repository.remote_info();
@@ -100,6 +79,66 @@ pub fn ref_command(
         _ => return None,
     };
     Some(dialog)
+}
+
+// Deletes the refs of a section: local branches (not the checked-out one), branches on their
+// remotes, tags, or drops stashes.
+fn delete_refs(
+    repository: &Repository,
+    section: RefSection,
+    names: &[String],
+) -> Result<GitDialog, String> {
+    let names = names.to_vec();
+    match section {
+        RefSection::Branches => {
+            if let Some(current) = repository
+                .current_branch()
+                .filter(|current| names.contains(current))
+            {
+                return Err(format!(
+                    "{current} is checked out, check out another branch to delete it"
+                ));
+            }
+            let unmerged = names
+                .iter()
+                .filter(|name| !repository.is_merged(name))
+                .cloned()
+                .collect();
+            Ok(GitDialog::delete_branches(names, unmerged))
+        }
+        RefSection::Remotes => {
+            let info = repository.remote_info();
+            let branches = names
+                .iter()
+                .map(|name| {
+                    split_remote_branch(&info.remotes, name)
+                        .map(|(remote, branch)| (remote.to_string(), branch.to_string()))
+                        .ok_or_else(|| format!("No remote has {name}"))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(GitDialog::delete_remote_branches(branches))
+        }
+        RefSection::Tags => {
+            let info = repository.remote_info();
+            let remote = info
+                .remotes
+                .iter()
+                .find(|r| *r == "origin")
+                .or(info.remotes.first())
+                .cloned();
+            Ok(GitDialog::delete_tags(names, remote))
+        }
+        RefSection::Stashes => {
+            let stashes = names
+                .into_iter()
+                .map(|name| {
+                    let message = stash_message(repository, &name);
+                    (name, message)
+                })
+                .collect();
+            Ok(GitDialog::drop_stashes(stashes))
+        }
+    }
 }
 
 // A new branch from `from`, or another local branch.
@@ -153,7 +192,7 @@ mod tests {
         keys: &[Result<char, UserEvent>],
     ) {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let mut dialog = ref_command(&repository, event, &selection)
+        let mut dialog = ref_command(&repository, event, &selection, &RefPicks::default())
             .unwrap()
             .unwrap();
         for key in keys {
@@ -194,7 +233,13 @@ mod tests {
         use RefSection::*;
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let folder = RefSelection::Folder(Remotes, "other".into());
-        let refused = ref_command(&repository, UserEvent::EditRef, &folder).unwrap();
+        let refused = ref_command(
+            &repository,
+            UserEvent::EditRef,
+            &folder,
+            &RefPicks::default(),
+        )
+        .unwrap();
         assert!(refused.is_err());
 
         // renamed, with another URL
@@ -213,6 +258,83 @@ mod tests {
             git(path, &["remote", "-v"]).lines().next().unwrap(),
             "origin2\thttps://a.example/r.gitx (fetch)"
         );
+    }
+
+    #[test]
+    fn test_delete_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote_dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(remote_dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "t"]);
+        git(path, &["config", "user.email", "t@t"]);
+        git(path, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        let remote = remote_dir.path().to_str().unwrap();
+        git(path, &["remote", "add", "origin", remote]);
+        for name in ["a", "b", "c"] {
+            git(path, &["branch", name]);
+            git(path, &["tag", &format!("v{name}")]);
+            git(path, &["push", "-q", "origin", &format!("main:r{name}")]);
+        }
+        git(path, &["fetch", "-q", "origin"]);
+        for i in 0..4 {
+            std::fs::write(path.join("f"), format!("{i}\n")).unwrap();
+            git(
+                path,
+                &[
+                    "stash",
+                    "push",
+                    "-q",
+                    "--include-untracked",
+                    "-m",
+                    &format!("s{i}"),
+                ],
+            );
+        }
+        use RefSection::*;
+        let picks = |section, names: &[&str]| RefPicks {
+            section,
+            names: names.iter().map(|n| n.to_string()).collect(),
+        };
+        let delete = |picked: RefPicks| {
+            let repository =
+                Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+            // the picked refs, whatever is selected
+            let selection = RefSelection::LocalChanges;
+            let dialog = ref_command(&repository, UserEvent::DeleteRef, &selection, &picked)
+                .unwrap()
+                .unwrap();
+            crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        };
+
+        delete(picks(Branches, &["a", "c"]));
+        assert_eq!(
+            git(path, &["branch", "--format=%(refname:short)"]),
+            "b\nmain\n"
+        );
+        delete(picks(Tags, &["va", "vb"]));
+        assert_eq!(git(path, &["tag"]), "vc\n");
+        delete(picks(Remotes, &["origin/ra", "origin/rc"]));
+        let on_remote = git(remote_dir.path(), &["branch", "--format=%(refname:short)"]);
+        assert_eq!(on_remote, "rb\n");
+        // stash@{1} and stash@{3} go, in an order that doesn't renumber the other one
+        delete(picks(Stashes, &["stash@{1}", "stash@{3}"]));
+        assert_eq!(
+            git(path, &["stash", "list", "--format=%s"]),
+            "On main: s3\nOn main: s1\n"
+        );
+
+        // the checked-out branch can't be among them
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let picked = picks(Branches, &["b", "main"]);
+        let refused = ref_command(
+            &repository,
+            UserEvent::DeleteRef,
+            &RefSelection::LocalChanges,
+            &picked,
+        );
+        assert!(refused.unwrap().unwrap_err().contains("checked out"));
     }
 
     #[test]
@@ -262,7 +384,13 @@ mod tests {
         // the current branch can't be deleted
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let selection = RefSelection::Ref(Branches, "topic".into());
-        let deleted = ref_command(&repository, UserEvent::DeleteRef, &selection).unwrap();
+        let deleted = ref_command(
+            &repository,
+            UserEvent::DeleteRef,
+            &selection,
+            &RefPicks::default(),
+        )
+        .unwrap();
         assert!(deleted.unwrap_err().contains("checked out"));
         git(path, &["checkout", "-q", "main"]);
 
@@ -280,9 +408,14 @@ mod tests {
         // no longer tracking it
         let selection = RefSelection::Ref(Branches, "topic2".into());
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let mut dialog = ref_command(&repository, UserEvent::EditRef, &selection)
-            .unwrap()
-            .unwrap();
+        let mut dialog = ref_command(
+            &repository,
+            UserEvent::EditRef,
+            &selection,
+            &RefPicks::default(),
+        )
+        .unwrap()
+        .unwrap();
         dialog.handle_key(
             Some(UserEvent::NavigateDown),
             KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
@@ -306,10 +439,15 @@ mod tests {
         git(path, &["checkout", "-q", "main"]);
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let ahead = RefSelection::Ref(Branches, "ahead".into());
-        let dialog = ref_command(&repository, UserEvent::DeleteRef, &ahead)
-            .unwrap()
-            .unwrap();
-        assert!(format!("{dialog:?}").contains("merged: false"));
+        let dialog = ref_command(
+            &repository,
+            UserEvent::DeleteRef,
+            &ahead,
+            &RefPicks::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(format!("{dialog:?}").contains(r#"unmerged: ["ahead"]"#));
         run(path, UserEvent::DeleteRef, ahead, &[]);
         assert_eq!(branches(), "main \n");
 
@@ -387,6 +525,12 @@ mod tests {
         // space on another row opens or closes it
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let section = RefSelection::Section(Branches);
-        assert!(ref_command(&repository, UserEvent::ApplyStash, &section).is_none());
+        assert!(ref_command(
+            &repository,
+            UserEvent::ApplyStash,
+            &section,
+            &RefPicks::default()
+        )
+        .is_none());
     }
 }

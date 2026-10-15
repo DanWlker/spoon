@@ -162,7 +162,47 @@ pub struct AppShell {
     // taken for outside ones
     refs_snapshot: Option<String>,
     // only the commits of the current branch are loaded, see `UserEvent::BranchOnly`
-    pub branch_only: bool,
+    branch_only: bool,
+    // two refs diffed from the sidebar, the graph showing only their history while their
+    // comparison is open: asked for, until the repository is reloaded for it, then open
+    compare_request: Option<RefCompare>,
+    compare: Option<RefCompare>,
+}
+
+// The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
+#[derive(Debug, Clone)]
+struct RefCompare {
+    base: String,
+    target: String,
+}
+
+impl AppShell {
+    // The revisions whose history the graph shows, None for all.
+    pub fn graph_revisions(&self) -> Option<Vec<String>> {
+        match self.compare_request.as_ref().or(self.compare.as_ref()) {
+            Some(compare) => Some(vec![compare.base.clone(), compare.target.clone()]),
+            None if self.branch_only => Some(vec!["HEAD".into()]),
+            None => None,
+        }
+    }
+
+    // What the graph shows, when not all of the history, for the title of the commit list.
+    fn graph_filter_note(&self, repository: &Repository) -> Option<String> {
+        match self.compare_request.as_ref().or(self.compare.as_ref()) {
+            Some(compare) => Some(format!("{} ↔ {}", compare.base, compare.target)),
+            None if self.branch_only => Some(format!(
+                "{} only",
+                repository.current_branch().unwrap_or_else(|| "HEAD".into())
+            )),
+            None => None,
+        }
+    }
+
+    pub fn reset_graph_filter(&mut self) {
+        self.branch_only = false;
+        self.compare_request = None;
+        self.compare = None;
+    }
 }
 
 #[derive(Debug)]
@@ -222,7 +262,11 @@ impl<'a> App<'a> {
             },
             ctx.ui_config.list.scrolloff as usize,
         );
-        commit_list_state.set_branch_only(shell.as_ref().is_some_and(|s| s.branch_only));
+        commit_list_state.set_filter_note(
+            shell
+                .as_ref()
+                .and_then(|shell| shell.graph_filter_note(repository)),
+        );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
                 Head::Branch { name } => commit_list_state.select_ref(name),
@@ -253,6 +297,8 @@ impl<'a> App<'a> {
                 app_status: AppStatus::default(),
                 refs_snapshot: loaded_refs,
                 branch_only: false,
+                compare_request: None,
+                compare: None,
             },
         };
 
@@ -273,6 +319,7 @@ impl<'a> App<'a> {
             // start on the local changes page; the graph is one Tab away
             None => app.show_local_changes_page(),
         }
+        app.open_ref_compare();
 
         app
     }
@@ -286,6 +333,7 @@ impl App<'_> {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
+            self.end_ref_compare();
             self.prepare_render(terminal)?;
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
@@ -1061,8 +1109,17 @@ impl App<'_> {
                     self.set_sidebar_focused(false);
                 }
             }
+            // the picked refs are cleared first
+            UserEvent::Cancel | UserEvent::Close if !self.shell.sidebar.picked().is_empty() => {
+                self.shell.sidebar.clear_picks();
+            }
             UserEvent::Cancel | UserEvent::Close => {
                 self.set_sidebar_focused(false);
+            }
+            UserEvent::ToggleSelect => {
+                if let Err(err) = self.shell.sidebar.toggle_pick() {
+                    self.ec.send(AppEvent::NotifyWarn(err));
+                }
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
             event @ (UserEvent::CreateRef
@@ -1070,7 +1127,8 @@ impl App<'_> {
             | UserEvent::EditRef
             | UserEvent::ApplyStash) => {
                 let selection = self.shell.sidebar.selection();
-                match ref_command(self.repository, event, &selection) {
+                let picked = self.shell.sidebar.picked();
+                match ref_command(self.repository, event, &selection, picked) {
                     Some(dialog) => self.open_dialog(dialog),
                     // space opens or closes a folder like enter
                     None => {
@@ -1104,6 +1162,22 @@ impl App<'_> {
     // The commands on the selected row of the sidebar, then moving about.
     fn sidebar_hints(&self) -> Vec<KeyHint> {
         use RefSection::*;
+        let picked = self.shell.sidebar.picked();
+        if !picked.is_empty() {
+            let mut hints = vec![
+                hint(UserEvent::Cancel, "clear picks"),
+                hint(UserEvent::ToggleSelect, "pick"),
+            ];
+            if picked.section == Stashes {
+                hints.push(hint(UserEvent::DeleteRef, "drop"));
+            } else {
+                hints.extend([
+                    hint(UserEvent::DeleteRef, "delete"),
+                    hint(UserEvent::Diff, "diff"),
+                ]);
+            }
+            return hints;
+        }
         let mut hints = match self.shell.sidebar.selection() {
             RefSelection::LocalChanges => vec![],
             RefSelection::Folder(Remotes, name)
@@ -1148,6 +1222,9 @@ impl App<'_> {
                 hint(UserEvent::Rebase, "rebase"),
                 hint(UserEvent::Diff, "diff"),
             ]);
+        }
+        if let RefSelection::Ref(..) = self.shell.sidebar.selection() {
+            hints.push(hint(UserEvent::ToggleSelect, "pick"));
         }
         hints.extend([
             hint(UserEvent::Confirm, "open"),
@@ -1433,6 +1510,18 @@ impl App<'_> {
             self.handle_graph_event(event);
             return;
         }
+        if event == UserEvent::Diff {
+            match self.sidebar_compare() {
+                Ok(compare) => self.request_ref_compare(compare),
+                Err(err) => self.ec.send(AppEvent::NotifyError(err)),
+            }
+            return;
+        }
+        if !self.shell.sidebar.picked().is_empty() {
+            let err = "This works on the selected ref, clear the picked ones first".to_string();
+            self.ec.send(AppEvent::NotifyError(err));
+            return;
+        }
         let name = match self.shell.sidebar.selection() {
             RefSelection::Ref(
                 RefSection::Branches | RefSection::Remotes | RefSection::Tags,
@@ -1463,6 +1552,101 @@ impl App<'_> {
         };
         let command = ref_graph_command(self.repository, event, &name, target);
         self.run_graph_command(event, command);
+    }
+
+    // The refs to diff from the sidebar: the two picked ones, else HEAD and the picked or
+    // selected one.
+    fn sidebar_compare(&self) -> Result<RefCompare, String> {
+        let picked = self.shell.sidebar.picked();
+        let (section, names) = if picked.is_empty() {
+            match self.shell.sidebar.selection() {
+                RefSelection::Ref(section, name) => (section, vec![name]),
+                _ => return Err("Select a branch or a tag to diff it".into()),
+            }
+        } else {
+            (picked.section, picked.names.clone())
+        };
+        if section == RefSection::Stashes {
+            return Err("Diff compares branches and tags".into());
+        }
+        let head = || {
+            self.repository
+                .current_branch()
+                .unwrap_or_else(|| "HEAD".into())
+        };
+        let (base, target) = match names.as_slice() {
+            [one] => (head(), one.clone()),
+            [one, two] => (one.clone(), two.clone()),
+            more => return Err(format!("Diff compares two refs, {} are picked", more.len())),
+        };
+        if base == target {
+            return Err(format!(
+                "{base} is checked out, there is nothing to compare"
+            ));
+        }
+        Ok(RefCompare { base, target })
+    }
+
+    // Diffs refs from the sidebar: the graph is loaded again with only their history, then
+    // their comparison opens, see `open_ref_compare`.
+    fn request_ref_compare(&mut self, compare: RefCompare) {
+        let Some(context) = self.view.refresh_context() else {
+            return;
+        };
+        // the local changes page is kept as it was, for coming back to it
+        if let View::LocalChanges(view) = &self.view {
+            self.shell.parked_local_changes = Some(view.context());
+        }
+        self.shell.compare_request = Some(compare);
+        self.shell.sidebar.clear_picks();
+        self.set_sidebar_focused(false);
+        let list_context = context.list_context().clone();
+        self.ec
+            .send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+    }
+
+    // Opens the comparison of the refs diffed from the sidebar, once the repository is loaded
+    // for it, and again after a refresh while it is open.
+    fn open_ref_compare(&mut self) {
+        let Some(compare) = self
+            .shell
+            .compare_request
+            .take()
+            .or_else(|| self.shell.compare.take())
+        else {
+            return;
+        };
+        let resolved = self
+            .repository
+            .resolve(&compare.base)
+            .zip(self.repository.resolve(&compare.target));
+        let Some((base, target)) = resolved else {
+            // gone meanwhile, the graph shows all again
+            self.ec.send(AppEvent::NotifyError(format!(
+                "Cannot diff {} and {}, one of them is gone",
+                compare.base, compare.target
+            )));
+            self.view.refresh();
+            return;
+        };
+        let title = format!("Diff {} → {}", compare.base, compare.target);
+        self.open_compare(base, target, title);
+        self.shell.compare = Some(compare);
+    }
+
+    // Once the comparison of refs diffed from the sidebar is closed, the graph shows all the
+    // history again.
+    fn end_ref_compare(&mut self) {
+        let comparing = match &self.view {
+            View::Detail(view) => view.is_comparing(),
+            // over the comparison
+            View::Help(_) => true,
+            _ => false,
+        };
+        if self.shell.compare.is_some() && !comparing {
+            self.shell.compare = None;
+            self.view.refresh();
+        }
     }
 
     fn run_graph_command(

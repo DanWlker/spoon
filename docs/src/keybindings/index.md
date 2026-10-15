@@ -189,11 +189,15 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
 | <kbd>Space</kbd>                                   | Apply the stash; elsewhere open/close node | `apply_stash` |
+| <kbd>v</kbd>                                       | Pick/Unpick the ref (only refs of one kind together) | `toggle_select` |
+| <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 
 The commands on the refs ask first, in a popup:
 
 - <kbd>a</kbd> on the branches: a new branch from the selected branch (or remote branch, which it then tracks), else from the current branch, checking it out or not. The start can be typed, or chosen among the branches with <kbd>v</kbd>.
 - <kbd>a</kbd> on the tags: a new tag at `HEAD` (or a revision typed), annotated when it has a message.
+- <kbd>v</kbd> picks refs, all of one kind: branches, remote branches, tags or stashes (picking another kind warns; <kbd>Esc</kbd> clears the picks first). The title of the sidebar shows how many are picked. <kbd>d</kbd> then deletes (or drops) all of them in one popup, and <kbd>D</kbd> diffs the two picked refs.
+- <kbd>D</kbd> diffs two refs: the two picked ones (the first picked is the base), else the current branch and the picked or selected one. The changes between them open in the details, like <kbd>D</kbd> on the graph, and the commit graph shows only the history of the two (its title says which); closing the comparison shows all of it again.
 - <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from the remote too); and drops a stash.
 - <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
 - the commands of the commit graph work on the selected branch, remote branch or tag: <kbd>m</kbd> merges it into the current branch and <kbd>r</kbd> rebases the current branch onto it (by its name), <kbd>c</kbd> checks it out (a tag detached); the others, like <kbd>D</kbd> diff or <kbd>t</kbd> tag, work on the commit it points at. The keys of the sidebar come first (<kbd>d</kbd> deletes the ref, it doesn't drop the commit).
