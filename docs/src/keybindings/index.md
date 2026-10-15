@@ -45,7 +45,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | Key                                  | Description                                        | Corresponding keybind                        |
 | ------------------------------------ | -------------------------------------------------- | -------------------------------------------- |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Move down/up                                       | `navigate_down` `navigate_up`                |
-| <kbd>J/K</kbd>                       | Move down/up                                       | `select_down` `select_up`                    |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Move down/up                                       | `select_down` `select_up`                    |
 | <kbd>g/G</kbd>                       | Go to top/bottom                                   | `go_to_top` `go_to_bottom`                   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up                                | `page_down` `page_up`                        |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up                           | `half_page_down` `half_page_up`              |
@@ -116,7 +116,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up             | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up        | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
-| <kbd>J/K</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash; in the changes and files tabs, the relative/absolute path of the selected file | `short_copy` `full_copy` |
 | <kbd>1</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_1` |
@@ -189,7 +189,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Enter</kbd>                                     | Open/Close node, else back to the page | `confirm`              |
 | <kbd>1</kbd> - <kbd>4</kbd>                          | Focus a panel of the page | `focus_panel_1` ... `focus_panel_4` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
-| <kbd>J/K</kbd>                                     | Move down/up     | `select_down` `select_up`        |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
@@ -243,7 +243,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>y/Y</kbd>                       | Copy the relative/absolute path of the file<br>Copy the line or hunk (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
-| <kbd>J/K</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up                                     | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up                                | `half_page_down` `half_page_up` |
@@ -267,11 +267,11 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | ------------------------------------ | --------------------------- | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Close user command          | `close` `cancel`                |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up              | `navigate_down` `navigate_up`   |
-| <kbd>J/K</kbd>                       | Scroll down/up              | `select_down` `select_up`       |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Scroll down/up              | `select_down` `select_up`       |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up         | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up    | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom            | `go_to_top` `go_to_bottom`      |
-| <kbd>J/K</kbd>                       | Select older/newer commit   | `select_down` `select_up`       |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit   | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                     | `refresh`                       |
 
 #### Help
@@ -280,7 +280,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | -------------------------------------------------------------- | ------------------------ | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>F1</kbd>              | Close help               | `close` `cancel` `help_toggle`  |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                              | Scroll down/up           | `navigate_down` `navigate_up`   |
-| <kbd>J/K</kbd>                                                 | Scroll down/up           | `select_down` `select_up`       |
+| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                                 | Scroll down/up           | `select_down` `select_up`       |
 | <kbd>Ctrl-f/b</kbd>                                            | Scroll page down/up      | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                                            | Scroll half page down/up | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                                                 | Go to top/bottom         | `go_to_top` `go_to_bottom`      |
