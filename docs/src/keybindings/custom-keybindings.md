@@ -60,7 +60,7 @@ Binding a key on its own in your config replaces the default sequences starting 
 
 ### Keys of a page
 
-The commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`) and of the local changes page (`toggle_stage`, `stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) only apply on their page, so the two pages can use the same key for different commands, like <kbd>d</kbd> for `diff` and `discard`. Likewise `dialog_toggle` and `dialog_edit` only apply in the popups of the git commands.
+The commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) and of the local changes page (`toggle_stage`, `stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) only apply on their page, so the two pages can use the same key for different commands, like <kbd>d</kbd> for `diff` and `discard`. Likewise `dialog_toggle` and `dialog_edit` only apply in the popups of the git commands.
 A key bound to any other event applies on every page, and takes over the keys of the pages.
 The tabs of the commit details are a page inside the commit graph: `next_tab` and `previous_tab` apply while a tab has the focus, and the commands of the commit graph apply there too.
 

@@ -451,11 +451,6 @@
           "description": "Background color for commits picked with space in the commit list.",
           "default": "#f780e2"
         },
-        "list_ref_paren_fg": {
-          "type": "string",
-          "description": "Color for parentheses surrounding refs in the commit list.",
-          "default": "#626262"
-        },
         "list_ref_branch_fg": {
           "type": "string",
           "description": "Color for local branches in the commit list.",
@@ -478,7 +473,7 @@
         },
         "list_head_fg": {
           "type": "string",
-          "description": "Color for the HEAD indicator in the commit list.",
+          "description": "Background of the label of the checked-out branch in the commit list.",
           "default": "#6ec8f0"
         },
         "list_subject_fg": {
@@ -489,16 +484,21 @@
         "list_name_fg": {
           "type": "string",
           "description": "Color for the author name in the commit list.",
-          "default": "#a49fc5"
+          "default": "reset"
         },
         "list_hash_fg": {
           "type": "string",
           "description": "Color for the commit hash in the commit list.",
-          "default": "#7571f9"
+          "default": "reset"
         },
         "list_date_fg": {
           "type": "string",
           "description": "Color for the date in the commit list.",
+          "default": "reset"
+        },
+        "list_dimmed_fg": {
+          "type": "string",
+          "description": "Color for the subject, author name, hash and date of commits that are not on the current branch.",
           "default": "#626262"
         },
         "list_match_fg": {
@@ -836,6 +836,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "drop_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "create_tag": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {

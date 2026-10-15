@@ -322,6 +322,8 @@ pub enum UserEvent {
     Reset,
     AmendCommit,
     DropCommit,
+    CreateTag,
+    BranchOnly,
     CreateRef,
     DeleteRef,
     EditRef,
@@ -431,6 +433,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "reset" => Ok(UserEvent::Reset),
                         "amend_commit" => Ok(UserEvent::AmendCommit),
                         "drop_commit" => Ok(UserEvent::DropCommit),
+                        "create_tag" => Ok(UserEvent::CreateTag),
+                        "branch_only" => Ok(UserEvent::BranchOnly),
                         "create_ref" => Ok(UserEvent::CreateRef),
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "edit_ref" => Ok(UserEvent::EditRef),
@@ -496,7 +500,9 @@ impl UserEvent {
             | UserEvent::Revert
             | UserEvent::Reset
             | UserEvent::AmendCommit
-            | UserEvent::DropCommit => Some(Page::Graph),
+            | UserEvent::DropCommit
+            | UserEvent::CreateTag
+            | UserEvent::BranchOnly => Some(Page::Graph),
             UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef

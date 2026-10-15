@@ -38,8 +38,10 @@ pub enum RefSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefSelection {
     LocalChanges,
-    // a section, or a folder in it
+    // a section
     Section(RefSection),
+    // a folder in a section, by its path: a remote ("origin"), or a prefix of names ("feature")
+    Folder(RefSection, String),
     // a ref, by its full name: "main", "origin/main", "v1.0", "stash@{0}"
     Ref(RefSection, String),
 }
@@ -189,6 +191,7 @@ impl RefListState {
                 .any(|row| row.identifier == self.selected && !row.has_children);
         match self.selected.last() {
             Some(name) if is_ref => RefSelection::Ref(section, name.clone()),
+            Some(path) if self.selected.len() > 1 => RefSelection::Folder(section, path.clone()),
             _ => RefSelection::Section(section),
         }
     }

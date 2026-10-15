@@ -124,19 +124,35 @@ pub struct Repository {
 }
 
 impl Repository {
+    #[cfg(test)]
     pub fn load(
         path: &Path,
         sort: SortCommit,
         max_count: Option<usize>,
         mailmap: bool,
     ) -> Result<Self> {
+        Self::load_scoped(path, sort, max_count, mailmap, false)
+    }
+
+    // `head_only` loads the history of HEAD alone, else that of every branch, tag and stash.
+    pub fn load_scoped(
+        path: &Path,
+        sort: SortCommit,
+        max_count: Option<usize>,
+        mailmap: bool,
+        head_only: bool,
+    ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
 
         let (mut ref_map, head) = load_refs(path);
 
-        let stashes = load_all_stashes(path, mailmap);
-        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap);
+        let stashes = if head_only {
+            vec![]
+        } else {
+            load_all_stashes(path, mailmap)
+        };
+        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, head_only);
         if commits.is_empty() {
             return Err("no commits in the repository".into());
         }
@@ -224,6 +240,32 @@ impl Repository {
 
     pub fn head(&self) -> &Head {
         &self.head
+    }
+
+    // The loaded commits on the history of HEAD.
+    pub fn head_history(&self) -> rustc_hash::FxHashSet<&CommitHash> {
+        let tip = match &self.head {
+            Head::Branch { name } => self.ref_map.values().flatten().find_map(|r| match r {
+                Ref::Branch { name: n, target } if n == name => Some(target),
+                _ => None,
+            }),
+            Head::Detached { target } => Some(target),
+            Head::None => None,
+        };
+        let mut history = rustc_hash::FxHashSet::default();
+        let mut pending: Vec<&CommitHash> = tip.into_iter().collect();
+        while let Some(hash) = pending.pop() {
+            if self.commit_map.contains_key(hash) && history.insert(hash) {
+                pending.extend(self.parents_map.get(hash).into_iter().flatten());
+            }
+        }
+        history
+    }
+
+    pub fn remote_url(&self, remote: &str) -> Option<String> {
+        git_output(&self.path, &["remote", "get-url", remote])
+            .ok()
+            .map(|url| url.trim().to_string())
     }
 
     // The branch checked out, None when HEAD is detached.
@@ -844,6 +886,7 @@ fn load_all_commits(
     stashes: &[Commit],
     max_count: Option<usize>,
     mailmap: bool,
+    head_only: bool,
 ) -> Vec<Commit> {
     let mut cmd = Command::new("git");
     cmd.arg("log");
@@ -857,7 +900,9 @@ fn load_all_commits(
     .arg("-z"); // use NUL as a delimiter
 
     // exclude stashes and other refs
-    cmd.arg("--branches").arg("--remotes").arg("--tags");
+    if !head_only {
+        cmd.arg("--branches").arg("--remotes").arg("--tags");
+    }
 
     // commits that are reachable from the stashes
     stashes.iter().for_each(|stash| {
@@ -1155,6 +1200,10 @@ fn parse_branch_refs(hash: &str, refs: &str) -> Option<Ref> {
         })
     } else if refs.starts_with("refs/remotes/") {
         let name = refs.trim_start_matches("refs/remotes/");
+        // "origin/HEAD" only points at the default branch of the remote, which is shown already
+        if name.ends_with("/HEAD") {
+            return None;
+        }
         Some(Ref::RemoteBranch {
             name: name.into(),
             target: hash.into(),
@@ -1879,6 +1928,43 @@ mod tests {
         // the reason is reported, not the hints after it
         let err = run("fetch nowhere").unwrap_err();
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
+    }
+
+    #[test]
+    fn test_head_only() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("other");
+        repo.commit("other", "2024-01-02");
+        repo.checkout("master");
+        repo.commit("main", "2024-01-03");
+
+        let subjects = |repository: &Repository| -> Vec<String> {
+            let history = repository.head_history();
+            repository
+                .all_commits()
+                .iter()
+                .map(|c| {
+                    let mark = if history.contains(&c.commit_hash) {
+                        ""
+                    } else {
+                        "-"
+                    };
+                    format!("{mark}{}", c.subject)
+                })
+                .collect()
+        };
+        // all commits, the other branch's off the history of HEAD
+        let all = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert_eq!(subjects(&all), ["main", "-other", "base"]);
+        let head_only =
+            Repository::load_scoped(path, SortCommit::Chronological, None, false, true).unwrap();
+        assert_eq!(subjects(&head_only), ["main", "base"]);
     }
 
     #[test]

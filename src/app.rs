@@ -31,7 +31,7 @@ use crate::{
         refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository,
     },
     graph::GraphImageManager,
-    graph_commands::{graph_command, GraphCommand},
+    graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, SequenceMatch},
     protocol::ImageProtocol,
     ref_commands::ref_command,
@@ -165,6 +165,8 @@ pub struct AppShell {
     // the branches and HEAD as loaded, see `git::refs_snapshot`, so the app's own changes are not
     // taken for outside ones
     refs_snapshot: Option<String>,
+    // only the commits of the current branch are loaded, see `UserEvent::BranchOnly`
+    pub branch_only: bool,
 }
 
 #[derive(Debug)]
@@ -193,6 +195,7 @@ impl<'a> App<'a> {
         };
         let graph = graph_image_manager.graph();
         let mut ref_name_to_commit_index_map = FxHashMap::default();
+        let head_history = repository.head_history();
         let commits = graph
             .commits
             .iter()
@@ -204,7 +207,8 @@ impl<'a> App<'a> {
                 }
                 let (pos_x, _) = graph.commit_pos_map[&commit.commit_hash];
                 let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
-                CommitInfo::new(commit, refs, graph_color)
+                let on_head = head_history.contains(&commit.commit_hash);
+                CommitInfo::new(commit, refs, graph_color, on_head)
             })
             .collect();
         let graph_cell_width = graph_image_manager.graph_cell_width();
@@ -222,6 +226,7 @@ impl<'a> App<'a> {
             },
             ctx.ui_config.list.scrolloff as usize,
         );
+        commit_list_state.set_branch_only(shell.as_ref().is_some_and(|s| s.branch_only));
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
                 Head::Branch { name } => commit_list_state.select_ref(name),
@@ -251,6 +256,7 @@ impl<'a> App<'a> {
                 last_frame: None,
                 app_status: AppStatus::default(),
                 refs_snapshot: loaded_refs,
+                branch_only: false,
             },
         };
 
@@ -1030,7 +1036,8 @@ impl App<'_> {
         if self.handle_remote_event(event) {
             return;
         }
-        if event.page() == Some(Page::Graph) {
+        // on the sidebar, they work on its selected ref, see `handle_sidebar_event`
+        if event.page() == Some(Page::Graph) && !self.shell.sidebar_focused {
             self.handle_graph_event(event);
             return;
         }
@@ -1117,6 +1124,7 @@ impl App<'_> {
                 self.set_sidebar_focused(false);
                 self.view.handle_event(event_with_count, key);
             }
+            event if event.page() == Some(Page::Graph) => self.handle_sidebar_graph_event(event),
             _ => {}
         }
     }
@@ -1124,7 +1132,8 @@ impl App<'_> {
     // The pages whose keys apply, the innermost first.
     fn current_pages(&self) -> Vec<Page> {
         if self.shell.sidebar_focused {
-            return vec![Page::Refs];
+            // the commands of the graph work on the selected branch or tag, after the sidebar's own
+            return vec![Page::Refs, Page::Graph];
         }
         match &self.view {
             // the commands of the graph act on the commit list, so only while it has the focus
@@ -1140,11 +1149,22 @@ impl App<'_> {
         use RefSection::*;
         let mut hints = match self.shell.sidebar.selection() {
             RefSelection::LocalChanges => vec![],
-            RefSelection::Section(Branches | Remotes) => {
+            RefSelection::Folder(Remotes, name)
+                if self.repository.remote_info().remotes.contains(&name) =>
+            {
+                vec![
+                    hint(UserEvent::CreateRef, "new branch"),
+                    hint(UserEvent::EditRef, "edit remote"),
+                ]
+            }
+            RefSelection::Section(Branches | Remotes)
+            | RefSelection::Folder(Branches | Remotes, _) => {
                 vec![hint(UserEvent::CreateRef, "new branch")]
             }
-            RefSelection::Section(Tags) => vec![hint(UserEvent::CreateRef, "new tag")],
-            RefSelection::Section(Stashes) => vec![],
+            RefSelection::Section(Tags) | RefSelection::Folder(Tags, _) => {
+                vec![hint(UserEvent::CreateRef, "new tag")]
+            }
+            RefSelection::Section(Stashes) | RefSelection::Folder(Stashes, _) => vec![],
             RefSelection::Ref(Branches, _) => vec![
                 hint(UserEvent::CreateRef, "new branch"),
                 hint(UserEvent::EditRef, "rename/upstream"),
@@ -1163,6 +1183,15 @@ impl App<'_> {
                 hint(UserEvent::DeleteRef, "drop"),
             ],
         };
+        // the commands of the graph, on the ref
+        if let RefSelection::Ref(Branches | Remotes | Tags, _) = self.shell.sidebar.selection() {
+            hints.extend([
+                hint(UserEvent::Checkout, "checkout"),
+                hint(UserEvent::Merge, "merge"),
+                hint(UserEvent::Rebase, "rebase"),
+                hint(UserEvent::Diff, "diff"),
+            ]);
+        }
         hints.extend([
             hint(UserEvent::Confirm, "open"),
             hint(UserEvent::FocusPanel(0), "collapse"),
@@ -1423,10 +1452,64 @@ impl App<'_> {
 
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
+        if event == UserEvent::BranchOnly {
+            // the commits are loaded again, of the current branch or of all
+            self.shell.branch_only = !self.shell.branch_only;
+            self.view.refresh();
+            return;
+        }
         let Some((selected, picked)) = self.graph_selection() else {
             return;
         };
-        match graph_command(self.repository, event, selected, picked) {
+        let command = graph_command(self.repository, event, selected, picked);
+        self.run_graph_command(event, command);
+    }
+
+    // The commands of the commit graph on the branch, remote branch or tag selected in the
+    // sidebar, see `ref_graph_command`.
+    fn handle_sidebar_graph_event(&mut self, event: UserEvent) {
+        if event == UserEvent::BranchOnly {
+            self.handle_graph_event(event);
+            return;
+        }
+        let name = match self.shell.sidebar.selection() {
+            RefSelection::Ref(
+                RefSection::Branches | RefSection::Remotes | RefSection::Tags,
+                name,
+            ) => name,
+            _ => {
+                let err = "Select a branch or a tag for the commands of the graph".to_string();
+                self.ec.send(AppEvent::NotifyError(err));
+                return;
+            }
+        };
+        let target = self
+            .repository
+            .all_refs()
+            .into_iter()
+            .find_map(|r| match r {
+                Ref::Branch { name: n, target }
+                | Ref::RemoteBranch { name: n, target }
+                | Ref::Tag { name: n, target }
+                    if *n == name =>
+                {
+                    Some(target.clone())
+                }
+                _ => None,
+            });
+        let Some(target) = target else {
+            return;
+        };
+        let command = ref_graph_command(self.repository, event, &name, target);
+        self.run_graph_command(event, command);
+    }
+
+    fn run_graph_command(
+        &mut self,
+        event: UserEvent,
+        command: Option<Result<GraphCommand, String>>,
+    ) {
+        match command {
             None => {}
             Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(dialog)),
             Some(Ok(GraphCommand::AmendHead)) => self.amend_on_local_changes(),

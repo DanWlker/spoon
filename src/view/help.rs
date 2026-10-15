@@ -265,6 +265,8 @@ fn build_lines(
         (vec![UserEvent::Reset], "Reset the current branch to the selected commit".into()),
         (vec![UserEvent::AmendCommit], "Amend the selected commit on the local changes page".into()),
         (vec![UserEvent::DropCommit], "Drop the picked commits, or the selected one".into()),
+        (vec![UserEvent::CreateTag], "Create a tag at the selected commit".into()),
+        (vec![UserEvent::BranchOnly], "Show only the commits of the current branch, or all".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::SearchTargetToggle], "Toggle search target".into()),
@@ -322,8 +324,11 @@ fn build_lines(
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
         (vec![UserEvent::CreateRef], "New branch (on branches, remotes) or tag (on tags)".into()),
         (vec![UserEvent::DeleteRef], "Delete the branch or tag, drop the stash".into()),
-        (vec![UserEvent::EditRef], "Rename the branch or change its upstream".into()),
+        (vec![UserEvent::EditRef], "Rename the branch or change its upstream; edit the remote".into()),
         (vec![UserEvent::ApplyStash], "Apply the stash; open/close a node elsewhere".into()),
+        (vec![UserEvent::Merge], "Merge the branch into the current branch".into()),
+        (vec![UserEvent::Rebase], "Rebase the current branch onto the branch".into()),
+        (vec![UserEvent::Checkout], "Check out the branch or tag".into()),
     ];
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs Sidebar:", refs_helps, color_theme, keybind);
 

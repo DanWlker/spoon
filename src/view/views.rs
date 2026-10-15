@@ -34,6 +34,8 @@ pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
         hint(UserEvent::Squash, "squash"),
         hint(UserEvent::AmendCommit, "amend"),
         hint(UserEvent::DropCommit, "drop"),
+        hint(UserEvent::CreateTag, "tag"),
+        hint(UserEvent::BranchOnly, "branch only"),
         hint(UserEvent::Revert, "revert"),
         hint(UserEvent::Reset, "reset"),
         hint(UserEvent::Search, "search"),

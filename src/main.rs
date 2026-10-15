@@ -206,7 +206,11 @@ fn main() -> Result<()> {
     let mut terminal = None;
 
     let ret = loop {
-        let repository = git::Repository::load(Path::new("."), order, max_count, mailmap)?;
+        let head_only = refresh
+            .as_ref()
+            .is_some_and(|(shell, _): &(app::AppShell, _)| shell.branch_only);
+        let repository =
+            git::Repository::load_scoped(Path::new("."), order, max_count, mailmap, head_only)?;
 
         let graph = graph::calc_graph(&repository, primary_branch.as_deref());
 

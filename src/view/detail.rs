@@ -10,10 +10,15 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
-    view::{copy_path, graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
+    view::{
+        copy_path, graph_hints, handle_search_event, typing_hints, ListRefreshViewContext,
+        RefreshViewContext,
+    },
     widget::{
         commit_detail::{CommitDetail, CommitDetailState},
-        commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
+        commit_list::{
+            commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
+        },
         commit_tabs::{
             render_compare_title, render_tab_titles, CommitChanges, CommitChangesState,
             CommitFiles, CommitFilesState, DetailTab,
@@ -103,6 +108,9 @@ impl<'a> DetailView<'a> {
             return typing_hints(false);
         }
         let picked = self.as_list_state().picked_commit_hashes().len();
+        if self.list_focused && self.is_searching_list() {
+            return typing_hints(true);
+        }
         if self.list_focused {
             let mut hints = graph_hints(picked);
             hints.insert(0, hint(UserEvent::Confirm, "details"));
@@ -158,6 +166,13 @@ impl<'a> DetailView<'a> {
         hints
     }
 
+    fn is_searching_list(&self) -> bool {
+        matches!(
+            self.as_list_state().search_state(),
+            SearchState::Searching { .. }
+        )
+    }
+
     pub fn is_comparing(&self) -> bool {
         self.compare.is_some()
     }
@@ -193,6 +208,17 @@ impl<'a> DetailView<'a> {
             }
             self.update_query_status();
             return;
+        }
+        // searching the commit list works as without the details, which follow the selection
+        if self.list_focused {
+            let before = self.as_list_state().selected_commit_hash().clone();
+            let tx = self.tx.clone();
+            if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
+                if *self.as_list_state().selected_commit_hash() != before {
+                    self.update_selected_commit(|_| {});
+                }
+                return;
+            }
         }
         if let UserEvent::NextTab | UserEvent::PreviousTab = event {
             // the comparison only has changes; the focus stays where it is

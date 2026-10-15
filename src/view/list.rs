@@ -39,163 +39,98 @@ impl<'a> ListView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
-        if let SearchState::Searching { .. } = self.as_list_state().search_state() {
-            match event {
-                UserEvent::Confirm => {
-                    self.as_mut_list_state().apply_search();
-                    self.update_matched_message();
-                }
-                UserEvent::Cancel => {
-                    self.as_mut_list_state().cancel_search();
-                    self.clear_search_query();
-                }
-                UserEvent::SearchTargetToggle => {
-                    self.as_mut_list_state().toggle_search_target();
-                    self.update_search_status();
-                }
-                UserEvent::IgnoreCaseToggle => {
-                    self.as_mut_list_state().toggle_ignore_case();
-                    self.update_search_status();
-                }
-                UserEvent::FuzzyToggle => {
-                    self.as_mut_list_state().toggle_fuzzy();
-                    self.update_search_status();
-                }
-                _ => {
-                    self.as_mut_list_state().handle_search_input(key);
-                    self.update_search_status();
-                }
-            }
+        let tx = self.tx.clone();
+        if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
             return;
-        } else {
-            match event {
-                UserEvent::Quit => {
-                    self.tx.send(AppEvent::Quit);
-                }
-                UserEvent::NavigateDown | UserEvent::SelectDown => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().select_next();
-                    }
-                }
-                UserEvent::NavigateUp | UserEvent::SelectUp => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().select_prev();
-                    }
-                }
-                UserEvent::GoToTop => {
-                    self.as_mut_list_state().select_first();
-                }
-                UserEvent::GoToBottom => {
-                    self.as_mut_list_state().select_last();
-                }
-                UserEvent::ScrollDown => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().scroll_down();
-                    }
-                }
-                UserEvent::ScrollUp => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().scroll_up();
-                    }
-                }
-                UserEvent::PageDown => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().scroll_down_page();
-                    }
-                }
-                UserEvent::PageUp => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().scroll_up_page();
-                    }
-                }
-                UserEvent::HalfPageDown => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().scroll_down_half();
-                    }
-                }
-                UserEvent::HalfPageUp => {
-                    for _ in 0..count {
-                        self.as_mut_list_state().scroll_up_half();
-                    }
-                }
-                UserEvent::ShortCopy => {
-                    self.copy_commit_short_hash();
-                }
-                UserEvent::FullCopy => {
-                    self.copy_commit_hash();
-                }
-                UserEvent::Search => {
-                    self.as_mut_list_state().start_search();
-                    self.update_search_status();
-                }
-                UserEvent::SearchTargetToggle => {
-                    self.as_mut_list_state().toggle_search_target();
-                    self.update_search_options_message();
-                }
-                UserEvent::IgnoreCaseToggle => {
-                    self.as_mut_list_state().toggle_ignore_case();
-                    self.update_search_options_message();
-                }
-                UserEvent::FuzzyToggle => {
-                    self.as_mut_list_state().toggle_fuzzy();
-                    self.update_search_options_message();
-                }
-                UserEvent::UserCommand(n) => {
-                    self.tx.send(AppEvent::OpenUserCommand(n));
-                }
-                UserEvent::HelpToggle => {
-                    self.tx.send(AppEvent::OpenHelp);
-                }
-                UserEvent::Cancel => {
-                    // clear an applied search first, then the picked commits
-                    let list_state = self.as_list_state();
-                    if matches!(list_state.search_state(), SearchState::Inactive)
-                        && !list_state.picked_commit_hashes().is_empty()
-                    {
-                        self.as_mut_list_state().clear_picks();
-                    } else {
-                        self.as_mut_list_state().cancel_search();
-                        self.clear_search_query();
-                    }
-                }
-                UserEvent::ToggleSelect => {
-                    self.as_mut_list_state().toggle_pick();
-                }
-                UserEvent::NextPicked => {
-                    self.as_mut_list_state().select_next_pick(true);
-                }
-                UserEvent::PreviousPicked => {
-                    self.as_mut_list_state().select_next_pick(false);
-                }
-                UserEvent::Confirm => {
-                    self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
-                }
-                UserEvent::FocusPanel(n) => {
-                    // the panels of the details, opened right away
-                    if let Some(tab) = DetailTab::from_number(n) {
-                        self.tx.send(AppEvent::OpenDetail(tab));
-                    }
-                }
-                UserEvent::Refresh => {
-                    self.refresh();
-                }
-                _ => {}
-            }
         }
-
-        if let SearchState::Applied { .. } = self.as_list_state().search_state() {
-            match event {
-                UserEvent::GoToNext => {
-                    self.as_mut_list_state().select_next_match();
-                    self.update_matched_message();
-                }
-                UserEvent::GoToPrevious => {
-                    self.as_mut_list_state().select_prev_match();
-                    self.update_matched_message();
-                }
-                _ => {}
+        match event {
+            UserEvent::Quit => {
+                self.tx.send(AppEvent::Quit);
             }
-            // Do not return here
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                for _ in 0..count {
+                    self.as_mut_list_state().select_next();
+                }
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                for _ in 0..count {
+                    self.as_mut_list_state().select_prev();
+                }
+            }
+            UserEvent::GoToTop => {
+                self.as_mut_list_state().select_first();
+            }
+            UserEvent::GoToBottom => {
+                self.as_mut_list_state().select_last();
+            }
+            UserEvent::ScrollDown => {
+                for _ in 0..count {
+                    self.as_mut_list_state().scroll_down();
+                }
+            }
+            UserEvent::ScrollUp => {
+                for _ in 0..count {
+                    self.as_mut_list_state().scroll_up();
+                }
+            }
+            UserEvent::PageDown => {
+                for _ in 0..count {
+                    self.as_mut_list_state().scroll_down_page();
+                }
+            }
+            UserEvent::PageUp => {
+                for _ in 0..count {
+                    self.as_mut_list_state().scroll_up_page();
+                }
+            }
+            UserEvent::HalfPageDown => {
+                for _ in 0..count {
+                    self.as_mut_list_state().scroll_down_half();
+                }
+            }
+            UserEvent::HalfPageUp => {
+                for _ in 0..count {
+                    self.as_mut_list_state().scroll_up_half();
+                }
+            }
+            UserEvent::ShortCopy => {
+                self.copy_commit_short_hash();
+            }
+            UserEvent::FullCopy => {
+                self.copy_commit_hash();
+            }
+            UserEvent::UserCommand(n) => {
+                self.tx.send(AppEvent::OpenUserCommand(n));
+            }
+            UserEvent::HelpToggle => {
+                self.tx.send(AppEvent::OpenHelp);
+            }
+            // an applied search is cleared first, see `handle_search_event`
+            UserEvent::Cancel => {
+                self.as_mut_list_state().clear_picks();
+            }
+            UserEvent::ToggleSelect => {
+                self.as_mut_list_state().toggle_pick();
+            }
+            UserEvent::NextPicked => {
+                self.as_mut_list_state().select_next_pick(true);
+            }
+            UserEvent::PreviousPicked => {
+                self.as_mut_list_state().select_next_pick(false);
+            }
+            UserEvent::Confirm => {
+                self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
+            }
+            UserEvent::FocusPanel(n) => {
+                // the panels of the details, opened right away
+                if let Some(tab) = DetailTab::from_number(n) {
+                    self.tx.send(AppEvent::OpenDetail(tab));
+                }
+            }
+            UserEvent::Refresh => {
+                self.refresh();
+            }
+            _ => {}
         }
     }
 
@@ -253,49 +188,6 @@ impl<'a> ListView<'a> {
         self.as_list_state().graph_image_ids_sorted()
     }
 
-    fn update_search_status(&self) {
-        if let SearchState::Searching { .. } = self.as_list_state().search_state() {
-            let list_state = self.as_list_state();
-            if let Some(query) = list_state.search_query_string() {
-                let cursor_position = list_state.search_query_cursor_position();
-                let options = list_state.search_options().status_string();
-                self.tx.send(AppEvent::UpdateStatusInput {
-                    message: query,
-                    cursor_position,
-                    metadata: options,
-                });
-            }
-        }
-    }
-
-    fn update_search_options_message(&self) {
-        if let SearchState::Applied { .. } = self.as_list_state().search_state() {
-            self.update_matched_message();
-        } else {
-            let options = self.as_list_state().search_options().status_string();
-            self.tx.send(AppEvent::UpdateStatusTransient(format!(
-                "Search: {options}"
-            )));
-        }
-    }
-
-    fn clear_search_query(&self) {
-        self.tx.send(AppEvent::ClearStatusLine);
-    }
-
-    fn update_matched_message(&self) {
-        if let Some((msg, matched)) = self.as_list_state().matched_query_string() {
-            let options = self.as_list_state().search_options().status_string();
-            self.tx.send(AppEvent::UpdateSearchResult {
-                message: msg,
-                options,
-                matched,
-            });
-        } else {
-            self.tx.send(AppEvent::ClearStatusLine);
-        }
-    }
-
     fn copy_commit_short_hash(&self) {
         let selected = self.as_list_state().selected_commit_hash();
         self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash().into());
@@ -343,5 +235,107 @@ impl<'a> ListView<'a> {
         if let Some(search_context) = search_context {
             list_state.restore_search(search_context);
         }
+    }
+}
+
+// Searching the commit list, from the list or from the details beside it: typing the query, its
+// options, going through the matches and clearing it. Returns whether the event was one of these.
+pub fn handle_search_event(
+    state: &mut CommitListState,
+    tx: &Sender,
+    event: UserEvent,
+    key: KeyEvent,
+) -> bool {
+    match (state.search_state(), event) {
+        (SearchState::Searching { .. }, UserEvent::Confirm) => {
+            state.apply_search();
+            update_matched_message(state, tx);
+        }
+        (SearchState::Searching { .. }, UserEvent::Cancel) => {
+            state.cancel_search();
+            tx.send(AppEvent::ClearStatusLine);
+        }
+        (SearchState::Searching { .. }, UserEvent::SearchTargetToggle) => {
+            state.toggle_search_target();
+            update_search_status(state, tx);
+        }
+        (SearchState::Searching { .. }, UserEvent::IgnoreCaseToggle) => {
+            state.toggle_ignore_case();
+            update_search_status(state, tx);
+        }
+        (SearchState::Searching { .. }, UserEvent::FuzzyToggle) => {
+            state.toggle_fuzzy();
+            update_search_status(state, tx);
+        }
+        (SearchState::Searching { .. }, _) => {
+            state.handle_search_input(key);
+            update_search_status(state, tx);
+        }
+        (_, UserEvent::Search) => {
+            state.start_search();
+            update_search_status(state, tx);
+        }
+        (_, UserEvent::SearchTargetToggle) => {
+            state.toggle_search_target();
+            update_search_options_message(state, tx);
+        }
+        (_, UserEvent::IgnoreCaseToggle) => {
+            state.toggle_ignore_case();
+            update_search_options_message(state, tx);
+        }
+        (_, UserEvent::FuzzyToggle) => {
+            state.toggle_fuzzy();
+            update_search_options_message(state, tx);
+        }
+        (SearchState::Applied { .. }, UserEvent::GoToNext) => {
+            state.select_next_match();
+            update_matched_message(state, tx);
+        }
+        (SearchState::Applied { .. }, UserEvent::GoToPrevious) => {
+            state.select_prev_match();
+            update_matched_message(state, tx);
+        }
+        // an applied search is cleared before the picked commits
+        (SearchState::Applied { .. }, UserEvent::Cancel) => {
+            state.cancel_search();
+            tx.send(AppEvent::ClearStatusLine);
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn update_search_status(state: &CommitListState, tx: &Sender) {
+    if let SearchState::Searching { .. } = state.search_state() {
+        if let Some(query) = state.search_query_string() {
+            tx.send(AppEvent::UpdateStatusInput {
+                message: query,
+                cursor_position: state.search_query_cursor_position(),
+                metadata: state.search_options().status_string(),
+            });
+        }
+    }
+}
+
+fn update_search_options_message(state: &CommitListState, tx: &Sender) {
+    if let SearchState::Applied { .. } = state.search_state() {
+        update_matched_message(state, tx);
+    } else {
+        let options = state.search_options().status_string();
+        tx.send(AppEvent::UpdateStatusTransient(format!(
+            "Search: {options}"
+        )));
+    }
+}
+
+fn update_matched_message(state: &CommitListState, tx: &Sender) {
+    if let Some((msg, matched)) = state.matched_query_string() {
+        tx.send(AppEvent::UpdateSearchResult {
+            message: msg,
+            options: state.search_options().status_string(),
+            matched,
+        });
+    } else {
+        tx.send(AppEvent::ClearStatusLine);
     }
 }

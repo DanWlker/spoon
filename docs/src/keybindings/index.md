@@ -59,6 +59,8 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>U</kbd>                         | Reset the current branch to the selected commit    | `reset`                                      |
 | <kbd>A</kbd>                         | Amend the selected commit on the local changes page | `amend_commit`                              |
 | <kbd>d</kbd>                         | Drop the picked commits, or the selected one       | `drop_commit`                                |
+| <kbd>t</kbd>                         | Create a tag at the selected commit                | `create_tag`                                 |
+| <kbd>o</kbd>                         | Show only the commits of the current branch, or all again | `branch_only`                         |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
@@ -83,6 +85,11 @@ The other commands ask first, in a popup showing what they do and the git comman
 - <kbd>u</kbd> revert: the picked commits (newest first), or the selected one, committing the reverts or leaving them on the local changes page.
 - <kbd>U</kbd> reset: the current branch to the selected commit, mixed (keep the changes, unstaged), soft (keep them staged) or hard (discard them).
 - <kbd>A</kbd> amend: edits the selected commit on the local changes page, where amending is turned on: its changes are staged, combined with what is staged, and its message is in the message box, both to change. For the last commit it opens right away; an older one asks first, then an interactive rebase stops at it (`edit`), stashing and reapplying the local changes like rebase. Committing (<kbd>c</kbd>) amends it and goes on with the rebase; <kbd>C</kbd> aborts. The commits after it must be on the current branch, with no merge commits.
+
+- <kbd>t</kbd> tag: a new tag at the selected commit, annotated when it has a message.
+
+<kbd>o</kbd> shows only the history of `HEAD` (the commits of the current branch, and of the branches merged into it), and again all commits; the title of the commit list says so ("main only").
+The commits that are not on the current branch are dimmed, and the branches and tags at a commit are shown as labels before its subject, the checked-out branch standing out.
 
 Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
@@ -180,7 +187,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
 | <kbd>a</kbd>                                       | New branch (on the branches and remotes) or tag (on the tags) | `create_ref` |
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash | `delete_ref` |
-| <kbd>e</kbd>                                       | Rename the branch or change its upstream | `edit_ref`   |
+| <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
 | <kbd>Space</kbd>                                   | Apply the stash; elsewhere open/close node | `apply_stash` |
 
 The commands on the refs ask first, in a popup:
@@ -188,7 +195,8 @@ The commands on the refs ask first, in a popup:
 - <kbd>a</kbd> on the branches: a new branch from the selected branch (or remote branch, which it then tracks), else from the current branch, checking it out or not. The start can be typed, or chosen among the branches with <kbd>v</kbd>.
 - <kbd>a</kbd> on the tags: a new tag at `HEAD` (or a revision typed), annotated when it has a message.
 - <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from the remote too); and drops a stash.
-- <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none).
+- <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
+- the commands of the commit graph work on the selected branch, remote branch or tag: <kbd>m</kbd> merges it into the current branch and <kbd>r</kbd> rebases the current branch onto it (by its name), <kbd>c</kbd> checks it out (a tag detached); the others, like <kbd>D</kbd> diff or <kbd>t</kbd> tag, work on the commit it points at. The keys of the sidebar come first (<kbd>d</kbd> deletes the ref, it doesn't drop the commit).
 - <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
 
 The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page shows what is selected:

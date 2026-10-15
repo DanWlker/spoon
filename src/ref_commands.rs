@@ -20,10 +20,16 @@ pub fn ref_command(
     use RefSection::*;
     let current = repository.current_branch();
     let dialog = match (event, selection) {
-        (UserEvent::CreateRef, RefSelection::Section(Tags) | RefSelection::Ref(Tags, _)) => {
-            Ok(GitDialog::create_tag("HEAD"))
-        }
-        (UserEvent::CreateRef, RefSelection::Section(Branches | Remotes)) => {
+        (
+            UserEvent::CreateRef,
+            RefSelection::Section(Tags)
+            | RefSelection::Folder(Tags, _)
+            | RefSelection::Ref(Tags, _),
+        ) => Ok(GitDialog::create_tag("HEAD")),
+        (
+            UserEvent::CreateRef,
+            RefSelection::Section(Branches | Remotes) | RefSelection::Folder(Branches | Remotes, _),
+        ) => {
             let from = current.unwrap_or_else(|| "HEAD".into());
             Ok(create_branch(repository, &from))
         }
@@ -77,9 +83,16 @@ pub fn ref_command(
             remote_branches.sort();
             Ok(GitDialog::edit_branch(name, upstream, remote_branches))
         }
-        (UserEvent::EditRef, _) => {
-            Err("Select a local branch to rename it or change its upstream".into())
+        (UserEvent::EditRef, RefSelection::Folder(Remotes, name))
+            if repository.remote_info().remotes.contains(name) =>
+        {
+            let url = repository.remote_url(name).unwrap_or_default();
+            Ok(GitDialog::edit_remote(name, &url))
         }
+        (UserEvent::EditRef, _) => Err(
+            "Select a local branch to rename it or change its upstream, or a remote to edit it"
+                .into(),
+        ),
         (UserEvent::ApplyStash, RefSelection::Ref(Stashes, name)) => Ok(GitDialog::apply_stash(
             name,
             &stash_message(repository, name),
@@ -164,6 +177,42 @@ mod tests {
 
     fn typed(text: &str) -> Vec<Result<char, UserEvent>> {
         text.chars().map(Ok).collect()
+    }
+
+    #[test]
+    fn test_edit_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        git(
+            path,
+            &["remote", "add", "origin", "https://a.example/r.git"],
+        );
+
+        // only a remote's folder edits it
+        use RefSection::*;
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let folder = RefSelection::Folder(Remotes, "other".into());
+        let refused = ref_command(&repository, UserEvent::EditRef, &folder).unwrap();
+        assert!(refused.is_err());
+
+        // renamed, with another URL
+        let mut keys = vec![Err(UserEvent::DialogEdit)];
+        keys.extend(typed("2"));
+        keys.extend([
+            Err(UserEvent::Confirm),
+            Err(UserEvent::NavigateDown),
+            Err(UserEvent::DialogEdit),
+        ]);
+        keys.extend(typed("x"));
+        keys.push(Err(UserEvent::Confirm));
+        let folder = RefSelection::Folder(Remotes, "origin".into());
+        run(path, UserEvent::EditRef, folder, &keys);
+        assert_eq!(
+            git(path, &["remote", "-v"]).lines().next().unwrap(),
+            "origin2\thttps://a.example/r.gitx (fetch)"
+        );
     }
 
     #[test]

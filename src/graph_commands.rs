@@ -92,7 +92,71 @@ pub fn graph_command(
         UserEvent::Reset => single("Reset")
             .map(|_| GitDialog::reset(&branch_label, commands.dialog_commit(&selected))),
         UserEvent::DropCommit => commands.drop(&branch_label, targets),
+        UserEvent::CreateTag => {
+            single("Tag").map(|_| GitDialog::create_tag(selected.as_short_hash()))
+        }
         _ => return None,
+    };
+    Some(dialog.map(GraphCommand::Dialog))
+}
+
+// The command of `event` on a branch, remote branch or tag selected in the refs sidebar: rebase
+// and merge name the ref, checkout offers it first; the others work on the commit it points at.
+pub fn ref_graph_command(
+    repository: &Repository,
+    event: UserEvent,
+    name: &str,
+    target: CommitHash,
+) -> Option<Result<GraphCommand, String>> {
+    let commands = GraphCommands { repository };
+    let branch = repository.current_branch();
+    let checked_out = || -> Result<(), String> {
+        if branch.as_deref() == Some(name) {
+            Err(format!("{name} is checked out, choose another branch"))
+        } else {
+            Ok(())
+        }
+    };
+    let dialog = match event {
+        UserEvent::Rebase => checked_out().and_then(|_| {
+            let branch = branch.clone().ok_or("Check out a branch to rebase it")?;
+            Ok(GitDialog::rebase(
+                &branch,
+                name.to_string(),
+                name,
+                commands.rebase_auto_stash(),
+            ))
+        }),
+        UserEvent::Merge => checked_out().map(|_| {
+            let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
+            let merge_ff = repository.config("merge.ff");
+            GitDialog::merge(&branch_label, name.to_string(), name, merge_ff.as_deref())
+        }),
+        UserEvent::Checkout => checked_out().map(|_| {
+            let mut targets = commands.checkout_targets(&target);
+            match targets
+                .iter()
+                .position(|t| t.args.last().map(String::as_str) == Some(name))
+            {
+                Some(i) => {
+                    let ours = targets.remove(i);
+                    targets.insert(0, ours);
+                }
+                // a tag, checked out detached in place of its commit
+                None => {
+                    targets.retain(|t| t.args.first().map(String::as_str) != Some("--detach"));
+                    targets.insert(
+                        0,
+                        CheckoutTarget {
+                            label: format!("{name} (detached HEAD)"),
+                            args: vec!["--detach".into(), name.to_string()],
+                        },
+                    );
+                }
+            }
+            GitDialog::checkout(targets)
+        }),
+        _ => return graph_command(repository, event, target, vec![]),
     };
     Some(dialog.map(GraphCommand::Dialog))
 }
@@ -562,6 +626,62 @@ mod tests {
         assert_eq!(git(&["log", "--format=%s"]), "c3\nc1\n");
         assert_eq!(git(&["ls-files"]), "f0\nf2\n");
         assert_eq!(git(&["status", "--porcelain"]), " M f0\n");
+    }
+
+    #[test]
+    fn test_ref_graph_command() {
+        let (dir, git) = rewrite_repo();
+        let path = dir.path();
+        git(&["branch", "topic", "HEAD~1"]);
+        git(&["tag", "v1", "HEAD~2"]);
+        let (repository, hashes) = load(path);
+        let on = |event, name: &str, target: &CommitHash| {
+            args(ref_graph_command(&repository, event, name, target.clone()).unwrap())
+        };
+
+        // rebase and merge name the branch
+        assert_eq!(
+            on(UserEvent::Rebase, "topic", &hashes[1]),
+            "rebase --autostash topic"
+        );
+        assert!(on(UserEvent::Merge, "topic", &hashes[1]).ends_with(" topic"));
+        assert!(on(UserEvent::Merge, "master", &hashes[0]).contains("is checked out"));
+        // checkout offers the branch first, a tag detached
+        assert_eq!(
+            on(UserEvent::Checkout, "topic", &hashes[1]),
+            "checkout topic"
+        );
+        assert_eq!(
+            on(UserEvent::Checkout, "v1", &hashes[2]),
+            "checkout --detach v1"
+        );
+        // the others work on its commit
+        let tag = ref_graph_command(
+            &repository,
+            UserEvent::CreateTag,
+            "topic",
+            hashes[1].clone(),
+        );
+        run(path, tag.unwrap(), "t1");
+        assert_eq!(git(&["tag", "--points-at", "topic"]), "t1\n");
+    }
+
+    #[test]
+    fn test_drop_picked() {
+        let (dir, git) = rewrite_repo();
+        let path = dir.path();
+        let (repository, hashes) = load(path);
+
+        // the picked c3 and c1 go, c2 is rebased onto the root and selected
+        let picked = [hashes[0].clone(), hashes[2].clone()];
+        let task = run(
+            path,
+            command(&repository, UserEvent::DropCommit, &hashes[1], &picked),
+            "",
+        );
+        assert_eq!(task.select.as_deref(), Some("HEAD~0"));
+        assert_eq!(git(&["log", "--format=%s"]), "c2\n");
+        assert_eq!(git(&["ls-files"]), "f1\n");
     }
 
     #[test]

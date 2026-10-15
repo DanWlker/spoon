@@ -35,14 +35,17 @@ pub struct CommitInfo<'a> {
     commit: &'a Commit,
     refs: Vec<&'a Ref>,
     graph_color: Color,
+    // on the history of HEAD; the other commits are dimmed
+    on_head: bool,
 }
 
 impl<'a> CommitInfo<'a> {
-    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, graph_color: Color) -> Self {
+    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, graph_color: Color, on_head: bool) -> Self {
         Self {
             commit,
             refs,
             graph_color,
+            on_head,
         }
     }
 }
@@ -202,6 +205,8 @@ pub struct CommitListState<'a> {
 
     // commits picked with space for commands on several commits, in the order they were picked
     picked_commit_hashes: Vec<CommitHash>,
+    // only the commits of the current branch are loaded
+    branch_only: bool,
     selected: usize,
     offset: usize,
     total: usize,
@@ -233,6 +238,7 @@ impl<'a> CommitListState<'a> {
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); total],
             picked_commit_hashes: Vec::new(),
+            branch_only: false,
             selected: 0,
             offset: 0,
             total,
@@ -503,6 +509,10 @@ impl<'a> CommitListState<'a> {
             .saturating_sub(row.min(self.height.saturating_sub(1)))
             .min(self.total.saturating_sub(self.height));
         self.selected = index - self.offset;
+    }
+
+    pub fn set_branch_only(&mut self, branch_only: bool) {
+        self.branch_only = branch_only;
     }
 
     pub fn select_ref(&mut self, ref_name: &str) {
@@ -786,14 +796,26 @@ pub fn render_commit_list_panel<'a>(
     focused: bool,
 ) {
     let theme = &ctx.color_theme;
-    let picked = match state.picked_commit_hashes().len() {
-        0 => String::new(),
-        n => format!("{n} picked"),
-    };
+    let mut notes = vec![];
+    if state.branch_only {
+        notes.push(match state.head {
+            Head::Branch { name } => format!("{name} only"),
+            _ => "HEAD only".to_string(),
+        });
+    }
+    match state.picked_commit_hashes().len() {
+        0 => {}
+        n => notes.push(format!("{n} picked")),
+    }
     let block = Block::default()
         .borders(Borders::TOP)
         .style(Style::default().fg(theme.divider_fg))
-        .title(panel_title("[1] Commits", &picked, focused, theme));
+        .title(panel_title(
+            "[1] Commits",
+            &notes.join(" · "),
+            focused,
+            theme,
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx), inner, state);
@@ -850,6 +872,15 @@ impl<'a> StatefulWidget for CommitList<'a> {
 }
 
 impl CommitList<'_> {
+    // The color of a commit's text: `fg`, or dimmed when the commit is not on the current branch.
+    fn text_fg(&self, commit_info: &CommitInfo, fg: Color) -> Color {
+        if commit_info.on_head {
+            fg
+        } else {
+            self.ctx.color_theme.list_dimmed_fg
+        }
+    }
+
     fn update_state(&self, area: Rect, state: &mut CommitListState) {
         state.update_height(area.height as usize);
     }
@@ -905,6 +936,7 @@ impl CommitList<'_> {
                 let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
                 let max_width = max_width.saturating_sub(ref_spans_width);
                 let commit = commit_info.commit;
+                let subject_fg = self.text_fg(commit_info, self.ctx.color_theme.list_subject_fg);
                 if max_width > ELLIPSIS.len() {
                     let truncate = console::measure_text_width(&commit.subject) > max_width;
                     let subject = if truncate {
@@ -918,13 +950,13 @@ impl CommitList<'_> {
                             highlighted_spans(
                                 subject.into(),
                                 pos,
-                                self.ctx.color_theme.list_subject_fg,
+                                subject_fg,
                                 Modifier::empty(),
                                 &self.ctx.color_theme,
                                 truncate,
                             )
                         } else {
-                            vec![subject.fg(self.ctx.color_theme.list_subject_fg)]
+                            vec![subject.fg(subject_fg)]
                         };
 
                     spans.extend(sub_spans)
@@ -941,8 +973,10 @@ impl CommitList<'_> {
             return;
         }
         let items: Vec<ListItem> = self
-            .rendering_commit_iter(state)
-            .map(|(i, commit)| {
+            .rendering_commit_info_iter(state)
+            .map(|(i, commit_info)| {
+                let commit = commit_info.commit;
+                let name_fg = self.text_fg(commit_info, self.ctx.color_theme.list_name_fg);
                 let truncate = console::measure_text_width(&commit.author_name) > max_width;
                 let name = if truncate {
                     console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
@@ -954,13 +988,13 @@ impl CommitList<'_> {
                         highlighted_spans(
                             name.into(),
                             pos,
-                            self.ctx.color_theme.list_name_fg,
+                            name_fg,
                             Modifier::empty(),
                             &self.ctx.color_theme,
                             truncate,
                         )
                     } else {
-                        vec![name.fg(self.ctx.color_theme.list_name_fg)]
+                        vec![name.fg(name_fg)]
                     };
                 self.to_commit_list_item(i, spans, state)
             })
@@ -973,21 +1007,22 @@ impl CommitList<'_> {
             return;
         }
         let items: Vec<ListItem> = self
-            .rendering_commit_iter(state)
-            .map(|(i, commit)| {
-                let hash = commit.commit_hash.as_short_hash();
+            .rendering_commit_info_iter(state)
+            .map(|(i, commit_info)| {
+                let hash_fg = self.text_fg(commit_info, self.ctx.color_theme.list_hash_fg);
+                let hash = commit_info.commit.commit_hash.as_short_hash();
                 let spans =
                     if let Some(pos) = state.search_matches[state.offset + i].commit_hash.clone() {
                         highlighted_spans(
                             hash.into(),
                             pos,
-                            self.ctx.color_theme.list_hash_fg,
+                            hash_fg,
                             Modifier::empty(),
                             &self.ctx.color_theme,
                             false,
                         )
                     } else {
-                        vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
+                        vec![hash.fg(hash_fg)]
                     };
                 self.to_commit_list_item(i, spans, state)
             })
@@ -1000,9 +1035,9 @@ impl CommitList<'_> {
             return;
         }
         let items: Vec<ListItem> = self
-            .rendering_commit_iter(state)
-            .map(|(i, commit)| {
-                let date = &commit.author_date;
+            .rendering_commit_info_iter(state)
+            .map(|(i, commit_info)| {
+                let date = &commit_info.commit.author_date;
                 let date_str = if self.ctx.ui_config.list.date_local {
                     let local = date.with_timezone(&chrono::Local);
                     local
@@ -1014,7 +1049,7 @@ impl CommitList<'_> {
                 };
                 self.to_commit_list_item(
                     i,
-                    vec![date_str.fg(self.ctx.color_theme.list_date_fg)],
+                    vec![date_str.fg(self.text_fg(commit_info, self.ctx.color_theme.list_date_fg))],
                     state,
                 )
             })
@@ -1032,14 +1067,6 @@ impl CommitList<'_> {
             .skip(state.offset)
             .take(state.height)
             .enumerate()
-    }
-
-    fn rendering_commit_iter<'a>(
-        &'a self,
-        state: &'a CommitListState,
-    ) -> impl Iterator<Item = (usize, &'a Commit)> {
-        self.rendering_commit_info_iter(state)
-            .map(|(i, commit_info)| (i, commit_info.commit))
     }
 
     fn to_commit_list_item<'a, 'b>(
@@ -1066,90 +1093,77 @@ impl CommitList<'_> {
     }
 }
 
+// The refs at the commit as labels with a background: the checked-out branch stands out, the
+// other branches, remote branches, tags and stashes are tinted with their colors.
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo,
     head: &'a Head,
     refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
     color_theme: &'a ColorTheme,
 ) -> Vec<Span<'a>> {
-    let refs = &commit_info.refs;
-
-    if refs.len() == 1 {
-        if let Ref::Stash { name, .. } = refs[0] {
-            return vec![
-                Span::raw(name).fg(color_theme.list_ref_stash_fg).bold(),
-                Span::raw(" "),
-            ];
-        }
+    let current = match head {
+        Head::Branch { name } => Some(name),
+        _ => None,
+    };
+    let mut spans = vec![];
+    for r in &commit_info.refs {
+        let (name, color) = match r {
+            Ref::Branch { name, .. } => (name, color_theme.list_ref_branch_fg),
+            Ref::RemoteBranch { name, .. } => (name, color_theme.list_ref_remote_branch_fg),
+            Ref::Tag { name, .. } => (name, color_theme.list_ref_tag_fg),
+            Ref::Stash { name, .. } => (name, color_theme.list_ref_stash_fg),
+        };
+        let is_current = matches!(r, Ref::Branch { .. }) && Some(name) == current;
+        let style = if is_current {
+            ref_label_style(color_theme.list_head_fg, true)
+        } else {
+            ref_label_style(color, false)
+        };
+        let fg = style.fg.unwrap_or_default();
+        let bg = style.bg.unwrap_or_default();
+        let label = format!(" {name} ");
+        let label_spans = match refs_matches.get(name.as_str()) {
+            // the match positions are of the name, the label has a space before it
+            Some(pos) => {
+                let mut pos = pos.clone();
+                pos.matched_indices = pos.matched_indices.iter().map(|i| i + 1).collect();
+                highlighted_spans(label.into(), pos, fg, Modifier::BOLD, color_theme, false)
+                    .into_iter()
+                    .map(|span| {
+                        if span.style.bg.is_none() {
+                            span.bg(bg)
+                        } else {
+                            span
+                        }
+                    })
+                    .collect()
+            }
+            None => vec![Span::styled(label, style)],
+        };
+        spans.extend(label_spans);
+        spans.push(Span::raw(" "));
     }
-
-    let ref_spans: Vec<(Vec<Span>, &String)> = refs
-        .iter()
-        .filter_map(|r| match r {
-            Ref::Branch { name, .. } => {
-                let fg = color_theme.list_ref_branch_fg;
-                Some((name, fg))
-            }
-            Ref::RemoteBranch { name, .. } => {
-                let fg = color_theme.list_ref_remote_branch_fg;
-                Some((name, fg))
-            }
-            Ref::Tag { name, .. } => {
-                let fg = color_theme.list_ref_tag_fg;
-                Some((name, fg))
-            }
-            Ref::Stash { .. } => None,
-        })
-        .map(|(name, fg)| {
-            let spans = refs_matches
-                .get(name)
-                .map(|pos| {
-                    highlighted_spans(
-                        name.into(),
-                        pos.clone(),
-                        fg,
-                        Modifier::BOLD,
-                        color_theme,
-                        false,
-                    )
-                })
-                .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
-            (spans, name)
-        })
-        .collect();
-
-    let mut spans = vec![Span::raw("(").fg(color_theme.list_ref_paren_fg).bold()];
-
-    if let Head::Detached { target } = head {
-        if commit_info.commit.commit_hash == *target {
-            spans.push(Span::raw("HEAD").fg(color_theme.list_head_fg).bold());
-            if !ref_spans.is_empty() {
-                spans.push(Span::raw(", ").fg(color_theme.list_ref_paren_fg).bold());
-            }
-        }
-    }
-
-    for (i, ss) in ref_spans.into_iter().enumerate() {
-        let (ref_spans, ref_name) = ss;
-        if let Head::Branch { name } = head {
-            if ref_name == name {
-                spans.push(Span::raw("HEAD -> ").fg(color_theme.list_head_fg).bold());
-            }
-        }
-        spans.extend(ref_spans);
-        if i < refs.len() - 1 {
-            spans.push(Span::raw(", ").fg(color_theme.list_ref_paren_fg).bold());
-        }
-    }
-
-    spans.push(Span::raw(") ").fg(color_theme.list_ref_paren_fg).bold());
-
-    if spans.len() == 2 {
-        spans.clear(); // contains only "(" and ")", so clear it
-    }
-
     spans
 }
+
+// A ref label in `color`: solid for the checked-out branch, else the color on a dark tint of it.
+fn ref_label_style(color: Color, current: bool) -> Style {
+    let style = Style::default().add_modifier(Modifier::BOLD);
+    match color {
+        _ if current => style.fg(LABEL_INK).bg(color),
+        Color::Rgb(r, g, b) => {
+            let [ir, ig, ib] = [0x1E_u16, 0x1E, 0x24];
+            let tint = |c: u8, base: u16| ((c as u16 * 3 + base * 7) / 10) as u8;
+            style
+                .fg(color)
+                .bg(Color::Rgb(tint(r, ir), tint(g, ig), tint(b, ib)))
+        }
+        // named colors cannot be tinted
+        _ => style.fg(LABEL_INK).bg(color),
+    }
+}
+
+const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);
 
 fn highlighted_spans(
     s: Span<'_>,
@@ -1325,7 +1339,12 @@ mod tests {
             .commits
             .iter()
             .map(|commit| {
-                CommitInfo::new(commit, repository.refs(&commit.commit_hash), Color::Reset)
+                CommitInfo::new(
+                    commit,
+                    repository.refs(&commit.commit_hash),
+                    Color::Reset,
+                    true,
+                )
             })
             .collect();
         let mut state = CommitListState::new(

@@ -21,8 +21,6 @@ pub struct ColorTheme {
     pub list_picked_fg: RatatuiColor,
     #[default(FUCHSIA)]
     pub list_picked_bg: RatatuiColor,
-    #[default(MUTED)]
-    pub list_ref_paren_fg: RatatuiColor,
     #[default(GREEN)]
     pub list_ref_branch_fg: RatatuiColor,
     #[default(RED)]
@@ -35,12 +33,15 @@ pub struct ColorTheme {
     pub list_head_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub list_subject_fg: RatatuiColor,
-    #[default(LAVENDER)]
+    #[default(RatatuiColor::Reset)]
     pub list_name_fg: RatatuiColor,
-    #[default(INDIGO)]
+    #[default(RatatuiColor::Reset)]
     pub list_hash_fg: RatatuiColor,
-    #[default(MUTED)]
+    #[default(RatatuiColor::Reset)]
     pub list_date_fg: RatatuiColor,
+    // the text of commits that are not on the current branch
+    #[default(MUTED)]
+    pub list_dimmed_fg: RatatuiColor,
     #[default(INK)]
     pub list_match_fg: RatatuiColor,
     #[default(YELLOW)]
@@ -120,7 +121,6 @@ const GREEN: RatatuiColor = RatatuiColor::Rgb(0x02, 0xBF, 0x87);
 const RED: RatatuiColor = RatatuiColor::Rgb(0xED, 0x56, 0x7A);
 const YELLOW: RatatuiColor = RatatuiColor::Rgb(0xEC, 0xCB, 0x6E);
 const CYAN: RatatuiColor = RatatuiColor::Rgb(0x6E, 0xC8, 0xF0);
-const LAVENDER: RatatuiColor = RatatuiColor::Rgb(0xA4, 0x9F, 0xC5);
 const MUTED: RatatuiColor = RatatuiColor::Rgb(0x62, 0x62, 0x62);
 const SUBTLE: RatatuiColor = RatatuiColor::Rgb(0x3A, 0x3A, 0x3A);
 const INK: RatatuiColor = RatatuiColor::Rgb(0x1E, 0x1E, 0x24);

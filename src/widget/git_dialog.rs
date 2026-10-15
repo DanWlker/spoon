@@ -86,6 +86,10 @@ enum DialogKind {
         name: String,
         upstream: String,
     },
+    EditRemote {
+        name: String,
+        url: String,
+    },
     CreateTag,
     // `remote` is where it may be deleted too
     DeleteTag {
@@ -126,6 +130,7 @@ enum FieldId {
     Index,
     Checkout,
     Pop,
+    Url,
 }
 
 #[derive(Debug)]
@@ -451,6 +456,22 @@ impl GitDialog {
             "Upstream",
             Field::text(&upstream, remote_branches),
         ));
+        dialog
+    }
+
+    // Renames a remote or changes its URL.
+    pub fn edit_remote(name: &str, url: &str) -> Self {
+        let kind = DialogKind::EditRemote {
+            name: name.to_string(),
+            url: url.to_string(),
+        };
+        let mut dialog = Self::with(" Edit remote ", "save", vec![], kind);
+        dialog
+            .fields
+            .push((FieldId::Name, "Name", Field::text(name, vec![])));
+        dialog
+            .fields
+            .push((FieldId::Url, "URL", Field::text(url, vec![])));
         dialog
     }
 
@@ -982,6 +1003,39 @@ impl GitDialog {
                 }
                 let mut commands = commands.into_iter();
                 let args = commands.next().ok_or("Change the name or the upstream")?;
+                Ok(GitTask {
+                    args,
+                    then: commands.collect(),
+                    running: format!("Saving {new_name}"),
+                    done: format!("Saved {new_name}"),
+                    ..Default::default()
+                })
+            }
+            DialogKind::EditRemote { name, url } => {
+                let new_name = self.value(FieldId::Name);
+                let new_url = self.value(FieldId::Url);
+                if new_name.is_empty() || new_url.is_empty() {
+                    return Err("Type a name and a URL for the remote".into());
+                }
+                let mut commands: Vec<Vec<String>> = vec![];
+                if new_name != *name {
+                    commands.push(vec![
+                        "remote".into(),
+                        "rename".into(),
+                        name.clone(),
+                        new_name.clone(),
+                    ]);
+                }
+                if new_url != *url {
+                    commands.push(vec![
+                        "remote".into(),
+                        "set-url".into(),
+                        new_name.clone(),
+                        new_url,
+                    ]);
+                }
+                let mut commands = commands.into_iter();
+                let args = commands.next().ok_or("Change the name or the URL")?;
                 Ok(GitTask {
                     args,
                     then: commands.collect(),
