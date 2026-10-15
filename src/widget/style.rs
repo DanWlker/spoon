@@ -15,7 +15,7 @@ use crate::color::ColorTheme;
 // `extra`, like "· 2 picked", follows it.
 pub fn panel_title(label: &str, extra: &str, focused: bool, theme: &ColorTheme) -> Line<'static> {
     let mut spans = vec![if focused {
-        badge(format!(" {label} "), theme.accent_fg, theme)
+        focused_title(format!(" {label} "), theme)
     } else {
         Span::raw(format!(" {label} ")).fg(theme.fg)
     }];
@@ -38,7 +38,19 @@ pub fn panel_block<'a>(focused: bool, theme: &ColorTheme) -> Block<'a> {
         .border_style(Style::default().fg(fg))
 }
 
-// Text on a colored background, like the title of the focused panel.
+// The title of the focused panel: a badge, or colored text alone when its background is "reset".
+pub fn focused_title<'a>(
+    text: impl Into<std::borrow::Cow<'a, str>>,
+    theme: &ColorTheme,
+) -> Span<'a> {
+    let span = Span::raw(text).fg(theme.panel_title_focused_fg).bold();
+    match theme.panel_title_focused_bg {
+        Color::Reset => span,
+        bg => span.bg(bg),
+    }
+}
+
+// Text on a colored background, like an error.
 pub fn badge<'a>(
     text: impl Into<std::borrow::Cow<'a, str>>,
     bg: Color,
@@ -90,5 +102,24 @@ pub fn mark_selected_row(buf: &mut Buffer, inner: Rect, y: u16, focused: bool, t
             theme.status_input_transient_fg
         };
         buf.set_string(inner.x - 1, y, "▌", Style::default().fg(fg));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_focused_title_without_background() {
+        // like lazygit: only the text is colored
+        let theme = ColorTheme::default();
+        let title = focused_title("t", &theme);
+        assert_eq!(title.style.bg, None);
+        assert_eq!(title.style.fg, Some(theme.accent_fg));
+        // a badge, with a background
+        let config: crate::color::OptionalColorTheme =
+            toml::from_str("panel_title_focused_bg = \"#89b4fa\"").unwrap();
+        let theme: ColorTheme = config.into();
+        assert_eq!(focused_title("t", &theme).style.bg, Some(theme.accent_fg));
     }
 }

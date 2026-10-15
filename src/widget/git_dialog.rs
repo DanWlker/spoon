@@ -13,7 +13,7 @@ use crate::{
     color::ColorTheme,
     event::{KeyHint, UserEvent},
     git::{todo_action, BranchStatus, GitTask, RemoteInfo},
-    widget::style::badge,
+    widget::style::focused_title,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1645,7 +1645,7 @@ impl Widget for GitDialogWidget<'_> {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent_fg))
             .style(Style::default().fg(theme.fg).bg(theme.bg))
-            .title(badge(dialog.title, theme.accent_fg, theme))
+            .title(focused_title(dialog.title, theme))
             .padding(Padding::horizontal(1));
         let inner = block.inner(popup);
         Paragraph::new(lines).block(block).render(popup, buf);

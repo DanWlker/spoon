@@ -13,7 +13,7 @@ use crate::{
     color::ColorTheme,
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{Border, Panel},
-    widget::style::{badge, mark_selected_row, panel_title, tree_panel_width},
+    widget::style::{focused_title, mark_selected_row, panel_title, tree_panel_width},
     widget::{
         diff::{diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step},
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
@@ -75,7 +75,7 @@ pub fn render_tab_titles(
         .map(|(i, tab)| {
             let title = format!(" [{}] {} ", i + 2, tab.title());
             if *tab == current && focused {
-                badge(title, theme.accent_fg, theme)
+                focused_title(title, theme)
             } else if *tab == current {
                 Span::raw(title).fg(theme.fg).bold()
             } else {

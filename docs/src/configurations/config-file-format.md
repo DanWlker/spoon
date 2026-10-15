@@ -55,62 +55,64 @@ row_image_width = "compact"
 
 [graph.color]
 branches = [
-  "#E06C76",
-  "#98C379",
-  "#E5C07B",
-  "#61AFEF",
-  "#C678DD",
-  "#56B6C2",
+  "#F38BA8",
+  "#A6E3A1",
+  "#F9E2AF",
+  "#89B4FA",
+  "#CBA6F7",
+  "#94E2D5",
 ]
 edge = "#00000000"
 background = "#00000000"
 
 [color]
-fg = "reset"
+fg = "#cdd6f4"
 bg = "reset"
-list_selected_fg = "#fffdf5"
-list_selected_bg = "#35314c"
-list_picked_fg = "#1e1e24"
-list_picked_bg = "#f780e2"
-list_ref_branch_fg = "#02bf87"
-list_ref_head_fg = "#7571f9"
-list_ref_remote_branch_fg = "#02bf87"
-list_ref_tag_fg = "#eccb6e"
-list_ref_stash_fg = "#f780e2"
-list_subject_fg = "reset"
-list_name_fg = "reset"
-list_hash_fg = "reset"
-list_date_fg = "reset"
-list_dimmed_fg = "#626262"
-list_match_fg = "#1e1e24"
-list_match_bg = "#eccb6e"
-detail_label_fg = "#626262"
-detail_name_fg = "reset"
-detail_date_fg = "reset"
-detail_email_fg = "#7571f9"
-detail_hash_fg = "reset"
-detail_ref_branch_fg = "#02bf87"
-detail_ref_remote_branch_fg = "#02bf87"
-detail_ref_tag_fg = "#eccb6e"
-detail_file_change_add_fg = "#02bf87"
-detail_file_change_modify_fg = "#eccb6e"
-detail_file_change_delete_fg = "#ed567a"
-detail_file_change_move_fg = "#f780e2"
-ref_selected_fg = "#fffdf5"
-ref_selected_bg = "#35314c"
-help_block_title_fg = "#f780e2"
-help_key_fg = "#7571f9"
-virtual_cursor_fg = "reset"
-status_input_transient_fg = "#626262"
-status_info_fg = "#7571f9"
-status_success_fg = "#02bf87"
-status_warn_fg = "#eccb6e"
-status_error_fg = "#ed567a"
-divider_fg = "#3a3a3a"
-accent_fg = "#7571f9"
-accent_text_fg = "#fffdf5"
-highlight_fg = "#f780e2"
-status_bar_fg = "#c1c6b2"
+list_selected_fg = "#cdd6f4"
+list_selected_bg = "#313244"
+list_picked_fg = "#11111b"
+list_picked_bg = "#cba6f7"
+list_ref_branch_fg = "#a6e3a1"
+list_ref_head_fg = "#89b4fa"
+list_ref_remote_branch_fg = "#a6e3a1"
+list_ref_tag_fg = "#f9e2af"
+list_ref_stash_fg = "#cba6f7"
+list_subject_fg = "#cdd6f4"
+list_name_fg = "#cdd6f4"
+list_hash_fg = "#cdd6f4"
+list_date_fg = "#cdd6f4"
+list_dimmed_fg = "#6c7086"
+list_match_fg = "#11111b"
+list_match_bg = "#f9e2af"
+detail_label_fg = "#7f849c"
+detail_name_fg = "#cdd6f4"
+detail_date_fg = "#cdd6f4"
+detail_email_fg = "#89b4fa"
+detail_hash_fg = "#cdd6f4"
+detail_ref_branch_fg = "#a6e3a1"
+detail_ref_remote_branch_fg = "#a6e3a1"
+detail_ref_tag_fg = "#f9e2af"
+detail_file_change_add_fg = "#a6e3a1"
+detail_file_change_modify_fg = "#f9e2af"
+detail_file_change_delete_fg = "#f38ba8"
+detail_file_change_move_fg = "#cba6f7"
+ref_selected_fg = "#cdd6f4"
+ref_selected_bg = "#313244"
+help_block_title_fg = "#cba6f7"
+help_key_fg = "#89b4fa"
+virtual_cursor_fg = "#cdd6f4"
+status_input_transient_fg = "#7f849c"
+status_info_fg = "#89b4fa"
+status_success_fg = "#a6e3a1"
+status_warn_fg = "#f9e2af"
+status_error_fg = "#f38ba8"
+divider_fg = "#45475a"
+accent_fg = "#89b4fa"
+accent_text_fg = "#11111b"
+panel_title_focused_fg = "#89b4fa"
+panel_title_focused_bg = "reset"
+highlight_fg = "#cba6f7"
+status_bar_fg = "#a6adc8"
 status_bar_bg = "reset"
 
 [keybind]
@@ -408,12 +410,12 @@ Array of colors used for the commit graph.
 
 - type: `array of strings`
 - default:
-  - `"#E06C76"`
-  - `"#98C379"`
-  - `"#E5C07B"`
-  - `"#61AFEF"`
-  - `"#C678DD"`
-  - `"#56B6C2"`
+  - `"#F38BA8"`
+  - `"#A6E3A1"`
+  - `"#F9E2AF"`
+  - `"#89B4FA"`
+  - `"#CBA6F7"`
+  - `"#94E2D5"`
 
 Colors should be specified in the format `#RRGGBB` or `#RRGGBBAA`.
 
@@ -444,7 +446,9 @@ Note: Graph colors are specified with `[graph.color]`.
 - type: `string`
 - default: see the example above
 
-The default colors follow the palette of Charm's tools (lipgloss, huh, bubbles): indigo for the focused panel, whose title is shown as a badge, fuchsia for the mark beside the selected row and for picked commits, and muted grays for hints and dividers. They are 24-bit colors; set them to ANSI color names (like the defaults of serie) for a terminal without true color.
+The default colors are [Catppuccin Mocha](https://catppuccin.com/palette): blue for the focused panel, mauve for the mark beside the selected row and for picked commits, and overlay grays for hints and dividers. Any of them can be overridden here. They are 24-bit colors; set them to ANSI color names (like the defaults of serie) for a terminal without true color.
+
+The title of the focused panel is colored text, `panel_title_focused_fg`, like lazygit. Give it a background with `panel_title_focused_bg` to show it as a badge instead, like `panel_title_focused_fg = "#11111b"` on `panel_title_focused_bg = "#89b4fa"`.
 
 Colors should be specified in one of the following formats:
 

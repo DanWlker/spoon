@@ -8,55 +8,55 @@ use crate::config::GraphColorConfig;
 #[optional(derives = [Deserialize], visibility = pub)]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct ColorTheme {
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub bg: RatatuiColor,
 
-    #[default(CREAM)]
+    #[default(TEXT)]
     pub list_selected_fg: RatatuiColor,
-    #[default(SELECTION_BG)]
+    #[default(SURFACE0)]
     pub list_selected_bg: RatatuiColor,
-    #[default(INK)]
+    #[default(CRUST)]
     pub list_picked_fg: RatatuiColor,
-    #[default(FUCHSIA)]
+    #[default(MAUVE)]
     pub list_picked_bg: RatatuiColor,
     #[default(GREEN)]
     pub list_ref_branch_fg: RatatuiColor,
     // the checked-out branch
-    #[default(INDIGO)]
+    #[default(BLUE)]
     pub list_ref_head_fg: RatatuiColor,
     #[default(GREEN)]
     pub list_ref_remote_branch_fg: RatatuiColor,
     #[default(YELLOW)]
     pub list_ref_tag_fg: RatatuiColor,
-    #[default(FUCHSIA)]
+    #[default(MAUVE)]
     pub list_ref_stash_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub list_subject_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub list_name_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub list_hash_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub list_date_fg: RatatuiColor,
     // the text of commits that are not on the current branch
-    #[default(MUTED)]
+    #[default(OVERLAY0)]
     pub list_dimmed_fg: RatatuiColor,
-    #[default(INK)]
+    #[default(CRUST)]
     pub list_match_fg: RatatuiColor,
     #[default(YELLOW)]
     pub list_match_bg: RatatuiColor,
 
-    #[default(MUTED)]
+    #[default(OVERLAY1)]
     pub detail_label_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub detail_name_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub detail_date_fg: RatatuiColor,
-    #[default(INDIGO)]
+    #[default(BLUE)]
     pub detail_email_fg: RatatuiColor,
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub detail_hash_fg: RatatuiColor,
     #[default(GREEN)]
     pub detail_ref_branch_fg: RatatuiColor,
@@ -70,24 +70,24 @@ pub struct ColorTheme {
     pub detail_file_change_modify_fg: RatatuiColor,
     #[default(RED)]
     pub detail_file_change_delete_fg: RatatuiColor,
-    #[default(FUCHSIA)]
+    #[default(MAUVE)]
     pub detail_file_change_move_fg: RatatuiColor,
 
-    #[default(CREAM)]
+    #[default(TEXT)]
     pub ref_selected_fg: RatatuiColor,
-    #[default(SELECTION_BG)]
+    #[default(SURFACE0)]
     pub ref_selected_bg: RatatuiColor,
 
-    #[default(FUCHSIA)]
+    #[default(MAUVE)]
     pub help_block_title_fg: RatatuiColor,
-    #[default(INDIGO)]
+    #[default(BLUE)]
     pub help_key_fg: RatatuiColor,
 
-    #[default(RatatuiColor::Reset)]
+    #[default(TEXT)]
     pub virtual_cursor_fg: RatatuiColor,
-    #[default(MUTED)]
+    #[default(OVERLAY1)]
     pub status_input_transient_fg: RatatuiColor,
-    #[default(INDIGO)]
+    #[default(BLUE)]
     pub status_info_fg: RatatuiColor,
     #[default(GREEN)]
     pub status_success_fg: RatatuiColor,
@@ -96,36 +96,42 @@ pub struct ColorTheme {
     #[default(RED)]
     pub status_error_fg: RatatuiColor,
 
-    #[default(SUBTLE)]
+    #[default(SURFACE1)]
     pub divider_fg: RatatuiColor,
 
-    // the focused panel: its title (as a badge) and its border
-    #[default(INDIGO)]
+    // the focused panel: its border, and its title unless panel_title_focused_* say otherwise
+    #[default(BLUE)]
     pub accent_fg: RatatuiColor,
     // text on the accent color
-    #[default(CREAM)]
+    #[default(CRUST)]
     pub accent_text_fg: RatatuiColor,
+    // the title of the focused panel: colored text, like lazygit; with a background, a badge
+    #[default(BLUE)]
+    pub panel_title_focused_fg: RatatuiColor,
+    #[default(RatatuiColor::Reset)]
+    pub panel_title_focused_bg: RatatuiColor,
     // the mark beside the selected row
-    #[default(FUCHSIA)]
+    #[default(MAUVE)]
     pub highlight_fg: RatatuiColor,
-    #[default(STATUS_BAR_FG)]
+    #[default(SUBTEXT0)]
     pub status_bar_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub status_bar_bg: RatatuiColor,
 }
 
-// The default colors, after the palette of Charm's tools (lipgloss, huh, bubbles).
-const INDIGO: RatatuiColor = RatatuiColor::Rgb(0x75, 0x71, 0xF9);
-const FUCHSIA: RatatuiColor = RatatuiColor::Rgb(0xF7, 0x80, 0xE2);
-const CREAM: RatatuiColor = RatatuiColor::Rgb(0xFF, 0xFD, 0xF5);
-const GREEN: RatatuiColor = RatatuiColor::Rgb(0x02, 0xBF, 0x87);
-const RED: RatatuiColor = RatatuiColor::Rgb(0xED, 0x56, 0x7A);
-const YELLOW: RatatuiColor = RatatuiColor::Rgb(0xEC, 0xCB, 0x6E);
-const MUTED: RatatuiColor = RatatuiColor::Rgb(0x62, 0x62, 0x62);
-const SUBTLE: RatatuiColor = RatatuiColor::Rgb(0x3A, 0x3A, 0x3A);
-const INK: RatatuiColor = RatatuiColor::Rgb(0x1E, 0x1E, 0x24);
-const SELECTION_BG: RatatuiColor = RatatuiColor::Rgb(0x35, 0x31, 0x4C);
-const STATUS_BAR_FG: RatatuiColor = RatatuiColor::Rgb(0xC1, 0xC6, 0xB2);
+// The default colors: Catppuccin Mocha, https://catppuccin.com/palette
+const TEXT: RatatuiColor = RatatuiColor::Rgb(0xCD, 0xD6, 0xF4);
+const SUBTEXT0: RatatuiColor = RatatuiColor::Rgb(0xA6, 0xAD, 0xC8);
+const OVERLAY1: RatatuiColor = RatatuiColor::Rgb(0x7F, 0x84, 0x9C);
+const OVERLAY0: RatatuiColor = RatatuiColor::Rgb(0x6C, 0x70, 0x86);
+const SURFACE1: RatatuiColor = RatatuiColor::Rgb(0x45, 0x47, 0x5A);
+const SURFACE0: RatatuiColor = RatatuiColor::Rgb(0x31, 0x32, 0x44);
+const CRUST: RatatuiColor = RatatuiColor::Rgb(0x11, 0x11, 0x1B);
+const BLUE: RatatuiColor = RatatuiColor::Rgb(0x89, 0xB4, 0xFA);
+const MAUVE: RatatuiColor = RatatuiColor::Rgb(0xCB, 0xA6, 0xF7);
+const GREEN: RatatuiColor = RatatuiColor::Rgb(0xA6, 0xE3, 0xA1);
+const YELLOW: RatatuiColor = RatatuiColor::Rgb(0xF9, 0xE2, 0xAF);
+const RED: RatatuiColor = RatatuiColor::Rgb(0xF3, 0x8B, 0xA8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphColor {
