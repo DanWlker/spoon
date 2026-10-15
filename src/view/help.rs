@@ -173,7 +173,10 @@ impl<'a> HelpView<'a> {
 
     fn update_state(&mut self, area: Rect) {
         self.height = area.height as usize;
-        self.offset = self.offset.min(self.help_key_lines.len() - 1)
+        // the last line stays at the bottom, not scrolled up to the top
+        self.offset = self
+            .offset
+            .min(self.help_key_lines.len().saturating_sub(self.height))
     }
 }
 

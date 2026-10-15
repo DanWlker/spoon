@@ -50,24 +50,25 @@ pub fn graph_command(
     };
     let dialog = match event {
         UserEvent::Diff => return Some(commands.compare(selected, picked)),
-        // both name the commit by its hash, not a branch or tag at it
         UserEvent::Rebase => single("Rebase").and_then(|_| {
             let branch = branch.ok_or("Check out a branch to rebase it")?;
             commands.not_head(&selected, "rebase onto")?;
+            let (target, label) = commands.name_of(&selected);
             Ok(GitDialog::rebase(
                 &branch,
-                selected.as_str().to_string(),
-                selected.as_short_hash(),
+                target,
+                &label,
                 commands.rebase_auto_stash(),
             ))
         }),
         UserEvent::Merge => single("Merge").and_then(|_| {
             commands.not_head(&selected, "merge")?;
             let merge_ff = repository.config("merge.ff");
+            let (target, label) = commands.name_of(&selected);
             Ok(GitDialog::merge(
                 &branch_label,
-                selected.as_str().to_string(),
-                selected.as_short_hash(),
+                target,
+                &label,
                 merge_ff.as_deref(),
             ))
         }),
@@ -194,6 +195,29 @@ impl GraphCommands<'_> {
         DialogCommit {
             hash: hash.as_str().to_string(),
             line: format!("{} {subject}", hash.as_short_hash()),
+        }
+    }
+
+    // The commit to merge or rebase onto, and its label: by the name of the one local branch at
+    // it, for "Merge branch 'x'" as the message, else by its hash; by the hash too when a tag has
+    // that name, which git would take instead.
+    fn name_of(&self, hash: &CommitHash) -> (String, String) {
+        let mut branches = self
+            .repository
+            .refs(hash)
+            .into_iter()
+            .filter(|r| matches!(r, Ref::Branch { .. }));
+        let tagged = |name: &str| {
+            self.repository
+                .all_refs()
+                .iter()
+                .any(|r| matches!(r, Ref::Tag { .. }) && r.name() == name)
+        };
+        match (branches.next(), branches.next()) {
+            (Some(branch), None) if !tagged(branch.name()) => {
+                (branch.name().to_string(), branch.name().to_string())
+            }
+            _ => (hash.as_str().to_string(), hash.as_short_hash().to_string()),
         }
     }
 
@@ -491,7 +515,7 @@ mod tests {
         let diff = args(command(&repository, UserEvent::Diff, c3, &hashes));
         assert_eq!(diff, "Diff compares two commits, 3 are picked");
 
-        // rebase and merge name the commit by its hash, not the branch at it
+        // rebase and merge name the commit by its hash, without one branch at it
         git.checkout_b("other");
         let rebase = args(command(&repository, UserEvent::Rebase, c1, &[]));
         assert_eq!(rebase, format!("rebase --autostash {}", c1.as_str()));
@@ -499,6 +523,27 @@ mod tests {
         assert!(merge.ends_with(c1.as_str()), "{merge}");
         let merge = args(command(&repository, UserEvent::Merge, c3, &[]));
         assert!(merge.contains("is checked out"), "{merge}");
+        // with one, by its name, for "Merge branch 'topic'" as the message
+        let git_in = |git_args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(git_args)
+                .current_dir(path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            Repository::load(path, SortCommit::Chronological, None, false).unwrap()
+        };
+        let reloaded = git_in(&["branch", "topic", c1.as_str()]);
+        let merge = args(command(&reloaded, UserEvent::Merge, c1, &[]));
+        assert!(merge.ends_with(" topic"), "{merge}");
+        let rebase = args(command(&reloaded, UserEvent::Rebase, c1, &[]));
+        assert_eq!(rebase, "rebase --autostash topic");
+        // a tag of the same name would be merged instead, so the hash is
+        let reloaded = git_in(&["tag", "topic", c2.as_str()]);
+        let merge = args(command(&reloaded, UserEvent::Merge, c1, &[]));
+        assert!(merge.ends_with(c1.as_str()), "{merge}");
+        let rebase = args(command(&reloaded, UserEvent::Rebase, c1, &[]));
+        assert_eq!(rebase, format!("rebase --autostash {}", c1.as_str()));
 
         // commands on the selected commit refuse picked ones
         let reset = args(command(
