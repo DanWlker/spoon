@@ -40,7 +40,7 @@ In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the 
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
-The command runs in the background, the status line shows it while it runs, and the app refreshes when it is done.
+The command runs in the background, the status line shows it with a spinner while it runs (a push or pull also beside its branch in the sidebar, like lazygit), and the app refreshes when it is done.
 Git cannot ask for a password or passphrase meanwhile, so use a credential helper or an SSH agent: a prompt fails the command instead.
 
 #### Commit List

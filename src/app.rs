@@ -2,7 +2,8 @@ use std::{
     cell::RefCell,
     io::{self, Write},
     rc::Rc,
-    time::{Duration, Instant},
+    sync::mpsc::RecvTimeoutError,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ratatui::{
@@ -95,8 +96,8 @@ pub struct AppContext {
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
-    // what the git command running in the background is doing, kept across refreshes
-    pub running_task: RefCell<Option<String>>,
+    // the git command running in the background, kept across refreshes
+    pub running_task: RefCell<Option<GitTask>>,
     // the keys of the hints in the status bar, see `short_keys`
     pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
     // the sizes of the panels, set by the user, kept across refreshes
@@ -117,8 +118,20 @@ impl AppContext {
     pub fn busy_message(&self) -> Option<String> {
         let task = self.running_task.borrow();
         task.as_ref()
-            .map(|task| format!("{task}, wait for it to finish"))
+            .map(|task| format!("{}, wait for it to finish", task.running))
     }
+}
+
+// How often the spinner of a running task turns, see `spinner`.
+pub const SPINNER_RATE: Duration = Duration::from_millis(180);
+
+// lazygit's spinner, by the clock, so each frame drawn while a task runs shows where it is.
+pub fn spinner() -> &'static str {
+    const FRAMES: [&str; 4] = ["●∙∙", "∙●∙", "∙∙●", "∙●∙"];
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    FRAMES[(now.as_millis() / SPINNER_RATE.as_millis()) as usize % FRAMES.len()]
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -530,6 +543,8 @@ impl App<'_> {
                 }
                 // checked again on the next tick
                 AppEvent::FilesTick | AppEvent::RefsSnapshot(_) | AppEvent::FocusGained => {}
+                // only redraws
+                AppEvent::SpinnerTick => {}
                 AppEvent::OpenHelp => {
                     self.open_help();
                 }
@@ -849,7 +864,9 @@ impl App<'_> {
                 }
                 // what runs in the background, else where the repository is
                 match self.ctx.running_task.borrow().as_ref() {
-                    Some(task) => left.push(Span::raw(format!("󱥸 {task}…")).fg(theme.highlight_fg)),
+                    Some(task) => left.push(
+                        Span::raw(format!("{} {}", task.running, spinner())).fg(theme.highlight_fg),
+                    ),
                     None => {
                         // shortened like neovim's pathshorten when it would crowd the keys
                         let mut path = home_relative(self.repository.path());
@@ -908,7 +925,8 @@ impl App<'_> {
         // with a message, what runs in the background goes to the right
         let message = !matches!(self.shell.app_status.status_line, StatusLine::None);
         if let Some(task) = self.ctx.running_task.borrow().as_ref().filter(|_| message) {
-            right.insert(0, Span::raw(format!("{task}… ")).fg(theme.highlight_fg));
+            let text = format!("{} {} ", task.running, spinner());
+            right.insert(0, Span::raw(text).fg(theme.highlight_fg));
         }
         // the selected commit and how many there are, like the line and column
         if let Some(state) = self.view.as_list_state() {
@@ -1553,7 +1571,7 @@ impl App<'_> {
             self.ec.send(AppEvent::NotifyWarn(message));
             return;
         }
-        *self.ctx.running_task.borrow_mut() = Some(task.running.clone());
+        *self.ctx.running_task.borrow_mut() = Some(task.clone());
         let path = self.repository.path().to_path_buf();
         // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
         if task.may_sign() && self.repository.signs() {
@@ -1567,7 +1585,16 @@ impl App<'_> {
         }
         let tx = self.ec.sender();
         std::thread::spawn(move || {
+            // the app redraws the spinner on each tick, until `done` is dropped
+            let (done, ticking) = std::sync::mpsc::channel::<()>();
+            let ticker = tx.clone();
+            std::thread::spawn(move || {
+                while ticking.recv_timeout(SPINNER_RATE) == Err(RecvTimeoutError::Timeout) {
+                    ticker.send(AppEvent::SpinnerTick);
+                }
+            });
             let result = run_task(&path, &task);
+            drop(done);
             tx.send(AppEvent::TaskFinished { task, result });
         });
     }

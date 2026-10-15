@@ -1222,6 +1222,7 @@ impl GitDialog {
 
     fn remote_command(&self, action: RemoteAction) -> Result<GitTask, String> {
         let remote = self.value(FieldId::Remote);
+        let mut branch_status = None;
         let (args, running, done) = match action {
             RemoteAction::Fetch => (
                 vec!["fetch".to_string(), remote.clone()],
@@ -1247,6 +1248,12 @@ impl GitDialog {
                     "--no-autostash".into()
                 });
                 args.extend([remote.clone(), branch.clone()]);
+                // pulling merges into the checked-out branch
+                branch_status = self
+                    .info()
+                    .current_branch
+                    .clone()
+                    .map(|current| (current, "Pulling".to_string()));
                 (
                     args,
                     format!("Pulling {remote}/{branch}"),
@@ -1279,6 +1286,7 @@ impl GitDialog {
                 } else {
                     "Pushing"
                 };
+                branch_status = Some((branch.clone(), force.to_string()));
                 (
                     args,
                     format!("{force} {branch} to {remote}/{remote_branch}"),
@@ -1291,6 +1299,7 @@ impl GitDialog {
             remote: true,
             running,
             done,
+            branch_status,
             ..Default::default()
         })
     }
@@ -1728,7 +1737,12 @@ mod tests {
         // pressing the key opening the popup again runs it
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
         let outcome = press(&mut dialog, UserEvent::Pull);
-        assert!(matches!(outcome, DialogOutcome::Run(t) if t.running == "Pulling origin/main"));
+        let DialogOutcome::Run(task) = outcome else {
+            panic!("the pull did not run");
+        };
+        assert_eq!(task.running, "Pulling origin/main");
+        // the sidebar shows it beside the checked-out branch
+        assert_eq!(task.branch_status, Some(("main".into(), "Pulling".into())));
         let mut dialog = GitDialog::remote(RemoteAction::Fetch, info()).unwrap();
         assert!(matches!(
             press(&mut dialog, UserEvent::Push),

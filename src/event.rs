@@ -41,6 +41,8 @@ pub enum AppEvent {
     RefsSnapshot(String),
     // the terminal got the focus back, everything is reloaded
     FocusGained,
+    // redraws the spinner of the git command running in the background
+    SpinnerTick,
     // a git command running in the background finished
     TaskFinished {
         task: GitTask,
