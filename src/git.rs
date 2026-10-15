@@ -1269,6 +1269,21 @@ fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
     }
 }
 
+// The remotes whose names nest, like team/origin and team/origin/abc: the branches of both are
+// stored in the same place, where fetching one overwrites the other's, and the branches there are
+// taken for those of the longer one (see `split_remote_branch`). As (shorter, longer).
+pub fn nested_remotes(remotes: &[String]) -> Vec<(&str, &str)> {
+    remotes
+        .iter()
+        .flat_map(|a| {
+            remotes
+                .iter()
+                .filter(move |b| b.starts_with(&format!("{a}/")))
+                .map(move |b| (a.as_str(), b.as_str()))
+        })
+        .collect()
+}
+
 // The names of the remotes, sorted.
 fn load_remotes(path: &Path) -> Vec<String> {
     let mut remotes: Vec<String> = git_output(path, &["remote"])
@@ -1941,6 +1956,27 @@ mod tests {
             staged: vec![],
         };
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_nested_remotes() {
+        let remotes: Vec<String> = ["origin", "team", "team/origin", "team/origin/abc", "teams"]
+            .map(String::from)
+            .into();
+        assert_eq!(
+            nested_remotes(&remotes),
+            [
+                ("team", "team/origin"),
+                ("team", "team/origin/abc"),
+                ("team/origin", "team/origin/abc"),
+            ]
+        );
+        // the branch goes to the longer one
+        assert_eq!(
+            split_remote_branch(&remotes, "team/origin/abc/branch"),
+            Some(("team/origin/abc", "branch"))
+        );
+        assert!(nested_remotes(&remotes[..1]).is_empty());
     }
 
     #[test]

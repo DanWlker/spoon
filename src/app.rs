@@ -28,7 +28,8 @@ use crate::{
         validate_marked_hash, ExternalCommandParameters,
     },
     git::{
-        refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository,
+        nested_remotes, refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head,
+        Ref, Repository,
     },
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -182,6 +183,8 @@ pub struct AppShell {
     compare: Option<RefCompare>,
     // the keys of the focused panel shown in a popup, see `UserEvent::KeysToggle`
     keys_popup: bool,
+    // the warning about the remotes whose names nest, shown once until they change
+    nested_remotes_warning: Option<String>,
 }
 
 // The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
@@ -316,6 +319,7 @@ impl<'a> App<'a> {
                 compare_request: None,
                 compare: None,
                 keys_popup: false,
+                nested_remotes_warning: None,
             },
         };
         shell.sidebar.set_tracking(repository.branch_tracking());
@@ -331,6 +335,7 @@ impl<'a> App<'a> {
         if let Some(warning) = &graph.warning {
             app.warn_notification(warning.clone());
         }
+        app.warn_nested_remotes();
 
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
@@ -1692,6 +1697,27 @@ impl App<'_> {
         };
         if let Some(panel) = panel {
             self.ctx.layout.borrow_mut().move_border(panel, step);
+        }
+    }
+
+    // Warns about the remotes whose names nest, see `nested_remotes`, once until they change.
+    fn warn_nested_remotes(&mut self) {
+        let pairs: Vec<String> = nested_remotes(self.repository.remotes())
+            .into_iter()
+            .map(|(a, b)| format!("{a} and {b}"))
+            .collect();
+        let warning = (!pairs.is_empty()).then(|| {
+            format!(
+                "The remotes {} share where their branches are kept: fetching one overwrites the \
+                 other's, which show under the longer name",
+                pairs.join(", ")
+            )
+        });
+        if warning != self.shell.nested_remotes_warning {
+            self.shell.nested_remotes_warning.clone_from(&warning);
+            if let Some(warning) = warning {
+                self.warn_notification(warning);
+            }
         }
     }
 
