@@ -23,7 +23,7 @@ pub struct ColorTheme {
     pub list_picked_bg: RatatuiColor,
     #[default(GREEN)]
     pub list_ref_branch_fg: RatatuiColor,
-    #[default(RED)]
+    #[default(GREEN)]
     pub list_ref_remote_branch_fg: RatatuiColor,
     #[default(YELLOW)]
     pub list_ref_tag_fg: RatatuiColor,
@@ -57,7 +57,7 @@ pub struct ColorTheme {
     pub detail_hash_fg: RatatuiColor,
     #[default(GREEN)]
     pub detail_ref_branch_fg: RatatuiColor,
-    #[default(RED)]
+    #[default(GREEN)]
     pub detail_ref_remote_branch_fg: RatatuiColor,
     #[default(YELLOW)]
     pub detail_ref_tag_fg: RatatuiColor,
