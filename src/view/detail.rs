@@ -41,8 +41,6 @@ pub struct DetailView<'a> {
     compare: Option<String>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
     list_focused: bool,
-    // false while the refs sidebar has the focus
-    page_focused: bool,
     repository: &'a Repository,
 
     ctx: Rc<AppContext>,
@@ -65,7 +63,7 @@ impl<'a> DetailView<'a> {
             commit_detail_state: CommitDetailState::default(),
             tab: DetailTab::default(),
             changes_state: CommitChangesState::new(repository, hash.clone(), &changes),
-            files_state: CommitFilesState::new(repository, hash),
+            files_state: CommitFilesState::new(repository, &commit, &changes),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
             commit,
@@ -73,7 +71,6 @@ impl<'a> DetailView<'a> {
             refs,
             compare: None,
             list_focused: false,
-            page_focused: true,
             repository,
             ctx,
             tx,
@@ -81,21 +78,12 @@ impl<'a> DetailView<'a> {
     }
 
     // Shows the changes from `base` to `target` instead of the selected commit.
-    pub fn start_compare(
-        &mut self,
-        repository: &'a Repository,
-        base: CommitHash,
-        target: CommitHash,
-        title: String,
-    ) {
+    pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, title: String) {
+        let repository = self.repository;
         let changes = repository.diff_summary_between(&base, &target);
         self.changes_state = CommitChangesState::between(repository, Some(base), target, &changes);
         self.compare = Some(title);
         self.show_tab(DetailTab::Changes);
-    }
-
-    pub fn set_focused(&mut self, focused: bool) {
-        self.page_focused = focused;
     }
 
     pub fn clear_picks(&mut self) {
@@ -115,11 +103,11 @@ impl<'a> DetailView<'a> {
     }
 
     // Shows the commit of the ref, selected in the refs sidebar.
-    pub fn select_ref(&mut self, repository: &'a Repository, name: &str) {
+    pub fn select_ref(&mut self, name: &str) {
         let before = self.as_list_state().selected_commit_hash().clone();
         self.as_mut_list_state().select_ref(name);
         if *self.as_list_state().selected_commit_hash() != before {
-            self.update_selected_commit(repository, |_| {});
+            self.update_selected_commit(|_| {});
         }
     }
 
@@ -254,11 +242,11 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, page_focused: bool) {
         let [list_area, detail_area] = self.split_areas(area);
 
         let ctx = self.ctx.clone();
-        let list_focused = self.page_focused && self.list_focused;
+        let list_focused = page_focused && self.list_focused;
         render_commit_list_panel(f, list_area, self.as_mut_list_state(), ctx, list_focused);
 
         match self.tab {
@@ -280,7 +268,7 @@ impl<'a> DetailView<'a> {
         }
         // each tab draws a top border, the titles go over it
         let indicator = self.query().and_then(TreeQuery::indicator);
-        let focused = self.page_focused && !self.list_focused;
+        let focused = page_focused && !self.list_focused;
         match &self.compare {
             Some(title) => render_compare_title(
                 title,
@@ -367,7 +355,7 @@ impl<'a> DetailView<'a> {
             _ => return false,
         }
         if *self.as_list_state().selected_commit_hash() != before {
-            self.update_selected_commit(self.repository, |_| {});
+            self.update_selected_commit(|_| {});
         }
         true
     }
@@ -525,19 +513,19 @@ impl<'a> DetailView<'a> {
         Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area)
     }
 
-    pub fn select_older_commit(&mut self, repository: &'a Repository) {
-        self.update_selected_commit(repository, |state| state.select_next());
+    pub fn select_older_commit(&mut self) {
+        self.update_selected_commit(|state| state.select_next());
     }
 
-    pub fn select_newer_commit(&mut self, repository: &'a Repository) {
-        self.update_selected_commit(repository, |state| state.select_prev());
+    pub fn select_newer_commit(&mut self) {
+        self.update_selected_commit(|state| state.select_prev());
     }
 
-    pub fn select_parent_commit(&mut self, repository: &'a Repository) {
-        self.update_selected_commit(repository, |state| state.select_parent());
+    pub fn select_parent_commit(&mut self) {
+        self.update_selected_commit(|state| state.select_parent());
     }
 
-    fn update_selected_commit<F>(&mut self, repository: &'a Repository, update_commit_list_state: F)
+    fn update_selected_commit<F>(&mut self, update_commit_list_state: F)
     where
         F: FnOnce(&mut CommitListState<'a>),
     {
@@ -547,12 +535,12 @@ impl<'a> DetailView<'a> {
             // the comparison stays, the selection only moves in the list
             return;
         }
-        let commit_list_state = self.as_mut_list_state();
-        let selected = commit_list_state.selected_commit_hash().clone();
+        let repository = self.repository;
+        let selected = self.as_list_state().selected_commit_hash().clone();
         let (commit, changes) = repository.commit_detail(&selected);
         let refs = repository.refs(&selected).into_iter().cloned().collect();
         self.changes_state = CommitChangesState::new(repository, selected.clone(), &changes);
-        self.files_state.set_commit(selected);
+        self.files_state.set_commit(&commit, &changes);
         self.commit = commit;
         self.changes = changes;
         self.refs = refs;

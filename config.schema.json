@@ -596,11 +596,6 @@
           "description": "Foreground color for the virtual cursor.",
           "default": "reset"
         },
-        "status_input_fg": {
-          "type": "string",
-          "description": "Foreground color for the status bar in input mode.",
-          "default": "reset"
-        },
         "status_input_transient_fg": {
           "type": "string",
           "description": "Foreground color for transient messages in the status bar.",
@@ -802,6 +797,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "discard": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dialog_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dialog_edit": {
           "$ref": "#/definitions/keybindArray"
         },
         "fetch": {

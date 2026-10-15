@@ -6,7 +6,7 @@ use crate::config::ClipboardConfig;
 
 const USER_COMMAND_MARKER_PREFIX: &str = "{{";
 const USER_COMMAND_TARGET_HASH_MARKER: &str = "{{target_hash}}";
-pub const USER_COMMAND_MARKED_HASH_MARKER: &str = "{{marked_hash}}";
+const USER_COMMAND_MARKED_HASH_MARKER: &str = "{{marked_hash}}";
 const USER_COMMAND_PICKED_HASHES_MARKER: &str = "{{picked_hashes}}";
 const USER_COMMAND_FIRST_PARENT_HASH_MARKER: &str = "{{first_parent_hash}}";
 const USER_COMMAND_PARENT_HASHES_MARKER: &str = "{{parent_hashes}}";
@@ -166,19 +166,7 @@ pub fn exec_user_command(params: ExternalCommandParameters) -> Result<String, St
 }
 
 pub fn exec_user_command_suspend(params: ExternalCommandParameters) -> Result<(), String> {
-    let command = build_user_command(&params);
-
-    let output = Command::new(&command[0])
-        .args(&command[1..])
-        .status()
-        .map_err(|e| format!("Failed to execute command: {e:?}"))?;
-
-    if !output.success() {
-        let msg = format!("Command exited with non-zero status: {output}");
-        return Err(msg);
-    }
-
-    Ok(())
+    exec_interactive(&build_user_command(&params))
 }
 
 fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {

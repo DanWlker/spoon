@@ -9,10 +9,12 @@ use ratatui::{
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
+    app::AppContext,
     color::ColorTheme,
     event::UserEvent,
     git::{GitTask, RemoteInfo},
-    widget::style::key_hints,
+    keybind::KeyBind,
+    widget::style::{badge, key_hints},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,15 +471,13 @@ impl GitDialog {
                 self.change(false);
                 DialogOutcome::None
             }
-            Some(UserEvent::ToggleStage | UserEvent::ToggleSelect) => {
-                if let Some((id, _, Field::Check(checked))) = self.fields.get_mut(self.selected) {
-                    *checked = !*checked;
-                    let id = *id;
-                    self.changed(id);
+            Some(UserEvent::DialogToggle) => {
+                if let Some((_, _, Field::Check(_))) = self.fields.get(self.selected) {
+                    self.change(true);
                 }
                 DialogOutcome::None
             }
-            Some(UserEvent::Edit) => {
+            Some(UserEvent::DialogEdit) => {
                 self.editing = matches!(
                     self.fields.get(self.selected),
                     Some((_, _, Field::Text { .. }))
@@ -523,16 +523,7 @@ impl GitDialog {
             }
             Field::Check(checked) => *checked = !*checked,
         }
-        self.changed_from(id, previous_branch);
-    }
-
-    // Updates the fields that follow the one changed.
-    fn changed(&mut self, id: FieldId) {
-        let previous_branch = self.value(FieldId::Branch);
-        self.changed_from(id, previous_branch);
-    }
-
-    fn changed_from(&mut self, id: FieldId, previous_branch: String) {
+        // the fields that follow the one changed
         let action = match &self.kind {
             DialogKind::Remote(action, _) => Some(*action),
             _ => None,
@@ -595,7 +586,7 @@ impl GitDialog {
                 }
                 args.extend(target.args.iter().cloned());
                 Ok(GitTask {
-                    steps: vec![args],
+                    args,
                     stash: local_changes == 1,
                     running: format!("Checking out {}", target.label),
                     done: format!("Checked out {}", target.label),
@@ -613,7 +604,7 @@ impl GitDialog {
                 args.extend(commits.iter().map(|c| c.hash.clone()));
                 let n = count_commits(commits.len());
                 Ok(GitTask {
-                    steps: vec![args],
+                    args,
                     running: format!("Cherry-picking {n}"),
                     done: format!("Cherry-picked {n}"),
                     uses_picks: true,
@@ -646,7 +637,7 @@ impl GitDialog {
                 ];
                 let n = count_commits(commits.len());
                 Ok(GitTask {
-                    steps: vec![args],
+                    args,
                     env: env
                         .iter()
                         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -665,7 +656,7 @@ impl GitDialog {
                 args.extend(commits.iter().map(|c| c.hash.clone()));
                 let n = count_commits(commits.len());
                 Ok(GitTask {
-                    steps: vec![args],
+                    args,
                     running: format!("Reverting {n}"),
                     done: format!("Reverted {n}"),
                     uses_picks: true,
@@ -752,7 +743,7 @@ impl GitDialog {
             }
         };
         Ok(GitTask {
-            steps: vec![args],
+            args,
             remote: true,
             running,
             done,
@@ -783,19 +774,12 @@ impl GitDialog {
             Ok(task) => task,
             Err(err) => return err,
         };
-        let commands: Vec<String> = task
-            .steps
-            .iter()
-            .map(|args| {
-                let args: Vec<&str> = args.iter().map(|a| shorten_hash(a)).collect();
-                format!("git {}", args.join(" "))
-            })
-            .collect();
-        let commands = commands.join("; ");
+        let args: Vec<&str> = task.args.iter().map(|a| shorten_hash(a)).collect();
+        let command = format!("git {}", args.join(" "));
         if task.stash {
-            format!("git stash; {commands}; git stash pop")
+            format!("git stash; {command}; git stash pop")
         } else {
-            commands
+            command
         }
     }
 }
@@ -840,11 +824,26 @@ fn shorten_hash(arg: &str) -> &str {
 pub struct GitDialogWidget<'a> {
     dialog: &'a GitDialog,
     theme: &'a ColorTheme,
+    keybind: &'a KeyBind,
 }
 
 impl<'a> GitDialogWidget<'a> {
-    pub fn new(dialog: &'a GitDialog, theme: &'a ColorTheme) -> Self {
-        GitDialogWidget { dialog, theme }
+    pub fn new(dialog: &'a GitDialog, ctx: &'a AppContext) -> Self {
+        GitDialogWidget {
+            dialog,
+            theme: &ctx.color_theme,
+            keybind: &ctx.keybind,
+        }
+    }
+
+    // The keys of the events, like "j/k", the first of each.
+    fn keys(&self, events: &[UserEvent]) -> String {
+        let keys: Vec<String> = events
+            .iter()
+            .filter_map(|event| self.keybind.keys_for_event(*event).into_iter().next())
+            .map(|key| key.to_lowercase())
+            .collect();
+        keys.join("/")
     }
 }
 
@@ -855,6 +854,14 @@ const MAX_CONTENT_WIDTH: usize = 90;
 impl Widget for GitDialogWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (dialog, theme) = (self.dialog, self.theme);
+        let (move_keys, change_keys, toggle_key, edit_key, run_key, cancel_key) = (
+            self.keys(&[UserEvent::NavigateDown, UserEvent::NavigateUp]),
+            self.keys(&[UserEvent::NavigateLeft, UserEvent::NavigateRight]),
+            self.keys(&[UserEvent::DialogToggle]),
+            self.keys(&[UserEvent::DialogEdit]),
+            self.keys(&[UserEvent::Confirm]),
+            self.keys(&[UserEvent::Cancel]),
+        );
         let dim = Style::default().fg(theme.status_input_transient_fg);
         let has_text = dialog
             .fields
@@ -864,14 +871,21 @@ impl Widget for GitDialogWidget<'_> {
             .fields
             .iter()
             .any(|(.., f)| matches!(f, Field::Check(_)));
-        let mut keys = vec![("j/k", "move"), ("h/l", "change")];
+        let mut keys = vec![
+            (move_keys.as_str(), "move"),
+            (change_keys.as_str(), "change"),
+        ];
         if has_check {
-            keys.push(("space", "toggle"));
+            keys.push((toggle_key.as_str(), "toggle"));
         }
         if has_text {
-            keys.push(("e", "type"));
+            keys.push((edit_key.as_str(), "type"));
         }
-        keys.extend([("enter", dialog.verb), ("esc", "cancel")]);
+        keys.extend([
+            (run_key.as_str(), dialog.verb),
+            (cancel_key.as_str(), "cancel"),
+        ]);
+        keys.retain(|(key, _)| !key.is_empty());
         let keys_hint = key_hints(&keys, theme);
         // the width stays the same while typing
         let min_width = keys_hint.width();
@@ -1003,12 +1017,7 @@ impl Widget for GitDialogWidget<'_> {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent_fg))
             .style(Style::default().fg(theme.fg).bg(theme.bg))
-            .title(
-                Span::raw(dialog.title)
-                    .fg(theme.accent_text_fg)
-                    .bg(theme.accent_fg)
-                    .bold(),
-            )
+            .title(badge(dialog.title, theme.accent_fg, theme))
             .padding(Padding::horizontal(1));
         let inner = block.inner(popup);
         Paragraph::new(lines).block(block).render(popup, buf);
@@ -1057,11 +1066,7 @@ mod tests {
 
     fn args(dialog: &GitDialog) -> String {
         let task = dialog.command().unwrap();
-        task.steps
-            .iter()
-            .map(|step| step.join(" "))
-            .collect::<Vec<_>>()
-            .join("; ")
+        task.args.join(" ")
     }
 
     fn commit(n: char) -> DialogCommit {
@@ -1102,16 +1107,16 @@ mod tests {
         // merging follows merge.autoStash, which is not set
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
 
         // once changed, the choice stays
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         press(&mut dialog, UserEvent::NavigateUp);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(args(&dialog), "pull --rebase --autostash origin main");
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(args(&dialog), "pull --no-rebase --autostash origin main");
     }
 
@@ -1140,9 +1145,9 @@ mod tests {
         assert_eq!(args(&dialog), "pull --rebase --no-autostash origin dev");
 
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(args(&dialog), "pull --no-rebase --autostash origin dev");
 
         let outcome = press(&mut dialog, UserEvent::Confirm);
@@ -1164,16 +1169,16 @@ mod tests {
         // type another name for the remote branch
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::Edit);
+        press(&mut dialog, UserEvent::DialogEdit);
         assert!(dialog.editing);
         dialog.handle_key(None, key(KeyCode::Char('2')));
         dialog.handle_key(None, key(KeyCode::Enter));
         assert!(!dialog.editing);
 
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
             args(&dialog),
             "push --force-with-lease --tags --set-upstream origin refs/heads/topic:refs/heads/topic2"
@@ -1184,7 +1189,7 @@ mod tests {
     fn test_graph_commands() {
         let mut dialog = GitDialog::rebase("main", "feature".into(), "feature", true);
         assert_eq!(args(&dialog), "rebase --autostash feature");
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(args(&dialog), "rebase --no-autostash feature");
 
         let mut dialog = GitDialog::merge("main", "feature".into(), "feature", None);
@@ -1214,9 +1219,9 @@ mod tests {
         assert!(dialog.warning().is_some());
 
         let mut dialog = GitDialog::cherry_pick("main", vec![commit('a'), commit('b')]);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::ToggleStage);
+        press(&mut dialog, UserEvent::DialogToggle);
         let a = "a".repeat(40);
         let b = "b".repeat(40);
         assert_eq!(args(&dialog), format!("cherry-pick --no-commit -x {a} {b}"));

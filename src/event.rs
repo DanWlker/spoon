@@ -30,7 +30,7 @@ pub enum AppEvent {
     // a git command running in the background finished
     TaskFinished {
         task: GitTask,
-        result: Result<String, String>,
+        result: Result<(), String>,
     },
     OpenHelp,
     CloseHelp,
@@ -248,6 +248,8 @@ pub enum UserEvent {
     Edit,
     ToggleAmend,
     Discard,
+    DialogToggle,
+    DialogEdit,
     Fetch,
     FetchAll,
     Pull,
@@ -351,6 +353,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "abort" => Ok(UserEvent::Abort),
                         "toggle_amend" => Ok(UserEvent::ToggleAmend),
                         "discard" => Ok(UserEvent::Discard),
+                        "dialog_toggle" => Ok(UserEvent::DialogToggle),
+                        "dialog_edit" => Ok(UserEvent::DialogEdit),
                         "fetch" => Ok(UserEvent::Fetch),
                         "fetch_all" => Ok(UserEvent::FetchAll),
                         "pull" => Ok(UserEvent::Pull),
@@ -398,6 +402,8 @@ pub enum Page {
     // a tab of the commit details having the focus, on the graph
     Details,
     LocalChanges,
+    // a popup confirming a git command, like fetch or merge
+    Dialog,
 }
 
 impl UserEvent {
@@ -420,6 +426,7 @@ impl UserEvent {
             | UserEvent::ToggleAmend
             | UserEvent::Edit
             | UserEvent::Discard => Some(Page::LocalChanges),
+            UserEvent::DialogToggle | UserEvent::DialogEdit => Some(Page::Dialog),
             _ => None,
         }
     }

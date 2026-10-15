@@ -4,7 +4,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
 };
 
@@ -14,10 +14,7 @@ use crate::color::ColorTheme;
 // `extra`, like "· 2 picked", follows it.
 pub fn panel_title(label: &str, extra: &str, focused: bool, theme: &ColorTheme) -> Line<'static> {
     let mut spans = vec![if focused {
-        Span::raw(format!(" {label} "))
-            .fg(theme.accent_text_fg)
-            .bg(theme.accent_fg)
-            .bold()
+        badge(format!(" {label} "), theme.accent_fg, theme)
     } else {
         Span::raw(format!(" {label} ")).fg(theme.fg)
     }];
@@ -25,6 +22,20 @@ pub fn panel_title(label: &str, extra: &str, focused: bool, theme: &ColorTheme) 
         spans.push(Span::raw(format!(" {extra} ")).fg(theme.highlight_fg));
     }
     Line::from(spans)
+}
+
+// Text on a colored background, like the title of the focused panel.
+pub fn badge<'a>(
+    text: impl Into<std::borrow::Cow<'a, str>>,
+    bg: Color,
+    theme: &ColorTheme,
+) -> Span<'a> {
+    Span::raw(text).fg(theme.accent_text_fg).bg(bg).bold()
+}
+
+// The width of the file tree beside a diff or a preview, in `width`.
+pub fn tree_panel_width(width: u16) -> u16 {
+    (width / 3).clamp(20, 50).min(width)
 }
 
 // Keys and what they do, like "j/k move • enter push • esc cancel".

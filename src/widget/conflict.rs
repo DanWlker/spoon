@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::git::{ConflictSide, Repository};
 
 // The two sides of a conflicted file, to pick one of them.
@@ -15,8 +13,8 @@ pub struct ConflictView {
 impl ConflictView {
     // The conflicting blocks of the file in the working tree, or the whole content of each side when
     // the file has no conflict markers (when one side deleted it, or it is binary).
-    pub fn load(repository: &Repository, toplevel: &Path, path: &str) -> Self {
-        let content = std::fs::read_to_string(toplevel.join(path)).unwrap_or_default();
+    pub fn load(repository: &Repository, path: &str) -> Self {
+        let content = std::fs::read_to_string(repository.path().join(path)).unwrap_or_default();
         if let Some(view) = parse_conflict_markers(&content) {
             return view;
         }

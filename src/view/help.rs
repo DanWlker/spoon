@@ -357,6 +357,16 @@ fn build_lines(
     ];
     let (local_changes_key_lines, local_changes_value_lines) = build_block_lines("Local Changes:", local_changes_helps, color_theme, keybind);
     
+    let dialog_helps = vec![
+        (vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "Select next/previous field".into()),
+        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Change the selected field".into()),
+        (vec![UserEvent::DialogToggle], "Toggle the selected checkbox".into()),
+        (vec![UserEvent::DialogEdit], "Type into the selected text field".into()),
+        (vec![UserEvent::Confirm], "Run the command".into()),
+        (vec![UserEvent::Cancel, UserEvent::Close], "Cancel".into()),
+    ];
+    let (dialog_key_lines, dialog_value_lines) = build_block_lines("Git Command Popups:", dialog_helps, color_theme, keybind);
+
     let mut user_command_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Close user command".into()),
         (vec![UserEvent::NavigateDown], "Scroll down".into()),
@@ -383,6 +393,7 @@ fn build_lines(
         detail_key_lines,
         refs_key_lines,
         local_changes_key_lines,
+        dialog_key_lines,
         user_command_key_lines,
     ]);
     let value_lines = join_line_groups_with_empty(vec![
@@ -392,6 +403,7 @@ fn build_lines(
         detail_value_lines,
         refs_value_lines,
         local_changes_value_lines,
+        dialog_value_lines,
         user_command_value_lines,
     ]);
 

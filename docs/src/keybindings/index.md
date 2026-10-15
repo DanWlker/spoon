@@ -27,7 +27,7 @@ The default key bindings can be overridden.
 - Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, and whether to force push (`--force-with-lease`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> toggles a checkbox, <kbd>e</kbd> types a branch name (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> or <kbd>v</kbd> toggles a checkbox (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
 The popup shows the git command it will run.
 
 The command runs in the background, the status line shows it while it runs, and the app refreshes when it is done.

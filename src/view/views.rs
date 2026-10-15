@@ -14,9 +14,21 @@ use crate::{
     widget::{
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
-        local_changes::{CommitDraft, LocalChangesSection, LocalChangesState},
+        local_changes::LocalChangesState,
     },
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewKind {
+    Default,
+    List,
+    Detail,
+    // the details comparing two commits
+    Compare,
+    UserCommand,
+    LocalChanges,
+    Help,
+}
 
 #[derive(Debug, Default)]
 pub enum View<'a> {
@@ -41,13 +53,15 @@ impl<'a> View<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    // `focused` is false while another panel, like the refs sidebar, has the focus;
+    // the page shows its selection dimmed then.
+    pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         match self {
             View::Default => {}
-            View::List(view) => view.render(f, area),
-            View::Detail(view) => view.render(f, area),
+            View::List(view) => view.render(f, area, focused),
+            View::Detail(view) => view.render(f, area, focused),
             View::UserCommand(view) => view.render(f, area),
-            View::LocalChanges(view) => view.render(f, area),
+            View::LocalChanges(view) => view.render(f, area, focused),
             View::Help(view) => view.render(f, area),
         }
     }
@@ -93,6 +107,19 @@ impl<'a> View<'a> {
         }
     }
 
+    // What the view shows, to tell when the screen must be cleared of the graph images.
+    pub fn kind(&self) -> ViewKind {
+        match self {
+            View::Default => ViewKind::Default,
+            View::List(_) => ViewKind::List,
+            View::Detail(view) if view.is_comparing() => ViewKind::Compare,
+            View::Detail(_) => ViewKind::Detail,
+            View::UserCommand(_) => ViewKind::UserCommand,
+            View::LocalChanges(_) => ViewKind::LocalChanges,
+            View::Help(_) => ViewKind::Help,
+        }
+    }
+
     pub fn image_clear_area(&self, area: Rect) -> Option<Rect> {
         match self {
             View::Default | View::List(_) => None,
@@ -102,13 +129,10 @@ impl<'a> View<'a> {
         }
     }
 
-    // False while the refs sidebar has the focus.
-    pub fn set_focused(&mut self, focused: bool) {
-        match self {
-            View::List(view) => view.set_focused(focused),
-            View::Detail(view) => view.set_focused(focused),
-            View::LocalChanges(view) => view.set_focused(focused),
-            _ => {}
+    // Another panel, like the refs sidebar, takes the focus from the page.
+    pub fn blur(&mut self) {
+        if let View::LocalChanges(view) = self {
+            view.blur();
         }
     }
 
@@ -117,6 +141,17 @@ impl<'a> View<'a> {
             View::List(view) => view.clear_picks(),
             View::Detail(view) => view.clear_picks(),
             _ => {}
+        }
+    }
+
+    // Takes the commit list out of a view showing it, to build the next view on it.
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
+        match self {
+            View::List(view) => Some(view.take_list_state()),
+            View::Detail(view) => Some(view.take_list_state()),
+            View::UserCommand(view) => Some(view.take_list_state()),
+            View::LocalChanges(view) => Some(view.take_list_state()),
+            View::Default | View::Help(_) => None,
         }
     }
 
@@ -289,13 +324,7 @@ pub struct UserCommandRefreshViewContext {
     pub n: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct LocalChangesRefreshViewContext {
-    pub section: LocalChangesSection,
-    pub selected_path: Option<String>,
-    // boxed to keep the refresh context small
-    pub commit_draft: Box<CommitDraft>,
-}
+pub use crate::widget::local_changes::LocalChangesSnapshot as LocalChangesRefreshViewContext;
 
 // What the app keeps besides the view: the sidebar, and the local changes page while the graph is shown.
 #[derive(Debug, Clone)]

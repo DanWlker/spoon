@@ -18,8 +18,6 @@ use crate::{
 #[derive(Debug)]
 pub struct ListView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
-    // false while the refs sidebar has the focus
-    focused: bool,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -33,7 +31,6 @@ impl<'a> ListView<'a> {
     ) -> ListView<'a> {
         ListView {
             commit_list_state: Some(commit_list_state),
-            focused: true,
             ctx,
             tx,
         }
@@ -216,8 +213,8 @@ impl<'a> ListView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let (ctx, focused) = (self.ctx.clone(), self.focused);
+    pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        let ctx = self.ctx.clone();
         render_commit_list_panel(f, area, self.as_mut_list_state(), ctx, focused);
     }
 
@@ -238,10 +235,6 @@ impl<'a> ListView<'a> {
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state.as_mut().unwrap()
-    }
-
-    pub fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
     }
 
     pub fn clear_picks(&mut self) {

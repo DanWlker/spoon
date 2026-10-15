@@ -130,8 +130,7 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
     ) -> Result<Self> {
-        check_git_repository(path)?;
-        let (toplevel, git_dir) = locate_repository(path);
+        let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
 
         let (mut ref_map, head) = load_refs(path);
@@ -291,35 +290,15 @@ impl Repository {
 
     // The diff of `paths` (all files when empty) from one commit to another.
     pub fn diff_between(&self, base: &str, target: &str, paths: &[&str]) -> String {
-        let mut args = vec![
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "-M",
-            base,
-            target,
-            "--",
-        ];
+        let mut args = PATCH_DIFF_ARGS.to_vec();
+        args.extend_from_slice(&["-M", base, target, "--"]);
         args.extend_from_slice(paths);
         git_output(&self.path, &args).unwrap_or_default()
     }
 
     // The files changed from one commit to another.
     pub fn diff_summary_between(&self, base: &CommitHash, target: &CommitHash) -> Vec<FileChange> {
-        let args = [
-            "diff",
-            "--name-status",
-            "-M",
-            base.as_str(),
-            target.as_str(),
-        ];
-        git_output(&self.path, &args)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(parse_name_status_line)
-            .collect()
+        diff_summary(&self.path, base.as_str(), target.as_str())
     }
 
     // The commit checked out, None in a repository without commits.
@@ -329,18 +308,22 @@ impl Repository {
             .map(|hash| CommitHash::from(hash.trim()))
     }
 
-    // Where the commit is in the commit list, newer commits first.
-    pub fn commit_position(&self, commit_hash: &CommitHash) -> Option<usize> {
-        self.commit_hashes.iter().position(|h| h == commit_hash)
+    // Orders commits as in the commit list, newest first, in one pass over the list;
+    // commits not in it go last.
+    pub fn sort_newest_first(&self, hashes: &mut [CommitHash]) {
+        let wanted: rustc_hash::FxHashSet<&CommitHash> = hashes.iter().collect();
+        let positions: FxHashMap<&CommitHash, usize> = self
+            .commit_hashes
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| wanted.contains(h))
+            .map(|(i, h)| (h, i))
+            .collect();
+        let position = |h: &CommitHash| positions.get(h).copied().unwrap_or(usize::MAX);
+        hashes.sort_by_cached_key(|h| position(h));
     }
 
-    pub fn is_ancestor(&self, ancestor: &CommitHash, descendant: &str) -> bool {
-        let args = ["merge-base", "--is-ancestor", ancestor.as_str(), descendant];
-        git_output(&self.path, &args).is_ok()
-    }
-
-    // Whether there are merge commits after `base` up to `head`.
-    // The parents of a commit, asked of git as they may not be loaded, with `--max-count`.
+    // The parents of a commit, asked of git as they may not be loaded (with `--max-count`).
     pub fn parents_of(&self, commit: &str) -> std::result::Result<Vec<CommitHash>, String> {
         let out = git_output(
             &self.path,
@@ -353,13 +336,24 @@ impl Repository {
             .collect())
     }
 
-    pub fn has_merges_between(&self, base: Option<&CommitHash>, head: &str) -> bool {
-        let range = match base {
-            Some(base) => format!("{}..{head}", base.as_str()),
-            None => head.to_string(),
-        };
-        git_output(&self.path, &["rev-list", "--merges", "-n", "1", &range])
-            .is_ok_and(|out| !out.trim().is_empty())
+    // The commits after `base` (all of them when None) up to `head`, with their parents.
+    pub fn commits_after(
+        &self,
+        base: Option<&CommitHash>,
+        head: &str,
+    ) -> std::result::Result<FxHashMap<CommitHash, Vec<CommitHash>>, String> {
+        let exclude = base.map(|base| format!("^{}", base.as_str()));
+        let mut args = vec!["rev-list", "--parents", head];
+        args.extend(exclude.as_deref());
+        args.push("--");
+        let out = git_output(&self.path, &args)?;
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let mut hashes = line.split_whitespace().map(CommitHash::from);
+                Some((hashes.next()?, hashes.collect()))
+            })
+            .collect())
     }
 
     // The contents of a file at a commit.
@@ -369,18 +363,7 @@ impl Repository {
         path: &str,
     ) -> std::result::Result<Vec<u8>, String> {
         let object = format!("{}:{path}", commit_hash.as_str());
-        let output = Command::new("git")
-            .args(["cat-file", "blob", &object])
-            .current_dir(&self.path)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("failed to run git cat-file: {e}"))?;
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("git cat-file failed: {}", stderr.trim()))
-        }
+        git_output_bytes(&self.path, &["cat-file", "blob", &object])
     }
 
     // All file paths in the tree of a commit.
@@ -491,64 +474,74 @@ impl Repository {
         }
     }
 
-    // The top directory of the working tree, which file paths of local changes are relative to.
-    pub fn toplevel(&self) -> PathBuf {
-        self.path.clone()
-    }
-
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
     pub fn remote_info(&self) -> RemoteInfo {
-        let remotes: Vec<String> = git_output(&self.path, &["remote"])
-            .unwrap_or_default()
-            .lines()
-            .map(String::from)
-            .collect();
+        // the remotes and the settings of pulling, in one call
+        let pattern = r"^(remote\..*\.url|pull\.rebase|rebase\.autostash|merge\.autostash)$";
+        let config =
+            git_output(&self.path, &["config", "-z", "--get-regexp", pattern]).unwrap_or_default();
+        let mut remotes = vec![];
+        let mut settings = FxHashMap::default();
+        for entry in config.split('\0').filter(|e| !e.is_empty()) {
+            // a key, then its value on the next line (none for a boolean set by its name alone)
+            let (key, value) = entry.split_once('\n').unwrap_or((entry, "true"));
+            match key
+                .strip_prefix("remote.")
+                .and_then(|k| k.strip_suffix(".url"))
+            {
+                Some(remote) if !remotes.iter().any(|r| r == remote) => {
+                    remotes.push(remote.to_string())
+                }
+                Some(_) => {}
+                // the last value wins, like `git config --get`
+                None => {
+                    settings.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+        remotes.sort();
+        let setting = |key: &str| settings.get(key).map(String::as_str);
 
-        let mut remote_branches: FxHashMap<String, Vec<String>> = FxHashMap::default();
+        // the branches of the remotes and the local ones with their upstreams, in one call
+        let format = "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)";
         let refs = git_output(
             &self.path,
-            &["for-each-ref", "--format=%(refname)", "refs/remotes"],
+            &["for-each-ref", format, "refs/heads", "refs/remotes"],
         )
         .unwrap_or_default();
-        for name in refs.lines() {
-            let name = name.trim_start_matches("refs/remotes/");
-            // remote names may contain slashes, the longest matching one owns the branch
-            let remote = remotes
-                .iter()
-                .filter(|remote| name.starts_with(&format!("{remote}/")))
-                .max_by_key(|remote| remote.len());
-            if let Some(remote) = remote {
-                let branch = &name[remote.len() + 1..];
-                if branch != "HEAD" {
-                    remote_branches
-                        .entry(remote.clone())
-                        .or_default()
-                        .push(branch.to_string());
-                }
-            }
-        }
-
-        let format = "--format=%(refname:short)%00%(upstream:remotename)%00%(upstream:remoteref)";
-        let heads =
-            git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
+        let mut remote_branches: FxHashMap<String, Vec<String>> = FxHashMap::default();
         let mut branches = vec![];
         let mut upstreams = FxHashMap::default();
-        for line in heads.lines() {
+        for line in refs.lines() {
             let parts: Vec<&str> = line.split('\0').collect();
-            let [name, remote, remote_ref] = parts[..] else {
+            let [refname, remote, remote_ref] = parts[..] else {
                 continue;
             };
-            branches.push(name.to_string());
-            if let Some(branch) = remote_ref.strip_prefix("refs/heads/") {
-                if !remote.is_empty() {
-                    upstreams.insert(name.to_string(), (remote.to_string(), branch.to_string()));
+            if let Some(name) = refname.strip_prefix("refs/heads/") {
+                branches.push(name.to_string());
+                if let Some(branch) = remote_ref.strip_prefix("refs/heads/") {
+                    if !remote.is_empty() {
+                        upstreams
+                            .insert(name.to_string(), (remote.to_string(), branch.to_string()));
+                    }
+                }
+            } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+                // remote names may contain slashes, the longest matching one owns the branch
+                let owner = remotes
+                    .iter()
+                    .filter(|remote| name.starts_with(&format!("{remote}/")))
+                    .max_by_key(|remote| remote.len());
+                if let Some(owner) = owner {
+                    let branch = &name[owner.len() + 1..];
+                    if branch != "HEAD" {
+                        remote_branches
+                            .entry(owner.clone())
+                            .or_default()
+                            .push(branch.to_string());
+                    }
                 }
             }
         }
-
-        // pull.rebase may also be "merges" or "interactive", which rebase too
-        let pull_rebase = git_output(&self.path, &["config", "--get", "pull.rebase"])
-            .is_ok_and(|v| !matches!(v.trim(), "false" | "no" | "off" | "0" | ""));
 
         RemoteInfo {
             current_branch: match &self.head {
@@ -559,9 +552,10 @@ impl Repository {
             remote_branches,
             branches,
             upstreams,
-            pull_rebase,
-            rebase_auto_stash: self.config_bool("rebase.autoStash").unwrap_or(false),
-            merge_auto_stash: self.config_bool("merge.autoStash").unwrap_or(false),
+            // pull.rebase may also be "merges" or "interactive", which rebase too
+            pull_rebase: setting("pull.rebase").is_some_and(|v| parse_git_bool(v) != Some(false)),
+            rebase_auto_stash: setting("rebase.autostash").and_then(parse_git_bool) == Some(true),
+            merge_auto_stash: setting("merge.autostash").and_then(parse_git_bool) == Some(true),
         }
     }
 
@@ -574,38 +568,24 @@ impl Repository {
 
     // A boolean git config value, None when it is not set (or not a boolean).
     pub fn config_bool(&self, key: &str) -> Option<bool> {
-        match git_output(&self.path, &["config", "--type=bool", "--get", key]) {
-            Ok(v) if v.trim() == "true" => Some(true),
-            Ok(v) if v.trim() == "false" => Some(false),
-            _ => None,
-        }
+        self.config(key).as_deref().and_then(parse_git_bool)
     }
 
+    // The top directory of the working tree, which file paths of local changes are relative to.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     // The content of a conflicted file on one side, None when that side deleted it.
     pub fn conflict_side_content(&self, path: &str, side: ConflictSide) -> Option<String> {
-        let stage = match side {
-            ConflictSide::Ours => 2,
-            ConflictSide::Theirs => 3,
-        };
-        self.stage_blob(path, stage)
+        self.stage_blob(path, side.stage())
             .map(|blob| String::from_utf8_lossy(&blob).into_owned())
     }
 
     // The content of a conflicted file in an index stage: 1 the base, 2 ours, 3 theirs.
     fn stage_blob(&self, path: &str, stage: u8) -> Option<Vec<u8>> {
         let object = format!(":{stage}:{path}");
-        let output = Command::new("git")
-            .args(["cat-file", "blob", &object])
-            .current_dir(&self.path)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        output.status.success().then_some(output.stdout)
+        git_output_bytes(&self.path, &["cat-file", "blob", &object]).ok()
     }
 
     // Resolves a conflicted file by taking one side where the two conflict, keeping the changes
@@ -615,28 +595,35 @@ impl Repository {
         path: &str,
         side: ConflictSide,
     ) -> std::result::Result<(), String> {
-        if self.conflict_side_content(path, side).is_none() {
-            return run_git(&self.path, &["rm", "--quiet", "--", path], None);
-        }
-        match self.merge_file_favoring(path, side) {
+        let ours = self.stage_blob(path, ConflictSide::Ours.stage());
+        let theirs = self.stage_blob(path, ConflictSide::Theirs.stage());
+        let (Some(ours), Some(theirs)) = (ours, theirs) else {
+            // one side deleted the file: it is kept as it is on the side taken
+            let kept = self.stage_blob(path, side.stage()).is_some();
+            return if kept {
+                run_git(&self.path, &["checkout", side.option(), "--", path], None)
+                    .and_then(|_| run_git(&self.path, &["add", "--", path], None))
+            } else {
+                run_git(&self.path, &["rm", "--quiet", "--", path], None)
+            };
+        };
+        match self.merge_file_favoring(path, side, ours, theirs) {
             Some(merged) => std::fs::write(self.path.join(path), merged)
                 .map_err(|e| format!("failed to write {path}: {e}"))?,
             // a binary file can't be merged by lines, so it is taken whole
-            None => {
-                let option = match side {
-                    ConflictSide::Ours => "--ours",
-                    ConflictSide::Theirs => "--theirs",
-                };
-                run_git(&self.path, &["checkout", option, "--", path], None)?;
-            }
+            None => run_git(&self.path, &["checkout", side.option(), "--", path], None)?,
         }
         run_git(&self.path, &["add", "--", path], None)
     }
 
     // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`.
-    fn merge_file_favoring(&self, path: &str, side: ConflictSide) -> Option<Vec<u8>> {
-        let ours = self.stage_blob(path, 2)?;
-        let theirs = self.stage_blob(path, 3)?;
+    fn merge_file_favoring(
+        &self,
+        path: &str,
+        side: ConflictSide,
+        ours: Vec<u8>,
+        theirs: Vec<u8>,
+    ) -> Option<Vec<u8>> {
         // both sides added the file when there is no base
         let base = self.stage_blob(path, 1).unwrap_or_default();
         let files = [("ours", ours), ("base", base), ("theirs", theirs)]
@@ -647,24 +634,20 @@ impl Repository {
             std::fs::write(file, blob).ok()?;
             paths.push(file.to_string_lossy().into_owned());
         }
-        let option = match side {
-            ConflictSide::Ours => "--ours",
-            ConflictSide::Theirs => "--theirs",
-        };
-        let output = Command::new("git")
-            .args(["merge-file", "-p", option, &paths[0], &paths[1], &paths[2]])
-            .current_dir(&self.path)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
-        for (file, _) in &files {
-            if let Some(file) = file {
-                let _ = std::fs::remove_file(file);
-            }
-        }
+        let args = [
+            "merge-file",
+            "-p",
+            side.option(),
+            &paths[0],
+            &paths[1],
+            &paths[2],
+        ];
         // fails (with a negative code) on binary files
-        let output = output.ok()?;
-        output.status.success().then_some(output.stdout)
+        let merged = git_output_bytes(&self.path, &args).ok();
+        for file in files.iter().filter_map(|(file, _)| file.as_ref()) {
+            let _ = std::fs::remove_file(file);
+        }
+        merged
     }
 
     // The commit message git prepared for the operation in progress, without its comment lines.
@@ -754,44 +737,37 @@ impl Repository {
     }
 }
 
-fn check_git_repository(path: &Path) -> Result<()> {
-    if !is_inside_work_tree(path) && !is_bare_repository(path) {
-        let msg = "not a git repository (or any of the parent directories)";
-        return Err(msg.into());
+// A boolean as git reads it in its config, None when it isn't one.
+fn parse_git_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" | "" => Some(false),
+        _ => None,
     }
-    Ok(())
 }
 
-// The top directory of the working tree (None when bare) and the git directory of the repository at `path`.
-fn locate_repository(path: &Path) -> (Option<PathBuf>, Option<PathBuf>) {
-    let git_dir = git_output(path, &["rev-parse", "--absolute-git-dir"])
-        .ok()
-        .map(|p| PathBuf::from(p.trim()));
-    let toplevel = is_inside_work_tree(path)
+// The top directory of the working tree (None when bare) and the git directory of the repository
+// at `path`, which must be in a working tree or a bare repository.
+fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    let not_a_repository = || "not a git repository (or any of the parent directories)".into();
+    let args = [
+        "rev-parse",
+        "--is-inside-work-tree",
+        "--is-bare-repository",
+        "--absolute-git-dir",
+    ];
+    let output = git_output(path, &args).map_err(|_| not_a_repository())?;
+    let mut lines = output.lines();
+    let (inside_work_tree, bare) = (lines.next() == Some("true"), lines.next() == Some("true"));
+    let git_dir = lines.next().map(PathBuf::from);
+    if !inside_work_tree && !bare {
+        return Err(not_a_repository());
+    }
+    let toplevel = inside_work_tree
         .then(|| git_output(path, &["rev-parse", "--show-toplevel"]).ok())
         .flatten()
         .map(|p| PathBuf::from(p.trim()));
-    (toplevel, git_dir)
-}
-
-fn is_inside_work_tree(path: &Path) -> bool {
-    let output = Command::new("git")
-        .arg("rev-parse")
-        .arg("--is-inside-work-tree")
-        .current_dir(path)
-        .output()
-        .unwrap();
-    output.status.success() && output.stdout == b"true\n"
-}
-
-fn is_bare_repository(path: &Path) -> bool {
-    let output = Command::new("git")
-        .arg("rev-parse")
-        .arg("--is-bare-repository")
-        .current_dir(path)
-        .output()
-        .unwrap();
-    output.status.success() && output.stdout == b"true\n"
+    Ok((toplevel, git_dir))
 }
 
 fn load_all_commits(
@@ -1159,7 +1135,7 @@ fn get_current_branch(path: &Path) -> Option<String> {
     branch
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FileChange {
     Add { path: String },
     Modify { path: String },
@@ -1168,30 +1144,15 @@ pub enum FileChange {
 }
 
 pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
-    let mut cmd = Command::new("git")
-        .arg("diff")
-        .arg("--name-status")
-        .arg(format!("{}^", commit_hash.0))
-        .arg(&commit_hash.0)
-        .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    diff_summary(path, &format!("{}^", commit_hash.0), &commit_hash.0)
+}
 
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
-
-    let reader = BufReader::new(stdout);
-
-    let mut changes = Vec::new();
-
-    for line in reader.lines() {
-        changes.extend(parse_name_status_line(&line.unwrap()));
-    }
-
-    cmd.wait().unwrap();
-
-    changes
+fn diff_summary(path: &Path, base: &str, target: &str) -> Vec<FileChange> {
+    git_output(path, &["diff", "--name-status", "-M", base, target])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(parse_name_status_line)
+        .collect()
 }
 
 // A line of `git diff --name-status`, like "M\tsrc/a.rs" or "R087\told.rs\tnew.rs".
@@ -1248,6 +1209,24 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
 pub enum ConflictSide {
     Ours,
     Theirs,
+}
+
+impl ConflictSide {
+    // The index stage of the side in a conflict.
+    fn stage(self) -> u8 {
+        match self {
+            ConflictSide::Ours => 2,
+            ConflictSide::Theirs => 3,
+        }
+    }
+
+    // The option of git checkout and git merge-file that takes the side.
+    fn option(self) -> &'static str {
+        match self {
+            ConflictSide::Ours => "--ours",
+            ConflictSide::Theirs => "--theirs",
+        }
+    }
 }
 
 // An operation that can stop on conflicts, leaving the repository in the middle of it.
@@ -1333,19 +1312,11 @@ impl LocalChanges {
 }
 
 fn load_local_changes(path: &Path) -> LocalChanges {
-    let output = Command::new("git")
-        .arg("status")
-        .arg("--porcelain=v1")
-        .arg("--untracked-files=all")
-        .arg("-z")
-        .current_dir(path)
-        .stderr(Stdio::null())
-        .output();
-    match output {
-        // fails in bare repositories, which have no working tree
-        Ok(output) if output.status.success() => parse_status_porcelain(&output.stdout),
-        _ => LocalChanges::default(),
-    }
+    let args = ["status", "--porcelain=v1", "--untracked-files=all", "-z"];
+    // fails in bare repositories, which have no working tree
+    git_output_bytes(path, &args)
+        .map(|out| parse_status_porcelain(&out))
+        .unwrap_or_default()
 }
 
 fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
@@ -1404,6 +1375,16 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
     changes
 }
 
+// A diff in the format it is parsed in, and applied back as a patch: ignoring user config that
+// changes it, like colors, external diff tools or other prefixes.
+const PATCH_DIFF_ARGS: [&str; 5] = [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
 fn load_local_change_diff(
     path: &Path,
     targets: &[&str],
@@ -1412,12 +1393,7 @@ fn load_local_change_diff(
     staged_base: Option<&str>,
 ) -> String {
     let mut cmd = Command::new("git");
-    // the output is applied back as a patch, so ignore user config that changes its format
-    cmd.arg("diff")
-        .arg("--no-color")
-        .arg("--no-ext-diff")
-        .arg("--src-prefix=a/")
-        .arg("--dst-prefix=b/");
+    cmd.args(PATCH_DIFF_ARGS);
     if staged {
         cmd.arg("--cached")
             .args(staged_base)
@@ -1497,9 +1473,9 @@ impl RemoteInfo {
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitTask {
-    // run one after another, stopping at the first that fails
-    pub steps: Vec<Vec<String>>,
-    // stash the local changes before the steps, and reapply them after
+    // the arguments of the git command
+    pub args: Vec<String>,
+    // stash the local changes before the command, and reapply them after
     pub stash: bool,
     // talks to a remote
     pub remote: bool,
@@ -1517,7 +1493,7 @@ pub struct GitTask {
 impl GitTask {
     pub fn new(args: &[&str], running: String, done: String) -> Self {
         GitTask {
-            steps: vec![args.iter().map(|a| a.to_string()).collect()],
+            args: args.iter().map(|a| a.to_string()).collect(),
             running,
             done,
             ..Default::default()
@@ -1525,8 +1501,8 @@ impl GitTask {
     }
 }
 
-// Runs the steps of a task and returns the last line it printed.
-pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<String, String> {
+// Runs the command of a task, between stashing and reapplying the local changes if it says so.
+pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> {
     let stashed = task.stash
         && !git_output(path, &["status", "--porcelain"])
             .unwrap_or_default()
@@ -1539,19 +1515,16 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<String, Stri
     }
     let pop = || run_task_step(path, &["stash", "pop"].map(String::from), task);
 
-    let mut last = String::new();
-    for step in &task.steps {
-        match run_task_step(path, step, task) {
-            Ok(output) => last = output,
-            Err(err) if stashed => {
-                // nothing changed, the local changes go back
-                return Err(match pop() {
-                    Ok(_) => err,
-                    Err(_) => format!("{err} (the local changes are kept in the stash)"),
-                });
-            }
-            Err(err) => return Err(err),
+    match run_task_step(path, &task.args, task) {
+        Ok(()) => {}
+        Err(err) if stashed => {
+            // nothing changed, the local changes go back
+            return Err(match pop() {
+                Ok(()) => err,
+                Err(_) => format!("{err} (the local changes are kept in the stash)"),
+            });
         }
+        Err(err) => return Err(err),
     }
     if stashed {
         pop().map_err(|err| {
@@ -1561,16 +1534,12 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<String, Stri
             )
         })?;
     }
-    Ok(last)
+    Ok(())
 }
 
 // It runs while the app owns the terminal, so git must not prompt: no editor (the messages git
 // prepares are used as they are), and credentials come from a helper or an agent.
-fn run_task_step(
-    path: &Path,
-    args: &[String],
-    task: &GitTask,
-) -> std::result::Result<String, String> {
+fn run_task_step(path: &Path, args: &[String], task: &GitTask) -> std::result::Result<(), String> {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(path)
@@ -1595,15 +1564,8 @@ fn run_task_step(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let last_line = |text: &str| {
-        text.lines()
-            .map(str::trim)
-            .rfind(|line| !line.is_empty())
-            .unwrap_or_default()
-            .to_string()
-    };
     if output.status.success() {
-        Ok(last_line(&text))
+        Ok(())
     } else {
         // a rejected ref or a conflict says what went wrong best, then the error lines,
         // and the hints after them how to fix it
@@ -1613,8 +1575,8 @@ fn run_task_step(
             .or_else(|| {
                 lines().find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
             })
-            .map(String::from)
-            .unwrap_or_else(|| last_line(&text));
+            .or_else(|| lines().rfind(|line| !line.is_empty()))
+            .unwrap_or_default();
         Err(format!("git {} failed: {error}", args[0]))
     }
 }
@@ -1625,6 +1587,10 @@ fn empty_tree(path: &Path) -> std::result::Result<String, String> {
 }
 
 fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    git_output_bytes(path, args).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(path)
@@ -1632,7 +1598,7 @@ fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String>
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(output.stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git {} failed: {}", args[0], stderr.trim()))

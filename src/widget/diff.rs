@@ -287,20 +287,41 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize)> {
     Some((start(old)?, old_count, start(new)?))
 }
 
-// The lines displaying `diff`: line numbers of both sides, then the colored text.
-pub fn diff_lines(diff: &ParsedDiff, theme: &ColorTheme) -> Vec<Line<'static>> {
+// The lines of a diff without hunks: binary files and mode-only changes.
+fn hunkless_lines(diff: &ParsedDiff) -> impl Iterator<Item = &str> {
+    diff.raw
+        .lines()
+        .filter(|l| !l.starts_with("diff --git") && !l.starts_with("index "))
+}
+
+// The number of lines `diff_lines` displays for `diff`.
+pub fn diff_line_count(diff: &ParsedDiff) -> usize {
+    if diff.raw.is_empty() {
+        1
+    } else if diff.rows.is_empty() {
+        hunkless_lines(diff).count()
+    } else {
+        diff.rows.len()
+    }
+}
+
+// The lines displaying `diff` in `range` (of `diff_line_count`), only those on screen:
+// line numbers of both sides, then the colored text.
+pub fn diff_lines<'a>(
+    diff: &'a ParsedDiff,
+    theme: &ColorTheme,
+    range: Range<usize>,
+) -> Vec<Line<'a>> {
     let dim = theme.status_input_transient_fg;
     if diff.raw.is_empty() {
         // e.g. a directory of untracked files, which `git diff` does not show
         return vec![Line::raw("No diff to show").fg(dim)];
     }
     if diff.rows.is_empty() {
-        // binary files and mode-only changes have no hunks
-        return diff
-            .raw
-            .lines()
-            .filter(|l| !l.starts_with("diff --git") && !l.starts_with("index "))
-            .map(|l| Line::raw(l.to_string()).fg(dim))
+        return hunkless_lines(diff)
+            .skip(range.start)
+            .take(range.len())
+            .map(|l| Line::raw(l).fg(dim))
             .collect();
     }
 
@@ -316,6 +337,8 @@ pub fn diff_lines(diff: &ParsedDiff, theme: &ColorTheme) -> Vec<Line<'static>> {
 
     diff.rows
         .iter()
+        .skip(range.start)
+        .take(range.len())
         .map(|row| {
             let gutter = format!("{} {} ", number(row.old), number(row.new));
             let text_color = match row.kind {
@@ -328,7 +351,7 @@ pub fn diff_lines(diff: &ParsedDiff, theme: &ColorTheme) -> Vec<Line<'static>> {
             };
             Line::from(vec![
                 Span::raw(gutter).fg(dim),
-                Span::raw(row.text.clone()).fg(text_color),
+                Span::raw(row.text.as_str()).fg(text_color),
             ])
         })
         .collect()

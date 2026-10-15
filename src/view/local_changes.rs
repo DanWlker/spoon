@@ -10,12 +10,12 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     external::{editor_command, merge_tool_command},
-    view::{ListRefreshViewContext, LocalChangesRefreshViewContext, RefreshViewContext},
+    view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::CommitListState,
         local_changes::{
             ConflictMove, ExternalRequest, LocalChangesPanel, LocalChangesSection,
-            LocalChangesState,
+            LocalChangesSnapshot, LocalChangesState,
         },
         tree_query::QueryKind,
     },
@@ -24,7 +24,7 @@ use crate::{
 #[derive(Debug)]
 pub struct LocalChangesView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
-    local_changes_state: Option<LocalChangesState<'a>>,
+    local_changes_state: LocalChangesState<'a>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -33,15 +33,13 @@ pub struct LocalChangesView<'a> {
 impl<'a> LocalChangesView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
-        mut local_changes_state: LocalChangesState<'a>,
+        local_changes_state: LocalChangesState<'a>,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> LocalChangesView<'a> {
-        local_changes_state.set_focused(true);
-        local_changes_state.focus_section(LocalChangesSection::Unstaged);
         LocalChangesView {
             commit_list_state: Some(commit_list_state),
-            local_changes_state: Some(local_changes_state),
+            local_changes_state,
             ctx,
             tx,
         }
@@ -56,10 +54,8 @@ impl<'a> LocalChangesView<'a> {
         // like lazygit, the files are not changed while a git command runs in the background,
         // which could fail on the locked index or end up in the middle of its stash and pop
         if self.changes_repository(event_with_count.event, key) {
-            if let Some(task) = self.ctx.running_task.borrow().as_ref() {
-                self.tx.send(AppEvent::NotifyWarn(format!(
-                    "{task}, wait for it to finish"
-                )));
+            if let Some(message) = self.ctx.busy_message() {
+                self.tx.send(AppEvent::NotifyWarn(message));
                 return;
             }
         }
@@ -248,8 +244,8 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let panel = LocalChangesPanel::new(self.ctx.clone());
+    pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        let panel = LocalChangesPanel::new(self.ctx.clone(), focused);
         f.render_stateful_widget(panel, area, self.as_mut_state());
     }
 }
@@ -264,19 +260,16 @@ impl<'a> LocalChangesView<'a> {
     }
 
     fn as_state(&self) -> &LocalChangesState<'a> {
-        self.local_changes_state.as_ref().unwrap()
+        &self.local_changes_state
     }
 
     fn as_mut_state(&mut self) -> &mut LocalChangesState<'a> {
-        self.local_changes_state.as_mut().unwrap()
+        &mut self.local_changes_state
     }
 
-    // Dims the page while the sidebar has the focus.
-    pub fn set_focused(&mut self, focused: bool) {
-        // losing the focus leaves the diff and the message, only once
-        if self.as_state().is_focused() != focused {
-            self.as_mut_state().set_focused(focused);
-        }
+    // Another panel takes the focus, leaving the diff and the message.
+    pub fn blur(&mut self) {
+        self.as_mut_state().focus_files();
     }
 
     pub fn local_change_count(&self) -> usize {
@@ -371,19 +364,9 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    pub fn reset_local_changes_with(&mut self, context: LocalChangesRefreshViewContext) {
-        let state = self.as_mut_state();
-        state.restore_commit_draft(*context.commit_draft);
-        state.reset_selection(context.section, context.selected_path);
-    }
-
     // What to restore of the page, after a refresh or coming back to it.
-    pub fn context(&self) -> LocalChangesRefreshViewContext {
-        LocalChangesRefreshViewContext {
-            section: self.as_state().section(),
-            selected_path: self.as_state().selected_path(),
-            commit_draft: Box::new(self.as_state().commit_draft()),
-        }
+    pub fn context(&self) -> LocalChangesSnapshot {
+        self.as_state().snapshot()
     }
 
     pub fn refresh(&self) {

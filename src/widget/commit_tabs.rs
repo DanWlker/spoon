@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::BTreeSet, rc::Rc};
 
 use ratatui::{
     buffer::Buffer,
@@ -11,12 +11,12 @@ use ratatui::{
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    git::{CommitHash, FileChange, Repository},
-    widget::style::{mark_selected_row, panel_title},
+    git::{Commit, CommitHash, FileChange, Repository},
+    widget::style::{badge, mark_selected_row, panel_title, tree_panel_width},
     widget::{
-        diff::{diff_lines, parse_diff, ParsedDiff},
-        file_tree::{FileTree, FileTreeRow, FileTreeState},
-        tree_query::{highlighted_name, path_matches},
+        diff::{diff_line_count, diff_lines, parse_diff, ParsedDiff},
+        file_tree::{keeps, FileTree, FileTreeRow, FileTreeState},
+        tree_query::highlighted_name,
     },
 };
 
@@ -74,10 +74,7 @@ pub fn render_tab_titles(
         .map(|(i, tab)| {
             let title = format!(" [{}] {} ", i + 2, tab.title());
             if *tab == current && focused {
-                Span::raw(title)
-                    .fg(theme.accent_text_fg)
-                    .bg(theme.accent_fg)
-                    .bold()
+                badge(title, theme.accent_fg, theme)
             } else if *tab == current {
                 Span::raw(title).fg(theme.fg).bold()
             } else {
@@ -197,7 +194,7 @@ impl<'a> CommitChangesState<'a> {
                     .files
                     .iter()
                     .filter(|f| row.contains(&f.path))
-                    .filter(|f| self.tree.filter().is_none_or(|q| path_matches(&f.path, q)))
+                    .filter(|f| keeps(self.tree.filter(), &f.path))
                     .collect();
                 let mut paths: Vec<&str> = match self.tree.filter() {
                     Some(_) if row.is_dir() => files.iter().map(|f| f.path.as_str()).collect(),
@@ -255,6 +252,12 @@ enum FilePreview {
 pub struct CommitFilesState<'a> {
     repository: &'a Repository,
     commit_hash: CommitHash,
+    // the first parent of the commit and the changes from it, to work out the files of the
+    // commits next to it without listing them all again
+    first_parent: Option<CommitHash>,
+    changes: Vec<FileChange>,
+    // the files of the commit once listed, or worked out
+    paths: Option<BTreeSet<String>>,
     // loaded lazily, only once the tab is shown
     tree: Option<FileTreeState>,
     // the tree of the previously shown commit, whose expanded directories and selection are kept
@@ -265,10 +268,13 @@ pub struct CommitFilesState<'a> {
 }
 
 impl<'a> CommitFilesState<'a> {
-    pub fn new(repository: &'a Repository, commit_hash: CommitHash) -> Self {
+    pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {
         Self {
             repository,
-            commit_hash,
+            commit_hash: commit.commit_hash.clone(),
+            first_parent: commit.parent_commit_hashes.first().cloned(),
+            changes: changes.to_vec(),
+            paths: None,
             tree: None,
             previous_tree: None,
             preview: None,
@@ -278,17 +284,48 @@ impl<'a> CommitFilesState<'a> {
     }
 
     // Shows another commit's files, keeping the expanded directories and the selected path.
-    pub fn set_commit(&mut self, commit_hash: CommitHash) {
-        self.commit_hash = commit_hash;
-        if let Some(tree) = self.tree.take() {
-            self.previous_tree = Some(tree);
+    // Stepping to the parent or a child of the commit works out its files from the changes
+    // between them, keeping the tree when no file was added, deleted or moved.
+    pub fn set_commit(&mut self, commit: &Commit, changes: &[FileChange]) {
+        let hash = &commit.commit_hash;
+        let first_parent = commit.parent_commit_hashes.first();
+        let step = if first_parent == Some(&self.commit_hash) {
+            Some((changes, true))
+        } else if self.first_parent.as_ref() == Some(hash) {
+            Some((&self.changes[..], false))
+        } else {
+            None
+        };
+        let same_paths = match (self.paths.take(), step) {
+            (Some(mut paths), Some((changes, forward))) => {
+                let changed = apply_changes(&mut paths, changes, forward);
+                self.paths = Some(paths);
+                !changed
+            }
+            _ => false,
+        };
+
+        self.commit_hash = hash.clone();
+        self.first_parent = first_parent.cloned();
+        self.changes = changes.to_vec();
+        if !same_paths {
+            if let Some(tree) = self.tree.take() {
+                self.previous_tree = Some(tree);
+            }
         }
         self.preview = None;
     }
 
     pub fn ensure_loaded(&mut self) {
         if self.tree.is_none() {
-            let paths = self.repository.commit_tree_paths(&self.commit_hash);
+            let repository = self.repository;
+            let commit_hash = &self.commit_hash;
+            let paths = self.paths.get_or_insert_with(|| {
+                repository
+                    .commit_tree_paths(commit_hash)
+                    .into_iter()
+                    .collect()
+            });
             let tree = FileTree::new(paths.iter().map(String::as_str));
             self.tree = Some(match self.previous_tree.take() {
                 Some(previous) => previous.with_tree(tree),
@@ -354,6 +391,33 @@ impl<'a> CommitFilesState<'a> {
     }
 }
 
+// Applies the changes of a commit to the files of its parent (`forward`), or takes them back from
+// the files of the commit; returns whether a file was added, deleted or moved.
+fn apply_changes(paths: &mut BTreeSet<String>, changes: &[FileChange], forward: bool) -> bool {
+    let mut changed = false;
+    for change in changes {
+        let (added, removed) = match change {
+            FileChange::Modify { .. } => continue,
+            FileChange::Add { path } => (Some(path), None),
+            FileChange::Delete { path } => (None, Some(path)),
+            FileChange::Move { from, to } => (Some(to), Some(from)),
+        };
+        let (added, removed) = if forward {
+            (added, removed)
+        } else {
+            (removed, added)
+        };
+        if let Some(path) = removed {
+            paths.remove(path);
+        }
+        if let Some(path) = added {
+            paths.insert(path.clone());
+        }
+        changed = true;
+    }
+    changed
+}
+
 pub struct CommitChanges<'a> {
     ctx: Rc<AppContext>,
     // highlighted in the names
@@ -387,38 +451,38 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
             Paragraph::new(Line::raw(message).fg(theme.status_input_transient_fg))
                 .render(tree_area, buf);
         } else {
-            let lines = state
-                .tree
-                .rows()
-                .iter()
-                .map(|row| match row.file_index {
-                    None => dir_line(
-                        row,
-                        state.tree.is_open(&row.path),
-                        self.search.as_deref(),
-                        theme,
-                    ),
-                    Some(i) => {
-                        let symbol = state.files[i].symbol;
-                        let mut spans = vec![
-                            "  ".repeat(row.depth).into(),
-                            Span::raw(symbol).fg(symbol_color(symbol, theme)),
-                            " ".into(),
-                        ];
-                        spans.extend(highlighted_name(&row.name, self.search.as_deref(), theme));
-                        Line::from(spans)
-                    }
-                })
-                .collect();
-            render_rows_with_cursor(lines, state.tree.cursor(), theme, tree_area, buf);
+            let line = |row: &FileTreeRow| match row.file_index {
+                None => dir_line(
+                    row,
+                    state.tree.is_open(&row.path),
+                    self.search.as_deref(),
+                    theme,
+                ),
+                Some(i) => {
+                    let symbol = state.files[i].symbol;
+                    let mut spans = vec![
+                        "  ".repeat(row.depth).into(),
+                        Span::raw(symbol).fg(symbol_color(symbol, theme)),
+                        " ".into(),
+                    ];
+                    spans.extend(highlighted_name(&row.name, self.search.as_deref(), theme));
+                    Line::from(spans)
+                }
+            };
+            let (rows, cursor) = (state.tree.rows(), state.tree.cursor());
+            render_rows_with_cursor(rows, line, cursor, theme, tree_area, buf);
         }
 
+        let height = diff_area.height as usize;
+        state.diff_height = height;
+        let count = state.diff.as_ref().map_or(0, diff_line_count);
+        state.diff_offset = state.diff_offset.min(count.saturating_sub(height));
+        let offset = state.diff_offset;
         let lines = match &state.diff {
-            Some(diff) => diff_lines(diff, theme),
+            Some(diff) => diff_lines(diff, theme, offset..offset + height),
             None => Vec::new(),
         };
-        state.diff_height = diff_area.height as usize;
-        state.diff_offset = render_scrolled(lines, state.diff_offset, theme, diff_area, buf);
+        Paragraph::new(lines).fg(theme.fg).render(diff_area, buf);
     }
 }
 
@@ -452,19 +516,15 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                     .render(tree_area, buf);
             }
             let search = self.search.as_deref();
-            let lines = tree
-                .rows()
-                .iter()
-                .map(|row| match row.file_index {
-                    None => dir_line(row, tree.is_open(&row.path), search, theme),
-                    Some(_) => {
-                        let mut spans = vec!["  ".repeat(row.depth).into(), "  ".into()];
-                        spans.extend(highlighted_name(&row.name, search, theme));
-                        Line::from(spans)
-                    }
-                })
-                .collect();
-            render_rows_with_cursor(lines, tree.cursor(), theme, tree_area, buf);
+            let line = |row: &FileTreeRow| match row.file_index {
+                None => dir_line(row, tree.is_open(&row.path), search, theme),
+                Some(_) => {
+                    let mut spans = vec!["  ".repeat(row.depth).into(), "  ".into()];
+                    spans.extend(highlighted_name(&row.name, search, theme));
+                    Line::from(spans)
+                }
+            };
+            render_rows_with_cursor(tree.rows(), line, tree.cursor(), theme, tree_area, buf);
         }
 
         state.preview_height = preview_area.height as usize;
@@ -509,7 +569,7 @@ fn split_tree_and_side(theme: &ColorTheme, area: Rect, buf: &mut Buffer) -> [Rec
     let inner = block.inner(area);
     block.render(area, buf);
 
-    let tree_width = (inner.width / 3).clamp(20, 50).min(inner.width);
+    let tree_width = tree_panel_width(inner.width);
     let [tree_area, side_area] =
         Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(0)]).areas(inner);
     let tree_block = Block::default()
@@ -539,34 +599,22 @@ fn dir_line(
     Line::from(spans)
 }
 
-// Renders `lines` from `offset`, clamped so the end of the lines stays at the bottom; returns the clamped offset.
-fn render_scrolled(
-    lines: Vec<Line>,
-    offset: usize,
-    theme: &ColorTheme,
-    area: Rect,
-    buf: &mut Buffer,
-) -> usize {
-    let offset = offset.min(lines.len().saturating_sub(area.height as usize));
-    let lines: Vec<Line> = lines.into_iter().skip(offset).collect();
-    Paragraph::new(lines).fg(theme.fg).render(area, buf);
-    offset
-}
-
-// Renders `lines` scrolled so the cursor is visible, highlighting the cursor line.
-fn render_rows_with_cursor(
-    lines: Vec<Line>,
+// Renders the `rows` on screen as `line` makes them, scrolled so the cursor is visible,
+// highlighting the cursor line.
+fn render_rows_with_cursor<'a>(
+    rows: &'a [FileTreeRow],
+    line: impl Fn(&'a FileTreeRow) -> Line<'a>,
     cursor: usize,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    if lines.is_empty() {
+    if rows.is_empty() {
         return;
     }
     let height = area.height as usize;
     let offset = (cursor + 1).saturating_sub(height);
-    let lines: Vec<Line> = lines.into_iter().skip(offset).collect();
+    let lines: Vec<Line> = rows.iter().skip(offset).take(height).map(line).collect();
     Paragraph::new(lines).fg(theme.fg).render(area, buf);
 
     if let Ok(y) = u16::try_from(cursor - offset) {
@@ -656,7 +704,8 @@ mod tests {
         assert!(state.diff.as_ref().unwrap().raw.contains("+a"));
 
         // files: collapsed by default, with a preview of the selected file
-        let mut state = CommitFilesState::new(&repository, second);
+        let (second_commit, second_changes) = repository.commit_detail(&second);
+        let mut state = CommitFilesState::new(&repository, &second_commit, &second_changes);
         state.ensure_loaded();
         let tree = state.tree.as_ref().unwrap();
         assert_eq!(visible(tree), vec!["src", "DOC.md", "image.bin"]);
@@ -673,7 +722,8 @@ mod tests {
         // another commit keeps the expanded directories and the selection
         state.update_tree(FileTreeState::select_first);
         state.update_tree(FileTreeState::select_next);
-        state.set_commit(first);
+        let (first_commit, first_changes) = repository.commit_detail(&first);
+        state.set_commit(&first_commit, &first_changes);
         state.ensure_loaded();
         let tree = state.tree.as_ref().unwrap();
         assert_eq!(
@@ -683,6 +733,65 @@ mod tests {
         assert_eq!(selected(tree), "src/a.rs");
         assert!(matches!(&state.preview, Some(FilePreview::Text(lines)) if lines == &["a"]));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_files_follow_commits() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        let text = "some\nlines\nenough\nto rename\n";
+        fs::write(path.join("a"), text)?;
+        fs::write(path.join("b"), "b\n")?;
+        git.add(&["a", "b"]);
+        git.commit("add a and b", "2024-01-01");
+        fs::write(path.join("a"), format!("{text}more\n"))?;
+        git.add(&["a"]);
+        git.commit("modify a", "2024-01-02");
+        fs::create_dir(path.join("dir"))?;
+        fs::write(path.join("dir/c"), "c\n")?;
+        fs::remove_file(path.join("b"))?;
+        git.add(&["dir/c", "b"]);
+        git.commit("add dir/c, delete b", "2024-01-03");
+        std::process::Command::new("git")
+            .args(["mv", "a", "x"])
+            .current_dir(path)
+            .output()?;
+        git.commit("rename a to x", "2024-01-04");
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false)?;
+        let hashes: Vec<CommitHash> = repository
+            .all_commits()
+            .iter()
+            .map(|c| c.commit_hash.clone())
+            .collect();
+        let files = |state: &CommitFilesState| -> Vec<String> {
+            state.paths.as_ref().unwrap().iter().cloned().collect()
+        };
+        let listed = |hash: &CommitHash| -> Vec<String> {
+            let mut paths = repository.commit_tree_paths(hash);
+            paths.sort();
+            paths
+        };
+
+        let (commit, changes) = repository.commit_detail(&hashes[0]);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes);
+        state.ensure_loaded();
+        // down to the first commit, then back up, without listing the files again
+        let order = (1..hashes.len()).chain((0..hashes.len() - 1).rev());
+        for i in order {
+            let (commit, changes) = repository.commit_detail(&hashes[i]);
+            state.set_commit(&commit, &changes);
+            state.ensure_loaded();
+            assert_eq!(files(&state), listed(&hashes[i]), "at commit {i}");
+            let tree = state.tree.as_ref().unwrap();
+            assert!(tree
+                .rows()
+                .iter()
+                .all(|r| r.is_dir() || listed(&hashes[i]).contains(&r.path)));
+        }
         Ok(())
     }
 }
