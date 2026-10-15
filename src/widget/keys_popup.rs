@@ -9,7 +9,10 @@ use ratatui::{
     widgets::{Clear, Paragraph, Widget},
 };
 
-use crate::{color::ColorTheme, widget::style::panel_block};
+use crate::{
+    color::ColorTheme,
+    widget::style::{panel_block, panel_title},
+};
 
 pub struct KeysPopup<'a> {
     // the keys, like "j/k", and what they do
@@ -82,8 +85,7 @@ impl Widget for KeysPopup<'_> {
                 ])
             })
             .collect();
-        let block = panel_block(true, theme)
-            .title(Line::from(format!(" {TITLE} ")).fg(theme.accent_fg).bold());
+        let block = panel_block(true, theme).title(panel_title(TITLE, "", true, theme));
         Clear.render(area, buf);
         Paragraph::new(lines)
             .block(block)

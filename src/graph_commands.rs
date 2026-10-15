@@ -7,7 +7,6 @@ use rustc_hash::FxHashMap;
 use crate::{
     event::UserEvent,
     git::{CommitHash, Ref, Repository},
-    ref_commands::create_branch,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog},
 };
 
@@ -160,9 +159,24 @@ pub fn ref_graph_command(
             }
             GitDialog::checkout(targets)
         }),
+        // from the name, so a branch made from a remote branch tracks it
+        UserEvent::CreateBranch => Ok(create_branch(repository, name)),
+        UserEvent::CreateTag => Ok(GitDialog::create_tag(name)),
         _ => return graph_command(repository, event, target, vec![]),
     };
     Some(dialog.map(GraphCommand::Dialog))
+}
+
+// A new branch from `from`, or another local branch.
+fn create_branch(repository: &Repository, from: &str) -> GitDialog {
+    let mut branches: Vec<String> = repository
+        .all_refs()
+        .into_iter()
+        .filter(|r| matches!(r, Ref::Branch { .. }))
+        .map(|r| r.name().to_string())
+        .collect();
+    branches.sort();
+    GitDialog::create_branch(from, branches)
 }
 
 struct GraphCommands<'a> {
@@ -659,10 +673,17 @@ mod tests {
             on(UserEvent::Checkout, "v1", &hashes[2]),
             "checkout --detach v1"
         );
-        // a tag at a commit of the graph (the sidebar makes them with `ref_command`)
+        // a tag at a commit of the graph, and at a ref of the sidebar
         let tag = command(&repository, UserEvent::CreateTag, &hashes[1], &[]);
         run(path, tag, "t1");
         assert_eq!(git(&["tag", "--points-at", "topic"]), "t1\n");
+        let tag = ref_graph_command(
+            &repository,
+            UserEvent::CreateTag,
+            "topic",
+            hashes[1].clone(),
+        );
+        assert_eq!(run(path, tag.unwrap(), "t2").args, ["tag", "t2", "topic"]);
 
         // a branch at a commit of the graph, checked out
         let branch = command(&repository, UserEvent::CreateBranch, &hashes[2], &[]);

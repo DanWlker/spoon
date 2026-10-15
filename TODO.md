@@ -5,10 +5,15 @@ TODO:
 1. Submodules should open a new instance, and they should be able to switch back, need to think about the ux there
    - Maybe at the bottom (aligned bottom) of the side tab is a projects section, where we can switch the active instance
      between the project, and its submodules
-1. 3, 4 should not jump to the diff panel
-1. Status bar should have similr design to my current neovim status bar design
-1. Check whether can use tree-sitter rather than bat
-1. when in diff mode, attempting to do more diffs should not be possible (shift d, selecting more and pressing shift d etc)
-   - when in diff mode (from sidebar) pressing enter should show the info details for the selected commit, escape should go back to the diff, then another escape only exits the sidebar diff
-1. master doesn't need a separate color
-1. in the side bar, show how many commits missing from upstream and how many yet to push for the local ones
+
+Skipped (it would change behaviour or need a bigger refactor)
+
+- Generate the sidebar hints from the commands themselves: the hints duplicate what each command accepts, but the commands call git, which is too slow to run every frame. Fixing this properly means a separate "does this command apply here" check per command.
+- One focus type per view: the panel name, key scope and alt-arrow movement would all come from it. This is a refactor across views.
+- Show the popup title as a badge like the other focused panels: it's a visual change, so it's your call.
+- The remote lookup in the sidebar hints: it runs git, but it predates this work, and since the status bar stopped showing panel keys it only runs while the popup is open on a remote folder.
+
+Simplifications if you're willing to drop a behaviour 2. Send sidebar b/t through the graph command path: removes about 25 lines and one of two routes to the same dialogs. Lost:
+
+- On a header you'd get an error toast instead of nothing.
+- On the cheaper variant, the dialog fills in a short hash instead of the ref name, and a branch made from a remote branch no longer tracks it.

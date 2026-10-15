@@ -35,7 +35,7 @@ use crate::{
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
     layout::{Border, Direction, Panel, PanelLayout},
     protocol::ImageProtocol,
-    ref_commands::ref_command,
+    ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
     view::{
         user_command_height, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind,
@@ -1205,6 +1205,9 @@ impl App<'_> {
 
     fn handle_sidebar_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let count = event_with_count.count;
+        if !self.sidebar_command_applies(event_with_count.event) {
+            return;
+        }
         match event_with_count.event {
             UserEvent::Quit => self.ec.send(AppEvent::Quit),
             UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
@@ -1253,8 +1256,6 @@ impl App<'_> {
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
             event @ (UserEvent::CreateRef
-            | UserEvent::CreateBranch
-            | UserEvent::CreateTag
             | UserEvent::DeleteRef
             | UserEvent::EditRef
             | UserEvent::ApplyStash) => {
@@ -1291,73 +1292,55 @@ impl App<'_> {
     fn sidebar_hints(&self) -> Vec<KeyHint> {
         use RefSection::*;
         let picked = self.shell.sidebar.picked();
-        if !picked.is_empty() {
-            let mut hints = vec![
-                hint(UserEvent::Cancel, "clear picks"),
-                hint(UserEvent::ToggleSelect, "pick"),
-            ];
-            if picked.section == Stashes {
-                hints.push(hint(UserEvent::DeleteRef, "drop"));
-            } else {
-                hints.extend([
-                    hint(UserEvent::DeleteRef, "delete"),
-                    hint(UserEvent::Diff, "diff"),
-                ]);
-            }
-            return hints;
-        }
         let selection = self.shell.sidebar.selection();
-        // a branch, remote branch or tag: the commands of the graph work on it, and its name is
-        // copied (see `copy_sidebar_ref_name`)
-        let on_ref = matches!(selection, RefSelection::Ref(Branches | Remotes | Tags, _));
-        let mut hints = match &selection {
-            RefSelection::LocalChanges => vec![],
-            RefSelection::Folder(Remotes, name)
-                if self.repository.remote_info().remotes.contains(name) =>
-            {
-                vec![
-                    hint(UserEvent::CreateRef, "new remote"),
-                    hint(UserEvent::EditRef, "edit remote"),
-                ]
-            }
-            RefSelection::Section(Remotes) | RefSelection::Folder(Remotes, _) => {
-                vec![hint(UserEvent::CreateRef, "new remote")]
-            }
-            RefSelection::Section(Branches | Tags | Stashes)
-            | RefSelection::Folder(Branches | Tags | Stashes, _) => vec![],
-            RefSelection::Ref(Branches, _) => vec![
-                hint(UserEvent::EditRef, "rename/upstream"),
-                hint(UserEvent::DeleteRef, "delete"),
-            ],
-            RefSelection::Ref(Remotes, _) => vec![
-                hint(UserEvent::CreateRef, "new remote"),
-                hint(UserEvent::DeleteRef, "delete"),
-            ],
-            RefSelection::Ref(Tags, _) => vec![hint(UserEvent::DeleteRef, "delete")],
-            RefSelection::Ref(Stashes, _) => vec![
-                hint(UserEvent::ApplyStash, "apply"),
-                hint(UserEvent::DeleteRef, "drop"),
-            ],
+        let stashes =
+            picked.section == Stashes || matches!(selection, RefSelection::Ref(Stashes, _));
+        let edit = if let RefSelection::Folder(..) = selection {
+            "edit remote"
+        } else {
+            "rename/upstream"
         };
-        if on_ref {
+        let mut hints = vec![];
+        if !picked.is_empty() {
+            hints.push(hint(UserEvent::Cancel, "clear picks"));
+        }
+        let commands = [
+            hint(UserEvent::CreateRef, "new remote"),
+            hint(UserEvent::EditRef, edit),
+            hint(
+                UserEvent::DeleteRef,
+                if stashes { "drop" } else { "delete" },
+            ),
+            hint(UserEvent::ApplyStash, "apply"),
+            hint(UserEvent::CreateBranch, "new branch"),
+            hint(UserEvent::CreateTag, "new tag"),
+            hint(UserEvent::Checkout, "checkout"),
+            hint(UserEvent::Merge, "merge"),
+            hint(UserEvent::Rebase, "rebase"),
+            hint(UserEvent::Diff, "diff"),
+            hint(UserEvent::ToggleSelect, "pick"),
+            hint(UserEvent::ShortCopy, "copy name"),
+        ];
+        hints.extend(
+            commands
+                .into_iter()
+                .filter(|(events, _)| self.sidebar_command_applies(events[0])),
+        );
+        if picked.is_empty() {
             hints.extend([
-                hint(UserEvent::CreateBranch, "new branch"),
-                hint(UserEvent::CreateTag, "new tag"),
-                hint(UserEvent::Checkout, "checkout"),
-                hint(UserEvent::Merge, "merge"),
-                hint(UserEvent::Rebase, "rebase"),
-                hint(UserEvent::Diff, "diff"),
+                hint(UserEvent::Confirm, "open"),
+                hint(UserEvent::Cancel, "back"),
             ]);
         }
-        if let RefSelection::Ref(..) = selection {
-            hints.push(hint(UserEvent::ToggleSelect, "pick"));
-        }
-        hints.push(hint(UserEvent::Confirm, "open"));
-        if on_ref {
-            hints.push(hint(UserEvent::ShortCopy, "copy name"));
-        }
-        hints.push(hint(UserEvent::Cancel, "back"));
         hints
+    }
+
+    // Whether the event does something on the selected row of the sidebar, see
+    // `ref_command_applies`.
+    fn sidebar_command_applies(&self, event: UserEvent) -> bool {
+        let selection = self.shell.sidebar.selection();
+        let picked = self.shell.sidebar.picked();
+        ref_command_applies(self.repository, event, &selection, picked)
     }
 
     fn set_sidebar_focused(&mut self, focused: bool) {
@@ -1660,21 +1643,9 @@ impl App<'_> {
             }
             return;
         }
-        if !self.shell.sidebar.picked().is_empty() {
-            let err = "This works on the selected ref, clear the picked ones first".to_string();
-            self.ec.send(AppEvent::NotifyError(err));
+        // a branch, remote branch or tag, see `ref_command_applies`
+        let RefSelection::Ref(_, name) = self.shell.sidebar.selection() else {
             return;
-        }
-        let name = match self.shell.sidebar.selection() {
-            RefSelection::Ref(
-                RefSection::Branches | RefSection::Remotes | RefSection::Tags,
-                name,
-            ) => name,
-            _ => {
-                let err = "Select a branch or a tag for the commands of the graph".to_string();
-                self.ec.send(AppEvent::NotifyError(err));
-                return;
-            }
         };
         let target = self
             .repository

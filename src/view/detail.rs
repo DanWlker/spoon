@@ -32,6 +32,20 @@ use crate::{
     },
 };
 
+// What has the focus in the view: the scope of the keys, where alt and the arrow keys go and the
+// panels highlighted follow from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailFocus {
+    // the commit list above the details, moving the selection shows the details of each commit
+    List,
+    // the info tab
+    Info,
+    // the files of the changes or files tab
+    Files,
+    // the diff or preview beside the files
+    Pane,
+}
+
 #[derive(Debug)]
 pub struct DetailView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
@@ -194,19 +208,32 @@ impl<'a> DetailView<'a> {
     // Moves the focus to the panel that way: the commit list above the details, the diff or
     // preview beside the files. Returns false when there is none.
     pub fn move_focus(&mut self, direction: Direction) -> bool {
-        let pane = self.is_pane_focused();
-        match (direction, self.tab) {
-            (Direction::Up, _) if !self.list_focused => self.focus_list(),
-            (Direction::Down, _) if self.list_focused => self.show_tab(self.tab),
-            _ if self.list_focused => return false,
+        use DetailFocus::*;
+        match (direction, self.focus(), self.tab) {
+            (Direction::Up, Info | Files | Pane, _) => self.focus_list(),
+            (Direction::Down, List, _) => self.show_tab(self.tab),
             // into the diff or preview beside the files, and back
-            (Direction::Right, DetailTab::Changes) if !pane => return self.changes_state.enter(),
-            (Direction::Right, DetailTab::Files) if !pane => return self.files_state.enter(),
-            (Direction::Left, DetailTab::Changes) => return self.changes_state.back(),
-            (Direction::Left, DetailTab::Files) => return self.files_state.back(),
+            (Direction::Right, Files, DetailTab::Changes) => return self.changes_state.enter(),
+            (Direction::Right, Files, DetailTab::Files) => return self.files_state.enter(),
+            (Direction::Left, Pane, DetailTab::Changes) => return self.changes_state.back(),
+            (Direction::Left, Pane, DetailTab::Files) => return self.files_state.back(),
             _ => return false,
         }
         true
+    }
+
+    pub fn focus(&self) -> DetailFocus {
+        let pane = match self.tab {
+            _ if self.list_focused => return DetailFocus::List,
+            DetailTab::Info => return DetailFocus::Info,
+            DetailTab::Changes => self.changes_state.is_diff_focused(),
+            DetailTab::Files => self.files_state.is_preview_focused(),
+        };
+        if pane {
+            DetailFocus::Pane
+        } else {
+            DetailFocus::Files
+        }
     }
 
     pub fn focus_list(&mut self) {
@@ -216,12 +243,10 @@ impl<'a> DetailView<'a> {
     // The scope of the keys: the commit list, the diff or preview beside the files, or the rest
     // of the details.
     pub fn scope(&self) -> Scope {
-        if self.list_focused {
-            Scope::CommitList
-        } else if self.is_pane_focused() {
-            Scope::DetailsPane
-        } else {
-            Scope::Details
+        match self.focus() {
+            DetailFocus::List => Scope::CommitList,
+            DetailFocus::Pane => Scope::DetailsPane,
+            DetailFocus::Info | DetailFocus::Files => Scope::Details,
         }
     }
 
@@ -232,14 +257,14 @@ impl<'a> DetailView<'a> {
         )
     }
 
-    // Whether two commits are compared, also while the details of a commit in the comparison
-    // are shown over it.
     // Whether the files of the changes or files tab have the focus, with the diff or preview
     // beside them.
     pub fn shows_tree(&self) -> bool {
-        !self.list_focused && self.tab != DetailTab::Info
+        matches!(self.focus(), DetailFocus::Files | DetailFocus::Pane)
     }
 
+    // Whether two commits are compared, also while the details of a commit in the comparison
+    // are shown over it.
     pub fn is_comparing(&self) -> bool {
         self.compare.is_some() || self.parked_compare.is_some()
     }
@@ -557,12 +582,7 @@ impl<'a> DetailView<'a> {
 impl<'a> DetailView<'a> {
     // Whether the diff of the changes tab, or the preview of the files tab, has the focus.
     fn is_pane_focused(&self) -> bool {
-        !self.list_focused
-            && match self.tab {
-                DetailTab::Info => false,
-                DetailTab::Changes => self.changes_state.is_diff_focused(),
-                DetailTab::Files => self.files_state.is_preview_focused(),
-            }
+        self.focus() == DetailFocus::Pane
     }
 
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
