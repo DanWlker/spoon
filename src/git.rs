@@ -104,7 +104,14 @@ type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 
 #[derive(Debug)]
 pub struct Repository {
+    // the top directory of the working tree (the repository itself when bare), which git
+    // commands run in, since the paths they take and give are relative to it
     path: PathBuf,
+    // the git directory, to find the state files of operations in without running git
+    git_dir: Option<PathBuf>,
+    // the local changes when loaded, for the sidebar count and the first local changes page
+    // to share one `git status`; taken by the page, which shows them as they are after that
+    loaded_local_changes: std::cell::RefCell<Option<LocalChanges>>,
     commit_map: CommitMap,
 
     parents_map: CommitsMap,
@@ -124,6 +131,8 @@ impl Repository {
         mailmap: bool,
     ) -> Result<Self> {
         check_git_repository(path)?;
+        let (toplevel, git_dir) = locate_repository(path);
+        let path = toplevel.as_deref().unwrap_or(path);
 
         let (mut ref_map, head) = load_refs(path);
 
@@ -142,7 +151,7 @@ impl Repository {
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
-        Ok(Self::new(
+        let mut repository = Self::new(
             path.to_path_buf(),
             commit_map,
             parents_map,
@@ -150,7 +159,10 @@ impl Repository {
             ref_map,
             head,
             commit_hashes,
-        ))
+        );
+        repository.git_dir = git_dir;
+        repository.loaded_local_changes = Some(load_local_changes(path)).into();
+        Ok(repository)
     }
 
     pub fn new(
@@ -164,6 +176,8 @@ impl Repository {
     ) -> Self {
         Self {
             path,
+            git_dir: None,
+            loaded_local_changes: Default::default(),
             commit_map,
             parents_map,
             children_map,
@@ -225,6 +239,20 @@ impl Repository {
 
     pub fn local_changes(&self) -> LocalChanges {
         load_local_changes(&self.path)
+    }
+
+    // The number of local changes, as they were when the repository was loaded.
+    pub fn loaded_local_change_count(&self) -> usize {
+        let mut loaded = self.loaded_local_changes.borrow_mut();
+        loaded.get_or_insert_with(|| self.local_changes()).count()
+    }
+
+    // The local changes as they were when the repository was loaded the first time it is called,
+    // so the sidebar and the page share one `git status`, and as they are now after that.
+    pub fn take_loaded_local_changes(&self) -> LocalChanges {
+        self.loaded_local_changes
+            .take()
+            .unwrap_or_else(|| self.local_changes())
     }
 
     // `staged_base` is the tree staged changes are compared to, HEAD when None (see `amend_base`)
@@ -312,6 +340,19 @@ impl Repository {
     }
 
     // Whether there are merge commits after `base` up to `head`.
+    // The parents of a commit, asked of git as they may not be loaded, with `--max-count`.
+    pub fn parents_of(&self, commit: &str) -> std::result::Result<Vec<CommitHash>, String> {
+        let out = git_output(
+            &self.path,
+            &["rev-list", "--parents", "-n", "1", commit, "--"],
+        )?;
+        Ok(out
+            .split_whitespace()
+            .skip(1)
+            .map(CommitHash::from)
+            .collect())
+    }
+
     pub fn has_merges_between(&self, base: Option<&CommitHash>, head: &str) -> bool {
         let range = match base {
             Some(base) => format!("{}..{head}", base.as_str()),
@@ -452,9 +493,7 @@ impl Repository {
 
     // The top directory of the working tree, which file paths of local changes are relative to.
     pub fn toplevel(&self) -> PathBuf {
-        git_output(&self.path, &["rev-parse", "--show-toplevel"])
-            .map(|p| PathBuf::from(p.trim()))
-            .unwrap_or_else(|_| self.path.clone())
+        self.path.clone()
     }
 
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
@@ -539,36 +578,80 @@ impl Repository {
             ConflictSide::Ours => 2,
             ConflictSide::Theirs => 3,
         };
+        self.stage_blob(path, stage)
+            .map(|blob| String::from_utf8_lossy(&blob).into_owned())
+    }
+
+    // The content of a conflicted file in an index stage: 1 the base, 2 ours, 3 theirs.
+    fn stage_blob(&self, path: &str, stage: u8) -> Option<Vec<u8>> {
         let object = format!(":{stage}:{path}");
         let output = Command::new("git")
             .args(["cat-file", "blob", &object])
-            .current_dir(self.toplevel())
+            .current_dir(&self.path)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
             .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        output.status.success().then_some(output.stdout)
     }
 
-    // Resolves a conflicted file by keeping one side, removing it when that side deleted it.
+    // Resolves a conflicted file by taking one side where the two conflict, keeping the changes
+    // of the other side that merged cleanly, and removing the file when that side deleted it.
     pub fn resolve_conflict(
         &self,
         path: &str,
         side: ConflictSide,
     ) -> std::result::Result<(), String> {
-        let toplevel = self.toplevel();
         if self.conflict_side_content(path, side).is_none() {
-            return run_git(&toplevel, &["rm", "--quiet", "--", path], None);
+            return run_git(&self.path, &["rm", "--quiet", "--", path], None);
+        }
+        match self.merge_file_favoring(path, side) {
+            Some(merged) => std::fs::write(self.path.join(path), merged)
+                .map_err(|e| format!("failed to write {path}: {e}"))?,
+            // a binary file can't be merged by lines, so it is taken whole
+            None => {
+                let option = match side {
+                    ConflictSide::Ours => "--ours",
+                    ConflictSide::Theirs => "--theirs",
+                };
+                run_git(&self.path, &["checkout", option, "--", path], None)?;
+            }
+        }
+        run_git(&self.path, &["add", "--", path], None)
+    }
+
+    // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`.
+    fn merge_file_favoring(&self, path: &str, side: ConflictSide) -> Option<Vec<u8>> {
+        let ours = self.stage_blob(path, 2)?;
+        let theirs = self.stage_blob(path, 3)?;
+        // both sides added the file when there is no base
+        let base = self.stage_blob(path, 1).unwrap_or_default();
+        let files = [("ours", ours), ("base", base), ("theirs", theirs)]
+            .map(|(name, blob)| (self.git_path(&format!("spoon-merge-{name}")), blob));
+        let mut paths = vec![];
+        for (file, blob) in &files {
+            let file = file.as_ref()?;
+            std::fs::write(file, blob).ok()?;
+            paths.push(file.to_string_lossy().into_owned());
         }
         let option = match side {
             ConflictSide::Ours => "--ours",
             ConflictSide::Theirs => "--theirs",
         };
-        run_git(&toplevel, &["checkout", option, "--", path], None)?;
-        run_git(&toplevel, &["add", "--", path], None)
+        let output = Command::new("git")
+            .args(["merge-file", "-p", option, &paths[0], &paths[1], &paths[2]])
+            .current_dir(&self.path)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        for (file, _) in &files {
+            if let Some(file) = file {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+        // fails (with a negative code) on binary files
+        let output = output.ok()?;
+        output.status.success().then_some(output.stdout)
     }
 
     // The commit message git prepared for the operation in progress, without its comment lines.
@@ -589,12 +672,10 @@ impl Repository {
 
     // Continues a rebase, or the remaining commits of a cherry-pick or revert of several commits.
     pub fn continue_operation(&self, operation: Operation) -> std::result::Result<(), String> {
-        let command = match operation {
-            Operation::Rebase => "rebase",
-            Operation::CherryPick => "cherry-pick",
-            Operation::Revert => "revert",
-            Operation::Merge => return Ok(()),
-        };
+        if operation == Operation::Merge {
+            return Ok(());
+        }
+        let command = operation.name();
         // a single cherry-pick or revert is done once committed, only a sequence goes on
         if operation != Operation::Rebase && !self.git_path("sequencer").is_some_and(|p| p.exists())
         {
@@ -624,16 +705,13 @@ impl Repository {
     }
 
     pub fn abort_operation(&self, operation: Operation) -> std::result::Result<(), String> {
-        let command = match operation {
-            Operation::Rebase => "rebase",
-            Operation::Merge => "merge",
-            Operation::CherryPick => "cherry-pick",
-            Operation::Revert => "revert",
-        };
-        run_git(&self.path, &[command, "--abort"], None)
+        run_git(&self.path, &[operation.name(), "--abort"], None)
     }
 
     fn git_path(&self, name: &str) -> Option<PathBuf> {
+        if let Some(git_dir) = &self.git_dir {
+            return Some(git_dir.join(name));
+        }
         git_output(&self.path, &["rev-parse", "--git-path", name])
             .map(|p| self.path.join(p.trim()))
             .ok()
@@ -669,6 +747,18 @@ fn check_git_repository(path: &Path) -> Result<()> {
         return Err(msg.into());
     }
     Ok(())
+}
+
+// The top directory of the working tree (None when bare) and the git directory of the repository at `path`.
+fn locate_repository(path: &Path) -> (Option<PathBuf>, Option<PathBuf>) {
+    let git_dir = git_output(path, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .map(|p| PathBuf::from(p.trim()));
+    let toplevel = is_inside_work_tree(path)
+        .then(|| git_output(path, &["rev-parse", "--show-toplevel"]).ok())
+        .flatten()
+        .map(|p| PathBuf::from(p.trim()));
+    (toplevel, git_dir)
 }
 
 fn is_inside_work_tree(path: &Path) -> bool {
@@ -1083,25 +1173,7 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
     let mut changes = Vec::new();
 
     for line in reader.lines() {
-        let line = line.unwrap();
-        let parts: Vec<&str> = line.split('\t').collect();
-
-        match &parts[0][0..1] {
-            "A" => changes.push(FileChange::Add {
-                path: parts[1].into(),
-            }),
-            "M" => changes.push(FileChange::Modify {
-                path: parts[1].into(),
-            }),
-            "D" => changes.push(FileChange::Delete {
-                path: parts[1].into(),
-            }),
-            "R" => changes.push(FileChange::Move {
-                from: parts[1].into(),
-                to: parts[2].into(),
-            }),
-            _ => {}
-        }
+        changes.extend(parse_name_status_line(&line.unwrap()));
     }
 
     cmd.wait().unwrap();
@@ -1273,8 +1345,10 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
         }
         let (x, y) = (entry[0], entry[1]);
         let path = String::from_utf8_lossy(&entry[3..]).into_owned();
-        // renames and copies are followed by the original path
-        let orig_path = if x == b'R' || x == b'C' {
+        // renames and copies, staged or in the working tree (of files added with
+        // `git add --intent-to-add`), are followed by the original path
+        let is_rename = |c: u8| c == b'R' || c == b'C';
+        let orig_path = if is_rename(x) || is_rename(y) {
             entries
                 .next()
                 .map(|p| String::from_utf8_lossy(p).into_owned())
@@ -1301,14 +1375,14 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
         if let Some(status) = LocalChangeStatus::from_status_char(x) {
             changes.staged.push(LocalChangeFile {
                 path: path.clone(),
-                orig_path,
+                orig_path: orig_path.clone().filter(|_| is_rename(x)),
                 status,
             });
         }
         if let Some(status) = LocalChangeStatus::from_status_char(y) {
             changes.unstaged.push(LocalChangeFile {
                 path,
-                orig_path: None,
+                orig_path: orig_path.filter(|_| !is_rename(x)),
                 status,
             });
         }
@@ -1632,6 +1706,29 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_status_porcelain_worktree_rename() {
+        // `mv README.md docs.md; git add -N docs.md`
+        let actual = parse_status_porcelain(b" R docs.md\0README.md\0 M Makefile\0");
+
+        let expected = LocalChanges {
+            unstaged: vec![
+                LocalChangeFile {
+                    path: "docs.md".into(),
+                    orig_path: Some("README.md".into()),
+                    status: LocalChangeStatus::Renamed,
+                },
+                LocalChangeFile {
+                    path: "Makefile".into(),
+                    orig_path: None,
+                    status: LocalChangeStatus::Modified,
+                },
+            ],
+            staged: vec![],
+        };
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn test_push_fetch_and_remote_info() {
         use crate::test_support::git::GitRepository;
 
@@ -1670,5 +1767,60 @@ mod tests {
         // the reason is reported, not the hints after it
         let err = run("fetch nowhere").unwrap_err();
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
+    }
+
+    #[test]
+    fn test_resolve_conflict_keeps_clean_changes() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let lines = |first: &str, last: &str| format!("{first}\n2\n3\n4\n5\n6\n7\n8\n{last}\n");
+        std::fs::write(path.join("f"), lines("1", "9")).unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        std::fs::write(path.join("f"), lines("ONE", "NINE-theirs")).unwrap();
+        repo.add(&["f"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), lines("1", "NINE-ours")).unwrap();
+        repo.add(&["f"]);
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        repository
+            .resolve_conflict("f", ConflictSide::Ours)
+            .unwrap();
+        // the conflict goes our way, the clean change of the incoming side stays
+        let content = std::fs::read_to_string(path.join("f")).unwrap();
+        assert_eq!(content, lines("ONE", "NINE-ours"));
+        assert!(repository.local_changes().unstaged.is_empty());
+    }
+
+    #[test]
+    fn test_local_changes_from_subdirectory() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::create_dir(path.join("sub")).unwrap();
+        std::fs::write(path.join("sub/f"), "a").unwrap();
+        repo.add(&["sub/f"]);
+        repo.commit("first", "2024-01-01");
+        std::fs::write(path.join("sub/f"), "b").unwrap();
+
+        let repository =
+            Repository::load(&path.join("sub"), SortCommit::Chronological, None, false).unwrap();
+        let changes = repository.local_changes();
+        assert_eq!(changes.unstaged[0].path, "sub/f");
+        repository.stage_paths(&["sub/f"]).unwrap();
+        assert_eq!(repository.local_changes().staged[0].path, "sub/f");
+        assert_eq!(repository.operation_in_progress(), None);
     }
 }

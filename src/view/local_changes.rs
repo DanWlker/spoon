@@ -1,6 +1,10 @@
 use std::rc::Rc;
 
-use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
+use ratatui::{
+    crossterm::event::{KeyCode, KeyEvent},
+    layout::Rect,
+    Frame,
+};
 
 use crate::{
     app::AppContext,
@@ -49,11 +53,20 @@ impl<'a> LocalChangesView<'a> {
     }
 
     fn handle_event_inner(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+        // like lazygit, the files are not changed while a git command runs in the background,
+        // which could fail on the locked index or end up in the middle of its stash and pop
+        if self.changes_repository(event_with_count.event, key) {
+            if let Some(task) = self.ctx.running_task.borrow().as_ref() {
+                self.tx.send(AppEvent::NotifyWarn(format!(
+                    "{task}, wait for it to finish"
+                )));
+                return;
+            }
+        }
         // while confirming or typing, keys arrive unmapped, see App::run
         if self.as_state().is_confirming() {
-            if let Err(err) = self.as_mut_state().handle_confirm_key(key) {
-                self.tx.send(AppEvent::NotifyError(err));
-            }
+            let result = self.as_mut_state().handle_confirm_key(key);
+            self.after_action(result);
             return;
         }
         if self.as_state().is_editing() {
@@ -323,12 +336,38 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
+    // Whether the key may change the repository: staging, discarding, stashing, committing,
+    // aborting or resolving a conflict, or confirming one of these.
+    fn changes_repository(&self, event: UserEvent, key: KeyEvent) -> bool {
+        let state = self.as_state();
+        if state.is_confirming() {
+            return matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'));
+        }
+        if state.is_typing_stash() {
+            return key.code == KeyCode::Enter;
+        }
+        if state.is_editing() || state.is_typing_query() {
+            return false;
+        }
+        match event {
+            UserEvent::Commit
+            | UserEvent::Abort
+            | UserEvent::Stash
+            | UserEvent::ToggleStage
+            | UserEvent::Discard => true,
+            UserEvent::Confirm => state.is_conflict_focused(),
+            _ => false,
+        }
+    }
+
+    // Like lazygit, reloads the repository after anything that may have changed it, whether it
+    // succeeded or not: a failed continue may still have applied some commits before it stopped.
     fn after_action(&mut self, result: Result<(), String>) {
+        if self.as_mut_state().take_needs_refresh() {
+            self.refresh();
+        }
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
-        } else if self.as_mut_state().take_needs_refresh() {
-            // reload the repository so the new commit or stash appears in the graph
-            self.refresh();
         }
     }
 

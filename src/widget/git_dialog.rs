@@ -654,9 +654,12 @@ impl GitDialog {
                 } else {
                     "--no-rebase".into()
                 });
-                if self.checked(FieldId::AutoStash) {
-                    args.push("--autostash".into());
-                }
+                // explicit too, so the checkbox wins over rebase.autoStash and merge.autoStash
+                args.push(if self.checked(FieldId::AutoStash) {
+                    "--autostash".into()
+                } else {
+                    "--no-autostash".into()
+                });
                 args.extend([remote.clone(), branch.clone()]);
                 (
                     args,
@@ -1039,15 +1042,15 @@ mod tests {
     fn test_pull_options() {
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
         // pull.rebase is set
-        assert_eq!(args(&dialog), "pull --rebase origin main");
+        assert_eq!(args(&dialog), "pull --rebase --no-autostash origin main");
 
         // the branch follows the remote
         press(&mut dialog, UserEvent::NavigateLeft);
-        assert_eq!(args(&dialog), "pull --rebase fork topic");
+        assert_eq!(args(&dialog), "pull --rebase --no-autostash fork topic");
         press(&mut dialog, UserEvent::NavigateRight);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateRight);
-        assert_eq!(args(&dialog), "pull --rebase origin dev");
+        assert_eq!(args(&dialog), "pull --rebase --no-autostash origin dev");
 
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::ToggleStage);

@@ -145,7 +145,7 @@ pub struct LocalChangesState<'a> {
 
 impl<'a> LocalChangesState<'a> {
     pub fn load(repository: &'a Repository) -> Self {
-        let changes = repository.local_changes();
+        let changes = repository.take_loaded_local_changes();
         let unstaged_rows = build_rows(&changes.unstaged, &HashSet::new(), None);
         let staged_rows = build_rows(&changes.staged, &HashSet::new(), None);
         // while only previewed, show whichever section has something to look at
@@ -271,9 +271,8 @@ impl<'a> LocalChangesState<'a> {
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
         if let Some(operation) = self.operation.filter(|o| o.continues_without_commit()) {
             let result = self.repository.continue_operation(operation);
-            if result.is_ok() {
-                self.needs_refresh = true;
-            }
+            // a continue that stops on the next conflict has still applied commits
+            self.needs_refresh = true;
             self.reload();
             return result;
         }
@@ -350,7 +349,7 @@ impl<'a> LocalChangesState<'a> {
         continued
     }
 
-    // Returns true once after a commit or stash was made.
+    // Returns true once after the repository may have changed, by a commit, stash, continue or abort.
     pub fn take_needs_refresh(&mut self) -> bool {
         std::mem::take(&mut self.needs_refresh)
     }
@@ -529,11 +528,8 @@ impl<'a> LocalChangesState<'a> {
                         result
                     }
                     ConfirmAction::Abort(operation) => {
-                        let result = self.repository.abort_operation(operation);
-                        if result.is_ok() {
-                            self.needs_refresh = true;
-                        }
-                        result
+                        self.needs_refresh = true;
+                        self.repository.abort_operation(operation)
                     }
                 };
                 self.reload();
@@ -865,14 +861,13 @@ impl<'a> LocalChangesState<'a> {
         if paths.is_empty() {
             return Ok(());
         }
+        // a rename is only fully (un)staged together with its source path
+        paths.extend(targets.iter().filter_map(|f| f.orig_path.as_deref()));
         match self.section {
             LocalChangesSection::Unstaged => self.repository.stage_paths(&paths),
-            LocalChangesSection::Staged => {
-                // a staged rename is only fully unstaged together with its source path
-                paths.extend(targets.iter().filter_map(|f| f.orig_path.as_deref()));
-                self.repository
-                    .unstage_paths(&paths, self.amend_base.as_deref())
-            }
+            LocalChangesSection::Staged => self
+                .repository
+                .unstage_paths(&paths, self.amend_base.as_deref()),
         }
     }
 

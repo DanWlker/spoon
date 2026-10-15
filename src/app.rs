@@ -184,8 +184,10 @@ impl<'a> App<'a> {
         }
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
 
-        let mut sidebar =
-            RefListState::new(&repository.all_refs(), repository.local_changes().count());
+        let mut sidebar = RefListState::new(
+            &repository.all_refs(),
+            repository.loaded_local_change_count(),
+        );
         let mut sidebar_focused = false;
         let mut sidebar_collapsed = false;
         let mut parked_local_changes = None;
@@ -1405,19 +1407,20 @@ impl App<'_> {
             if !self.repository.is_ancestor(hash, "HEAD") {
                 return Err(format!("{short} is not on {branch}, check it out first"));
             }
-            match self.repository.parents_hash(hash).len() {
+            match self.repository.parents_of(hash.as_str())?.len() {
                 0 => return Err(format!("{short} is the first commit, it has no parent")),
                 1 => {}
                 _ => return Err(format!("{short} is a merge commit, it can't be squashed")),
             }
         }
         let oldest = commits.last().ok_or("No commit to squash")?;
-        let parent = self.repository.parents_hash(oldest)[0].clone();
+        let parent = self.repository.parents_of(oldest.as_str())?.remove(0);
+        // None when the parent is the first commit, to rebase from the root
         let base = self
             .repository
-            .parents_hash(&parent)
-            .first()
-            .map(|h| (*h).clone());
+            .parents_of(parent.as_str())?
+            .into_iter()
+            .next();
         if self.repository.has_merges_between(base.as_ref(), "HEAD") {
             return Err("There are merge commits after them, which squashing would flatten".into());
         }
