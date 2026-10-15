@@ -187,7 +187,7 @@ pub struct GitDialog {
     kind: DialogKind,
     // the event that opened the popup, which runs the command too, so a double press runs it
     trigger: Option<UserEvent>,
-    fields: Vec<(FieldId, &'static str, Field)>,
+    fields: Vec<(FieldId, String, Field)>,
     selected: usize,
     // typing into the selected text field
     editing: bool,
@@ -246,7 +246,7 @@ impl GitDialog {
                 dialog.push_choice(FieldId::Remote, "Remote", info.remotes.clone(), &remote);
                 dialog
                     .fields
-                    .push((FieldId::Branch, "Branch", Field::text("", vec![])));
+                    .push((FieldId::Branch, "Branch".into(), Field::text("", vec![])));
                 dialog.update_pull_branch(None);
                 dialog.push_check(FieldId::Rebase, "Rebase instead of merge", info.pull_rebase);
                 let auto_stash = info.auto_stash(info.pull_rebase);
@@ -268,9 +268,11 @@ impl GitDialog {
                     &current,
                 );
                 dialog.push_choice(FieldId::Remote, "To remote", info.remotes.clone(), "");
-                dialog
-                    .fields
-                    .push((FieldId::RemoteBranch, "As branch", Field::text("", vec![])));
+                dialog.fields.push((
+                    FieldId::RemoteBranch,
+                    "As branch".into(),
+                    Field::text("", vec![]),
+                ));
                 dialog.push_check(FieldId::Tags, "Push all tags", false);
                 dialog.push_check(FieldId::Force, "Force push (with lease)", false);
                 dialog.update_push_remote();
@@ -415,10 +417,10 @@ impl GitDialog {
         let mut dialog = Self::with(" New branch ", "create", vec![], DialogKind::CreateBranch);
         dialog
             .fields
-            .push((FieldId::Name, "Name", Field::text("", vec![])));
+            .push((FieldId::Name, "Name".into(), Field::text("", vec![])));
         dialog
             .fields
-            .push((FieldId::From, "From", Field::text(from, branches)));
+            .push((FieldId::From, "From".into(), Field::text(from, branches)));
         dialog.push_check(FieldId::Checkout, "Check it out", true);
         dialog.editing = true;
         dialog
@@ -473,10 +475,10 @@ impl GitDialog {
         let mut dialog = Self::with(" Edit branch ", "save", vec![], kind);
         dialog
             .fields
-            .push((FieldId::Name, "Name", Field::text(name, vec![])));
+            .push((FieldId::Name, "Name".into(), Field::text(name, vec![])));
         dialog.fields.push((
             FieldId::Upstream,
-            "Upstream",
+            "Upstream".into(),
             Field::text(&upstream, remote_branches),
         ));
         dialog
@@ -509,10 +511,10 @@ impl GitDialog {
         let mut dialog = Self::with(title, verb, vec![], kind);
         dialog
             .fields
-            .push((FieldId::Name, "Name", Field::text(name, vec![])));
+            .push((FieldId::Name, "Name".into(), Field::text(name, vec![])));
         dialog
             .fields
-            .push((FieldId::Url, "URL", Field::text(url, vec![])));
+            .push((FieldId::Url, "URL".into(), Field::text(url, vec![])));
         dialog
     }
 
@@ -531,13 +533,13 @@ impl GitDialog {
         let mut dialog = Self::with(" New tag ", "create", vec![], DialogKind::CreateTag);
         dialog
             .fields
-            .push((FieldId::Name, "Name", Field::text("", vec![])));
+            .push((FieldId::Name, "Name".into(), Field::text("", vec![])));
         dialog
             .fields
-            .push((FieldId::Message, "Message", Field::text("", vec![])));
+            .push((FieldId::Message, "Message".into(), Field::text("", vec![])));
         dialog
             .fields
-            .push((FieldId::At, "At", Field::text(at, vec![])));
+            .push((FieldId::At, "At".into(), Field::text(at, vec![])));
         dialog.editing = true;
         dialog
     }
@@ -545,11 +547,14 @@ impl GitDialog {
     // `remote` is where they may be deleted too, when there are remotes.
     pub fn delete_tags(names: Vec<String>, remote: Option<String>) -> Self {
         let intro = names_intro("Delete the tag", "Delete the tags", &names);
-        let has_remote = remote.is_some();
+        // named, as it may not be the remote meant: origin, else the first one
+        let label = remote
+            .as_ref()
+            .map(|remote| format!("Delete them from {remote} too"));
         let kind = DialogKind::DeleteTags { names, remote };
         let mut dialog = Self::with(" Delete tag ", "delete", intro, kind);
-        if has_remote {
-            dialog.push_check(FieldId::Force, "Delete them from the remote too", false);
+        if let Some(label) = label {
+            dialog.push_check(FieldId::Force, &label, false);
         }
         dialog
     }
@@ -598,14 +603,14 @@ impl GitDialog {
         }
     }
 
-    fn push_choice(&mut self, id: FieldId, label: &'static str, options: Vec<String>, value: &str) {
+    fn push_choice(&mut self, id: FieldId, label: &str, options: Vec<String>, value: &str) {
         let index = options.iter().position(|o| o == value).unwrap_or(0);
         self.fields
-            .push((id, label, Field::Choice { options, index }));
+            .push((id, label.into(), Field::Choice { options, index }));
     }
 
-    fn push_check(&mut self, id: FieldId, label: &'static str, checked: bool) {
-        self.fields.push((id, label, Field::Check(checked)));
+    fn push_check(&mut self, id: FieldId, label: &str, checked: bool) {
+        self.fields.push((id, label.into(), Field::Check(checked)));
     }
 
     // The upstream remote of the branch, else origin, else the first one.
@@ -1685,6 +1690,14 @@ mod tests {
             hash: n.to_string().repeat(40),
             line: format!("{n} subject"),
         }
+    }
+
+    #[test]
+    fn test_delete_tags_names_the_remote() {
+        let dialog = GitDialog::delete_tags(vec!["v1".into()], Some("fork".into()));
+        assert_eq!(dialog.fields[0].1, "Delete them from fork too");
+        let dialog = GitDialog::delete_tags(vec!["v1".into()], None);
+        assert!(dialog.fields.is_empty());
     }
 
     #[test]
