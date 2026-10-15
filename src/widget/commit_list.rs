@@ -19,7 +19,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
-    git::{Commit, CommitHash, Ref},
+    git::{Commit, CommitHash, Head, Ref},
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{SearchOptions, SearchTarget},
@@ -204,8 +204,8 @@ pub struct CommitListState<'a> {
     picked_commit_hashes: Vec<CommitHash>,
     // what part of the history is loaded, like "main only", when not all of it
     filter_note: Option<String>,
-    // the checked-out branch, its label in its own color
-    head_branch: Option<String>,
+    // the checked-out branch, its label in its own color; a detached HEAD gets a label
+    head: Head,
     selected: usize,
     offset: usize,
     total: usize,
@@ -236,7 +236,7 @@ impl<'a> CommitListState<'a> {
             search_matches: vec![SearchMatch::default(); total],
             picked_commit_hashes: Vec::new(),
             filter_note: None,
-            head_branch: None,
+            head: Head::None,
             selected: 0,
             offset: 0,
             total,
@@ -518,8 +518,8 @@ impl<'a> CommitListState<'a> {
         self.filter_note = note;
     }
 
-    pub fn set_head_branch(&mut self, branch: Option<String>) {
-        self.head_branch = branch;
+    pub fn set_head(&mut self, head: Head) {
+        self.head = head;
     }
 
     pub fn select_ref(&mut self, ref_name: &str) {
@@ -929,7 +929,7 @@ impl CommitList<'_> {
                 let mut spans = refs_spans(
                     commit_info,
                     &state.search_matches[state.offset + i].refs,
-                    state.head_branch.as_deref(),
+                    &state.head,
                     &self.ctx.color_theme,
                 );
                 let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
@@ -1097,10 +1097,21 @@ impl CommitList<'_> {
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo,
     refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
-    head_branch: Option<&str>,
+    head: &Head,
     color_theme: &'a ColorTheme,
 ) -> Vec<Span<'a>> {
     let mut spans = vec![];
+    if matches!(head, Head::Detached { target } if *target == commit_info.commit.commit_hash) {
+        spans.push(Span::styled(
+            " HEAD ",
+            ref_label_style(color_theme.list_ref_head_fg),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    let head_branch = match head {
+        Head::Branch { name } => Some(name.as_str()),
+        _ => None,
+    };
     for r in &commit_info.refs {
         let (name, color) = match r {
             Ref::Branch { name, .. } if head_branch == Some(name.as_str()) => {

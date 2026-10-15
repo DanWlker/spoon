@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keybind::Scope,
     layout::{Border, Direction, Panel},
@@ -318,10 +318,7 @@ impl<'a> DetailView<'a> {
         self.load_tab();
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
-        let event = event_with_count.event;
-        let count = event_with_count.count;
-
+    pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         // typing a search or filter, keys arrive unmapped, see App::run
         if self.is_typing_query() {
             if let Some(query) = self.query_mut() {
@@ -387,7 +384,7 @@ impl<'a> DetailView<'a> {
             }
         }
         if self.list_focused {
-            if self.handle_list_event(event, count) {
+            if self.handle_list_event(event) {
                 return;
             }
         } else if self.handle_query_event(event) {
@@ -397,7 +394,7 @@ impl<'a> DetailView<'a> {
         // the diff or preview beside the files gets only its own keys and those of the whole app
         // (see `Scope::DetailsPane`), which go on below
         if self.is_pane_focused() && !event.is_app_wide() {
-            self.handle_pane_event(event, count);
+            self.handle_pane_event(event);
             return;
         }
         // in the file trees, y and Y copy the path of the selected file
@@ -419,8 +416,8 @@ impl<'a> DetailView<'a> {
         let handled = match self.tab {
             _ if self.list_focused => false,
             DetailTab::Info => false,
-            DetailTab::Changes => self.handle_changes_event(event, count),
-            DetailTab::Files => self.handle_files_event(event, count),
+            DetailTab::Changes => self.handle_changes_event(event),
+            DetailTab::Files => self.handle_files_event(event),
         };
         if handled {
             return;
@@ -428,34 +425,22 @@ impl<'a> DetailView<'a> {
 
         match event {
             UserEvent::NavigateDown => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_down();
-                }
+                self.commit_detail_state.scroll_down();
             }
             UserEvent::NavigateUp => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_up();
-                }
+                self.commit_detail_state.scroll_up();
             }
             UserEvent::PageDown => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_page_down();
-                }
+                self.commit_detail_state.scroll_page_down();
             }
             UserEvent::PageUp => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_page_up();
-                }
+                self.commit_detail_state.scroll_page_up();
             }
             UserEvent::HalfPageDown => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_half_page_down();
-                }
+                self.commit_detail_state.scroll_half_page_down();
             }
             UserEvent::HalfPageUp => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_half_page_up();
-                }
+                self.commit_detail_state.scroll_half_page_up();
             }
             UserEvent::GoToTop => {
                 self.commit_detail_state.select_first();
@@ -587,7 +572,7 @@ impl<'a> DetailView<'a> {
 
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
     // copying and applying (the search is handled before); others are ignored.
-    fn handle_pane_event(&mut self, event: UserEvent, count: usize) {
+    fn handle_pane_event(&mut self, event: UserEvent) {
         let step = match event {
             UserEvent::NavigateDown => Some(Step::Next),
             UserEvent::NavigateUp => Some(Step::Prev),
@@ -595,16 +580,11 @@ impl<'a> DetailView<'a> {
             UserEvent::GoToBottom => Some(Step::Last),
             _ => None,
         };
-        let count = if matches!(step, Some(Step::Next | Step::Prev)) {
-            count
-        } else {
-            1
-        };
         match self.tab {
             DetailTab::Changes => {
                 let state = &mut self.changes_state;
                 if let Some(step) = step {
-                    (0..count).for_each(|_| state.step(step));
+                    state.step(step);
                     return;
                 }
                 match event {
@@ -627,14 +607,14 @@ impl<'a> DetailView<'a> {
                     }
                     _ => {
                         let page = self.changes_state.diff_page_height();
-                        self.scroll_changes_diff(event, count, page);
+                        self.scroll_changes_diff(event, page);
                     }
                 }
             }
             DetailTab::Files => {
                 let state = &mut self.files_state;
                 if let Some(step) = step {
-                    (0..count).for_each(|_| state.step(step));
+                    state.step(step);
                     return;
                 }
                 match event {
@@ -647,7 +627,7 @@ impl<'a> DetailView<'a> {
                         }
                     }
                     _ => {
-                        self.handle_files_event(event, count);
+                        self.handle_files_event(event);
                     }
                 }
             }
@@ -656,17 +636,17 @@ impl<'a> DetailView<'a> {
     }
 
     // Returns whether the event was handled by the files of the changes tab.
-    fn handle_changes_event(&mut self, event: UserEvent, count: usize) -> bool {
+    fn handle_changes_event(&mut self, event: UserEvent) -> bool {
         let page = self.changes_state.diff_page_height();
         // into the diff; a directory without one opens or closes
         if event == UserEvent::Confirm && self.changes_state.enter() {
             return true;
         }
-        if event == UserEvent::ApplyChange || self.scroll_changes_diff(event, count, page) {
+        if event == UserEvent::ApplyChange || self.scroll_changes_diff(event, page) {
             return true;
         }
         let state = &mut self.changes_state;
-        handle_tree_event(event, count, |f| state.update_tree(f))
+        handle_tree_event(event, |f| state.update_tree(f))
     }
 
     // Applies the selected hunk or line of the diff to the working tree.
@@ -699,15 +679,15 @@ impl<'a> DetailView<'a> {
 
     // Scrolls the diff of the changes tab, from the files or the diff; returns whether the event
     // was a scroll.
-    fn scroll_changes_diff(&mut self, event: UserEvent, count: usize, page: usize) -> bool {
+    fn scroll_changes_diff(&mut self, event: UserEvent, page: usize) -> bool {
         let state = &mut self.changes_state;
         match event {
-            UserEvent::ScrollDown => state.scroll_diff_down(count),
-            UserEvent::ScrollUp => state.scroll_diff_up(count),
-            UserEvent::PageDown => state.scroll_diff_down(page * count),
-            UserEvent::PageUp => state.scroll_diff_up(page * count),
-            UserEvent::HalfPageDown => state.scroll_diff_down(page / 2 * count),
-            UserEvent::HalfPageUp => state.scroll_diff_up(page / 2 * count),
+            UserEvent::ScrollDown => state.scroll_diff_down(1),
+            UserEvent::ScrollUp => state.scroll_diff_up(1),
+            UserEvent::PageDown => state.scroll_diff_down(page),
+            UserEvent::PageUp => state.scroll_diff_up(page),
+            UserEvent::HalfPageDown => state.scroll_diff_down(page / 2),
+            UserEvent::HalfPageUp => state.scroll_diff_up(page / 2),
             _ => return false,
         }
         true
@@ -715,29 +695,22 @@ impl<'a> DetailView<'a> {
 
     // Moves in the commit list while it has the focus, showing the details of the selected commit;
     // returns whether the event was handled.
-    fn handle_list_event(&mut self, event: UserEvent, count: usize) -> bool {
+    fn handle_list_event(&mut self, event: UserEvent) -> bool {
         let (comparing, shows_compare) = (self.is_comparing(), self.shows_compare());
         let tx = self.tx.clone();
         let state = self.as_mut_list_state();
         let before = state.selected_commit_hash().clone();
-        let repeat = |state: &mut CommitListState<'a>, f: fn(&mut CommitListState<'a>)| {
-            (0..count).for_each(|_| f(state))
-        };
         match event {
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                repeat(state, CommitListState::select_next)
-            }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                repeat(state, CommitListState::select_prev)
-            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => CommitListState::select_next(state),
+            UserEvent::NavigateUp | UserEvent::SelectUp => CommitListState::select_prev(state),
             UserEvent::GoToTop => state.select_first(),
             UserEvent::GoToBottom => state.select_last(),
-            UserEvent::PageDown => repeat(state, CommitListState::scroll_down_page),
-            UserEvent::PageUp => repeat(state, CommitListState::scroll_up_page),
-            UserEvent::HalfPageDown => repeat(state, CommitListState::scroll_down_half),
-            UserEvent::HalfPageUp => repeat(state, CommitListState::scroll_up_half),
-            UserEvent::ScrollDown => repeat(state, CommitListState::scroll_down),
-            UserEvent::ScrollUp => repeat(state, CommitListState::scroll_up),
+            UserEvent::PageDown => CommitListState::scroll_down_page(state),
+            UserEvent::PageUp => CommitListState::scroll_up_page(state),
+            UserEvent::HalfPageDown => CommitListState::scroll_down_half(state),
+            UserEvent::HalfPageUp => CommitListState::scroll_up_half(state),
+            UserEvent::ScrollDown => CommitListState::scroll_down(state),
+            UserEvent::ScrollUp => CommitListState::scroll_up(state),
             UserEvent::ToggleSelect if comparing => {
                 let msg = "Close the diff first (esc) to pick other commits".to_string();
                 tx.send(AppEvent::NotifyWarn(msg));
@@ -768,21 +741,21 @@ impl<'a> DetailView<'a> {
 
     // Returns whether the event was handled by the files tab: scrolling the preview from the files
     // or the preview, and the files.
-    fn handle_files_event(&mut self, event: UserEvent, count: usize) -> bool {
+    fn handle_files_event(&mut self, event: UserEvent) -> bool {
         let state = &mut self.files_state;
         let page = state.preview_page_height();
         let preview_focused = state.is_preview_focused();
         match event {
             // into the preview of a file; a directory opens or closes
             UserEvent::Confirm if !preview_focused && state.enter() => {}
-            UserEvent::ScrollDown => state.scroll_preview_down(count),
-            UserEvent::ScrollUp => state.scroll_preview_up(count),
-            UserEvent::PageDown => state.scroll_preview_down(page * count),
-            UserEvent::PageUp => state.scroll_preview_up(page * count),
-            UserEvent::HalfPageDown => state.scroll_preview_down(page / 2 * count),
-            UserEvent::HalfPageUp => state.scroll_preview_up(page / 2 * count),
+            UserEvent::ScrollDown => state.scroll_preview_down(1),
+            UserEvent::ScrollUp => state.scroll_preview_up(1),
+            UserEvent::PageDown => state.scroll_preview_down(page),
+            UserEvent::PageUp => state.scroll_preview_up(page),
+            UserEvent::HalfPageDown => state.scroll_preview_down(page / 2),
+            UserEvent::HalfPageUp => state.scroll_preview_up(page / 2),
             _ if preview_focused => return false,
-            _ => return handle_tree_event(event, count, |f| state.update_tree(f)),
+            _ => return handle_tree_event(event, |f| state.update_tree(f)),
         }
         true
     }
@@ -1019,12 +992,11 @@ impl<'a> DetailView<'a> {
 // Moves in or expands and collapses a file tree; returns whether the event was handled.
 fn handle_tree_event(
     event: UserEvent,
-    count: usize,
     mut update: impl FnMut(&dyn Fn(&mut FileTreeState)),
 ) -> bool {
     match event {
-        UserEvent::NavigateDown => (0..count).for_each(|_| update(&FileTreeState::select_next)),
-        UserEvent::NavigateUp => (0..count).for_each(|_| update(&FileTreeState::select_prev)),
+        UserEvent::NavigateDown => update(&FileTreeState::select_next),
+        UserEvent::NavigateUp => update(&FileTreeState::select_prev),
         UserEvent::GoToTop => update(&FileTreeState::select_first),
         UserEvent::GoToBottom => update(&FileTreeState::select_last),
         UserEvent::NavigateRight => update(&FileTreeState::expand),

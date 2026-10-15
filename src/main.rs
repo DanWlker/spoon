@@ -205,6 +205,7 @@ fn main() -> Result<()> {
 
     let ec = event::EventController::init();
     let mut refresh = None;
+    let mut terminal_guard = None;
     let mut terminal = None;
 
     let ret = loop {
@@ -242,6 +243,7 @@ fn main() -> Result<()> {
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
+            terminal_guard = Some(TerminalGuard);
             // the focus coming back reloads what changed meanwhile, like lazygit; the mouse drags
             // the borders of the panels
             let _ = ratatui::crossterm::execute!(
@@ -279,11 +281,21 @@ fn main() -> Result<()> {
         }
     };
 
-    let _ = ratatui::crossterm::execute!(
-        std::io::stdout(),
-        ratatui::crossterm::event::DisableFocusChange,
-        ratatui::crossterm::event::DisableMouseCapture
-    );
-    ratatui::restore();
+    drop(terminal_guard);
     ret.map_err(Into::into)
+}
+
+// Gives the terminal back however the app ends: quitting, an error while reloading, or a panic
+// (ratatui's panic hook leaves the mouse captured).
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::event::DisableFocusChange,
+            ratatui::crossterm::event::DisableMouseCapture
+        );
+        ratatui::restore();
+    }
 }

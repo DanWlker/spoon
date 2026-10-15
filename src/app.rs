@@ -22,7 +22,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{hint, AppEvent, EventController, KeyHint, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, EventController, KeyHint, UserEvent},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
         validate_marked_hash, ExternalCommandParameters,
@@ -46,7 +46,7 @@ use crate::{
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
         keys_popup::KeysPopup,
         local_changes::LocalChangesState,
-        ref_list::{RefList, RefListState, RefSection, RefSelection},
+        ref_list::{RefList, RefListState, RefSection, RefSelection, DETACHED_HEAD},
         style::{badge, key_hints},
     },
 };
@@ -258,6 +258,11 @@ impl<'a> App<'a> {
                 for r in &refs {
                     ref_name_to_commit_index_map.insert(r.name(), i);
                 }
+                // the detached HEAD's row in the sidebar selects it
+                if matches!(repository.head(), Head::Detached { target } if *target == commit.commit_hash)
+                {
+                    ref_name_to_commit_index_map.insert("HEAD", i);
+                }
                 // comparing two refs, both are shown alike
                 let on_head = comparing_refs || head_history.contains(&commit.commit_hash);
                 CommitInfo::new(commit, refs, on_head)
@@ -276,12 +281,8 @@ impl<'a> App<'a> {
             },
             ctx.ui_config.list.scrolloff as usize,
         );
-        // the checked-out branch, marked in the graph and the sidebar
-        let head_branch = match repository.head() {
-            Head::Branch { name } => Some(name.clone()),
-            _ => None,
-        };
-        commit_list_state.set_head_branch(head_branch.clone());
+        // the checked-out branch, or the detached HEAD, marked in the graph and the sidebar
+        commit_list_state.set_head(repository.head().clone());
         commit_list_state.set_filter_note(
             shell
                 .as_ref()
@@ -325,7 +326,7 @@ impl<'a> App<'a> {
             },
         };
         shell.sidebar.set_tracking(repository.branch_tracking());
-        shell.sidebar.set_head_branch(head_branch);
+        shell.sidebar.set_head(repository.head());
 
         let mut app = Self {
             repository,
@@ -392,9 +393,11 @@ impl App<'_> {
                             self.clear_status_line();
                         }
                         StatusLine::NotificationError(_) => {
-                            // Clear message and cancel key input
+                            // Clear message and cancel key input, but a key typed into text
                             self.clear_status_line();
-                            continue;
+                            if !self.view.is_capturing_keys() {
+                                continue;
+                            }
                         }
                     }
 
@@ -410,8 +413,8 @@ impl App<'_> {
                         {
                             self.ec.send(AppEvent::Quit);
                         } else {
-                            let event = UserEventWithCount::from_event(UserEvent::Unknown);
-                            self.view.handle_event(event, key);
+                            let event = UserEvent::Unknown;
+                            self.handle_view_event(event, key);
                         }
                         continue;
                     }
@@ -430,7 +433,7 @@ impl App<'_> {
                             SequenceMatch::Partial => continue,
                             SequenceMatch::Complete(ue) => {
                                 self.shell.app_status.pending_keys.clear();
-                                self.dispatch(UserEventWithCount::from_event(ue), key);
+                                self.dispatch(ue, key);
                                 continue;
                             }
                             SequenceMatch::None => {
@@ -462,16 +465,13 @@ impl App<'_> {
                         Some(UserEvent::ForceQuit) => {
                             self.ec.send(AppEvent::Quit);
                         }
-                        Some(ue) => self.dispatch(UserEventWithCount::from_event(ue), key),
+                        Some(ue) => self.dispatch(ue, key),
                         None => {
                             if let StatusLine::Input { .. } = self.shell.app_status.status_line {
                                 // In input mode, pass all key events to the view
                                 // fixme: currently, the only thing that processes key_event is searching the list,
                                 //        so this probably works, but it's not the right process...
-                                self.view.handle_event(
-                                    UserEventWithCount::from_event(UserEvent::Unknown),
-                                    key,
-                                );
+                                self.view.handle_event(UserEvent::Unknown, key);
                             }
                         }
                     }
@@ -1160,12 +1160,11 @@ impl App<'_> {
 
     // Handles what works on every page (the sidebar, switching pages, fetch, pull and push),
     // else hands the event to the focused sidebar or the page.
-    fn dispatch(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
-        let event = event_with_count.event;
+    fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
         // keys typed into the search of the list, or over the help, belong to the view
         let typing = matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if typing || matches!(self.view, View::Help(_)) {
-            self.view.handle_event(event_with_count, key);
+            self.view.handle_event(event, key);
             return;
         }
         if self.handle_remote_event(event) {
@@ -1206,27 +1205,41 @@ impl App<'_> {
             _ => {}
         }
         if self.shell.sidebar_focused {
-            self.handle_sidebar_event(event_with_count, key);
+            self.handle_sidebar_event(event, key);
         } else {
-            self.view.handle_event(event_with_count, key);
+            self.handle_view_event(event, key);
         }
     }
 
-    fn handle_sidebar_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
-        let count = event_with_count.count;
-        if !self.sidebar_command_applies(event_with_count.event) {
+    // Hands the key to the page; one committing while git signs commits gets the terminal back
+    // meanwhile, for a passphrase asked there, like the git commands of the popups.
+    fn handle_view_event(&mut self, event: UserEvent, key: KeyEvent) {
+        let signs = matches!(&self.view, View::LocalChanges(view) if view.may_sign(event, key))
+            && self.repository.signs();
+        if signs {
+            self.ec.suspend();
+        }
+        self.view.handle_event(event, key);
+        if signs {
+            self.ec.resume();
+            self.shell.app_status.pending_clear = PendingClear::Screen;
+        }
+    }
+
+    fn handle_sidebar_event(&mut self, event: UserEvent, key: KeyEvent) {
+        if !self.sidebar_command_applies(event) {
             return;
         }
-        match event_with_count.event {
+        match event {
             UserEvent::Quit => self.ec.send(AppEvent::Quit),
             UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
             UserEvent::Refresh => self.view.refresh(),
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                (0..count).for_each(|_| self.shell.sidebar.select_next());
+                self.shell.sidebar.select_next();
                 self.show_sidebar_selection();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
-                (0..count).for_each(|_| self.shell.sidebar.select_prev());
+                self.shell.sidebar.select_prev();
                 self.show_sidebar_selection();
             }
             UserEvent::GoToTop => {
@@ -1277,7 +1290,7 @@ impl App<'_> {
             UserEvent::FocusPanel(_) => {
                 // a panel of the page
                 self.set_sidebar_focused(false);
-                self.view.handle_event(event_with_count, key);
+                self.view.handle_event(event, key);
             }
             event if event.home_scope() == Scope::Graph => self.handle_sidebar_graph_event(event),
             _ => {}
@@ -1542,6 +1555,16 @@ impl App<'_> {
         }
         *self.ctx.running_task.borrow_mut() = Some(task.running.clone());
         let path = self.repository.path().to_path_buf();
+        // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
+        if task.may_sign() && self.repository.signs() {
+            self.ec.suspend();
+            println!("{}…", task.running);
+            let result = run_task(&path, &task);
+            self.ec.resume();
+            self.shell.app_status.pending_clear = PendingClear::Screen;
+            self.ec.send(AppEvent::TaskFinished { task, result });
+            return;
+        }
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let result = run_task(&path, &task);
@@ -1668,6 +1691,11 @@ impl App<'_> {
                 {
                     Some(target.clone())
                 }
+                _ => None,
+            })
+            .or_else(|| match self.repository.head() {
+                // the row of a detached HEAD
+                Head::Detached { target } if name == DETACHED_HEAD => Some(target.clone()),
                 _ => None,
             });
         let Some(target) = target else {
@@ -1911,11 +1939,19 @@ impl App<'_> {
         if !matches!(self.view, View::List(_) | View::Detail(_)) {
             return;
         }
+        // the details show the target, else (left out by --max-count) the selected commit
+        let shown = match self.repository.commit(&target) {
+            Some(_) => target.clone(),
+            None => match self.view.as_list_state() {
+                Some(state) => state.selected_commit_hash().clone(),
+                None => return,
+            },
+        };
         let Some(commit_list_state) = self.view.take_list_state() else {
             return;
         };
-        let (commit, changes) = self.repository.commit_detail(&target);
-        let refs = self.repository.refs(&target).into_iter().cloned().collect();
+        let (commit, changes) = self.repository.commit_detail(&shown);
+        let refs = self.repository.refs(&shown).into_iter().cloned().collect();
         self.view = View::of_detail(
             commit_list_state,
             commit,
@@ -2056,6 +2092,7 @@ fn moves_head(event: UserEvent) -> bool {
             | UserEvent::Revert
             | UserEvent::AmendCommit
             | UserEvent::DropCommit
+            | UserEvent::Reset
             | UserEvent::Pull
     )
 }

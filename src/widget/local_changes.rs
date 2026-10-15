@@ -90,6 +90,8 @@ pub struct CommitDraft {
     amend_base: Option<String>,
     message_before_amend: Option<TextArea>,
     amend_for_edit: bool,
+    // git's message was filled in, see `prepare_message`
+    message_prepared: bool,
 }
 
 // Where the keys go on the page.
@@ -247,13 +249,13 @@ impl<'a> LocalChangesState<'a> {
             operation: repository.operation_in_progress(),
             message_prepared: false,
         };
-        state.prepare_message();
         if let Some(snapshot) = snapshot {
             let draft = *snapshot.commit_draft;
             state.message = draft.message;
             state.amend_base = draft.amend_base;
             state.message_before_amend = draft.message_before_amend;
             state.amend_for_edit = draft.amend_for_edit;
+            state.message_prepared = draft.message_prepared;
             if state.amend_base.is_some() {
                 // the staged section shows the last commit too
                 state.changes = state.load_changes();
@@ -264,6 +266,8 @@ impl<'a> LocalChangesState<'a> {
                 state.tree_mut().select_path(&path);
             }
         }
+        // after the draft, filling the message only when it is empty, like MERGE_MSG on conflicts
+        state.prepare_message();
         state.sync_edit_stop();
         state.load_diff();
         state
@@ -328,11 +332,7 @@ impl<'a> LocalChangesState<'a> {
     // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
     // finishes a merge, cherry-pick or revert), or starts typing the message when there is none yet.
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
-        // the commit a rebase stopped at to edit is amended, then the rebase goes on
-        let continues = self
-            .operation
-            .filter(|o| o.continues_without_commit() && !self.editing_commit);
-        if let Some(operation) = continues {
+        if let Some(operation) = self.continuing_operation() {
             let result = self.repository.continue_operation(operation);
             // a continue that stops on the next conflict has still applied commits
             self.needs_refresh = true;
@@ -449,6 +449,13 @@ impl<'a> LocalChangesState<'a> {
             self.message = TextArea::new(&message);
             self.message_prepared = true;
         }
+    }
+
+    // The rebase that committing continues, rather than making a commit: the commit it stopped at
+    // to edit is amended first.
+    pub fn continuing_operation(&self) -> Option<Operation> {
+        self.operation
+            .filter(|o| o.continues_without_commit() && !self.editing_commit)
     }
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked.
@@ -710,6 +717,7 @@ impl<'a> LocalChangesState<'a> {
             amend_base: self.amend_base.clone(),
             message_before_amend: self.message_before_amend.clone(),
             amend_for_edit: self.amend_for_edit,
+            message_prepared: self.message_prepared,
         }
     }
 
@@ -1637,6 +1645,10 @@ impl LocalChangesPanel<'_> {
             return;
         }
 
+        // no room for a row, like in a very short terminal
+        if inner.height == 0 {
+            return;
+        }
         // keep the cursor visible when the tree is taller than the section
         let height = inner.height as usize;
         let offset = (cursor + 1).saturating_sub(height);
@@ -3116,6 +3128,15 @@ mod tests {
         // git's message, without its comment lines
         assert_eq!(state.message.text(), "Merge branch 'feature'");
         assert!(state.toggle_amend().is_err());
+        // also when the page opens from a snapshot; once cleared, it stays so
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let restored = LocalChangesState::restore(&repository, Some(Default::default()));
+        assert_eq!(restored.message.text(), "Merge branch 'feature'");
+        state.message = TextArea::default();
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let restored = LocalChangesState::restore(&repository, Some(state.snapshot()));
+        assert_eq!(restored.message.text(), "");
+        state.message = TextArea::new("Merge branch 'feature'");
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;

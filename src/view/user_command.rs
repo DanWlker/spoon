@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, Sender, UserEvent},
     git::{Commit, CommitHash, Ref, Repository},
     layout::{Border, Panel},
     view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
@@ -61,40 +61,25 @@ impl<'a> UserCommandView<'a> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
-        let event = event_with_count.event;
-        let count = event_with_count.count;
-
+    pub fn handle_event(&mut self, event: UserEvent, _: KeyEvent) {
         match event {
             UserEvent::NavigateDown => {
-                for _ in 0..count {
-                    self.commit_user_command_state.scroll_down();
-                }
+                self.commit_user_command_state.scroll_down();
             }
             UserEvent::NavigateUp => {
-                for _ in 0..count {
-                    self.commit_user_command_state.scroll_up();
-                }
+                self.commit_user_command_state.scroll_up();
             }
             UserEvent::PageDown => {
-                for _ in 0..count {
-                    self.commit_user_command_state.scroll_page_down();
-                }
+                self.commit_user_command_state.scroll_page_down();
             }
             UserEvent::PageUp => {
-                for _ in 0..count {
-                    self.commit_user_command_state.scroll_page_up();
-                }
+                self.commit_user_command_state.scroll_page_up();
             }
             UserEvent::HalfPageDown => {
-                for _ in 0..count {
-                    self.commit_user_command_state.scroll_half_page_down();
-                }
+                self.commit_user_command_state.scroll_half_page_down();
             }
             UserEvent::HalfPageUp => {
-                for _ in 0..count {
-                    self.commit_user_command_state.scroll_half_page_up();
-                }
+                self.commit_user_command_state.scroll_half_page_up();
             }
             UserEvent::GoToTop => {
                 self.commit_user_command_state.select_first();

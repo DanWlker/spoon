@@ -362,7 +362,8 @@ impl Repository {
     pub fn diff_between(&self, base: &str, target: &str, paths: &[&str]) -> String {
         let mut args = PATCH_DIFF_ARGS.to_vec();
         args.extend_from_slice(&["-M", base, target, "--"]);
-        args.extend_from_slice(paths);
+        let paths = pathspecs(paths);
+        args.extend(paths.iter().map(String::as_str));
         git_output(&self.path, &args).unwrap_or_default()
     }
 
@@ -496,7 +497,8 @@ impl Repository {
 
     pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {
         let mut args = vec!["add", "--all", "--"];
-        args.extend_from_slice(paths);
+        let paths = pathspecs(paths);
+        args.extend(paths.iter().map(String::as_str));
         run_git(&self.path, &args, None)
     }
 
@@ -509,7 +511,8 @@ impl Repository {
         let mut args = vec!["reset", "--quiet"];
         args.extend(staged_base);
         args.push("--");
-        args.extend_from_slice(paths);
+        let paths = pathspecs(paths);
+        args.extend(paths.iter().map(String::as_str));
         run_git(&self.path, &args, None)
     }
 
@@ -526,7 +529,8 @@ impl Repository {
         let mut untracked = untracked.to_vec();
         if !conflicted.is_empty() {
             let mut args = vec!["reset", "--quiet", "--"];
-            args.extend_from_slice(conflicted);
+            let specs = pathspecs(conflicted);
+            args.extend(specs.iter().map(String::as_str));
             run_git(&self.path, &args, None)?;
             let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
             args.extend_from_slice(conflicted);
@@ -542,12 +546,14 @@ impl Repository {
         }
         if !tracked.is_empty() {
             let mut args = vec!["checkout", "--quiet", "--"];
-            args.extend_from_slice(&tracked);
+            let specs = pathspecs(&tracked);
+            args.extend(specs.iter().map(String::as_str));
             run_git(&self.path, &args, None)?;
         }
         if !untracked.is_empty() {
             let mut args = vec!["clean", "--force", "--quiet", "--"];
-            args.extend_from_slice(&untracked);
+            let specs = pathspecs(&untracked);
+            args.extend(specs.iter().map(String::as_str));
             run_git(&self.path, &args, None)?;
         }
         Ok(())
@@ -575,7 +581,9 @@ impl Repository {
         }
         if !paths.is_empty() {
             args.push("--");
-            args.extend_from_slice(paths);
+            let paths = pathspecs(paths);
+            args.extend(paths.iter().map(String::as_str));
+            return run_git(&self.path, &args, None);
         }
         run_git(&self.path, &args, None)
     }
@@ -600,12 +608,14 @@ impl Repository {
     // The commits each local branch with an upstream has that it lacks (ahead, to push) and the
     // other way round (behind, to pull), by branch name.
     pub fn branch_tracking(&self) -> FxHashMap<String, (usize, usize)> {
-        let format = "--format=%(refname:short)%00%(upstream:track,nobracket)";
+        // the full name: the short one is "heads/v2" when a tag is named v2 too
+        let format = "--format=%(refname)%00%(upstream:track,nobracket)";
         let refs =
             git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
         refs.lines()
             .filter_map(|line| {
                 let (name, track) = line.split_once('\0')?;
+                let name = name.strip_prefix("refs/heads/")?;
                 // like "ahead 2, behind 1", empty when in sync or without an upstream
                 let count = |what: &str| {
                     track
@@ -700,6 +710,13 @@ impl Repository {
         git_output(&self.path, &["config", "--get", key])
             .ok()
             .map(|v| v.trim().to_string())
+    }
+
+    // Whether git signs the commits or tags it makes, which may ask for a passphrase in the
+    // terminal (a pinentry like pinentry-curses).
+    pub fn signs(&self) -> bool {
+        self.config_bool("commit.gpgSign") == Some(true)
+            || self.config_bool("tag.gpgSign") == Some(true)
     }
 
     // A boolean git config value, None when it is not set (or not a boolean).
@@ -819,7 +836,7 @@ impl Repository {
         {
             return Ok(());
         }
-        let output = Command::new("git")
+        let output = git_command()
             .args([command, "--continue"])
             // keep the messages of the commits instead of opening an editor
             .env("GIT_EDITOR", "true")
@@ -921,7 +938,7 @@ fn load_all_commits(
     mailmap: bool,
     revisions: Option<&[String]>,
 ) -> Vec<Commit> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command();
     cmd.arg("log");
 
     cmd.arg(match sort {
@@ -1001,7 +1018,7 @@ fn load_all_commits(
 }
 
 fn load_all_stashes(path: &Path, mailmap: bool) -> Vec<Commit> {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_command()
         .arg("stash")
         .arg("list")
         .arg(format!("--pretty={}", load_commits_format(mailmap)))
@@ -1127,7 +1144,7 @@ fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<C
 }
 
 fn load_refs(path: &Path) -> (RefMap, Head) {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_command()
         .arg("show-ref")
         .arg("--head")
         .arg("--dereference")
@@ -1186,7 +1203,7 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
 fn load_stashes_as_refs(path: &Path) -> RefMap {
     let format = ["%gd", "%H", "%s"].join("%x1f"); // use Unit Separator as a delimiter
-    let mut cmd = Command::new("git")
+    let mut cmd = git_command()
         .arg("stash")
         .arg("list")
         .arg(format!("--format={format}"))
@@ -1281,7 +1298,7 @@ fn load_remotes(path: &Path) -> Vec<String> {
 }
 
 fn get_current_branch(path: &Path) -> Option<String> {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_command()
         .arg("branch")
         .arg("--show-current")
         .current_dir(path)
@@ -1535,11 +1552,12 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
 }
 
 // A diff in the format it is parsed in, and applied back as a patch: ignoring user config that
-// changes it, like colors, external diff tools or other prefixes.
-const PATCH_DIFF_ARGS: [&str; 5] = [
+// changes it, like colors, external diff tools, text conversions of binary files or other prefixes.
+const PATCH_DIFF_ARGS: [&str; 6] = [
     "diff",
     "--no-color",
     "--no-ext-diff",
+    "--no-textconv",
     "--src-prefix=a/",
     "--dst-prefix=b/",
 ];
@@ -1551,20 +1569,20 @@ fn load_local_change_diff(
     staged: bool,
     staged_base: Option<&str>,
 ) -> String {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command();
     cmd.args(PATCH_DIFF_ARGS);
     if staged {
         cmd.arg("--cached")
             .args(staged_base)
             .arg("--")
-            .args(targets);
+            .args(pathspecs(targets));
     } else if untracked {
         cmd.arg("--no-index")
             .arg("--")
             .arg("/dev/null")
             .args(targets);
     } else {
-        cmd.arg("--").args(targets);
+        cmd.arg("--").args(pathspecs(targets));
     }
     // `--no-index` exits with 1 when the files differ, so the exit status is not checked
     cmd.current_dir(path)
@@ -1672,6 +1690,19 @@ pub struct GitTask {
 }
 
 impl GitTask {
+    // Whether it may make a commit or a tag, which git signs when configured to.
+    pub fn may_sign(&self) -> bool {
+        std::iter::once(&self.args)
+            .chain(&self.then)
+            .filter_map(|args| args.first())
+            .any(|command| {
+                matches!(
+                    command.as_str(),
+                    "commit" | "rebase" | "cherry-pick" | "merge" | "revert" | "tag" | "pull"
+                )
+            })
+    }
+
     pub fn new(args: &[&str], running: String, done: String) -> Self {
         GitTask {
             args: args.iter().map(|a| a.to_string()).collect(),
@@ -1721,16 +1752,16 @@ pub fn todo_action(hash: &str, action: &str) -> String {
 
 // Runs the command of a task, between stashing and reapplying the local changes if it says so.
 pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> {
-    let stashed = task.stash
-        && !git_output(path, &["status", "--porcelain"])
-            .unwrap_or_default()
-            .trim()
-            .is_empty();
-    if stashed {
+    // stashed when the stash changed: git stashes nothing for some changes it lists, like those
+    // in a submodule, and popping then would take an older stash
+    let stash_top = || git_output(path, &["rev-parse", "--verify", "--quiet", "refs/stash"]).ok();
+    let stashed = task.stash && {
+        let before = stash_top();
         let message = format!("serie: {}", task.running);
         let args = ["stash", "push", "--include-untracked", "-m", &message].map(String::from);
         run_task_step(path, &args, task)?;
-    }
+        stash_top() != before
+    };
     let pop = || run_task_step(path, &["stash", "pop"].map(String::from), task);
 
     let run = || {
@@ -1763,7 +1794,7 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
 // It runs while the app owns the terminal, so git must not prompt: no editor (the messages git
 // prepares are used as they are), and credentials come from a helper or an agent.
 fn run_task_step(path: &Path, args: &[String], task: &GitTask) -> std::result::Result<(), String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_command();
     cmd.args(args)
         .current_dir(path)
         .stdin(Stdio::null())
@@ -1809,12 +1840,32 @@ fn empty_tree(path: &Path) -> std::result::Result<String, String> {
     git_output(path, &["hash-object", "-t", "tree", "/dev/null"]).map(|s| s.trim().to_string())
 }
 
+// A git command of the app, taking no lock it can do without, like `git status` refreshing the
+// index, which would make the user's own git commands fail meanwhile.
+fn git_command() -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
+// Paths of files or directories for git, taken as they are, not as patterns: a file named
+// `*.log` is only that file. The root of the repository stays ":/".
+fn pathspecs(paths: &[&str]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| match *path {
+            ":/" => path.to_string(),
+            path => format!(":(literal){path}"),
+        })
+        .collect()
+}
+
 fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
     git_output_bytes(path, args).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, String> {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(path)
         .stdin(Stdio::null())
@@ -1830,7 +1881,7 @@ fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, 
 
 fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
     let command_error = |e: std::io::Error| format!("failed to run git {}: {e}", args.join(" "));
-    let mut child = Command::new("git")
+    let mut child = git_command()
         .args(args)
         .current_dir(path)
         .stdin(if stdin.is_some() {
@@ -1944,6 +1995,96 @@ mod tests {
     }
 
     #[test]
+    fn test_task_may_sign() {
+        let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
+        assert!(task(&["rebase", "-i", "main"]).may_sign());
+        assert!(!task(&["fetch", "origin"]).may_sign());
+        let delete_tag = GitTask {
+            then: vec![vec!["tag".into(), "v1".into()]],
+            ..task(&["branch", "-D", "x"])
+        };
+        assert!(delete_tag.may_sign());
+    }
+
+    #[test]
+    fn test_paths_are_literal() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let write = |name: &str, text: &str| std::fs::write(path.join(name), text).unwrap();
+        write("foo[1].txt", "a\n");
+        write("foo1.txt", "a\n");
+        repo.add(&["foo[1].txt", "foo1.txt"]);
+        repo.commit("first", "2024-01-01");
+        write("foo[1].txt", "b\n");
+        write("foo1.txt", "b\n");
+        write("*.log", "x\n");
+        write("important.log", "keep\n");
+
+        // only the files named, not those their names match as patterns
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        repository
+            .discard_paths(&["foo[1].txt"], &["*.log"], &[])
+            .unwrap();
+        let read = |name: &str| std::fs::read_to_string(path.join(name)).ok();
+        assert_eq!(read("foo[1].txt").as_deref(), Some("a\n"));
+        assert_eq!(read("foo1.txt").as_deref(), Some("b\n"));
+        assert_eq!(read("*.log"), None);
+        assert_eq!(read("important.log").as_deref(), Some("keep\n"));
+
+        // the root, all of them
+        repository.stage_paths(&[":/"]).unwrap();
+        let staged = git_output(path, &["diff", "--cached", "--name-only"]).unwrap();
+        assert_eq!(staged, "foo1.txt\nimportant.log\n");
+    }
+
+    #[test]
+    fn test_stash_only_what_git_stashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sub, path) = (dir.path().join("sub"), dir.path().join("work"));
+        let git = |dir: &Path, args: &[&str]| git_output(dir, args).unwrap();
+        for dir in [&sub, &path] {
+            std::fs::create_dir(dir).unwrap();
+            git(dir, &["init", "-q", "-b", "main"]);
+            git(dir, &["config", "user.name", "t"]);
+            git(dir, &["config", "user.email", "t@t"]);
+            git(dir, &["config", "commit.gpgsign", "false"]);
+            std::fs::write(dir.join("f"), "1\n").unwrap();
+            git(dir, &["add", "f"]);
+            git(dir, &["commit", "-q", "-m", "c1"]);
+        }
+        let sub_url = sub.to_str().unwrap();
+        let add = [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub_url,
+            "sub",
+        ];
+        git(&path, &add);
+        git(&path, &["commit", "-q", "-m", "sub"]);
+        // an older stash, and changes only in the submodule, which git doesn't stash
+        std::fs::write(path.join("f"), "2\n").unwrap();
+        git(&path, &["stash", "-q", "-m", "older"]);
+        std::fs::write(path.join("sub/f"), "2\n").unwrap();
+        assert!(!git(&path, &["status", "--porcelain"]).is_empty());
+
+        let task = GitTask {
+            stash: true,
+            ..GitTask::new(&["branch", "other"], String::new(), String::new())
+        };
+        run_task(&path, &task).unwrap();
+        // the older stash is left alone
+        let stashes = git(&path, &["stash", "list", "--format=%s"]);
+        assert_eq!(stashes, "On main: older\n");
+    }
+
+    #[test]
     fn test_push_fetch_and_remote_info() {
         use crate::test_support::git::GitRepository;
 
@@ -1990,6 +2131,9 @@ mod tests {
         assert_eq!(repository.branch_tracking()["master"], (2, 0));
         run("push origin master:main").unwrap();
         git_output(&work, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        assert_eq!(repository.branch_tracking()["master"], (0, 1));
+        // also with a tag of the same name
+        git_output(&work, &["tag", "master"]).unwrap();
         assert_eq!(repository.branch_tracking()["master"], (0, 1));
     }
 

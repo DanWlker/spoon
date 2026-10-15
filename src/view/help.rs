@@ -13,7 +13,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::CoreConfig,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, Sender, UserEvent},
     keybind::KeyBind,
     view::View,
 };
@@ -52,10 +52,7 @@ impl HelpView<'_> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
-        let event = event_with_count.event;
-        let count = event_with_count.count;
-
+    pub fn handle_event(&mut self, event: UserEvent, _: KeyEvent) {
         match event {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
@@ -64,34 +61,22 @@ impl HelpView<'_> {
                 self.tx.send(AppEvent::CloseHelp);
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                for _ in 0..count {
-                    self.scroll_down();
-                }
+                self.scroll_down();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
-                for _ in 0..count {
-                    self.scroll_up();
-                }
+                self.scroll_up();
             }
             UserEvent::PageDown => {
-                for _ in 0..count {
-                    self.scroll_page_down();
-                }
+                self.scroll_page_down();
             }
             UserEvent::PageUp => {
-                for _ in 0..count {
-                    self.scroll_page_up();
-                }
+                self.scroll_page_up();
             }
             UserEvent::HalfPageDown => {
-                for _ in 0..count {
-                    self.scroll_half_page_down();
-                }
+                self.scroll_half_page_down();
             }
             UserEvent::HalfPageUp => {
-                for _ in 0..count {
-                    self.scroll_half_page_up();
-                }
+                self.scroll_half_page_up();
             }
             UserEvent::GoToTop => {
                 self.select_first();

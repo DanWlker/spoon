@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, KeyHint, Sender, UserEvent},
     external::{editor_command, merge_tool_command},
     keybind::Scope,
     layout::{Direction, Panel},
@@ -47,15 +47,15 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
-        self.handle_event_inner(event_with_count, key);
+    pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
+        self.handle_event_inner(event, key);
         self.run_external_request();
     }
 
-    fn handle_event_inner(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+    fn handle_event_inner(&mut self, event: UserEvent, key: KeyEvent) {
         // like lazygit, the files are not changed while a git command runs in the background,
         // which could fail on the locked index or end up in the middle of its stash and pop
-        if self.changes_repository(event_with_count.event, key) {
+        if self.changes_repository(event, key) {
             if let Some(message) = self.ctx.busy_message() {
                 self.tx.send(AppEvent::NotifyWarn(message));
                 return;
@@ -86,9 +86,6 @@ impl<'a> LocalChangesView<'a> {
             self.after_action(result);
             return;
         }
-
-        let event = event_with_count.event;
-        let count = event_with_count.count;
 
         // the diff copies its hunk or line; it doesn't get the keys of the files beside it, see
         // `Scope::LocalChangesDiff`
@@ -217,14 +214,10 @@ impl<'a> LocalChangesView<'a> {
                 self.as_mut_state().edit_message();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                for _ in 0..count {
-                    self.as_mut_state().select_next();
-                }
+                self.as_mut_state().select_next();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
-                for _ in 0..count {
-                    self.as_mut_state().select_prev();
-                }
+                self.as_mut_state().select_prev();
             }
             UserEvent::GoToTop => {
                 self.as_mut_state().select_first();
@@ -239,25 +232,25 @@ impl<'a> LocalChangesView<'a> {
                 self.as_mut_state().collapse();
             }
             UserEvent::ScrollDown => {
-                self.as_mut_state().scroll_diff_down(count);
+                self.as_mut_state().scroll_diff_down(1);
             }
             UserEvent::ScrollUp => {
-                self.as_mut_state().scroll_diff_up(count);
+                self.as_mut_state().scroll_diff_up(1);
             }
             UserEvent::PageDown => {
-                let n = self.as_state().diff_page_height() * count;
+                let n = self.as_state().diff_page_height();
                 self.as_mut_state().scroll_diff_down(n);
             }
             UserEvent::PageUp => {
-                let n = self.as_state().diff_page_height() * count;
+                let n = self.as_state().diff_page_height();
                 self.as_mut_state().scroll_diff_up(n);
             }
             UserEvent::HalfPageDown => {
-                let n = self.as_state().diff_page_height() / 2 * count;
+                let n = self.as_state().diff_page_height() / 2;
                 self.as_mut_state().scroll_diff_down(n);
             }
             UserEvent::HalfPageUp => {
-                let n = self.as_state().diff_page_height() / 2 * count;
+                let n = self.as_state().diff_page_height() / 2;
                 self.as_mut_state().scroll_diff_up(n);
             }
             UserEvent::HelpToggle => {
@@ -380,6 +373,20 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // Whether the key is the commit key, while the popup asks to confirm a commit.
+    // Whether the key commits, or continues the rebase in progress, which git may sign, asking for
+    // a passphrase in the terminal (see `App::handle_view_event`).
+    pub fn may_sign(&self, event: UserEvent, key: KeyEvent) -> bool {
+        let state = self.as_state();
+        if state.is_confirming() {
+            return state.is_confirming_commit()
+                && (key.code == KeyCode::Enter || self.confirms_commit(key));
+        }
+        !self.is_capturing_keys()
+            && state.continuing_operation().is_some()
+            && (event == UserEvent::Commit
+                || (event == UserEvent::Confirm && state.is_commit_focused()))
+    }
+
     fn confirms_commit(&self, key: KeyEvent) -> bool {
         self.as_state().is_confirming_commit()
             && self.ctx.keybind.event_in(Scope::LocalChanges, &key) == Some(UserEvent::Commit)

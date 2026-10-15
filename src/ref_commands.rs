@@ -7,7 +7,7 @@ use crate::{
     keybind::Scope,
     widget::{
         git_dialog::GitDialog,
-        ref_list::{RefPicks, RefSection, RefSelection},
+        ref_list::{RefPicks, RefSection, RefSelection, DETACHED_HEAD},
     },
 };
 
@@ -24,7 +24,18 @@ pub fn ref_command_applies(
     use RefSection::*;
     let on_ref = matches!(selection, RefSelection::Ref(Branches | Remotes | Tags, _));
     let graph = event.home_scope() == Scope::Graph;
+    // a detached HEAD is no branch to delete, rename, pick or copy, only a commit to work on
+    let detached = matches!(selection, RefSelection::Ref(Branches, name) if name == DETACHED_HEAD);
     match event {
+        UserEvent::ShortCopy
+        | UserEvent::FullCopy
+        | UserEvent::ToggleSelect
+        | UserEvent::DeleteRef
+        | UserEvent::EditRef
+            if detached =>
+        {
+            false
+        }
         // on the whole graph, wherever
         UserEvent::BranchOnly => true,
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,

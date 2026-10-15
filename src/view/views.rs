@@ -4,7 +4,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
+    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     layout::Direction,
     search::SearchOptions,
@@ -109,14 +109,14 @@ pub enum View<'a> {
 }
 
 impl<'a> View<'a> {
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key_event: KeyEvent) {
+    pub fn handle_event(&mut self, event: UserEvent, key_event: KeyEvent) {
         match self {
             View::Default => {}
-            View::List(view) => view.handle_event(event_with_count, key_event),
-            View::Detail(view) => view.handle_event(event_with_count, key_event),
-            View::UserCommand(view) => view.handle_event(event_with_count, key_event),
-            View::LocalChanges(view) => view.handle_event(event_with_count, key_event),
-            View::Help(view) => view.handle_event(event_with_count, key_event),
+            View::List(view) => view.handle_event(event, key_event),
+            View::Detail(view) => view.handle_event(event, key_event),
+            View::UserCommand(view) => view.handle_event(event, key_event),
+            View::LocalChanges(view) => view.handle_event(event, key_event),
+            View::Help(view) => view.handle_event(event, key_event),
         }
     }
 

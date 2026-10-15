@@ -11,13 +11,15 @@ use semver::Version;
 
 use crate::{
     app::AppContext,
-    git::{split_remote_branch, Ref},
+    git::{split_remote_branch, Head, Ref},
     widget::style::{mark_selected_row, panel_block, panel_title},
 };
 
 const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
 const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
 const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
+// the row of a detached HEAD in the branches, see `RefListState::set_head`
+pub const DETACHED_HEAD: &str = "HEAD";
 const TREE_TAG_ROOT_IDENT: &str = "__tags__";
 const TREE_STASH_ROOT_IDENT: &str = "__stashes__";
 
@@ -111,7 +113,7 @@ pub struct RefListState {
     picked: RefPicks,
     // the commits to push and to pull of the local branches with an upstream, by name
     tracking: FxHashMap<String, (usize, usize)>,
-    // the checked-out branch, marked
+    // the checked-out branch, or "HEAD" when detached, marked
     head_branch: Option<String>,
 }
 
@@ -140,8 +142,25 @@ impl RefListState {
         self.tracking = tracking;
     }
 
-    pub fn set_head_branch(&mut self, branch: Option<String>) {
-        self.head_branch = branch;
+    // Marks the checked-out branch; a detached HEAD gets a row of its own, first in the branches.
+    pub fn set_head(&mut self, head: &Head) {
+        self.head_branch = match head {
+            Head::Branch { name } => Some(name.clone()),
+            Head::Detached { target } => {
+                let name = format!("HEAD (detached at {})", target.as_short_hash());
+                let node = RefTreeNode::new(DETACHED_HEAD.into(), name, Vec::new());
+                if let Some(branches) = self
+                    .roots
+                    .iter_mut()
+                    .find(|r| r.identifier == TREE_BRANCH_ROOT_IDENT)
+                {
+                    branches.children.insert(0, node);
+                }
+                self.rebuild_visible_rows();
+                Some(DETACHED_HEAD.into())
+            }
+            Head::None => None,
+        };
     }
 
     pub fn picked(&self) -> &RefPicks {
@@ -752,6 +771,7 @@ fn parse_semantic_version_tag(tag: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::CommitHash;
 
     #[test]
     fn test_picks_of_one_section() {
@@ -784,6 +804,32 @@ mod tests {
         state.clear_picks();
         state.toggle_pick().unwrap();
         assert_eq!(state.picked().section, RefSection::Tags);
+    }
+
+    #[test]
+    fn test_detached_head_row() {
+        let target: CommitHash = "a".repeat(40).as_str().into();
+        let branch = Ref::Branch {
+            name: "main".into(),
+            target: target.clone(),
+        };
+        let mut state = RefListState::new(&[&branch], &[], 0);
+        state.set_head(&Head::Branch {
+            name: "main".into(),
+        });
+        let names = |state: &RefListState| -> Vec<String> {
+            state.visible_rows.iter().map(|r| r.name.clone()).collect()
+        };
+        assert!(!names(&state).iter().any(|n| n.starts_with("HEAD")));
+        // only while detached, first in the branches, selecting the commit as a ref
+        state.set_head(&Head::Detached { target });
+        assert!(names(&state).contains(&"HEAD (detached at aaaaaaa)".to_string()));
+        state.select_branches();
+        state.select_next();
+        assert_eq!(
+            state.selection(),
+            RefSelection::Ref(RefSection::Branches, DETACHED_HEAD.into())
+        );
     }
 
     #[test]

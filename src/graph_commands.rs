@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     event::UserEvent,
-    git::{CommitHash, Ref, Repository},
+    git::{split_remote_branch, CommitHash, Ref, Repository},
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog},
 };
 
@@ -240,7 +240,8 @@ impl GraphCommands<'_> {
                 }
                 Ref::RemoteBranch { name, .. } => {
                     // a new local branch tracking it, unless there is one by that name
-                    let Some((_, local)) = name.split_once('/') else {
+                    let Some((_, local)) = split_remote_branch(self.repository.remotes(), name)
+                    else {
                         continue;
                     };
                     if local != "HEAD" && !local_exists(local) {
