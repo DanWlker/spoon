@@ -27,7 +27,8 @@ The default key bindings can be overridden.
 - Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, and whether to force push (`--force-with-lease`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> or <kbd>v</kbd> toggles a checkbox (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>Space</kbd> or <kbd>v</kbd> toggles a checkbox, types into a text field or picks the next choice (`dialog_toggle`), <kbd>e</kbd> also types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
+The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
 The command runs in the background, the status line shows it while it runs, and the app refreshes when it is done.
@@ -169,13 +170,13 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter | `close` `cancel` |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
-| <kbd>3</kbd>                         | Focus commit message                                         | `focus_panel_3`                 |
-| <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Edit commit message | `confirm`    |
-| <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert; or continue a rebase | `commit` |
-| <kbd>e</kbd>                         | Open the file in `$VISUAL` or `$EDITOR`                      | `edit`                          |
+| <kbd>3</kbd>                         | Focus the commit message and type it                          | `focus_panel_3`                 |
+| <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Commit, like <kbd>c</kbd>, in the commit section | `confirm`    |
+| <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert, after confirming; or continue a rebase | `commit` |
+| <kbd>e</kbd>                         | Open the file in `$VISUAL` or `$EDITOR`<br>Type the message, in the commit section | `edit`  |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
-| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files) | `toggle_stage`             |
+| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files)<br>Type the message, in the commit section | `toggle_stage` |
 | <kbd>v</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
 | <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked file                              | `next_picked` `previous_picked` |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
@@ -192,11 +193,12 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
-<kbd>c</kbd> commits the staged changes with the message, or starts typing the message when it is empty.
+<kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>y</kbd>, <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>n</kbd> or <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
 While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
 Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
 The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
+<kbd>3</kbd> starts typing the message; in the commit section, <kbd>Space</kbd> or <kbd>e</kbd> start typing it again.
 While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.

@@ -13,7 +13,11 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
-    git::{ConflictSide, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository},
+    event::UserEvent,
+    git::{
+        ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation,
+        Repository,
+    },
     widget::{
         conflict::ConflictView,
         diff::{diff_line_count, diff_lines, parse_diff, ParsedDiff},
@@ -64,6 +68,7 @@ pub enum ExternalRequest {
 enum ConfirmAction {
     Discard,
     Abort(Operation),
+    Commit,
 }
 
 // The commit section's contents, kept across refreshes.
@@ -113,6 +118,9 @@ impl Section {
 fn file_tree(files: &[LocalChangeFile]) -> FileTree {
     FileTree::new(files.iter().map(|f| f.path.as_str()))
 }
+
+// The lines of the message, and the files, shown in the popup confirming a commit.
+const COMMIT_PREVIEW_LINES: usize = 6;
 
 // What is kept of the page while it isn't shown, or across a refresh.
 #[derive(Debug, Clone)]
@@ -288,8 +296,8 @@ impl<'a> LocalChangesState<'a> {
         matches!(self.focus, Focus::Hunks | Focus::Lines)
     }
 
-    // Continues the rebase when one is in progress; otherwise commits (which also finishes a merge,
-    // cherry-pick or revert), or starts typing the message when there is none yet.
+    // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
+    // finishes a merge, cherry-pick or revert), or starts typing the message when there is none yet.
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
         if let Some(operation) = self.operation.filter(|o| o.continues_without_commit()) {
             let result = self.repository.continue_operation(operation);
@@ -299,11 +307,65 @@ impl<'a> LocalChangesState<'a> {
             return result;
         }
         if self.message.text().trim().is_empty() {
-            self.focus_commit();
-            self.focus = Focus::Commit { editing: true };
+            self.edit_message();
             return Ok(());
         }
-        self.commit()
+        self.request_commit()
+    }
+
+    // Focuses the commit section and starts typing the message.
+    pub fn edit_message(&mut self) {
+        self.focus_commit();
+        self.focus = Focus::Commit { editing: true };
+    }
+
+    // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
+    fn request_commit(&mut self) -> Result<(), String> {
+        self.check_commit()?;
+        let branch = match self.repository.head() {
+            Head::Branch { name } => name.clone(),
+            _ => "detached HEAD".to_string(),
+        };
+        let heading = match (self.amend_base.is_some(), self.operation) {
+            (true, _) => format!("Amend the last commit on {branch}"),
+            (false, Some(operation)) => format!("Commit the {} on {branch}", operation.name()),
+            (false, None) => format!("Commit to {branch}"),
+        };
+        let mut lines = vec![heading, String::new()];
+        let message = self.message.text();
+        let message: Vec<&str> = message.trim_end().lines().collect();
+        lines.extend(message.iter().take(COMMIT_PREVIEW_LINES).map(|l| format!("  {l}")));
+        if message.len() > COMMIT_PREVIEW_LINES {
+            lines.push("  …".into());
+        }
+        lines.push(String::new());
+        let files = &self.changes.staged;
+        lines.push(match files.len() {
+            0 => "No staged changes".to_string(),
+            1 => "1 staged file:".to_string(),
+            n => format!("{n} staged files:"),
+        });
+        for file in files.iter().take(COMMIT_PREVIEW_LINES) {
+            lines.push(format!("  {} {}", status_symbol(file.status), file.path));
+        }
+        if files.len() > COMMIT_PREVIEW_LINES {
+            lines.push(format!("  … and {} more", files.len() - COMMIT_PREVIEW_LINES));
+        }
+        self.confirm = Some((ConfirmAction::Commit, lines.join("\n")));
+        Ok(())
+    }
+
+    // Whether there is something to commit, with a message.
+    fn check_commit(&self) -> Result<(), String> {
+        if self.message.text().trim().is_empty() {
+            return Err("Commit message is empty".into());
+        }
+        let amend = self.amend_base.is_some();
+        // a merge can be committed without changes, when its resolution keeps one side
+        if !amend && self.changes.staged.is_empty() && self.operation.is_none() {
+            return Err("Nothing staged to commit".into());
+        }
+        Ok(())
     }
 
     // Asks for confirmation to abort the operation in progress.
@@ -346,15 +408,9 @@ impl<'a> LocalChangesState<'a> {
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked.
     pub fn commit(&mut self) -> Result<(), String> {
+        self.check_commit()?;
         let message = self.message.text();
-        if message.trim().is_empty() {
-            return Err("Commit message is empty".into());
-        }
         let amend = self.amend_base.is_some();
-        // a merge can be committed without changes, when its resolution keeps one side
-        if !amend && self.changes.staged.is_empty() && self.operation.is_none() {
-            return Err("Nothing staged to commit".into());
-        }
         self.repository.commit_staged(&message, amend)?;
         // the next commits of a cherry-pick or revert of several commits
         let continued = match self.operation {
@@ -527,11 +583,26 @@ impl<'a> LocalChangesState<'a> {
     // y or Enter confirms, n or Esc cancels; other keys are ignored.
     pub fn handle_confirm_key(&mut self, key: KeyEvent) -> Result<(), String> {
         match key.code {
-            KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
-                let Some((action, _)) = self.confirm.take() else {
-                    return Ok(());
-                };
-                let result = match action {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => self.confirm(),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.confirm = None;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    // Whether the popup asks to confirm a commit, which the commit key confirms too.
+    pub fn is_confirming_commit(&self) -> bool {
+        matches!(self.confirm, Some((ConfirmAction::Commit, _)))
+    }
+
+    // Runs the action waiting for confirmation.
+    pub fn confirm(&mut self) -> Result<(), String> {
+        let Some((action, _)) = self.confirm.take() else {
+            return Ok(());
+        };
+        let result = match action {
                     ConfirmAction::Discard => {
                         let picked_files = !self.is_diff_focused();
                         let result = self.discard();
@@ -544,16 +615,11 @@ impl<'a> LocalChangesState<'a> {
                         self.needs_refresh = true;
                         self.repository.abort_operation(operation)
                     }
+                    // reloads itself
+                    ConfirmAction::Commit => return self.commit(),
                 };
                 self.reload();
                 result
-            }
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                self.confirm = None;
-                Ok(())
-            }
-            _ => Ok(()),
-        }
     }
 
     // Unstaged changes are between the index and the working tree, so discarding reverts the working tree.
@@ -613,6 +679,7 @@ impl<'a> LocalChangesState<'a> {
     // Asks the view to open the file under the cursor in the editor.
     pub fn request_edit(&mut self) -> Result<(), String> {
         if self.is_commit_focused() {
+            self.edit_message();
             return Ok(());
         }
         let Some(row) = self.selected_row() else {
@@ -683,7 +750,7 @@ impl<'a> LocalChangesState<'a> {
     // In the commit section, starts editing the message; in the conflict panel, runs the choice.
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus {
-            Focus::Commit { .. } => self.focus = Focus::Commit { editing: true },
+            Focus::Commit { .. } => self.commit_or_continue()?,
             Focus::Conflict => self.activate_conflict_item()?,
             Focus::Files if self.conflict.is_some() && self.picked().is_empty() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
@@ -806,7 +873,11 @@ impl<'a> LocalChangesState<'a> {
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
     pub fn toggle_stage(&mut self) -> Result<(), String> {
         let result = match self.focus {
-            Focus::Commit { .. } | Focus::Conflict => return Ok(()),
+            Focus::Commit { .. } => {
+                self.edit_message();
+                return Ok(());
+            }
+            Focus::Conflict => return Ok(()),
             Focus::Lines => self.toggle_stage_line(),
             Focus::Hunks => self.toggle_stage_hunk(),
             Focus::Files => {
@@ -1595,14 +1666,63 @@ impl LocalChangesPanel<'_> {
         buf: &mut Buffer,
     ) {
         let theme = &self.ctx.color_theme;
-        let (title, verb) = match action {
-            ConfirmAction::Discard => ("Discard changes", "discard"),
-            ConfirmAction::Abort(_) => ("Abort", "abort"),
+        // the commit key confirms a commit too
+        let commit_key = self
+            .ctx
+            .keybind
+            .keys_for_event(UserEvent::Commit)
+            .into_iter()
+            .min_by_key(|key| key.chars().count())
+            .map(|key| format!("/{}", key.to_lowercase()))
+            .unwrap_or_default();
+        let (title, confirm_keys, verb, color, warning) = match action {
+            ConfirmAction::Discard => (
+                "Discard changes",
+                "y/enter".to_string(),
+                "discard",
+                theme.status_error_fg,
+                Some("This cannot be undone."),
+            ),
+            ConfirmAction::Abort(_) => (
+                "Abort",
+                "y/enter".to_string(),
+                "abort",
+                theme.status_error_fg,
+                Some("This cannot be undone."),
+            ),
+            ConfirmAction::Commit => (
+                "Commit",
+                format!("y/enter{commit_key}"),
+                "commit",
+                theme.accent_fg,
+                None,
+            ),
         };
-        let hint = key_hints(&[("y/enter", verb), ("n/esc", "cancel")], theme);
+        let hint = key_hints(&[(&confirm_keys, verb), ("n/esc", "cancel")], theme);
+
+        // the first line asks, the others tell more
+        let mut lines: Vec<Line> = prompt
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                let line = Line::raw(line.to_string());
+                if i == 0 {
+                    line.fg(theme.fg).bold()
+                } else {
+                    line.fg(theme.fg)
+                }
+            })
+            .collect();
+        if let Some(warning) = warning {
+            lines.push(Line::raw(warning).fg(theme.status_error_fg));
+        }
+        lines.push(Line::raw(""));
+        lines.push(hint);
+
         // text plus padding and borders
-        let width = (prompt.chars().count().max(hint.width()) as u16 + 4).min(area.width);
-        let height = 8.min(area.height);
+        let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
+        let width = (text_width as u16 + 4).min(area.width);
+        let height = (lines.len() as u16 + 3).min(area.height);
         let popup = Rect::new(
             area.x + (area.width.saturating_sub(width)) / 2,
             area.y + (area.height.saturating_sub(height)) / 2,
@@ -1613,15 +1733,9 @@ impl LocalChangesPanel<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(Style::default().fg(theme.status_error_fg).bg(theme.bg))
-            .title(badge(format!(" {title} "), theme.status_error_fg, theme))
+            .style(Style::default().fg(color).bg(theme.bg))
+            .title(badge(format!(" {title} "), color, theme))
             .padding(Padding::new(1, 1, 1, 0));
-        let lines = vec![
-            Line::raw(prompt.to_string()).fg(theme.fg).bold(),
-            Line::raw("This cannot be undone.").fg(theme.status_error_fg),
-            Line::raw(""),
-            hint,
-        ];
         Paragraph::new(lines).block(block).render(popup, buf);
     }
 
@@ -2009,9 +2123,32 @@ mod tests {
         state.back();
         state.back();
 
-        // c with a message commits
+        // in the commit section, space and e type the message, enter asks to commit
+        state.focus_commit();
+        state.toggle_stage()?;
+        assert!(state.is_editing());
+        state.back();
+        state.request_edit()?;
+        assert!(state.is_editing());
+        state.back();
+        state.message = TextArea::new("typed");
+        state.enter()?;
+        assert!(state.is_confirming_commit());
+        state.handle_confirm_key(KeyEvent::from(KeyCode::Esc))?;
+        assert!(!state.is_confirming());
+        assert!(state.is_commit_focused());
+        state.back();
+
+        // c with a message asks to confirm the commit, showing it
         state.message = TextArea::new("first change\n\nbody");
         state.commit_or_continue()?;
+        assert!(state.is_confirming_commit());
+        let prompt = state.confirm_prompt().unwrap();
+        assert!(prompt.starts_with("Commit to master"), "{prompt}");
+        assert!(prompt.contains("  first change\n  \n  body"), "{prompt}");
+        assert!(prompt.contains("1 staged file:\n  A a.txt"), "{prompt}");
+        assert!(!state.take_needs_refresh());
+        state.confirm()?;
         assert!(state.take_needs_refresh());
         assert!(!state.take_needs_refresh());
         assert_eq!(
@@ -2587,6 +2724,7 @@ mod tests {
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
+        state.confirm()?;
         assert_eq!(state.operation, None);
         // a merge commit, with both parents
         let parents = git_stdout(repo_path, &["log", "-1", "--format=%p"]);
@@ -2624,6 +2762,7 @@ mod tests {
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
+        state.confirm()?;
         assert_eq!(state.operation, None);
         assert_eq!(
             git_stdout(repo_path, &["log", "--format=%s", "-3"]),

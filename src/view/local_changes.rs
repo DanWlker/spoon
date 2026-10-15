@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, Page, Sender, UserEvent, UserEventWithCount},
     external::{editor_command, merge_tool_command},
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
@@ -61,7 +61,11 @@ impl<'a> LocalChangesView<'a> {
         }
         // while confirming or typing, keys arrive unmapped, see App::run
         if self.as_state().is_confirming() {
-            let result = self.as_mut_state().handle_confirm_key(key);
+            let result = if self.confirms_commit(key) {
+                self.as_mut_state().confirm()
+            } else {
+                self.as_mut_state().handle_confirm_key(key)
+            };
             self.after_action(result);
             return;
         }
@@ -188,7 +192,7 @@ impl<'a> LocalChangesView<'a> {
                     .focus_section(LocalChangesSection::Staged);
             }
             UserEvent::FocusPanel(3) => {
-                self.as_mut_state().focus_commit();
+                self.as_mut_state().edit_message();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 for _ in 0..count {
@@ -329,12 +333,19 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
+    // Whether the key is the commit key, while the popup asks to confirm a commit.
+    fn confirms_commit(&self, key: KeyEvent) -> bool {
+        self.as_state().is_confirming_commit()
+            && self.ctx.keybind.get_on(&[Page::LocalChanges], &key) == Some(UserEvent::Commit)
+    }
+
     // Whether the key may change the repository: staging, discarding, stashing, committing,
     // aborting or resolving a conflict, or confirming one of these.
     fn changes_repository(&self, event: UserEvent, key: KeyEvent) -> bool {
         let state = self.as_state();
         if state.is_confirming() {
-            return matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'));
+            return matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'))
+                || self.confirms_commit(key);
         }
         if state.is_typing_stash() {
             return key.code == KeyCode::Enter;
@@ -343,12 +354,10 @@ impl<'a> LocalChangesView<'a> {
             return false;
         }
         match event {
-            UserEvent::Commit
-            | UserEvent::Abort
-            | UserEvent::Stash
-            | UserEvent::ToggleStage
-            | UserEvent::Discard => true,
-            UserEvent::Confirm => state.is_conflict_focused(),
+            UserEvent::Commit | UserEvent::Abort | UserEvent::Stash | UserEvent::Discard => true,
+            // in the commit section, space types the message and enter commits (or continues)
+            UserEvent::ToggleStage => !state.is_commit_focused(),
+            UserEvent::Confirm => state.is_conflict_focused() || state.is_commit_focused(),
             _ => false,
         }
     }

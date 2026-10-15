@@ -86,6 +86,14 @@ impl Receiver {
     fn recv(&self) -> AppEvent {
         self.rx.recv().unwrap()
     }
+
+    fn recv_timeout(&self, timeout: std::time::Duration) -> Option<AppEvent> {
+        match self.rx.recv_timeout(timeout) {
+            Ok(event) => Some(event),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the event channel closed"),
+        }
+    }
 }
 
 impl Debug for Receiver {
@@ -199,6 +207,11 @@ impl EventController {
 
     pub fn recv(&self) -> AppEvent {
         self.rx.recv()
+    }
+
+    // The next event, or None once `timeout` passed without one.
+    pub fn recv_timeout(&self, timeout: std::time::Duration) -> Option<AppEvent> {
+        self.rx.recv_timeout(timeout)
     }
 }
 

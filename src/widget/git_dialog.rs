@@ -129,6 +129,8 @@ pub struct GitDialog {
     // what the command does, above the options
     intro: Vec<String>,
     kind: DialogKind,
+    // the event that opened the popup, which runs the command too, so a double press runs it
+    trigger: Option<UserEvent>,
     fields: Vec<(FieldId, &'static str, Field)>,
     selected: usize,
     // typing into the selected text field
@@ -148,6 +150,7 @@ impl GitDialog {
             selected: 0,
             editing: false,
             auto_stash_changed: false,
+            trigger: None,
         }
     }
 
@@ -155,10 +158,10 @@ impl GitDialog {
         if info.remotes.is_empty() {
             return Err("No remotes configured".into());
         }
-        let (title, verb) = match action {
-            RemoteAction::Fetch => (" Fetch ", "fetch"),
-            RemoteAction::Pull => (" Pull ", "pull"),
-            RemoteAction::Push => (" Push ", "push"),
+        let (title, verb, trigger) = match action {
+            RemoteAction::Fetch => (" Fetch ", "fetch", UserEvent::Fetch),
+            RemoteAction::Pull => (" Pull ", "pull", UserEvent::Pull),
+            RemoteAction::Push => (" Push ", "push", UserEvent::Push),
         };
         let mut dialog = Self::with(
             title,
@@ -166,6 +169,7 @@ impl GitDialog {
             vec![],
             DialogKind::Remote(action, Box::new(info.clone())),
         );
+        dialog.trigger = Some(trigger);
         let current = info.current_branch.clone();
         match action {
             RemoteAction::Fetch => {
@@ -453,6 +457,9 @@ impl GitDialog {
             return DialogOutcome::None;
         }
         let len = self.fields.len().max(1);
+        if event.is_some() && event == self.trigger {
+            return self.run();
+        }
         match event {
             Some(UserEvent::Cancel | UserEvent::Close | UserEvent::Quit) => DialogOutcome::Close,
             Some(UserEvent::NavigateDown | UserEvent::SelectDown) => {
@@ -471,9 +478,12 @@ impl GitDialog {
                 self.change(false);
                 DialogOutcome::None
             }
+            // toggles a checkbox, types into a text field, or picks the next choice
             Some(UserEvent::DialogToggle) => {
-                if let Some((_, _, Field::Check(_))) = self.fields.get(self.selected) {
-                    self.change(true);
+                match self.fields.get(self.selected) {
+                    Some((_, _, Field::Text { .. })) => self.editing = true,
+                    Some(_) => self.change(true),
+                    None => {}
                 }
                 DialogOutcome::None
             }
@@ -484,11 +494,15 @@ impl GitDialog {
                 );
                 DialogOutcome::None
             }
-            Some(UserEvent::Confirm) => match self.command() {
-                Ok(task) => DialogOutcome::Run(task),
-                Err(err) => DialogOutcome::Error(err),
-            },
+            Some(UserEvent::Confirm) => self.run(),
             _ => DialogOutcome::None,
+        }
+    }
+
+    fn run(&self) -> DialogOutcome {
+        match self.command() {
+            Ok(task) => DialogOutcome::Run(task),
+            Err(err) => DialogOutcome::Error(err),
         }
     }
 
@@ -857,12 +871,15 @@ const MAX_CONTENT_WIDTH: usize = 90;
 impl Widget for GitDialogWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (dialog, theme) = (self.dialog, self.theme);
-        let (move_keys, change_keys, toggle_key, edit_key, run_key, cancel_key) = (
+        // the key that opened the popup runs it too
+        let run_events: Vec<UserEvent> = std::iter::once(UserEvent::Confirm)
+            .chain(dialog.trigger)
+            .collect();
+        let (move_keys, change_keys, toggle_key, run_key, cancel_key) = (
             self.keys(&[UserEvent::NavigateDown, UserEvent::NavigateUp]),
             self.keys(&[UserEvent::NavigateLeft, UserEvent::NavigateRight]),
             self.keys(&[UserEvent::DialogToggle]),
-            self.keys(&[UserEvent::DialogEdit]),
-            self.keys(&[UserEvent::Confirm]),
+            self.keys(&run_events),
             self.keys(&[UserEvent::Cancel]),
         );
         let dim = Style::default().fg(theme.status_input_transient_fg);
@@ -878,11 +895,15 @@ impl Widget for GitDialogWidget<'_> {
             (move_keys.as_str(), "move"),
             (change_keys.as_str(), "change"),
         ];
-        if has_check {
-            keys.push((toggle_key.as_str(), "toggle"));
-        }
-        if has_text {
-            keys.push((edit_key.as_str(), "type"));
+        // the toggle key types into text fields too
+        let toggle = match (has_check, has_text) {
+            (true, true) => "toggle/type",
+            (true, false) => "toggle",
+            (false, true) => "type",
+            (false, false) => "",
+        };
+        if !toggle.is_empty() {
+            keys.push((toggle_key.as_str(), toggle));
         }
         keys.extend([
             (run_key.as_str(), dialog.verb),
@@ -1131,6 +1152,34 @@ mod tests {
         assert_eq!(args(&dialog), "merge --ff-only feature");
         let dialog = GitDialog::rebase("main", "feature".into(), "feature", false);
         assert_eq!(args(&dialog), "rebase --no-autostash feature");
+    }
+
+    #[test]
+    fn test_trigger_key_runs() {
+        // pressing the key opening the popup again runs it
+        let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
+        let outcome = press(&mut dialog, UserEvent::Pull);
+        assert!(matches!(outcome, DialogOutcome::Run(t) if t.running == "Pulling origin/main"));
+        let mut dialog = GitDialog::remote(RemoteAction::Fetch, info()).unwrap();
+        assert!(matches!(press(&mut dialog, UserEvent::Push), DialogOutcome::None));
+
+        // space types into a text field, picks the next choice, toggles a checkbox
+        let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(args(&dialog), "pull --rebase --no-autostash fork topic");
+        assert!(!dialog.editing);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash fork topic");
+        press(&mut dialog, UserEvent::NavigateUp);
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert!(dialog.editing);
+        // while typing, the key opening the popup is typed
+        let typed = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+        dialog.handle_key(Some(UserEvent::Pull), typed);
+        assert!(dialog.editing);
+        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash fork topicp");
     }
 
     #[test]

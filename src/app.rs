@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     io::{self, Write},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 use ratatui::{
@@ -69,6 +70,10 @@ pub enum InitialSelection {
     Latest,
     Head,
 }
+
+// How long the fetch, pull and push popups wait for their key to be pressed again before showing,
+// as a double press runs the command right away.
+const QUICK_RUN_DELAY: Duration = Duration::from_millis(300);
 
 pub enum Ret {
     Quit,
@@ -161,6 +166,9 @@ pub struct AppShell {
     parked_detail_tab: Option<DetailTab>,
     // the popup confirming a git command, over any view
     dialog: Option<GitDialog>,
+    // when the popup shows, while it waits for the key opening it to be pressed again, which
+    // runs the command right away, see `QUICK_RUN_DELAY`
+    dialog_reveal: Option<Instant>,
     // what the last frame showed, None before the first
     last_frame: Option<FrameLayout>,
     app_status: AppStatus,
@@ -244,6 +252,7 @@ impl<'a> App<'a> {
                 parked_local_changes: None,
                 parked_detail_tab: None,
                 dialog: None,
+                dialog_reveal: None,
                 last_frame: None,
                 app_status: AppStatus::default(),
             },
@@ -283,7 +292,21 @@ impl App<'_> {
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
-            match self.ec.recv() {
+            let event = match self.shell.dialog_reveal {
+                Some(at) => match self
+                    .ec
+                    .recv_timeout(at.saturating_duration_since(Instant::now()))
+                {
+                    Some(event) => event,
+                    // no second press, the popup shows
+                    None => {
+                        self.shell.dialog_reveal = None;
+                        continue;
+                    }
+                },
+                None => self.ec.recv(),
+            };
+            match event {
                 AppEvent::Key(key) => {
                     match self.shell.app_status.status_line {
                         StatusLine::None | StatusLine::Input { .. } => {
@@ -539,7 +562,7 @@ impl App<'_> {
         let layout = FrameLayout {
             view: self.view.kind(),
             sidebar_collapsed: self.shell.sidebar_collapsed,
-            dialog: self.shell.dialog.is_some(),
+            dialog: self.visible_dialog().is_some(),
         };
         let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
@@ -603,7 +626,7 @@ impl App<'_> {
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
-        if let Some(dialog) = &self.shell.dialog {
+        if let Some(dialog) = self.visible_dialog() {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), view_area);
         }
         self.render_status_line(f, status_line_area);
@@ -1183,6 +1206,10 @@ impl App<'_> {
             _ => return false,
         };
         self.open_dialog(GitDialog::remote(action, self.repository.remote_info()));
+        // pressing the key again quickly runs the command without showing the popup
+        if self.shell.dialog.is_some() {
+            self.shell.dialog_reveal = Some(Instant::now() + QUICK_RUN_DELAY);
+        }
         true
     }
 
@@ -1215,12 +1242,24 @@ impl App<'_> {
             DialogOutcome::Run(task) => {
                 self.close_dialog();
                 self.start_task(task);
+                return;
             }
         }
+        // any other key shows the popup it acts on
+        self.shell.dialog_reveal = None;
     }
 
     fn close_dialog(&mut self) {
         self.shell.dialog = None;
+        self.shell.dialog_reveal = None;
+    }
+
+    // The popup, once it shows.
+    fn visible_dialog(&self) -> Option<&GitDialog> {
+        self.shell
+            .dialog
+            .as_ref()
+            .filter(|_| self.shell.dialog_reveal.is_none())
     }
 
     // Runs the git command in the background; the app is told when it finishes.
