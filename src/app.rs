@@ -597,7 +597,8 @@ impl App<'_> {
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
-        match self.frame_clear() {
+        let keys = self.keys_popup_keys();
+        match self.frame_clear(&keys) {
             PendingClear::None => {}
             PendingClear::ViewImages => self.clear_view_image_area(terminal)?,
             PendingClear::Screen => {
@@ -606,24 +607,32 @@ impl App<'_> {
             }
         }
         self.flush_pending_graph_uploads()?;
-        terminal.draw(|f| self.render(f))?;
+        terminal.draw(|f| self.render(f, &keys))?;
         Ok(())
     }
 
-    // The keys of what has the focus: the popup, the sidebar or the view; without those waiting for
-    // the operation in progress, see `blocked_by_operation`.
+    // The keys of what has the focus: the popup, the sidebar or the view.
     fn local_hints(&self) -> Vec<KeyHint> {
-        let mut hints = if let Some(dialog) = self.visible_dialog() {
+        if let Some(dialog) = self.visible_dialog() {
             dialog.key_hints()
         } else if self.shell.sidebar_focused {
             self.sidebar_hints()
         } else {
             self.view.key_hints()
-        };
-        if self.visible_dialog().is_none() && self.repository.operation_in_progress().is_some() {
+        }
+    }
+
+    // The keys and what they do, without those waiting for the operation in progress (see
+    // `blocked_by_operation`) or bound to no key.
+    fn shown_keys(&self, mut hints: Vec<KeyHint>) -> Vec<(String, String)> {
+        if self.repository.operation_in_progress().is_some() {
             hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
         }
         hints
+            .into_iter()
+            .map(|(events, description)| (self.ctx.short_keys(&events), description))
+            .filter(|(keys, _)| !keys.is_empty())
+            .collect()
     }
 
     // The keys working everywhere, for the status bar: the remotes, switching pages, the keys
@@ -634,7 +643,7 @@ impl App<'_> {
         } else {
             "keys"
         };
-        let mut hints = vec![
+        vec![
             hint(UserEvent::KeysToggle, keys),
             hint(UserEvent::Push, "push"),
             hint(UserEvent::Pull, "pull"),
@@ -642,39 +651,28 @@ impl App<'_> {
             hint(UserEvent::RefList, "switch page"),
             hint(UserEvent::Refresh, "refresh"),
             hint(UserEvent::HelpToggle, "help"),
-        ];
-        if self.repository.operation_in_progress().is_some() {
-            hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
-        }
-        hints
+        ]
     }
 
     // Whether the keys go to a popup, typed text or the help, which take only their own: then
     // these are in the status bar, else those of the whole app, the others in the keys popup.
     fn keys_are_local(&self) -> bool {
-        self.visible_dialog().is_some()
-            || self.view.is_capturing_keys()
+        self.visible_dialog().is_some() || self.is_typing() || matches!(self.view, View::Help(_))
+    }
+
+    // Whether text is being typed or a prompt answered, in the view or the status bar.
+    fn is_typing(&self) -> bool {
+        self.view.is_capturing_keys()
             || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
-            || matches!(self.view, View::Help(_))
     }
 
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
-    // hidden.
+    // hidden. Computed once a frame, for clearing the screen and drawing.
     fn keys_popup_keys(&self) -> Vec<(String, String)> {
         if !self.shell.keys_popup || self.keys_are_local() {
             return vec![];
         }
-        let global: Vec<UserEvent> = self
-            .global_hints()
-            .into_iter()
-            .flat_map(|(events, _)| events)
-            .collect();
-        self.local_hints()
-            .into_iter()
-            .filter(|(events, _)| !events.iter().all(|e| global.contains(e)))
-            .map(|(events, description)| (self.ctx.short_keys(&events), description))
-            .filter(|(keys, _)| !keys.is_empty())
-            .collect()
+        self.shown_keys(self.local_hints())
     }
 
     fn keys_popup_title(&self) -> &'static str {
@@ -685,56 +683,44 @@ impl App<'_> {
         }
     }
 
-    // The width and height of the keys popup, None when it is hidden.
-    fn keys_popup_size(&self) -> Option<(u16, u16)> {
-        let keys = self.keys_popup_keys();
-        if keys.is_empty() {
-            return None;
-        }
-        let popup = KeysPopup::new(self.keys_popup_title(), &keys, &self.ctx.color_theme);
-        let area = popup.area(Rect::new(0, 0, u16::MAX / 2, u16::MAX / 2));
-        Some((area.width, area.height))
-    }
-
     // The keys for the status bar (see `keys_are_local`), as many as fit in `width`, the first
     // ones being the most useful.
     fn fit_key_hints(&self, width: usize) -> Line<'static> {
-        let hints = if self.keys_are_local() {
+        let keys = self.shown_keys(if self.keys_are_local() {
             self.local_hints()
         } else {
             self.global_hints()
-        };
-        let keys: Vec<(String, String)> = hints
-            .into_iter()
-            .map(|(events, description)| (self.ctx.short_keys(&events), description))
-            .filter(|(keys, _)| !keys.is_empty())
+        });
+        let keys: Vec<(&str, &str)> = keys
+            .iter()
+            .map(|(key, description)| (key.as_str(), description.as_str()))
             .collect();
         let theme = &self.ctx.color_theme;
-        let mut fitted = Line::default();
-        for n in 1..=keys.len() {
-            let keys: Vec<(&str, &str)> = keys[..n]
-                .iter()
-                .map(|(key, description)| (key.as_str(), description.as_str()))
-                .collect();
-            let line = key_hints(&keys, theme);
-            if line.width() > width {
-                break;
-            }
-            fitted = line;
-        }
-        fitted
+        // each hint and the " • " before it, see `key_hints`
+        let mut used = 0;
+        let fitting = keys
+            .iter()
+            .take_while(|hint| {
+                let separator = if used == 0 { 0 } else { 3 };
+                used += separator + key_hints(std::slice::from_ref(hint), theme).width();
+                used <= width
+            })
+            .count();
+        key_hints(&keys[..fitting], theme)
     }
 
     // What to clear before drawing the frame: the graph images stay on the screen until cleared,
     // so they are when the layout changes. Text views cover the area of the images they replace,
     // and the whole screen is cleared when the graph comes back, or moves.
-    fn frame_clear(&mut self) -> PendingClear {
+    fn frame_clear(&mut self, keys: &[(String, String)]) -> PendingClear {
         let layout = FrameLayout {
             view: self.view.kind(),
             sidebar_collapsed: self.shell.sidebar_collapsed,
             panels: self.ctx.layout.borrow().version(),
             dialog: self.visible_dialog().is_some(),
-            keys_popup: self.keys_popup_size(),
+            keys_popup: (!keys.is_empty()).then(|| {
+                KeysPopup::new(self.keys_popup_title(), keys, &self.ctx.color_theme).size()
+            }),
         };
         let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
@@ -780,7 +766,7 @@ impl App<'_> {
         self.ctx.image_protocol.delete_images(&image_ids)
     }
 
-    fn render(&mut self, f: &mut Frame) {
+    fn render(&mut self, f: &mut Frame, keys: &[(String, String)]) {
         let base = Block::default()
             .fg(self.ctx.color_theme.fg)
             .bg(self.ctx.color_theme.bg);
@@ -821,9 +807,8 @@ impl App<'_> {
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
-        let keys = self.keys_popup_keys();
         if !keys.is_empty() {
-            let popup = KeysPopup::new(self.keys_popup_title(), &keys, &self.ctx.color_theme);
+            let popup = KeysPopup::new(self.keys_popup_title(), keys, &self.ctx.color_theme);
             f.render_widget(popup, app_area);
         }
         if let Some(dialog) = self.visible_dialog() {
@@ -1197,20 +1182,14 @@ impl App<'_> {
             return;
         }
         match event {
-            UserEvent::ResizeLeft
-            | UserEvent::ResizeRight
-            | UserEvent::ResizeUp
-            | UserEvent::ResizeDown => {
-                self.move_border(event);
-                return;
-            }
-            UserEvent::FocusLeft
-            | UserEvent::FocusRight
-            | UserEvent::FocusUp
-            | UserEvent::FocusDown => {
-                self.move_focus(event);
-                return;
-            }
+            UserEvent::ResizeLeft => return self.move_border(Direction::Left),
+            UserEvent::ResizeRight => return self.move_border(Direction::Right),
+            UserEvent::ResizeUp => return self.move_border(Direction::Up),
+            UserEvent::ResizeDown => return self.move_border(Direction::Down),
+            UserEvent::FocusLeft => return self.move_focus(Direction::Left),
+            UserEvent::FocusRight => return self.move_focus(Direction::Right),
+            UserEvent::FocusUp => return self.move_focus(Direction::Up),
+            UserEvent::FocusDown => return self.move_focus(Direction::Down),
             UserEvent::KeysToggle => {
                 self.shell.keys_popup = !self.shell.keys_popup;
                 return;
@@ -1221,8 +1200,7 @@ impl App<'_> {
                     self.shell.sidebar_collapsed = true;
                     self.set_sidebar_focused(false);
                 } else {
-                    self.shell.sidebar_collapsed = false;
-                    self.set_sidebar_focused(true);
+                    self.focus_sidebar();
                 }
                 return;
             }
@@ -1347,10 +1325,14 @@ impl App<'_> {
             }
             return hints;
         }
-        let mut hints = match self.shell.sidebar.selection() {
+        let selection = self.shell.sidebar.selection();
+        // a branch, remote branch or tag: the commands of the graph work on it, and its name is
+        // copied (see `copy_sidebar_ref_name`)
+        let on_ref = matches!(selection, RefSelection::Ref(Branches | Remotes | Tags, _));
+        let mut hints = match &selection {
             RefSelection::LocalChanges => vec![],
             RefSelection::Folder(Remotes, name)
-                if self.repository.remote_info().remotes.contains(&name) =>
+                if self.repository.remote_info().remotes.contains(name) =>
             {
                 vec![
                     hint(UserEvent::CreateRef, "new remote"),
@@ -1376,8 +1358,7 @@ impl App<'_> {
                 hint(UserEvent::DeleteRef, "drop"),
             ],
         };
-        // the commands of the graph, on the ref
-        if let RefSelection::Ref(Branches | Remotes | Tags, _) = self.shell.sidebar.selection() {
+        if on_ref {
             hints.extend([
                 hint(UserEvent::CreateBranch, "new branch"),
                 hint(UserEvent::CreateTag, "new tag"),
@@ -1387,12 +1368,11 @@ impl App<'_> {
                 hint(UserEvent::Diff, "diff"),
             ]);
         }
-        if let RefSelection::Ref(..) = self.shell.sidebar.selection() {
+        if let RefSelection::Ref(..) = selection {
             hints.push(hint(UserEvent::ToggleSelect, "pick"));
         }
         hints.push(hint(UserEvent::Confirm, "open"));
-        // what copying the name works on, see `copy_sidebar_ref_name`
-        if let RefSelection::Ref(Branches | Remotes | Tags, _) = self.shell.sidebar.selection() {
+        if on_ref {
             hints.push(hint(UserEvent::ShortCopy, "copy name"));
         }
         hints.push(hint(UserEvent::Cancel, "back"));
@@ -1600,8 +1580,7 @@ impl App<'_> {
         *self.ctx.running_task.borrow_mut() = None;
         // the page under the help shows the outcome, which could not be refreshed under it
         self.close_help();
-        let typing = self.view.is_capturing_keys()
-            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
+        let typing = self.is_typing();
         if result.is_ok() && task.uses_picks {
             self.view.clear_picked_commits();
         }
@@ -1739,12 +1718,12 @@ impl App<'_> {
 
     // Moves the border beside the focused panel with ctrl-left and ctrl-right (the sidebar, or the
     // files beside a diff), the one above or under it with ctrl-up and ctrl-down.
-    fn move_border(&mut self, event: UserEvent) {
-        let (vertical, step) = match event {
-            UserEvent::ResizeLeft => (true, -2),
-            UserEvent::ResizeRight => (true, 2),
-            UserEvent::ResizeUp => (false, -1),
-            _ => (false, 1),
+    fn move_border(&mut self, direction: Direction) {
+        let (vertical, step) = match direction {
+            Direction::Left => (true, -2),
+            Direction::Right => (true, 2),
+            Direction::Up => (false, -1),
+            Direction::Down => (false, 1),
         };
         let sidebar = (!self.shell.sidebar_collapsed).then_some(Panel::Sidebar);
         let panel = match &self.view {
@@ -1764,21 +1743,20 @@ impl App<'_> {
 
     // Moves the focus to the panel that way: the sidebar on the left of the page, the page on its
     // right, else between the panels of the page.
-    fn move_focus(&mut self, event: UserEvent) {
-        let direction = match event {
-            UserEvent::FocusLeft => Direction::Left,
-            UserEvent::FocusRight => Direction::Right,
-            UserEvent::FocusUp => Direction::Up,
-            _ => Direction::Down,
-        };
+    fn move_focus(&mut self, direction: Direction) {
         if self.shell.sidebar_focused {
             if direction == Direction::Right {
                 self.set_sidebar_focused(false);
             }
         } else if !self.view.move_focus(direction) && direction == Direction::Left {
-            self.shell.sidebar_collapsed = false;
-            self.set_sidebar_focused(true);
+            self.focus_sidebar();
         }
+    }
+
+    // Focuses the sidebar, growing it back when shrunk.
+    fn focus_sidebar(&mut self) {
+        self.shell.sidebar_collapsed = false;
+        self.set_sidebar_focused(true);
     }
 
     // Whether a diff of two commits or refs is open, also under the details of one of its commits.
@@ -1930,9 +1908,8 @@ impl App<'_> {
     fn refresh_paused(&self) -> bool {
         self.ctx.busy_message().is_some()
             || self.shell.dialog.is_some()
-            || self.view.is_capturing_keys()
+            || self.is_typing()
             || matches!(self.view, View::Help(_))
-            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
     }
 
     // Reloads everything when the branches or HEAD changed since they were loaded, from outside the
@@ -2249,8 +2226,8 @@ fn build_external_command_parameters<'a>(
         all_refs.push(r.name());
     }
 
-    let area_width = view_area.width.saturating_sub(4); // minus the left and right padding
-                                                        // minus the top and bottom borders
+    // minus the left and right padding, and the top and bottom borders
+    let area_width = view_area.width.saturating_sub(4);
     let area_height = user_command_height(ctx, view_area.height).saturating_sub(2);
     Ok(ExternalCommandParameters {
         command,

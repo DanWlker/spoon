@@ -468,7 +468,25 @@ impl GitDialog {
             name: name.to_string(),
             url: url.to_string(),
         };
-        let mut dialog = Self::with(" Edit remote ", "save", vec![], kind);
+        Self::remote_form(" Edit remote ", "save", kind, name, url)
+    }
+
+    // A new remote, fetched once added, like lazygit.
+    pub fn add_remote() -> Self {
+        let mut dialog = Self::remote_form(" New remote ", "add", DialogKind::AddRemote, "", "");
+        dialog.editing = true;
+        dialog
+    }
+
+    // The name and URL of a remote.
+    fn remote_form(
+        title: &'static str,
+        verb: &'static str,
+        kind: DialogKind,
+        name: &str,
+        url: &str,
+    ) -> Self {
+        let mut dialog = Self::with(title, verb, vec![], kind);
         dialog
             .fields
             .push((FieldId::Name, "Name", Field::text(name, vec![])));
@@ -478,17 +496,14 @@ impl GitDialog {
         dialog
     }
 
-    // A new remote, fetched once added, like lazygit.
-    pub fn add_remote() -> Self {
-        let mut dialog = Self::with(" New remote ", "add", vec![], DialogKind::AddRemote);
-        dialog
-            .fields
-            .push((FieldId::Name, "Name", Field::text("", vec![])));
-        dialog
-            .fields
-            .push((FieldId::Url, "URL", Field::text("", vec![])));
-        dialog.editing = true;
-        dialog
+    // The name and URL typed for a remote.
+    fn remote_values(&self) -> Result<(String, String), String> {
+        let name = self.value(FieldId::Name);
+        let url = self.value(FieldId::Url);
+        if name.is_empty() || url.is_empty() {
+            return Err("Type a name and a URL for the remote".into());
+        }
+        Ok((name, url))
     }
 
     // A tag at `at`, annotated when it has a message.
@@ -1048,11 +1063,7 @@ impl GitDialog {
                 })
             }
             DialogKind::EditRemote { name, url } => {
-                let new_name = self.value(FieldId::Name);
-                let new_url = self.value(FieldId::Url);
-                if new_name.is_empty() || new_url.is_empty() {
-                    return Err("Type a name and a URL for the remote".into());
-                }
+                let (new_name, new_url) = self.remote_values()?;
                 let mut commands: Vec<Vec<String>> = vec![];
                 if new_name != *name {
                     commands.push(vec![
@@ -1081,11 +1092,7 @@ impl GitDialog {
                 })
             }
             DialogKind::AddRemote => {
-                let name = self.value(FieldId::Name);
-                let url = self.value(FieldId::Url);
-                if name.is_empty() || url.is_empty() {
-                    return Err("Type a name and a URL for the remote".into());
-                }
+                let (name, url) = self.remote_values()?;
                 Ok(GitTask {
                     args: vec!["remote".into(), "add".into(), name.clone(), url],
                     then: vec![vec!["fetch".into(), name.clone()]],

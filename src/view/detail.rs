@@ -194,23 +194,16 @@ impl<'a> DetailView<'a> {
     // Moves the focus to the panel that way: the commit list above the details, the diff or
     // preview beside the files. Returns false when there is none.
     pub fn move_focus(&mut self, direction: Direction) -> bool {
-        match direction {
-            Direction::Up if !self.list_focused => self.list_focused = true,
-            Direction::Down if self.list_focused => self.show_tab(self.tab),
-            Direction::Right if self.shows_tree() && !self.is_pane_focused() => {
-                return match self.tab {
-                    DetailTab::Info => false,
-                    DetailTab::Changes => self.changes_state.enter(),
-                    DetailTab::Files => self.files_state.enter(),
-                };
-            }
-            Direction::Left if self.is_pane_focused() => {
-                let _ = match self.tab {
-                    DetailTab::Info => false,
-                    DetailTab::Changes => self.changes_state.back(),
-                    DetailTab::Files => self.files_state.back(),
-                };
-            }
+        let pane = self.is_pane_focused();
+        match (direction, self.tab) {
+            (Direction::Up, _) if !self.list_focused => self.focus_list(),
+            (Direction::Down, _) if self.list_focused => self.show_tab(self.tab),
+            _ if self.list_focused => return false,
+            // into the diff or preview beside the files, and back
+            (Direction::Right, DetailTab::Changes) if !pane => return self.changes_state.enter(),
+            (Direction::Right, DetailTab::Files) if !pane => return self.files_state.enter(),
+            (Direction::Left, DetailTab::Changes) => return self.changes_state.back(),
+            (Direction::Left, DetailTab::Files) => return self.files_state.back(),
             _ => return false,
         }
         true

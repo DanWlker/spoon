@@ -23,9 +23,8 @@ impl<'a> KeysPopup<'a> {
         KeysPopup { title, keys, theme }
     }
 
-    // Where it goes in `area`: in the bottom right corner, as big as the keys (with some room for
-    // short ones), the rows that don't fit left out.
-    pub fn area(&self, area: Rect) -> Rect {
+    // Its width and height, as big as the keys (with some room for short ones); see `area`.
+    pub fn size(&self) -> (u16, u16) {
         let key_width = self.key_width();
         let row_width = self
             .keys
@@ -37,10 +36,15 @@ impl<'a> KeysPopup<'a> {
             .unwrap_or(0)
             .max(self.title.chars().count() + 2);
         // the borders and a space on each side
-        let width = (row_width as u16 + 4).max(MIN_WIDTH).min(area.width);
-        let height = (self.keys.len() as u16 + 2)
-            .min(MAX_HEIGHT)
-            .min(area.height);
+        let width = (row_width as u16 + 4).max(MIN_WIDTH);
+        let height = (self.keys.len() as u16 + 2).min(MAX_HEIGHT);
+        (width, height)
+    }
+
+    // Where it goes in `area`: in the bottom right corner, the rows that don't fit left out.
+    pub fn area(&self, area: Rect) -> Rect {
+        let (width, height) = self.size();
+        let (width, height) = (width.min(area.width), height.min(area.height));
         Rect::new(area.right() - width, area.bottom() - height, width, height)
     }
 

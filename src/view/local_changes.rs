@@ -283,7 +283,10 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn move_focus(&mut self, direction: Direction) -> bool {
-        self.as_mut_state().move_focus(direction)
+        let result = self.as_mut_state().move_focus(direction);
+        let moved = *result.as_ref().unwrap_or(&true);
+        self.after_action(result.map(|_| ()));
+        moved
     }
 
     pub fn focus_name(&self) -> &'static str {
@@ -419,7 +422,6 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    // The scope of the keys: the diff, or the rest of the page.
     // The panel whose height changes with ctrl-up and ctrl-down: the unstaged files over the
     // staged ones from them, else the commit message under the diff.
     pub fn height_panel(&self) -> Panel {
@@ -430,6 +432,7 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
+    // The scope of the keys: the diff, or the rest of the page.
     pub fn scope(&self) -> Scope {
         if self.as_state().is_diff_focused() {
             Scope::LocalChangesDiff

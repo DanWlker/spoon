@@ -659,14 +659,9 @@ mod tests {
             on(UserEvent::Checkout, "v1", &hashes[2]),
             "checkout --detach v1"
         );
-        // the others work on its commit
-        let tag = ref_graph_command(
-            &repository,
-            UserEvent::CreateTag,
-            "topic",
-            hashes[1].clone(),
-        );
-        run(path, tag.unwrap(), "t1");
+        // a tag at a commit of the graph (the sidebar makes them with `ref_command`)
+        let tag = command(&repository, UserEvent::CreateTag, &hashes[1], &[]);
+        run(path, tag, "t1");
         assert_eq!(git(&["tag", "--points-at", "topic"]), "t1\n");
 
         // a branch at a commit of the graph, checked out

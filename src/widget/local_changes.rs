@@ -1008,7 +1008,7 @@ impl<'a> LocalChangesState<'a> {
     // Moves the focus to the panel that way: the files are on the left, unstaged over staged, the
     // diff (or conflict panel) on the right over the commit message. Returns false when there is
     // none, or nothing to focus in it, like a diff without hunks.
-    pub fn move_focus(&mut self, direction: Direction) -> bool {
+    pub fn move_focus(&mut self, direction: Direction) -> Result<bool, String> {
         use LocalChangesSection::*;
         match (self.focus, direction) {
             (Focus::Files, Direction::Down) if self.section == Unstaged => {
@@ -1016,8 +1016,8 @@ impl<'a> LocalChangesState<'a> {
             }
             (Focus::Files, Direction::Up) if self.section == Staged => self.focus_section(Unstaged),
             (Focus::Files, Direction::Right) => {
-                let _ = self.enter();
-                return self.focus != Focus::Files;
+                self.enter()?;
+                return Ok(self.focus != Focus::Files);
             }
             (Focus::Hunks | Focus::Lines | Focus::Conflict, Direction::Down) => self.focus_commit(),
             (
@@ -1027,11 +1027,11 @@ impl<'a> LocalChangesState<'a> {
             // into the diff of the selected file, else its files
             (Focus::Commit { .. }, Direction::Up) => {
                 self.focus_files();
-                let _ = self.enter();
+                self.enter()?;
             }
-            _ => return false,
+            _ => return Ok(false),
         }
-        true
+        Ok(true)
     }
 
     // The name of the panel having the focus, for the title of the keys popup.
