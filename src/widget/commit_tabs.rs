@@ -227,7 +227,9 @@ impl<'a> CommitChangesState<'a> {
             }
             None => String::new(),
         };
-        self.diff = Some(parse_diff(&diff));
+        let mut diff = parse_diff(&diff);
+        diff.drop_converted(self.repository);
+        self.diff = Some(diff);
         self.focus = ChangesFocus::Files;
         self.cursor.reset();
     }
@@ -252,6 +254,13 @@ impl<'a> CommitChangesState<'a> {
 
     pub fn diff_page_height(&self) -> usize {
         self.cursor.page_height()
+    }
+
+    // Whether hunks were left out of the diff of the selected file, see
+    // `ParsedDiff::drop_converted`; a directory opens and closes instead.
+    pub fn is_converted(&self) -> bool {
+        self.tree.selected().is_some_and(|r| !r.is_dir())
+            && self.diff.as_ref().is_some_and(|d| d.converted)
     }
 
     pub fn is_diff_focused(&self) -> bool {

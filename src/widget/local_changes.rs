@@ -20,7 +20,10 @@ use crate::{
     layout::{Border, Direction, Panel},
     widget::{
         conflict::ConflictView,
-        diff::{diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step},
+        diff::{
+            diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step,
+            CONVERTED_DIFF,
+        },
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
@@ -984,6 +987,8 @@ impl<'a> LocalChangesState<'a> {
                 }
                 if self.cursor.select_hunk(&self.diff, 0) {
                     self.focus = Focus::Hunks;
+                } else if self.diff.converted {
+                    return Err(CONVERTED_DIFF.into());
                 }
             }
             Focus::Hunks => {
@@ -1493,6 +1498,7 @@ impl<'a> LocalChangesState<'a> {
             self.focus = Focus::Files;
         }
         self.diff = parse_diff(diff);
+        self.diff.drop_converted(self.repository);
         self.cursor.reset();
     }
 }
@@ -2252,6 +2258,39 @@ mod tests {
         assert!(!state.is_typing_query());
         assert!(state.clear_diff_query() && !state.clear_diff_query());
         assert!(state.is_diff_focused());
+        Ok(())
+    }
+
+    #[test]
+    fn test_converted_diff() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        // .bin files are diffed as text converted from them
+        fs::write(repo_path.join(".gitattributes"), "*.bin diff=upper\n")?;
+        git_stdout(
+            repo_path,
+            &["config", "diff.upper.textconv", "tr a-z A-Z <"],
+        );
+        fs::write(repo_path.join("a.bin"), "x\n")?;
+        fs::write(repo_path.join("a.txt"), "x\n")?;
+        git.add(&[".gitattributes", "a.bin", "a.txt"]);
+        git.commit("init", "2024-01-01");
+        fs::write(repo_path.join("a.bin"), "x\ny\n")?;
+        fs::write(repo_path.join("a.txt"), "x\ny\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        // shown converted, without hunks to stage
+        select_row(&mut state, "a.bin");
+        assert!(state.diff.raw.contains("+Y"));
+        assert_eq!(state.enter().unwrap_err(), CONVERTED_DIFF);
+        assert_eq!(state.focus, Focus::Files);
+        // the others as usual
+        select_row(&mut state, "a.txt");
+        state.enter()?;
+        assert_eq!(state.focus, Focus::Hunks);
         Ok(())
     }
 

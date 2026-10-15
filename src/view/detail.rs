@@ -25,7 +25,7 @@ use crate::{
             render_compare_title, render_tab_titles, CommitChanges, CommitChangesState,
             CommitFiles, CommitFilesState, DetailTab,
         },
-        diff::Step,
+        diff::{Step, CONVERTED_DIFF},
         file_tree::{FileTreeState, SearchDirection},
         style::panel_block,
         tree_query::{QueryChange, QueryKind, TreeQuery},
@@ -640,6 +640,10 @@ impl<'a> DetailView<'a> {
         let page = self.changes_state.diff_page_height();
         // into the diff; a directory without one opens or closes
         if event == UserEvent::Confirm && self.changes_state.enter() {
+            return true;
+        }
+        if event == UserEvent::Confirm && self.changes_state.is_converted() {
+            self.tx.send(AppEvent::NotifyWarn(CONVERTED_DIFF.into()));
             return true;
         }
         if event == UserEvent::ApplyChange || self.scroll_changes_diff(event, page) {

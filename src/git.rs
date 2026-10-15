@@ -6,7 +6,7 @@ use std::{
 };
 
 use chrono::{DateTime, FixedOffset};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Result;
 
@@ -121,6 +121,8 @@ pub struct Repository {
     head: Head,
     // the names of the remotes, sorted, as loaded
     remotes: Vec<String>,
+    // the diff drivers converting files to text to diff them (`diff.<driver>.textconv`)
+    textconv_drivers: Vec<String>,
     // to preserve order of the original commits from `git log`, we store the commit hashes
     commit_hashes: Vec<CommitHash>,
 }
@@ -180,6 +182,7 @@ impl Repository {
         );
         repository.git_dir = git_dir;
         repository.remotes = load_remotes(path);
+        repository.textconv_drivers = load_textconv_drivers(path);
         repository.loaded_local_changes = Some(load_local_changes(path)).into();
         Ok(repository)
     }
@@ -203,8 +206,29 @@ impl Repository {
             ref_map,
             head,
             remotes: Vec::new(),
+            textconv_drivers: Vec::new(),
             commit_hashes,
         }
+    }
+
+    // The paths among `paths` whose diff shows text converted from them (a diff driver with a
+    // `textconv`, set in .gitattributes), which can't be applied back as a patch.
+    pub fn converted_paths(&self, paths: &[&str]) -> FxHashSet<String> {
+        if self.textconv_drivers.is_empty() || paths.is_empty() {
+            return FxHashSet::default();
+        }
+        let mut args = vec!["check-attr", "-z", "diff", "--"];
+        args.extend_from_slice(paths);
+        let out = git_output(&self.path, &args).unwrap_or_default();
+        // path, attribute, value, each ended by a NUL
+        let fields: Vec<&str> = out.split('\0').collect();
+        fields
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|[_, _, driver]| self.textconv_drivers.iter().any(|d| d == driver))
+            .map(|[path, _, _]| path.to_string())
+            .collect()
     }
 
     // The names of the remotes when the repository was loaded, without running git, see
@@ -1286,6 +1310,17 @@ fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
     }
 }
 
+// The diff drivers with a `textconv`, like "docx" for `diff.docx.textconv`.
+fn load_textconv_drivers(path: &Path) -> Vec<String> {
+    let pattern = r"^diff\..*\.textconv$";
+    git_output(path, &["config", "--name-only", "--get-regexp", pattern])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|key| key.strip_prefix("diff.")?.strip_suffix(".textconv"))
+        .map(String::from)
+        .collect()
+}
+
 // The names of the remotes, sorted.
 fn load_remotes(path: &Path) -> Vec<String> {
     let mut remotes: Vec<String> = git_output(path, &["remote"])
@@ -1552,12 +1587,12 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
 }
 
 // A diff in the format it is parsed in, and applied back as a patch: ignoring user config that
-// changes it, like colors, external diff tools, text conversions of binary files or other prefixes.
-const PATCH_DIFF_ARGS: [&str; 6] = [
+// changes it, like colors, external diff tools or other prefixes. Files converted to text to diff
+// them are shown so, without hunks to apply, see `ParsedDiff::drop_converted`.
+const PATCH_DIFF_ARGS: [&str; 5] = [
     "diff",
     "--no-color",
     "--no-ext-diff",
-    "--no-textconv",
     "--src-prefix=a/",
     "--dst-prefix=b/",
 ];

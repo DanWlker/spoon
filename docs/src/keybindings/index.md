@@ -183,6 +183,8 @@ Nothing is reloaded while a git command runs, a popup is open, or something is b
 #### Picking files
 
 On the local changes page, <kbd>v</kbd> picks files and directories (highlighted, with the count in the panel title).
+A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file.
+
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor, and <kbd>Enter</kbd> shows their combined diff to stage or unstage their hunks and lines.
 <kbd>s</kbd> asks for a stash message in the status line (it may be empty), and stashes including untracked files.
 

@@ -7,17 +7,39 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
+    git::Repository,
     widget::{
         file_tree::SearchDirection,
         tree_query::{find_around, match_range},
     },
 };
 
+// Why the hunks of a file aren't selectable, see `ParsedDiff::drop_converted`.
+pub const CONVERTED_DIFF: &str =
+    "This diff is text converted from the file (textconv): its hunks and lines can't be staged or applied, only the whole file";
+
 #[derive(Debug, Default)]
 pub struct ParsedDiff {
     pub raw: String,
     pub rows: Vec<DiffRow>,
     pub hunks: Vec<DiffHunk>,
+    // hunks were left out, of files diffed as text converted from them
+    pub converted: bool,
+}
+
+impl ParsedDiff {
+    // Leaves out the hunks of files git diffs as text converted from them, like a .docx with a
+    // textconv driver: the text isn't in the file, so they can't be staged or applied.
+    pub fn drop_converted(&mut self, repository: &Repository) {
+        let mut paths: Vec<&str> = self.hunks.iter().map(DiffHunk::path).collect();
+        paths.dedup();
+        let converted = repository.converted_paths(&paths);
+        if converted.is_empty() {
+            return;
+        }
+        self.hunks.retain(|h| !converted.contains(h.path()));
+        self.converted = true;
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -35,6 +57,18 @@ pub struct DiffHunk {
 }
 
 impl DiffHunk {
+    // The path of its file, the old one of a deleted file.
+    fn path(&self) -> &str {
+        let path_of = |prefix: &str| {
+            self.file_header
+                .lines()
+                .find_map(|l| l.strip_prefix(prefix))
+        };
+        path_of("+++ b/")
+            .or_else(|| path_of("--- a/"))
+            .unwrap_or_default()
+    }
+
     // The file header and this hunk alone, ready for `git apply`.
     pub fn patch(&self) -> String {
         format!("{}{}{}", self.file_header, self.header, self.lines.concat())
@@ -485,6 +519,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         raw: diff.to_string(),
         rows,
         hunks,
+        converted: false,
     }
 }
 
