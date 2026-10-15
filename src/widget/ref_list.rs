@@ -111,6 +111,8 @@ pub struct RefListState {
     picked: RefPicks,
     // the commits to push and to pull of the local branches with an upstream, by name
     tracking: FxHashMap<String, (usize, usize)>,
+    // the checked-out branch, marked
+    head_branch: Option<String>,
 }
 
 impl RefListState {
@@ -127,6 +129,7 @@ impl RefListState {
             scroll_to_selection: true,
             picked: RefPicks::default(),
             tracking: FxHashMap::default(),
+            head_branch: None,
         };
         state.rebuild_visible_rows();
         state
@@ -135,6 +138,10 @@ impl RefListState {
     // The commits ahead of and behind the upstream of each local branch, shown beside them.
     pub fn set_tracking(&mut self, tracking: FxHashMap<String, (usize, usize)>) {
         self.tracking = tracking;
+    }
+
+    pub fn set_head_branch(&mut self, branch: Option<String>) {
+        self.head_branch = branch;
     }
 
     pub fn picked(&self) -> &RefPicks {
@@ -462,7 +469,13 @@ impl StatefulWidget for RefList {
                 buf.set_stringn(inner.x, y, line, inner.width as usize, divider_style);
                 continue;
             }
-            let symbol = if !row.has_children {
+            // the checked-out branch, like `git branch`
+            let head = row.depth > 0
+                && row.identifier[0] == TREE_BRANCH_ROOT_IDENT
+                && state.head_branch.as_deref() == row.identifier.last().map(String::as_str);
+            let symbol = if head {
+                "● "
+            } else if !row.has_children {
                 "  "
             } else if state.opened.contains(&row.identifier) {
                 "▾ "
@@ -470,7 +483,11 @@ impl StatefulWidget for RefList {
                 "▸ "
             };
             let prefix = format!("{}{symbol}", "  ".repeat(row.depth));
-            let symbol_style = Style::default().fg(theme.status_input_transient_fg);
+            let symbol_style = if head {
+                Style::default().fg(theme.list_ref_head_fg)
+            } else {
+                Style::default().fg(theme.status_input_transient_fg)
+            };
             let (text_x, _) =
                 buf.set_stringn(inner.x, y, prefix, inner.width as usize, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
@@ -487,6 +504,8 @@ impl StatefulWidget for RefList {
                     .bg(theme.list_picked_bg)
             } else if row.depth == 0 {
                 root_style
+            } else if head {
+                root_style.fg(theme.list_ref_head_fg)
             } else {
                 item_style
             };

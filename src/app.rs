@@ -276,6 +276,12 @@ impl<'a> App<'a> {
             },
             ctx.ui_config.list.scrolloff as usize,
         );
+        // the checked-out branch, marked in the graph and the sidebar
+        let head_branch = match repository.head() {
+            Head::Branch { name } => Some(name.clone()),
+            _ => None,
+        };
+        commit_list_state.set_head_branch(head_branch.clone());
         commit_list_state.set_filter_note(
             shell
                 .as_ref()
@@ -319,6 +325,7 @@ impl<'a> App<'a> {
             },
         };
         shell.sidebar.set_tracking(repository.branch_tracking());
+        shell.sidebar.set_head_branch(head_branch);
 
         let mut app = Self {
             repository,

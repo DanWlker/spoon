@@ -23,6 +23,9 @@ pub struct ColorTheme {
     pub list_picked_bg: RatatuiColor,
     #[default(GREEN)]
     pub list_ref_branch_fg: RatatuiColor,
+    // the checked-out branch
+    #[default(INDIGO)]
+    pub list_ref_head_fg: RatatuiColor,
     #[default(GREEN)]
     pub list_ref_remote_branch_fg: RatatuiColor,
     #[default(YELLOW)]

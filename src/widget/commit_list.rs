@@ -204,6 +204,8 @@ pub struct CommitListState<'a> {
     picked_commit_hashes: Vec<CommitHash>,
     // what part of the history is loaded, like "main only", when not all of it
     filter_note: Option<String>,
+    // the checked-out branch, its label in its own color
+    head_branch: Option<String>,
     selected: usize,
     offset: usize,
     total: usize,
@@ -234,6 +236,7 @@ impl<'a> CommitListState<'a> {
             search_matches: vec![SearchMatch::default(); total],
             picked_commit_hashes: Vec::new(),
             filter_note: None,
+            head_branch: None,
             selected: 0,
             offset: 0,
             total,
@@ -513,6 +516,10 @@ impl<'a> CommitListState<'a> {
 
     pub fn set_filter_note(&mut self, note: Option<String>) {
         self.filter_note = note;
+    }
+
+    pub fn set_head_branch(&mut self, branch: Option<String>) {
+        self.head_branch = branch;
     }
 
     pub fn select_ref(&mut self, ref_name: &str) {
@@ -922,6 +929,7 @@ impl CommitList<'_> {
                 let mut spans = refs_spans(
                     commit_info,
                     &state.search_matches[state.offset + i].refs,
+                    state.head_branch.as_deref(),
                     &self.ctx.color_theme,
                 );
                 let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
@@ -1089,11 +1097,15 @@ impl CommitList<'_> {
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo,
     refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
+    head_branch: Option<&str>,
     color_theme: &'a ColorTheme,
 ) -> Vec<Span<'a>> {
     let mut spans = vec![];
     for r in &commit_info.refs {
         let (name, color) = match r {
+            Ref::Branch { name, .. } if head_branch == Some(name.as_str()) => {
+                (name, color_theme.list_ref_head_fg)
+            }
             Ref::Branch { name, .. } => (name, color_theme.list_ref_branch_fg),
             Ref::RemoteBranch { name, .. } => (name, color_theme.list_ref_remote_branch_fg),
             Ref::Tag { name, .. } => (name, color_theme.list_ref_tag_fg),
@@ -1127,7 +1139,7 @@ fn refs_spans<'a>(
     spans
 }
 
-// A ref label in `color`: solid for the checked-out branch, else the color on a dark tint of it.
+// A ref label in `color`, on a dark tint of it.
 fn ref_label_style(color: Color) -> Style {
     let style = Style::default().add_modifier(Modifier::BOLD);
     match color {

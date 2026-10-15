@@ -456,6 +456,11 @@
           "description": "Color for local branches in the commit list.",
           "default": "#02bf87"
         },
+        "list_ref_head_fg": {
+          "type": "string",
+          "description": "Color for the checked-out branch in the commit list.",
+          "default": "#7571f9"
+        },
         "list_ref_remote_branch_fg": {
           "type": "string",
           "description": "Color for remote branches in the commit list.",
