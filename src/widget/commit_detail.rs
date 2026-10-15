@@ -101,18 +101,14 @@ impl CommitDetail<'_> {
     fn render_labels_paragraph(&self, lines: Vec<Line>, area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default().padding(Padding::left(1)),
-            );
+            .block(Block::default().padding(Padding::left(1)));
         paragraph.render(area, buf);
     }
 
     fn render_value_paragraph(&self, lines: Vec<Line>, area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default().padding(Padding::new(1, 1, 0, 0)),
-            );
+            .block(Block::default().padding(Padding::new(1, 1, 0, 0)));
         paragraph.render(area, buf);
     }
 

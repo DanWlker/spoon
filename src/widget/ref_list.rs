@@ -510,7 +510,11 @@ impl StatefulWidget for RefList {
             };
             // a local branch: the commits to push and to pull, after its name
             let tracking = (row.depth > 0 && row.identifier[0] == TREE_BRANCH_ROOT_IDENT)
-                .then(|| state.tracking.get(&row.identifier[row.identifier.len() - 1]))
+                .then(|| {
+                    state
+                        .tracking
+                        .get(&row.identifier[row.identifier.len() - 1])
+                })
                 .flatten();
             let mut counts = vec![];
             if let Some(&(ahead, behind)) = tracking {

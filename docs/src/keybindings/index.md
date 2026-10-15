@@ -1,7 +1,8 @@
 # Keybindings
 
 You can see the keybindings by pressing the `F1` key.
-The status bar shows the keys of what has the focus, like the panel or the popup, as many as fit; not the ones moving around.
+The status bar shows the keys working everywhere, like push, pull and fetch, as many as fit.
+<kbd>H</kbd> shows the keys of the focused panel in a popup at the bottom right, and hides it again; while a popup has the focus or text is typed, the status bar shows their keys instead.
 
 The default key bindings can be overridden.
 
@@ -17,6 +18,8 @@ The default key bindings can be overridden.
 | <kbd>0</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_0` |
 | <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> | Move the border beside the focused panel: the sidebar's, or the one between the files and the diff | `resize_left` `resize_right` |
 | <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
+| <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
+| <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |

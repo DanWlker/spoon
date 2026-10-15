@@ -1,0 +1,116 @@
+// The keys of the focused panel in a box at the bottom right, after helix's infobox and the
+// helix preset of which-key: the panel as the title, then a key and what it does on each row.
+
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::Stylize,
+    text::{Line, Span},
+    widgets::{Clear, Paragraph, Widget},
+};
+
+use crate::{color::ColorTheme, widget::style::panel_block};
+
+pub struct KeysPopup<'a> {
+    title: &'a str,
+    // the keys, like "j/k", and what they do
+    keys: &'a [(String, String)],
+    theme: &'a ColorTheme,
+}
+
+impl<'a> KeysPopup<'a> {
+    pub fn new(title: &'a str, keys: &'a [(String, String)], theme: &'a ColorTheme) -> Self {
+        KeysPopup { title, keys, theme }
+    }
+
+    // Where it goes in `area`: in the bottom right corner, as big as the keys (with some room for
+    // short ones), the rows that don't fit left out.
+    pub fn area(&self, area: Rect) -> Rect {
+        let key_width = self.key_width();
+        let row_width = self
+            .keys
+            .iter()
+            .map(|(_, description)| {
+                key_width + SEPARATOR.chars().count() + description.chars().count()
+            })
+            .max()
+            .unwrap_or(0)
+            .max(self.title.chars().count() + 2);
+        // the borders and a space on each side
+        let width = (row_width as u16 + 4).max(MIN_WIDTH).min(area.width);
+        let height = (self.keys.len() as u16 + 2)
+            .min(MAX_HEIGHT)
+            .min(area.height);
+        Rect::new(area.right() - width, area.bottom() - height, width, height)
+    }
+
+    fn key_width(&self) -> usize {
+        self.keys
+            .iter()
+            .map(|(key, _)| key.chars().count())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+const MIN_WIDTH: u16 = 30;
+const MAX_HEIGHT: u16 = 25;
+const SEPARATOR: &str = " ➜ ";
+
+impl Widget for KeysPopup<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let area = self.area(area);
+        if area.width < 3 || area.height < 3 {
+            return;
+        }
+        let theme = self.theme;
+        let key_width = self.key_width();
+        let lines: Vec<Line> = self
+            .keys
+            .iter()
+            .map(|(key, description)| {
+                Line::from(vec![
+                    Span::raw(format!(" {key:>key_width$}"))
+                        .fg(theme.accent_fg)
+                        .bold(),
+                    Span::raw(SEPARATOR).fg(theme.divider_fg),
+                    Span::raw(description.clone()).fg(theme.fg),
+                ])
+            })
+            .collect();
+        let block = panel_block(true, theme).title(
+            Line::from(format!(" {} ", self.title))
+                .fg(theme.accent_fg)
+                .bold(),
+        );
+        Clear.render(area, buf);
+        Paragraph::new(lines)
+            .block(block)
+            .bg(theme.bg)
+            .render(area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_keys_popup_area() {
+        let theme = ColorTheme::default();
+        let keys = vec![
+            ("d".to_string(), "diff".to_string()),
+            (
+                "ctrl-x".to_string(),
+                "a long description of the key".to_string(),
+            ),
+        ];
+        let popup = KeysPopup::new("Commits", &keys, &theme);
+        // in the bottom right corner, the rows with the borders
+        let area = popup.area(Rect::new(0, 0, 100, 40));
+        assert_eq!(area, Rect::new(100 - 42, 40 - 4, 42, 4));
+        // never out of a small area
+        let area = popup.area(Rect::new(5, 5, 20, 3));
+        assert_eq!(area, Rect::new(5, 5, 20, 3));
+    }
+}

@@ -323,6 +323,11 @@ pub enum UserEvent {
     ResizeRight,
     ResizeUp,
     ResizeDown,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
+    KeysToggle,
     ToggleStage,
     ToggleSelect,
     NextPicked,
@@ -436,6 +441,11 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "resize_right" => Ok(UserEvent::ResizeRight),
                         "resize_up" => Ok(UserEvent::ResizeUp),
                         "resize_down" => Ok(UserEvent::ResizeDown),
+                        "focus_left" => Ok(UserEvent::FocusLeft),
+                        "focus_right" => Ok(UserEvent::FocusRight),
+                        "focus_up" => Ok(UserEvent::FocusUp),
+                        "focus_down" => Ok(UserEvent::FocusDown),
+                        "keys_toggle" => Ok(UserEvent::KeysToggle),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
@@ -559,6 +569,11 @@ impl UserEvent {
                 | UserEvent::ResizeRight
                 | UserEvent::ResizeUp
                 | UserEvent::ResizeDown
+                | UserEvent::FocusLeft
+                | UserEvent::FocusRight
+                | UserEvent::FocusUp
+                | UserEvent::FocusDown
+                | UserEvent::KeysToggle
                 | UserEvent::Fetch
                 | UserEvent::FetchAll
                 | UserEvent::Pull

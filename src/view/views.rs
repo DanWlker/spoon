@@ -6,6 +6,7 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
+    layout::Direction,
     search::SearchOptions,
     view::{
         detail::DetailView, help::HelpView, list::ListView, local_changes::LocalChangesView,
@@ -183,6 +184,26 @@ impl<'a> View<'a> {
         }
     }
 
+    // Moves the focus to the panel of the page that way; false when there is none.
+    pub fn move_focus(&mut self, direction: Direction) -> bool {
+        match self {
+            View::Detail(view) => view.move_focus(direction),
+            View::LocalChanges(view) => view.move_focus(direction),
+            _ => false,
+        }
+    }
+
+    // The name of the panel having the focus, for the title of the keys popup.
+    pub fn focus_name(&self) -> &'static str {
+        match self {
+            View::Detail(view) => view.focus_name(),
+            View::LocalChanges(view) => view.focus_name(),
+            View::UserCommand(_) => "Command",
+            View::Help(_) => "Help",
+            View::List(_) | View::Default => "Commits",
+        }
+    }
+
     // What the view shows, to tell when the screen must be cleared of the graph images.
     pub fn kind(&self) -> ViewKind {
         match self {
@@ -240,7 +261,6 @@ impl<'a> View<'a> {
             View::Default | View::LocalChanges(_) | View::Help(_) => None,
         }
     }
-
 
     // Views with numbered panels take digit keys; elsewhere they are a count prefix.
     // In the commit list, they open the details on that tab.

@@ -7,11 +7,11 @@ use ratatui::{
 };
 
 use crate::{
-    layout::Panel,
     app::AppContext,
     event::{AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     external::{editor_command, merge_tool_command},
     keybind::Scope,
+    layout::{Direction, Panel},
     view::{copy_path, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::CommitListState,
@@ -280,6 +280,14 @@ impl<'a> LocalChangesView<'a> {
 
     pub fn key_hints(&self) -> Vec<KeyHint> {
         self.as_state().key_hints()
+    }
+
+    pub fn move_focus(&mut self, direction: Direction) -> bool {
+        self.as_mut_state().move_focus(direction)
+    }
+
+    pub fn focus_name(&self) -> &'static str {
+        self.as_state().focus_name()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {

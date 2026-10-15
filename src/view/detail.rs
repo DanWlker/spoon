@@ -11,7 +11,7 @@ use crate::{
     event::{hint, AppEvent, KeyHint, Sender, UserEvent, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keybind::Scope,
-    layout::{Border, Panel},
+    layout::{Border, Direction, Panel},
     view::{
         copy_path, graph_hints, handle_search_event, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
@@ -26,8 +26,8 @@ use crate::{
             CommitFiles, CommitFilesState, DetailTab,
         },
         diff::Step,
-        style::panel_block,
         file_tree::{FileTreeState, SearchDirection},
+        style::panel_block,
         tree_query::{QueryChange, QueryKind, TreeQuery},
     },
 };
@@ -189,6 +189,45 @@ impl<'a> DetailView<'a> {
             ]),
         }
         hints
+    }
+
+    // Moves the focus to the panel that way: the commit list above the details, the diff or
+    // preview beside the files. Returns false when there is none.
+    pub fn move_focus(&mut self, direction: Direction) -> bool {
+        match direction {
+            Direction::Up if !self.list_focused => self.list_focused = true,
+            Direction::Down if self.list_focused => self.show_tab(self.tab),
+            Direction::Right if self.shows_tree() && !self.is_pane_focused() => {
+                return match self.tab {
+                    DetailTab::Info => false,
+                    DetailTab::Changes => self.changes_state.enter(),
+                    DetailTab::Files => self.files_state.enter(),
+                };
+            }
+            Direction::Left if self.is_pane_focused() => {
+                let _ = match self.tab {
+                    DetailTab::Info => false,
+                    DetailTab::Changes => self.changes_state.back(),
+                    DetailTab::Files => self.files_state.back(),
+                };
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    // The name of the panel having the focus, for the title of the keys popup.
+    pub fn focus_name(&self) -> &'static str {
+        if self.list_focused {
+            return "Commits";
+        }
+        match self.tab {
+            DetailTab::Changes if self.is_pane_focused() => "Diff",
+            DetailTab::Files if self.is_pane_focused() => "Preview",
+            DetailTab::Info => "Info",
+            DetailTab::Changes => "Changes",
+            DetailTab::Files => "Files",
+        }
     }
 
     pub fn focus_list(&mut self) {
@@ -478,7 +517,10 @@ impl<'a> DetailView<'a> {
             anchor: panel_area.bottom(),
             forward: false,
         };
-        self.ctx.layout.borrow_mut().place(border, panel_area.height);
+        self.ctx
+            .layout
+            .borrow_mut()
+            .place(border, panel_area.height);
 
         match self.tab {
             DetailTab::Info => {
@@ -901,9 +943,15 @@ impl<'a> DetailView<'a> {
     }
 
     fn split_areas(&self, area: Rect) -> [Rect; 2] {
-        let height = self.ctx.layout.borrow().size(Panel::Details, self.ctx.ui_config.detail.height);
+        let height = self
+            .ctx
+            .layout
+            .borrow()
+            .size(Panel::Details, self.ctx.ui_config.detail.height);
         // the commit list keeps a few rows
-        let detail_height = height.clamp(3, area.height.saturating_sub(4).max(3)).min(area.height);
+        let detail_height = height
+            .clamp(3, area.height.saturating_sub(4).max(3))
+            .min(area.height);
         Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area)
     }
 

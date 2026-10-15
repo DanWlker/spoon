@@ -12,12 +12,12 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
-    layout::{Border, Panel},
     app::AppContext,
     event::{KeyHint, UserEvent},
     git::{
         ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository,
     },
+    layout::{Border, Direction, Panel},
     widget::{
         conflict::ConflictView,
         diff::{diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step},
@@ -1003,6 +1003,46 @@ impl<'a> LocalChangesState<'a> {
             Focus::Files => return false,
         }
         true
+    }
+
+    // Moves the focus to the panel that way: the files are on the left, unstaged over staged, the
+    // diff (or conflict panel) on the right over the commit message. Returns false when there is
+    // none, or nothing to focus in it, like a diff without hunks.
+    pub fn move_focus(&mut self, direction: Direction) -> bool {
+        use LocalChangesSection::*;
+        match (self.focus, direction) {
+            (Focus::Files, Direction::Down) if self.section == Unstaged => {
+                self.focus_section(Staged)
+            }
+            (Focus::Files, Direction::Up) if self.section == Staged => self.focus_section(Unstaged),
+            (Focus::Files, Direction::Right) => {
+                let _ = self.enter();
+                return self.focus != Focus::Files;
+            }
+            (Focus::Hunks | Focus::Lines | Focus::Conflict, Direction::Down) => self.focus_commit(),
+            (
+                Focus::Hunks | Focus::Lines | Focus::Conflict | Focus::Commit { .. },
+                Direction::Left,
+            ) => self.focus_files(),
+            // into the diff of the selected file, else its files
+            (Focus::Commit { .. }, Direction::Up) => {
+                self.focus_files();
+                let _ = self.enter();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    // The name of the panel having the focus, for the title of the keys popup.
+    pub fn focus_name(&self) -> &'static str {
+        match self.focus {
+            Focus::Files if self.section == LocalChangesSection::Unstaged => "Unstaged",
+            Focus::Files => "Staged",
+            Focus::Hunks | Focus::Lines => "Diff",
+            Focus::Conflict => "Conflict",
+            Focus::Commit { .. } => "Commit",
+        }
     }
 
     // Moves the focus to the files, whose diff shows the row under the cursor again.

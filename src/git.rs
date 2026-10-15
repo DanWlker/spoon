@@ -591,7 +591,8 @@ impl Repository {
     // other way round (behind, to pull), by branch name.
     pub fn branch_tracking(&self) -> FxHashMap<String, (usize, usize)> {
         let format = "--format=%(refname:short)%00%(upstream:track,nobracket)";
-        let refs = git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
+        let refs =
+            git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
         refs.lines()
             .filter_map(|line| {
                 let (name, track) = line.split_once('\0')?;

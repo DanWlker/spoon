@@ -20,7 +20,6 @@ use ratatui::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    layout::{Border, Panel, PanelLayout},
     color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{hint, AppEvent, EventController, KeyHint, UserEvent, UserEventWithCount},
@@ -34,6 +33,7 @@ use crate::{
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
+    layout::{Border, Direction, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::ref_command,
     search::SearchOptions,
@@ -44,6 +44,7 @@ use crate::{
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
+        keys_popup::KeysPopup,
         local_changes::LocalChangesState,
         ref_list::{RefList, RefListState, RefSection, RefSelection},
         style::{badge, key_hints},
@@ -136,6 +137,8 @@ struct FrameLayout {
     // the sizes of the panels, see `PanelLayout`
     panels: u64,
     dialog: bool,
+    // the size of the keys popup
+    keys_popup: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Default)]
@@ -177,6 +180,8 @@ pub struct AppShell {
     // comparison is open: asked for, until the repository is reloaded for it, then open
     compare_request: Option<RefCompare>,
     compare: Option<RefCompare>,
+    // the keys of the focused panel shown in a popup, see `UserEvent::KeysToggle`
+    keys_popup: bool,
 }
 
 // The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
@@ -308,6 +313,7 @@ impl<'a> App<'a> {
                 branch_only: false,
                 compare_request: None,
                 compare: None,
+                keys_popup: false,
             },
         };
         shell.sidebar.set_tracking(repository.branch_tracking());
@@ -604,9 +610,9 @@ impl App<'_> {
         Ok(())
     }
 
-    // The keys of what has the focus: the popup, the sidebar or the view; then switching pages and
-    // the help. As many as fit in `width`, the first ones being the most useful.
-    fn fit_key_hints(&self, width: usize) -> Line<'static> {
+    // The keys of what has the focus: the popup, the sidebar or the view; without those waiting for
+    // the operation in progress, see `blocked_by_operation`.
+    fn local_hints(&self) -> Vec<KeyHint> {
         let mut hints = if let Some(dialog) = self.visible_dialog() {
             dialog.key_hints()
         } else if self.shell.sidebar_focused {
@@ -614,18 +620,90 @@ impl App<'_> {
         } else {
             self.view.key_hints()
         };
-        // what waits for the operation in progress is left out, see `blocked_by_operation`
         if self.visible_dialog().is_none() && self.repository.operation_in_progress().is_some() {
             hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
         }
-        let typing = self.view.is_capturing_keys()
-            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
-        if self.visible_dialog().is_none() && !typing {
-            hints.extend([
-                hint(UserEvent::RefList, "switch page"),
-                hint(UserEvent::HelpToggle, "help"),
-            ]);
+        hints
+    }
+
+    // The keys working everywhere, for the status bar: the remotes, switching pages, the keys
+    // popup and the help.
+    fn global_hints(&self) -> Vec<KeyHint> {
+        let keys = if self.shell.keys_popup {
+            "hide keys"
+        } else {
+            "keys"
+        };
+        let mut hints = vec![
+            hint(UserEvent::KeysToggle, keys),
+            hint(UserEvent::Push, "push"),
+            hint(UserEvent::Pull, "pull"),
+            hint(UserEvent::Fetch, "fetch"),
+            hint(UserEvent::RefList, "switch page"),
+            hint(UserEvent::Refresh, "refresh"),
+            hint(UserEvent::HelpToggle, "help"),
+        ];
+        if self.repository.operation_in_progress().is_some() {
+            hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
         }
+        hints
+    }
+
+    // Whether the keys go to a popup, typed text or the help, which take only their own: then
+    // these are in the status bar, else those of the whole app, the others in the keys popup.
+    fn keys_are_local(&self) -> bool {
+        self.visible_dialog().is_some()
+            || self.view.is_capturing_keys()
+            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
+            || matches!(self.view, View::Help(_))
+    }
+
+    // The keys of the focused panel and what they do, for the keys popup; empty when it is
+    // hidden.
+    fn keys_popup_keys(&self) -> Vec<(String, String)> {
+        if !self.shell.keys_popup || self.keys_are_local() {
+            return vec![];
+        }
+        let global: Vec<UserEvent> = self
+            .global_hints()
+            .into_iter()
+            .flat_map(|(events, _)| events)
+            .collect();
+        self.local_hints()
+            .into_iter()
+            .filter(|(events, _)| !events.iter().all(|e| global.contains(e)))
+            .map(|(events, description)| (self.ctx.short_keys(&events), description))
+            .filter(|(keys, _)| !keys.is_empty())
+            .collect()
+    }
+
+    fn keys_popup_title(&self) -> &'static str {
+        if self.shell.sidebar_focused {
+            "Refs"
+        } else {
+            self.view.focus_name()
+        }
+    }
+
+    // The width and height of the keys popup, None when it is hidden.
+    fn keys_popup_size(&self) -> Option<(u16, u16)> {
+        let keys = self.keys_popup_keys();
+        if keys.is_empty() {
+            return None;
+        }
+        let popup = KeysPopup::new(self.keys_popup_title(), &keys, &self.ctx.color_theme);
+        let area = popup.area(Rect::new(0, 0, u16::MAX / 2, u16::MAX / 2));
+        Some((area.width, area.height))
+    }
+
+    // The keys for the status bar (see `keys_are_local`), as many as fit in `width`, the first
+    // ones being the most useful.
+    fn fit_key_hints(&self, width: usize) -> Line<'static> {
+        let hints = if self.keys_are_local() {
+            self.local_hints()
+        } else {
+            self.global_hints()
+        };
         let keys: Vec<(String, String)> = hints
             .into_iter()
             .map(|(events, description)| (self.ctx.short_keys(&events), description))
@@ -656,6 +734,7 @@ impl App<'_> {
             sidebar_collapsed: self.shell.sidebar_collapsed,
             panels: self.ctx.layout.borrow().version(),
             dialog: self.visible_dialog().is_some(),
+            keys_popup: self.keys_popup_size(),
         };
         let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
@@ -667,7 +746,9 @@ impl App<'_> {
                 PendingClear::Screen
             }
             // images of the graph would cover the popup
-            Some(last) if last.dialog != layout.dialog => PendingClear::Screen,
+            Some(last) if last.dialog != layout.dialog || last.keys_popup != layout.keys_popup => {
+                PendingClear::Screen
+            }
             Some(last) if last.view == layout.view => PendingClear::None,
             Some(last)
                 if layout.view == ViewKind::List
@@ -705,8 +786,8 @@ impl App<'_> {
             .bg(self.ctx.color_theme.bg);
         f.render_widget(base, f.area());
 
-        let [view_area, status_line_area] = split_app_areas(f.area());
-        let [sidebar_area, view_area] = self.split_sidebar(view_area);
+        let [app_area, status_line_area] = split_app_areas(f.area());
+        let [sidebar_area, view_area] = self.split_sidebar(app_area);
         // the panels place their borders to drag as they are drawn
         self.ctx.layout.borrow_mut().clear_borders();
         if !self.shell.sidebar_collapsed && !sidebar_area.is_empty() {
@@ -719,7 +800,10 @@ impl App<'_> {
                 anchor: sidebar_area.left(),
                 forward: true,
             };
-            self.ctx.layout.borrow_mut().place(border, sidebar_area.width);
+            self.ctx
+                .layout
+                .borrow_mut()
+                .place(border, sidebar_area.width);
         }
 
         self.update_state(view_area);
@@ -737,6 +821,11 @@ impl App<'_> {
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
+        let keys = self.keys_popup_keys();
+        if !keys.is_empty() {
+            let popup = KeysPopup::new(self.keys_popup_title(), &keys, &self.ctx.color_theme);
+            f.render_widget(popup, app_area);
+        }
         if let Some(dialog) = self.visible_dialog() {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), view_area);
         }
@@ -893,7 +982,9 @@ impl App<'_> {
             // leave the page some room on narrow terminals, unless resized
             let default = self.ctx.ui_config.refs.width.min(area.width / 3);
             let width = self.ctx.layout.borrow().size(Panel::Sidebar, default);
-            width.clamp(10, area.width.saturating_sub(20).max(10)).min(area.width)
+            width
+                .clamp(10, area.width.saturating_sub(20).max(10))
+                .min(area.width)
         };
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area)
     }
@@ -1111,6 +1202,17 @@ impl App<'_> {
             | UserEvent::ResizeUp
             | UserEvent::ResizeDown => {
                 self.move_border(event);
+                return;
+            }
+            UserEvent::FocusLeft
+            | UserEvent::FocusRight
+            | UserEvent::FocusUp
+            | UserEvent::FocusDown => {
+                self.move_focus(event);
+                return;
+            }
+            UserEvent::KeysToggle => {
+                self.shell.keys_popup = !self.shell.keys_popup;
                 return;
             }
             UserEvent::FocusPanel(0) => {
@@ -1662,6 +1764,25 @@ impl App<'_> {
         }
     }
 
+    // Moves the focus to the panel that way: the sidebar on the left of the page, the page on its
+    // right, else between the panels of the page.
+    fn move_focus(&mut self, event: UserEvent) {
+        let direction = match event {
+            UserEvent::FocusLeft => Direction::Left,
+            UserEvent::FocusRight => Direction::Right,
+            UserEvent::FocusUp => Direction::Up,
+            _ => Direction::Down,
+        };
+        if self.shell.sidebar_focused {
+            if direction == Direction::Right {
+                self.set_sidebar_focused(false);
+            }
+        } else if !self.view.move_focus(direction) && direction == Direction::Left {
+            self.shell.sidebar_collapsed = false;
+            self.set_sidebar_focused(true);
+        }
+    }
+
     // Whether a diff of two commits or refs is open, also under the details of one of its commits.
     fn is_diffing(&self) -> bool {
         self.shell.compare.is_some()
@@ -2006,7 +2127,10 @@ fn moves_head(event: UserEvent) -> bool {
 // The path with the home directory as ~, like a shell prompt.
 fn home_relative(path: &std::path::Path) -> String {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    match home.as_deref().and_then(|home| path.strip_prefix(home).ok()) {
+    match home
+        .as_deref()
+        .and_then(|home| path.strip_prefix(home).ok())
+    {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
@@ -2128,7 +2252,7 @@ fn build_external_command_parameters<'a>(
     }
 
     let area_width = view_area.width.saturating_sub(4); // minus the left and right padding
-    // minus the top and bottom borders
+                                                        // minus the top and bottom borders
     let area_height = user_command_height(ctx, view_area.height).saturating_sub(2);
     Ok(ExternalCommandParameters {
         command,

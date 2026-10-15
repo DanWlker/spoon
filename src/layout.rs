@@ -23,6 +23,15 @@ pub enum Panel {
     Commit,
 }
 
+// Where the focus moves to, from the focused panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 // The border of a panel, where it was drawn: a vertical line is dragged left and right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Border {

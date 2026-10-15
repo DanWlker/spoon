@@ -802,11 +802,11 @@ pub fn render_commit_list_panel<'a>(
         n => notes.push(format!("{n} picked")),
     }
     let block = panel_block(focused, theme).title(panel_title(
-            "[1] Commits",
-            &notes.join(" · "),
-            focused,
-            theme,
-        ));
+        "[1] Commits",
+        &notes.join(" · "),
+        focused,
+        theme,
+    ));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx), inner, state);
@@ -1318,13 +1318,7 @@ mod tests {
         let commit_infos = graph
             .commits
             .iter()
-            .map(|commit| {
-                CommitInfo::new(
-                    commit,
-                    repository.refs(&commit.commit_hash),
-                    true,
-                )
-            })
+            .map(|commit| CommitInfo::new(commit, repository.refs(&commit.commit_hash), true))
             .collect();
         let mut state = CommitListState::new(
             commit_infos,

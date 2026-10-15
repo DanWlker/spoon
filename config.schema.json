@@ -749,6 +749,21 @@
         "resize_down": {
           "$ref": "#/definitions/keybindArray"
         },
+        "focus_left": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_right": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "keys_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "short_copy": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1025,6 +1040,21 @@
           "$ref": "#/definitions/keybindArray"
         },
         "resize_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_left": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_right": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "focus_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "keys_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
         "short_copy": {

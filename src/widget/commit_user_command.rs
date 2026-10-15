@@ -88,9 +88,7 @@ impl CommitUserCommand<'_> {
             .collect::<Vec<_>>();
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default().padding(Padding::horizontal(1)),
-            );
+            .block(Block::default().padding(Padding::horizontal(1)));
         paragraph.render(area, buf);
     }
 

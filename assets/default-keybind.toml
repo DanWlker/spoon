@@ -37,6 +37,13 @@ resize_left = ["ctrl-left", "ctrl-h"]
 resize_right = ["ctrl-right", "ctrl-l"]
 resize_up = ["ctrl-up", "ctrl-k"]
 resize_down = ["ctrl-down", "ctrl-j"]
+# move the focus to the panel beside, above or under the focused one
+focus_left = ["alt-left"]
+focus_right = ["alt-right"]
+focus_up = ["alt-up"]
+focus_down = ["alt-down"]
+# show the keys of the focused panel in a popup
+keys_toggle = ["shift-h"]
 
 # focus the refs sidebar on the left
 focus_panel_0 = ["0"]
