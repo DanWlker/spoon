@@ -701,6 +701,7 @@ impl App<'_> {
         let [view_area, _] = split_app_areas(area);
         let [_, view_area] = self.split_sidebar(view_area);
         self.update_state(view_area);
+        self.run_user_command();
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
         Ok(())
@@ -1399,7 +1400,22 @@ impl App<'_> {
     }
 
     fn handle_view_event(&mut self, event: UserEvent, key: KeyEvent) {
+        // held, the keys stepping through the commits run the user command once let go
+        if !matches!(event, UserEvent::SelectDown | UserEvent::SelectUp) {
+            self.run_user_command();
+        }
         self.view.handle_event(event, key);
+    }
+
+    // Runs the user command shown for the selected commit, when the selection moved since it ran.
+    fn run_user_command(&mut self) {
+        if let View::UserCommand(view) = &mut self.view {
+            view.run_selected(
+                self.repository,
+                self.shell.app_status.view_area,
+                build_external_command_parameters_and_exec_command,
+            );
+        }
     }
 
     fn handle_sidebar_event(&mut self, event: UserEvent, key: KeyEvent) {
@@ -2226,11 +2242,7 @@ impl App<'_> {
         if let View::Detail(ref mut view) = self.view {
             view.select_older_commit();
         } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_older_commit(
-                self.repository,
-                self.shell.app_status.view_area,
-                build_external_command_parameters_and_exec_command,
-            );
+            view.select_older_commit();
         }
     }
 
@@ -2238,11 +2250,7 @@ impl App<'_> {
         if let View::Detail(ref mut view) = self.view {
             view.select_newer_commit();
         } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_newer_commit(
-                self.repository,
-                self.shell.app_status.view_area,
-                build_external_command_parameters_and_exec_command,
-            );
+            view.select_newer_commit();
         }
     }
 

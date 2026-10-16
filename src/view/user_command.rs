@@ -32,6 +32,8 @@ pub struct UserCommandView<'a> {
 
     user_command_number: usize,
     user_command_output_lines: Vec<Line<'a>>,
+    // the selection moved to another commit, the command runs for it once used, see `run_selected`
+    stale: bool,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -56,6 +58,7 @@ impl<'a> UserCommandView<'a> {
             commit_user_command_state: CommitUserCommandState::default(),
             user_command_number,
             user_command_output_lines,
+            stale: false,
             ctx,
             tx,
         }
@@ -184,40 +187,28 @@ impl<'a> UserCommandView<'a> {
         Layout::vertical([Constraint::Min(0), Constraint::Length(user_command_height)]).areas(area)
     }
 
-    pub fn select_older_commit(
+    // Moves the selection; the command runs for the commit once the key is let go, see `run_selected`.
+    pub fn select_older_commit(&mut self) {
+        self.as_mut_list_state().select_next();
+        self.stale = true;
+    }
+
+    pub fn select_newer_commit(&mut self) {
+        self.as_mut_list_state().select_prev();
+        self.stale = true;
+    }
+
+    // Runs the command for the selected commit, when the selection moved since it last ran.
+    pub fn run_selected(
         &mut self,
         repository: &Repository,
         view_area: Rect,
         exec_command: ExecCommandFn,
     ) {
-        self.update_selected_commit(repository, view_area, exec_command, |state| {
-            state.select_next()
-        });
-    }
-
-    pub fn select_newer_commit(
-        &mut self,
-        repository: &Repository,
-        view_area: Rect,
-        exec_command: ExecCommandFn,
-    ) {
-        self.update_selected_commit(repository, view_area, exec_command, |state| {
-            state.select_prev()
-        });
-    }
-
-    fn update_selected_commit<F>(
-        &mut self,
-        repository: &Repository,
-        view_area: Rect,
-        exec_command: ExecCommandFn,
-        update_commit_list_state: F,
-    ) where
-        F: FnOnce(&mut CommitListState<'a>),
-    {
-        let commit_list_state = self.as_mut_list_state();
-        update_commit_list_state(commit_list_state);
-
+        if !std::mem::take(&mut self.stale) {
+            return;
+        }
+        let commit_list_state = self.as_list_state();
         let selected = commit_list_state.selected_commit_hash().clone();
         let picked_commit_hashes = commit_list_state.picked_commit_hashes().to_vec();
         let (commit, _) = repository.commit_detail(&selected);
