@@ -23,10 +23,14 @@ pub fn test_ctx() -> Rc<AppContext> {
 }
 
 pub fn test_ctx_with(color_theme: ColorTheme) -> Rc<AppContext> {
+    test_ctx_of(color_theme, UiConfig::default())
+}
+
+pub fn test_ctx_of(color_theme: ColorTheme, ui_config: UiConfig) -> Rc<AppContext> {
     Rc::new(AppContext {
         keybind: KeyBind::new(None),
         core_config: CoreConfig::default(),
-        ui_config: UiConfig::default(),
+        ui_config,
         color_theme,
         image_protocol: ImageProtocol::Kitty,
         running_task: Default::default(),

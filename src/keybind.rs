@@ -638,18 +638,27 @@ reset = ["d"]"#
         .is_err());
     }
 
-    #[rustfmt::skip]
     #[test]
     fn test_parse_key_event() {
         let key = |code, modifiers| Ok(KeyEvent::new(code, modifiers));
-        assert_eq!(parse_key_event("ctrl-x"), key(KeyCode::Char('x'), KeyModifiers::CONTROL));
-        assert_eq!(parse_key_event("shift-h"), key(KeyCode::Char('H'), KeyModifiers::SHIFT));
-        assert_eq!(parse_key_event("space"), key(KeyCode::Char(' '), KeyModifiers::empty()));
+        assert_eq!(
+            parse_key_event("ctrl-x"),
+            key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(
+            parse_key_event("shift-h"),
+            key(KeyCode::Char('H'), KeyModifiers::SHIFT)
+        );
+        assert_eq!(
+            parse_key_event("space"),
+            key(KeyCode::Char(' '), KeyModifiers::empty())
+        );
         // keys pressed together aren't supported, sequences are: "] v"
         assert!(parse_key_event("a-b").unwrap_err().contains("several keys"));
         assert!(parse_key_event("nope").is_err());
     }
 
+    #[rustfmt::skip]
     #[test]
     fn test_key_event_to_string() {
         let key_event = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty());

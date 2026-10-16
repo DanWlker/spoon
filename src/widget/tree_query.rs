@@ -468,6 +468,37 @@ mod tests {
     }
 
     #[test]
+    fn test_tiny_trees_with_scrolloff() {
+        // a scrolloff larger than the tree is tall: drawn without a crash, the cursor shown
+        let mut ui_config = crate::config::UiConfig::default();
+        ui_config.common.scrolloff = 5;
+        let ctx = crate::test_support::ui::test_ctx_of(ColorTheme::default(), ui_config);
+        let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
+        let mut tree = FileTreeState::new(FileTree::new(paths.iter().map(String::as_str)), true);
+        for height in 0..4 {
+            for index in 0..10 {
+                tree.select_index(index);
+                let mut buf = Buffer::empty(Rect::new(0, 0, 23, height.max(1)));
+                let area = Rect::new(1, 0, 20, height);
+                let offset = render_tree(
+                    &mut buf,
+                    area,
+                    &tree,
+                    |_| None,
+                    None,
+                    |_| false,
+                    Some(true),
+                    "",
+                    &ctx,
+                );
+                if height > 0 {
+                    assert!((offset..offset + height as usize).contains(&index));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_tree_scrolls_like_the_other_lists() {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(FileTree::new(paths.iter().map(String::as_str)), true);

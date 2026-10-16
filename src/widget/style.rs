@@ -337,6 +337,27 @@ mod tests {
     }
 
     #[test]
+    fn test_scroll_to_small_heights() {
+        // every small case: no panic, the selected row shown, never past the last row
+        for height in 0..6 {
+            for total in 0..9 {
+                for selected in 0..total.max(1) {
+                    for offset in 0..10 {
+                        for scrolloff in 0..8 {
+                            let o = scroll_to(offset, selected, height, total, scrolloff);
+                            let shown = height.max(1);
+                            assert!(o <= total.saturating_sub(shown));
+                            if total > 0 {
+                                assert!((o..o + shown).contains(&selected), "{o} {selected}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_scroll_to() {
         assert_eq!(scroll_to(5, 2, 10, 20, 0), 2); // above: scrolls up to it
         assert_eq!(scroll_to(0, 12, 10, 20, 0), 3); // below: the last row shown
