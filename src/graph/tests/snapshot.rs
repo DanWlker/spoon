@@ -8,7 +8,7 @@ use crate::{color, config, git, graph, test_support::image_snapshot::compare_ima
 const OUTPUT_DIR: &str = "./out/graph";
 const SNAPSHOT_DIR: &str = "./tests/graph";
 // Set this environment variable when Git repository output is needed for graph test debugging.
-const DUMP_GRAPH_TEST_REPOS_ENV: &str = "SERIE_TEST_DUMP_GRAPH_REPOS";
+const DUMP_GRAPH_TEST_REPOS_ENV: &str = "SPOON_TEST_DUMP_GRAPH_REPOS";
 
 pub struct GenerateGraphOption {
     output_name: &'static str,

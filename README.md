@@ -1,72 +1,76 @@
-# Serie
+# Spoon
 
-[![Crate Status](https://img.shields.io/crates/v/serie.svg)](https://crates.io/crates/serie)
 [![Built With Ratatui](https://img.shields.io/badge/Built_With-Ratatui-000?logo=ratatui&logoColor=fff&labelColor=000&color=fff)](https://ratatui.rs)
 
-A rich git commit graph in your terminal, like magic 📚
+A lazygit-style git client in your terminal, with a rich commit graph 🥄
 
 <img src="./img/demo.gif">
 
-(This demo shows [Ratatui](https://github.com/ratatui/ratatui) repository!)
+(This demo shows the [Ratatui](https://github.com/ratatui/ratatui) repository.)
 
 ## About
 
-Serie ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that uses the terminal emulators' image display protocol to render commit graphs like `git log --graph --all`.
+Spoon is a terminal UI for everyday git work: staging, committing, branching, rebasing, pushing and pulling, with keys and flows modeled on [lazygit](https://github.com/jesseduffield/lazygit). It is a fork of [Serie](https://github.com/lusingander/serie), and keeps Serie's commit graph, drawn as images with your terminal's image protocol, as the centerpiece.
 
-### Why?
+### Features
 
-While some users prefer to use Git via CLI, they often rely on a GUI or feature-rich TUI to view commit logs. Others may find `git log --graph` sufficient.
-
-Personally, I found the output from `git log --graph` difficult to read, even with additional options. Learning complex tools just to view logs seemed cumbersome.
-
-### Goals
-
-- Provide a rich `git log --graph` experience in the terminal.
-- Offer commit graph-centric browsing of Git repositories.
-
-### Non-Goals
-
-- Implement a fully-featured Git client.
-- Create a TUI application with a complex UI.
-- Works in any terminal environment.
-
-## Documentation
-
-For detailed usage, configuration, and advanced features, see [the full documentation](https://lusingander.github.io/serie/).
+- **Local changes**: stage and unstage files, directories, hunks or single lines; commit, amend, stash, discard, or add to `.gitignore`. Diffs highlight the words that changed within a line.
+- **Commit graph**: checkout, merge, rebase, cherry-pick, squash, drop, revert, reset, or amend an older commit, all from the graph. Each command asks first in a popup showing the git command it runs.
+- **Refs sidebar**: branches, remotes, tags and stashes, to create, rename, delete, diff or apply. <kbd>]</kbd> and <kbd>[</kbd> jump between sections.
+- **Fetch, pull and push** run in the background, with a spinner beside the branch.
+- **Conflicts**: resolve them with your merge tool or editor, then continue or abort the merge, rebase, cherry-pick or revert.
+- **Open in browser**: open commits, branches, pull requests, tags and files (at the selected lines) on GitHub, GitLab, Bitbucket or Gitea/Forgejo.
+- **Command log**: <kbd>@</kbd> shows every git command the app ran and its output.
+- **Catppuccin Mocha** colors by default, all configurable, as are the keybindings.
 
 ## Requirements
 
 - Git
-- Supported terminal emulator
-  - Refer to [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html) for details.
+- A terminal emulator supporting the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) or [iTerm2 inline images](https://iterm2.com/documentation-images.html), such as kitty, Ghostty, WezTerm or iTerm2.
+  - Refer to [Compatibility](./docs/src/getting-started/compatibility.md) for details.
+- A [Nerd Font](https://www.nerdfonts.com/) for the icons (kitty bundles the symbols).
 
 ## Installation
 
-If you're using Cargo:
+### Homebrew
 
 ```
-$ cargo install --locked serie
+$ brew tap DanWlker/spoon
+$ brew install spoon
 ```
 
-For other download options, see [Installation](https://lusingander.github.io/serie/getting-started/installation.html).
+### Cargo
+
+```
+$ cargo install --locked --git https://github.com/DanWlker/spoon
+```
+
+### Build from source
+
+```
+$ git clone https://github.com/DanWlker/spoon.git
+$ cd spoon
+$ cargo build --release
+$ ./target/release/spoon
+```
 
 ## Usage
 
-### Basic
-
-Run `serie` in the directory where your git repository exists.
+Run `spoon` in your git repository.
 
 ```
 $ cd <your git repository>
-$ serie
+$ spoon
 ```
+
+It opens on the local changes page; <kbd>Tab</kbd> switches to the commit graph and back.
 
 ### Options
 
 ```
-Serie - A rich git commit graph in your terminal, like magic 📚
+Spoon - A lazygit-style git TUI with a rich commit graph
 
-Usage: serie [OPTIONS]
+Usage: spoon [OPTIONS]
 
 Options:
   -n, --max-count <NUMBER>        Maximum number of commits to render
@@ -82,78 +86,63 @@ Options:
   -V, --version                   Print version
 ```
 
-For details on each option, see [Command Line Options](https://lusingander.github.io/serie/getting-started/command-line-options.html).
+For details on each option, see [Command Line Options](./docs/src/getting-started/command-line-options.md).
 
 ### Keybindings
 
-You can see the keybindings by pressing the `?` key.
+<kbd>H</kbd> shows the keys of the focused panel, and <kbd>F1</kbd> lists them all. The status bar shows the main ones as you go.
 
-The [default key bindings](https://lusingander.github.io/serie/keybindings/index.html) can be overridden. See [Custom Keybindings](https://lusingander.github.io/serie/keybindings/custom-keybindings.html) for more information.
+The [default keybindings](./docs/src/keybindings/index.md) can be overridden; see [Custom Keybindings](./docs/src/keybindings/custom-keybindings.md).
 
 ### Config
 
 Config files are loaded in the following order of priority:
 
-- `$SERIE_CONFIG_FILE`
-  - If `$SERIE_CONFIG_FILE` is set but the file does not exist, an error occurs.
-- `$XDG_CONFIG_HOME/serie/config.toml`
-  - If `$XDG_CONFIG_HOME` is not set, `~/.config/` will be used instead.
+- `$SPOON_CONFIG_FILE`
+  - If `$SPOON_CONFIG_FILE` is set but the file does not exist, an error occurs.
+- `$XDG_CONFIG_HOME/spoon/config.toml`
+  - If `$XDG_CONFIG_HOME` is not set, `~/.config/` is used instead.
 
-If the config file does not exist, the default values will be used for all items.
-If the config file exists but some items are not set, the default values will be used for those unset items.
+Unset items use their defaults. For the format, see [Config File Format](./docs/src/configurations/config-file-format.md).
 
-For detailed information about the config file format, see [Config File Format](https://lusingander.github.io/serie/configurations/config-file-format.html).
+### User commands
 
-### User command
-
-The User command feature allows you to execute custom external commands.
-You can display the output of commands like `git diff` in a dedicated view, execute commands like branch deletion in the background, or run interactive commands like `vim` by suspending the application.
-
-For details on how to set commands, see [User Command](https://lusingander.github.io/serie/features/user-command.html).
+User commands run external commands on the selected commit: show the output of `git diff` in a view, run a command in the background, or suspend the app for an interactive one like `vim`. See [User Command](./docs/src/features/user-command.md).
 
 ## Compatibility
 
-### Supported terminals
-
-These image protocols are supported:
+The commit graph is drawn with one of these image protocols:
 
 - [Inline Images Protocol (iTerm2)](https://iterm2.com/documentation-images.html)
-- [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
-  - Supports both the existing graphics protocol mode and the [Unicode placeholder](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) mode.
+- [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/), in both its default mode and its [Unicode placeholder](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) mode.
 
-For more information, see [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html).
-
-### Partially supported environments
-
-- tmux is supported only when using the kitty Unicode placeholder protocol.
-
-### Unsupported environments
-
-- Sixel graphics is not supported.
-- Other terminal multiplexers (screen, Zellij, etc.) other than those listed in [Partially supported environments](#partially-supported-environments) are not supported.
-- Windows is not officially supported. Please refer to [the related issue](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).
+tmux works only with the kitty Unicode placeholder protocol (`--protocol kitty-unicode`). Sixel, other terminal multiplexers and Windows are not supported.
 
 ## Screenshots
 
-<img src="./img/list.png" width=600>
-<img src="./img/detail.png" width=600>
-<img src="./img/refs.png" width=600>
-<img src="./img/searching.png" width=600>
-<img src="./img/applied.png" width=600>
-<img src="./img/diff_git.png" width=600>
-<img src="./img/diff_difft.png" width=600>
+Local changes, with the words changed in each line highlighted:
 
-The following repositories are used as these examples:
+<img src="./img/local-changes.png" width=800>
 
-- [ratatui/ratatui](https://github.com/ratatui/ratatui)
-- [charmbracelet/vhs](https://github.com/charmbracelet/vhs)
-- [lusingander/stu](https://github.com/lusingander/stu)
+The commit graph:
 
-## Contributing
+<img src="./img/graph.png" width=800>
 
-To get started with contributing, please review [CONTRIBUTING.md](CONTRIBUTING.md).
+A commit's changes:
 
-Contributions that do not follow these guidelines may not be accepted.
+<img src="./img/details.png" width=800>
+
+Branches, remotes and tags in the sidebar:
+
+<img src="./img/refs.png" width=800>
+
+Git commands confirm in a popup showing what they run:
+
+<img src="./img/popup.png" width=800>
+
+## Credits
+
+Spoon is built on [Serie](https://github.com/lusingander/serie) by [Kyosuke Fujimoto](https://github.com/lusingander), and takes its keys and flows from [lazygit](https://github.com/jesseduffield/lazygit).
 
 ## License
 

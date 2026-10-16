@@ -1979,38 +1979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serie"
-version = "0.10.0"
-dependencies = [
- "ansi-to-tui",
- "arboard",
- "base64 0.23.1",
- "chrono",
- "clap",
- "console",
- "font8x8",
- "fuzzy-matcher",
- "garde",
- "image",
- "laurier",
- "once_cell",
- "open",
- "ratatui",
- "ratatui-textarea",
- "rstest",
- "rustc-hash",
- "semver",
- "serde",
- "similar",
- "smart-default",
- "tempfile",
- "toml",
- "tui-input",
- "umbra",
- "unicode-width",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2106,6 +2074,38 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "spoon"
+version = "0.10.0"
+dependencies = [
+ "ansi-to-tui",
+ "arboard",
+ "base64 0.23.1",
+ "chrono",
+ "clap",
+ "console",
+ "font8x8",
+ "fuzzy-matcher",
+ "garde",
+ "image",
+ "laurier",
+ "once_cell",
+ "open",
+ "ratatui",
+ "ratatui-textarea",
+ "rstest",
+ "rustc-hash",
+ "semver",
+ "serde",
+ "similar",
+ "smart-default",
+ "tempfile",
+ "toml",
+ "tui-input",
+ "umbra",
+ "unicode-width",
 ]
 
 [[package]]

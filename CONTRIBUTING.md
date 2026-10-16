@@ -27,7 +27,7 @@ Serie renders commit graphs using terminal image display protocols. Before repor
 When reporting a bug, please include the following information:
 
 - Application version
-  - `serie --version`
+  - `spoon --version`
 - Installation method
 - OS and version
 - Terminal emulator and version
@@ -99,7 +99,7 @@ Improvements to the commit graph are welcome.
 Tests for the commit graph are conducted in [./src/graph/tests.rs](./src/graph/tests.rs).
 
 Run `cargo test graph::tests` to generate images under `./out/graph` and compare them with snapshots under `./tests/graph`.
-Set `SERIE_TEST_DUMP_GRAPH_REPOS=1` to also save the temporary Git repositories under `./out/graph`.
+Set `SPOON_TEST_DUMP_GRAPH_REPOS=1` to also save the temporary Git repositories under `./out/graph`.
 If you add new test cases, please add these images under `./tests/graph/`.
 If existing graphs are modified, overwrite the images and ensure no unexpected changes have occurred.
 

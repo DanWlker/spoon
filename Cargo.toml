@@ -1,10 +1,10 @@
 [package]
-name = "serie"
+name = "spoon"
 version = "0.10.0"
-description = "A rich git commit graph in your terminal, like magic"
-authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>"]
-homepage = "https://github.com/lusingander/serie"
-repository = "https://github.com/lusingander/serie"
+description = "A lazygit-style git TUI with a rich commit graph, forked from serie"
+authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>", "DanWlker"]
+homepage = "https://github.com/DanWlker/spoon"
+repository = "https://github.com/DanWlker/spoon"
 readme = "README.md"
 license = "MIT"
 keywords = ["git", "cli", "tui", "terminal"]

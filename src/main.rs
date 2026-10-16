@@ -33,7 +33,7 @@ use crate::{
     graph::GraphImageManager,
 };
 
-/// Serie - A rich git commit graph in your terminal, like magic 📚
+/// Spoon - A lazygit-style git TUI with a rich commit graph
 #[derive(Parser)]
 #[command(version)]
 struct Args {

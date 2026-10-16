@@ -1876,7 +1876,7 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     let stash_top = || git_output(path, &["rev-parse", "--verify", "--quiet", "refs/stash"]).ok();
     let stashed = task.stash && {
         let before = stash_top();
-        let message = format!("serie: {}", task.running);
+        let message = format!("spoon: {}", task.running);
         let args = ["stash", "push", "--include-untracked", "-m", &message].map(String::from);
         run_task_step(path, &args, task)?;
         stash_top() != before
