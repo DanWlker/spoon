@@ -86,6 +86,8 @@ impl Scope {
                             | UserEvent::NextTab
                             | UserEvent::PreviousTab
                             | UserEvent::ApplyChange
+                            | UserEvent::OpenInBrowser
+                            | UserEvent::CopyLink
                     )
             }
             // not the keys of the files beside it

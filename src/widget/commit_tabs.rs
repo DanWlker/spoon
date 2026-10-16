@@ -280,6 +280,16 @@ impl<'a> CommitChangesState<'a> {
         self.focus == ChangesFocus::Lines
     }
 
+    // The lines of the selected hunk or line in the file at the commit, (first, last); None for
+    // the files, or lines only removed.
+    pub fn selected_lines(&self) -> Option<(usize, usize)> {
+        let diff = self.diff.as_ref().filter(|_| self.is_diff_focused())?;
+        let rows = self.cursor.highlighted(diff, self.is_selecting_lines());
+        let mut lines = diff.rows.get(rows)?.iter().filter_map(|row| row.new);
+        let first = lines.next()?;
+        Some((first, lines.next_back().unwrap_or(first)))
+    }
+
     // Goes one level deeper, like on the local changes page: files -> hunks -> lines of the
     // selected hunk. Returns false when the diff has no hunk.
     pub fn enter(&mut self) -> bool {
@@ -556,6 +566,11 @@ impl<'a> CommitFilesState<'a> {
     pub fn selected_text(&self) -> Option<String> {
         let lines = self.text_lines().filter(|_| self.preview_focused)?;
         lines.get(self.cursor.line).cloned()
+    }
+
+    // The number of the selected line of the preview, from 1.
+    pub fn selected_line(&self) -> Option<usize> {
+        self.selected_text().map(|_| self.cursor.line + 1)
     }
 
     // Selects the line of the preview matching `query`, around from the last match; false when

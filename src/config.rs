@@ -687,6 +687,8 @@ mod tests {
                                 pull_request: None,
                                 tag: None,
                                 file: None,
+                                line: None,
+                                lines: None,
                             }),
                         ),
                     ]),

@@ -424,6 +424,7 @@ impl<'a> DetailView<'a> {
                     let target = LinkTarget::File {
                         commit: self.commit.commit_hash.as_str().into(),
                         path,
+                        lines: None,
                     };
                     let copy = event == UserEvent::CopyLink;
                     self.tx.send(AppEvent::Link { target, copy });
@@ -617,6 +618,30 @@ impl<'a> DetailView<'a> {
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
     // copying and applying (the search is handled before); others are ignored.
     fn handle_pane_event(&mut self, event: UserEvent) {
+        // o opens the file at this commit on the web host, at the selected lines; O copies the link
+        if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
+            let (path, lines) = match self.tab {
+                DetailTab::Changes => (
+                    self.changes_state.selected_path(),
+                    self.changes_state.selected_lines(),
+                ),
+                DetailTab::Files => (
+                    self.files_state.selected_path(),
+                    self.files_state.selected_line().map(|line| (line, line)),
+                ),
+                DetailTab::Info => (None, None),
+            };
+            if let Some(path) = path.map(String::from) {
+                let target = LinkTarget::File {
+                    commit: self.commit.commit_hash.as_str().into(),
+                    path,
+                    lines,
+                };
+                let copy = event == UserEvent::CopyLink;
+                self.tx.send(AppEvent::Link { target, copy });
+            }
+            return;
+        }
         let step = match event {
             UserEvent::NavigateDown => Some(Step::Next),
             UserEvent::NavigateUp => Some(Step::Prev),

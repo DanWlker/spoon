@@ -16,7 +16,12 @@ pub enum LinkTarget {
     // "origin/main"
     RemoteBranch(String),
     Tag(String),
-    File { commit: String, path: String },
+    // lines, when a hunk or line of the diff or a line of the file is selected: (first, last)
+    File {
+        commit: String,
+        path: String,
+        lines: Option<(usize, usize)>,
+    },
     Remote(String),
 }
 
@@ -30,7 +35,8 @@ pub enum Service {
 }
 
 // The patterns of the links of a host: {base} is https://host/owner/repo, and {hash}, {branch},
-// {tag} and {path} what is linked to.
+// {tag} and {path} what is linked to; `line` and `lines` are added to the file's link for a line,
+// {start}, or the lines from {start} to {end}.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Links {
     pub commit: Option<String>,
@@ -38,40 +44,52 @@ pub struct Links {
     pub pull_request: Option<String>,
     pub tag: Option<String>,
     pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<String>,
+    #[serde(default)]
+    pub lines: Option<String>,
 }
 
-const GITHUB: [&str; 5] = [
+const GITHUB: [&str; 7] = [
     "{base}/commit/{hash}",
     "{base}/tree/{branch}",
     "{base}/compare/{branch}?expand=1",
     "{base}/releases/tag/{tag}",
     "{base}/blob/{hash}/{path}",
+    "#L{start}",
+    "#L{start}-L{end}",
 ];
-const GITLAB: [&str; 5] = [
+const GITLAB: [&str; 7] = [
     "{base}/-/commit/{hash}",
     "{base}/-/tree/{branch}",
     "{base}/-/merge_requests/new?merge_request[source_branch]={branch}",
     "{base}/-/tags/{tag}",
     "{base}/-/blob/{hash}/{path}",
+    "#L{start}",
+    "#L{start}-{end}",
 ];
-const BITBUCKET: [&str; 5] = [
+const BITBUCKET: [&str; 7] = [
     "{base}/commits/{hash}",
     "{base}/branch/{branch}",
     "{base}/pull-requests/new?source={branch}&t=1",
     "{base}/src/{tag}",
     "{base}/src/{hash}/{path}",
+    "#lines-{start}",
+    "#lines-{start}:{end}",
 ];
-const GITEA: [&str; 5] = [
+const GITEA: [&str; 7] = [
     "{base}/commit/{hash}",
     "{base}/src/branch/{branch}",
     "{base}/compare/{branch}",
     "{base}/src/tag/{tag}",
     "{base}/src/commit/{hash}/{path}",
+    "#L{start}",
+    "#L{start}-L{end}",
 ];
 
 impl Links {
     fn of_kind(kind: &str) -> Option<Links> {
-        let [commit, branch, pull_request, tag, file] = match kind {
+        let [commit, branch, pull_request, tag, file, line, lines] = match kind {
             "github" => GITHUB,
             "gitlab" => GITLAB,
             "bitbucket" => BITBUCKET,
@@ -85,6 +103,8 @@ impl Links {
             pull_request: some(pull_request),
             tag: some(tag),
             file: some(file),
+            line: some(line),
+            lines: some(lines),
         })
     }
 }
@@ -97,7 +117,11 @@ enum Page {
     Branch(String),
     PullRequest(String),
     Tag(String),
-    File { commit: String, path: String },
+    File {
+        commit: String,
+        path: String,
+        lines: Option<(usize, usize)>,
+    },
 }
 
 // The link of `target`, on the web host of the remote it belongs to.
@@ -119,11 +143,16 @@ pub fn link(
     let current = info.current_branch.as_deref();
     let (remote, page) = match target {
         LinkTarget::Commit(hash) => (remote_of(current)?, Page::Commit(hash.clone())),
-        LinkTarget::File { commit, path } => (
+        LinkTarget::File {
+            commit,
+            path,
+            lines,
+        } => (
             remote_of(current)?,
             Page::File {
                 commit: commit.clone(),
                 path: path.clone(),
+                lines: *lines,
             },
         ),
         LinkTarget::Tag(tag) => (remote_of(current)?, Page::Tag(tag.clone())),
@@ -190,15 +219,31 @@ fn web_link(
     let (hash, name, path) = match page {
         Page::Commit(hash) => (hash.as_str(), "", ""),
         Page::Branch(name) | Page::PullRequest(name) | Page::Tag(name) => ("", name.as_str(), ""),
-        Page::File { commit, path } => (commit.as_str(), "", path.as_str()),
+        Page::File { commit, path, .. } => (commit.as_str(), "", path.as_str()),
         Page::Repo => ("", "", ""),
     };
-    Ok(pattern
+    let link = pattern
         .replace("{base}", &base)
         .replace("{hash}", hash)
         .replace("{branch}", &encode(name))
         .replace("{tag}", &encode(name))
-        .replace("{path}", &encode(path)))
+        .replace("{path}", &encode(path));
+    // the selected lines, where the host's links can point at them
+    let fragment = match page {
+        Page::File {
+            lines: Some((start, end)),
+            ..
+        } => match (&links.line, &links.lines) {
+            (Some(line), _) if start == end => line.clone(),
+            (_, Some(lines)) => lines.clone(),
+            (Some(line), None) => line.clone(),
+            (None, None) => String::new(),
+        }
+        .replace("{start}", &start.to_string())
+        .replace("{end}", &end.to_string()),
+        _ => String::new(),
+    };
+    Ok(link + &fragment)
 }
 
 // (scheme of the pages, host with its port when it serves them, owner/repo) of a remote URL:
@@ -296,10 +341,33 @@ mod tests {
                 &none,
                 Page::File {
                     commit: "abc".into(),
-                    path: "src/a b.rs".into()
+                    path: "src/a b.rs".into(),
+                    lines: None,
                 }
             ),
             Ok("https://github.com/o/r/blob/abc/src/a%20b.rs".into())
+        );
+        // the selected lines, as each host points at them
+        let file = |lines| Page::File {
+            commit: "abc".into(),
+            path: "a.rs".into(),
+            lines: Some(lines),
+        };
+        assert_eq!(
+            link(url, &none, file((5, 5))),
+            Ok("https://github.com/o/r/blob/abc/a.rs#L5".into())
+        );
+        assert_eq!(
+            link(url, &none, file((5, 9))),
+            Ok("https://github.com/o/r/blob/abc/a.rs#L5-L9".into())
+        );
+        assert_eq!(
+            link("git@gitlab.com:o/r.git", &none, file((5, 9))),
+            Ok("https://gitlab.com/o/r/-/blob/abc/a.rs#L5-9".into())
+        );
+        assert_eq!(
+            link("git@bitbucket.org:o/r.git", &none, file((5, 9))),
+            Ok("https://bitbucket.org/o/r/src/abc/a.rs#lines-5:9".into())
         );
         assert_eq!(
             link(url, &none, Page::Repo),
@@ -327,6 +395,8 @@ mod tests {
                     pull_request: None,
                     tag: None,
                     file: None,
+                    line: None,
+                    lines: None,
                 }),
             ),
         ]);

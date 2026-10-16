@@ -194,7 +194,9 @@
                       "branch": { "type": "string" },
                       "pull_request": { "type": "string" },
                       "tag": { "type": "string" },
-                      "file": { "type": "string" }
+                      "file": { "type": "string" },
+                      "line": { "type": "string", "description": "Added to the file's link for a selected line: {start}." },
+                      "lines": { "type": "string", "description": "Added to the file's link for selected lines: {start} to {end}." }
                     },
                     "additionalProperties": false
                   }

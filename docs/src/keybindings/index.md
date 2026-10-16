@@ -135,6 +135,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs); search the diff while it has the focus | `search` `filter` |
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `apply_change` |
+| <kbd>o/O</kbd>                       | Open the commit, or the selected file at it, on the web host; from the diff or the file, at the selected hunk or line; copy its link | `open_in_browser` `copy_link` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 
 The commit detail has three tabs:

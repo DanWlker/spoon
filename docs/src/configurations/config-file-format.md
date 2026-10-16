@@ -312,7 +312,7 @@ The clipboard command to use for copy operations.
 - a commit in the graph or the details: the commit
 - a local branch in the sidebar: a new pull request from it (from its upstream branch, when it has one)
 - a remote branch, a tag or a remote in the sidebar: its page
-- a file in the Changes or Files tab of the details: the file at that commit
+- a file in the Changes or Files tab of the details: the file at that commit; from the diff or the file beside it, at the selected hunk or line (`#L5-L9`), where the host's links can point at lines. A line only removed has no line in the file at that commit, so it opens the file.
 
 The remote is the one of the branch (a local branch's upstream), else the upstream remote of the current branch, else `origin`, else the first. Its URL (`git@host:owner/repo.git`, `https://…`, `ssh://…`) becomes `https://host/owner/repo`. A commit not pushed yet opens a page that doesn't exist.
 
@@ -329,7 +329,7 @@ How to link to the pages of a host. GitHub, GitLab, Bitbucket and Gitea/Forgejo 
 
 - a kind of host: `"git.company.com" = "gitlab"`, one of `github`, `gitlab`, `bitbucket` and `gitea`
 - a kind and the domain of its pages, for an ssh alias: `"github.com-work" = "github:github.com"`
-- link patterns of its own, where `{base}` is `https://host/owner/repo`, and `{hash}`, `{branch}`, `{tag}` and `{path}` what is linked to:
+- link patterns of its own, where `{base}` is `https://host/owner/repo`, and `{hash}`, `{branch}`, `{tag}` and `{path}` what is linked to; `line` and `lines` are added to the file's link for a selected line (`{start}`) or lines (`{start}` to `{end}`):
 
   ```toml
   [core.browser.services."code.example.org"]
@@ -338,6 +338,8 @@ How to link to the pages of a host. GitHub, GitLab, Bitbucket and Gitea/Forgejo 
   pull_request = "{base}/new-review?from={branch}"
   tag = "{base}/tag/{tag}"
   file = "{base}/file/{hash}/{path}"
+  line = "#L{start}"
+  lines = "#L{start}-{end}"
   ```
 
 ### `ui.common.cursor_type`
