@@ -1674,7 +1674,14 @@ impl LocalChangesPanel<'_> {
         // keep the cursor visible when the tree is taller than the section
         let height = inner.height as usize;
         let offset = (cursor + 1).saturating_sub(height);
-        render_panel_scrollbar(buf, area, rows.len(), offset, &self.ctx.color_theme);
+        render_panel_scrollbar(
+            buf,
+            area,
+            rows.len(),
+            offset,
+            focused,
+            &self.ctx.color_theme,
+        );
 
         // the search is highlighted in the section it applies to
         let search = state.query_of(section).search();
@@ -1760,7 +1767,8 @@ impl LocalChangesPanel<'_> {
         };
         let range = state.cursor.fit(count, inner.height as usize);
         let offset = range.start;
-        render_panel_scrollbar(buf, area, count, offset, &self.ctx.color_theme);
+        let theme = &self.ctx.color_theme;
+        render_panel_scrollbar(buf, area, count, offset, diff_focused, theme);
 
         let mut lines = if selected {
             diff_lines(&state.diff, &self.ctx.color_theme, range)

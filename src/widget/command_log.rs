@@ -114,7 +114,14 @@ impl<'a> CommandLog<'a> {
         } else if state.selected >= state.offset + height {
             state.offset = state.selected + 1 - height;
         }
-        render_panel_scrollbar(buf, list_area, state.entries.len(), state.offset, theme);
+        render_panel_scrollbar(
+            buf,
+            list_area,
+            state.entries.len(),
+            state.offset,
+            true,
+            theme,
+        );
         for (row, entry) in state
             .entries
             .iter()

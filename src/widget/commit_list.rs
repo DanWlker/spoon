@@ -828,6 +828,7 @@ pub fn render_commit_list_panel<'a>(
         area,
         state.commits.len(),
         state.offset,
+        focused,
         theme,
     );
 }

@@ -659,15 +659,23 @@ pub struct CommitChanges<'a> {
     search: Option<String>,
     // highlighted in the diff
     diff_search: Option<String>,
+    // the panel has the focus, its border the accent's color
+    focused: bool,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CommitChanges<'_> {
-    pub fn new(ctx: Rc<AppContext>, search: Option<&str>, diff_search: Option<&str>) -> Self {
+    pub fn new(
+        ctx: Rc<AppContext>,
+        search: Option<&str>,
+        diff_search: Option<&str>,
+        focused: bool,
+    ) -> Self {
         Self {
             ctx,
             search: search.map(String::from),
             diff_search: diff_search.map(String::from),
+            focused,
             _marker: std::marker::PhantomData,
         }
     }
@@ -718,7 +726,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
             return;
         };
         let border = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
-        render_scrollbar(buf, border, count, range.start, theme);
+        render_scrollbar(buf, border, count, range.start, self.focused, theme);
         let mut lines = diff_lines(diff, theme, range.clone());
         let highlighted = match state.focus {
             ChangesFocus::Files => 0..0,
@@ -740,15 +748,23 @@ pub struct CommitFiles<'a> {
     search: Option<String>,
     // highlighted in the preview
     preview_search: Option<String>,
+    // the panel has the focus, its border the accent's color
+    focused: bool,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl CommitFiles<'_> {
-    pub fn new(ctx: Rc<AppContext>, search: Option<&str>, preview_search: Option<&str>) -> Self {
+    pub fn new(
+        ctx: Rc<AppContext>,
+        search: Option<&str>,
+        preview_search: Option<&str>,
+        focused: bool,
+    ) -> Self {
         Self {
             ctx,
             search: search.map(String::from),
             preview_search: preview_search.map(String::from),
+            focused,
             _marker: std::marker::PhantomData,
         }
     }
@@ -795,7 +811,8 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                 let range = state.cursor.fit(lines.len(), preview_area.height as usize);
                 let border =
                     Rect::new(preview_area.right(), preview_area.y, 1, preview_area.height);
-                render_scrollbar(buf, border, lines.len(), range.start, theme);
+                let focused = self.focused;
+                render_scrollbar(buf, border, lines.len(), range.start, focused, theme);
                 let highlight_style = Style::default().bg(theme.list_selected_bg);
                 let selected = if state.preview_focused {
                     state.cursor.line..state.cursor.line + 1
@@ -899,7 +916,8 @@ fn render_rows_with_cursor<'a>(
     let offset = (cursor + 1).saturating_sub(height);
     // on the divider beside the tree, past its padding
     let divider = Rect::new(area.right() + 1, area.y, 1, area.height);
-    render_scrollbar(buf, divider, rows.len(), offset, theme);
+    // the divider keeps its color
+    render_scrollbar(buf, divider, rows.len(), offset, false, theme);
     let lines: Vec<Line> = rows.iter().skip(offset).take(height).map(line).collect();
     Paragraph::new(lines).fg(theme.fg).render(area, buf);
 

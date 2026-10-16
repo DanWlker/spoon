@@ -570,13 +570,15 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => {
                 let search = self.changes_query.search();
                 let diff_search = self.pane_query.search();
-                let commit_changes = CommitChanges::new(self.ctx.clone(), search, diff_search);
+                let commit_changes =
+                    CommitChanges::new(self.ctx.clone(), search, diff_search, focused);
                 f.render_stateful_widget(commit_changes, detail_area, &mut self.changes_state);
             }
             DetailTab::Files => {
                 let search = self.files_query.search();
                 let preview_search = self.pane_query.search();
-                let commit_files = CommitFiles::new(self.ctx.clone(), search, preview_search);
+                let commit_files =
+                    CommitFiles::new(self.ctx.clone(), search, preview_search, focused);
                 f.render_stateful_widget(commit_files, detail_area, &mut self.files_state);
             }
         }

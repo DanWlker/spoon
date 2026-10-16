@@ -506,7 +506,7 @@ impl StatefulWidget for RefList {
             state.scroll_to_selection = false;
         }
         let total = state.visible_rows.len();
-        render_panel_scrollbar(buf, area, total, state.offset, theme);
+        render_panel_scrollbar(buf, area, total, state.offset, self.focused, theme);
 
         let item_style = Style::default().fg(theme.fg);
         // the sections stand out from the refs in them

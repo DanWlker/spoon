@@ -123,11 +123,13 @@ pub fn mark_selected_row(buf: &mut Buffer, inner: Rect, y: u16, focused: bool, t
 
 // A scroll thumb, a full block, on `column` (one cell wide: a panel's border, or a divider), when `total` rows
 // don't fit its height; the border stays as the track.
+// In the color of the border it is on, the accent's when its panel has the focus.
 pub fn render_scrollbar(
     buf: &mut Buffer,
     column: Rect,
     total: usize,
     offset: usize,
+    focused: bool,
     theme: &ColorTheme,
 ) {
     let height = column.height as usize;
@@ -137,7 +139,12 @@ pub fn render_scrollbar(
     let thumb = (height * height / total).max(1);
     let max_offset = total - height;
     let top = offset.min(max_offset) * (height - thumb) / max_offset;
-    let style = Style::default().fg(theme.divider_fg);
+    let fg = if focused {
+        theme.accent_fg
+    } else {
+        theme.divider_fg
+    };
+    let style = Style::default().fg(fg);
     for y in top..top + thumb {
         buf.set_string(column.x, column.y + y as u16, "█", style);
     }
@@ -149,11 +156,12 @@ pub fn render_panel_scrollbar(
     area: Rect,
     total: usize,
     offset: usize,
+    focused: bool,
     theme: &ColorTheme,
 ) {
     if area.width > 0 && area.height > 2 {
         let column = Rect::new(area.right() - 1, area.y + 1, 1, area.height - 2);
-        render_scrollbar(buf, column, total, offset, theme);
+        render_scrollbar(buf, column, total, offset, focused, theme);
     }
 }
 
