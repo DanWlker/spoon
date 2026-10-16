@@ -28,7 +28,7 @@ use crate::{
     event::{hint, AppEvent, EventController, KeyHint, UserEvent},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
-        open_in_browser, validate_marked_hash, ExternalCommandParameters,
+        validate_marked_hash, ExternalCommandParameters,
     },
     git::{
         refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository,
@@ -2197,9 +2197,9 @@ impl App<'_> {
                 name: "Link".into(),
                 value: url,
             },
-            Ok(url) => match open_in_browser(&url, config.open_command.as_deref()) {
+            Ok(url) => match open::that_detached(&url) {
                 Ok(()) => AppEvent::NotifySuccess(format!("Opened {url}")),
-                Err(err) => AppEvent::NotifyError(err),
+                Err(err) => AppEvent::NotifyError(format!("Failed to open {url}: {err}")),
             },
             Err(err) => AppEvent::NotifyError(err),
         };

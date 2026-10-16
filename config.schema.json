@@ -169,15 +169,6 @@
           "type": "object",
           "description": "Opening the pages of commits, branches, tags and files on the web host of a remote (o), or copying their links (O).",
           "properties": {
-            "open_command": {
-              "type": "array",
-              "description": "The command opening a link, given as its last argument. Default: xdg-open, or open on macOS.",
-              "minItems": 1,
-              "items": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
             "services": {
               "type": "object",
               "description": "The kind of host of a domain its name doesn't tell: \"github\", \"gitlab\", \"bitbucket\" or \"gitea\"; \"kind:domain\" for an ssh alias whose pages are on another domain; or link patterns of its own.",

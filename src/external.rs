@@ -73,34 +73,6 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-// Opens `url` with `command` (xdg-open, or open on macOS), without waiting for the browser.
-pub fn open_in_browser(url: &str, command: Option<&[String]>) -> Result<(), String> {
-    use std::process::Stdio;
-
-    let default: &[&str] = if cfg!(target_os = "macos") {
-        &["open"]
-    } else if cfg!(windows) {
-        &["cmd", "/c", "start", ""]
-    } else {
-        &["xdg-open"]
-    };
-    let command: Vec<&str> = match command {
-        Some(command) if !command.is_empty() => command.iter().map(String::as_str).collect(),
-        _ => default.to_vec(),
-    };
-    let mut child = Command::new(command[0])
-        .args(&command[1..])
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Failed to run {}: {e}", command[0]))?;
-    // reaped once it ends, some openers wait for the browser
-    std::thread::spawn(move || child.wait());
-    Ok(())
-}
-
 pub struct ExternalCommandParameters<'a> {
     pub command: &'a [String],
     pub target_hash: &'a str,

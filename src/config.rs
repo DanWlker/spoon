@@ -131,8 +131,6 @@ pub struct CoreConfig {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreBrowserConfig {
-    // the command opening a link, given as its last argument; xdg-open, or open on macOS
-    pub open_command: Option<Vec<String>>,
     // the kind of host of a domain the name doesn't tell: "git.company.com" = "gitlab"
     pub services: FxHashMap<String, Service>,
 }
@@ -576,8 +574,6 @@ mod tests {
             commands_10 = { name = "echo world", type = "inline", commands = ["echo", "world"], refresh = false }
             commands_3 = { name = "open vim", type = "suspend", commands = ["vim"] }
             tab_width = 2
-            [core.browser]
-            open_command = ["firefox"]
             [core.browser.services]
             "git.company.com" = "gitlab"
             "code.example.org" = { commit = "{base}/c/{hash}" }
@@ -676,7 +672,6 @@ mod tests {
                     clipboard: ClipboardConfig::Auto,
                 },
                 browser: CoreBrowserConfig {
-                    open_command: Some(vec!["firefox".into()]),
                     services: FxHashMap::from_iter([
                         ("git.company.com".into(), Service::Kind("gitlab".into())),
                         (

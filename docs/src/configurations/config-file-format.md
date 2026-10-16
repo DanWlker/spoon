@@ -27,8 +27,6 @@ tab_width = 4
 [core.external]
 clipboard = "auto"
 
-[core.browser]
-# open_command = ["xdg-open"]
 [core.browser.services]
 # "git.company.com" = "gitlab"
 
@@ -315,13 +313,6 @@ The clipboard command to use for copy operations.
 - a file in the Changes or Files tab of the details: the file at that commit; from the diff or the file beside it, at the selected hunk or line (`#L5-L9`), where the host's links can point at lines. A line only removed has no line in the file at that commit, so it opens the file.
 
 The remote is the one of the branch (a local branch's upstream), else the upstream remote of the current branch, else `origin`, else the first. Its URL (`git@host:owner/repo.git`, `https://…`, `ssh://…`) becomes `https://host/owner/repo`. A commit not pushed yet opens a page that doesn't exist.
-
-#### `core.browser.open_command`
-
-The command opening a link, given as its last argument.
-
-- type: `array of strings`
-- default: `["xdg-open"]`, `["open"]` on macOS
 
 #### `core.browser.services`
 
