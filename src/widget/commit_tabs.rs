@@ -12,10 +12,9 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     git::{Commit, CommitHash, FileChange, Repository},
-    layout::{Border, Panel},
+    layout::{fit_size, Panel},
     widget::style::{
-        focused_title, fold_marker, mark_selected_row, panel_title, render_scrollbar,
-        tree_panel_width,
+        focused_title, mark_selected_row, panel_title, render_scrollbar, tree_panel_width,
     },
     widget::{
         diff::{
@@ -23,7 +22,7 @@ use crate::{
             visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
-        tree_query::{find_around, highlight_match, highlighted_name, match_range},
+        tree_query::{dir_line, find_around, highlight_match, highlighted_name, match_range},
     },
 };
 
@@ -146,10 +145,6 @@ pub struct CommitChangesState<'a> {
 
 impl<'a> CommitChangesState<'a> {
     // The path of the selected file or directory, relative to the top of the repository.
-    pub fn selected_path(&self) -> Option<&str> {
-        self.tree.selected().map(|r| r.path.as_str())
-    }
-
     // The selected path, and whether it is a directory.
     pub fn selected_entry(&self) -> Option<(&str, bool)> {
         let row = self.tree.selected()?;
@@ -414,10 +409,6 @@ pub struct CommitFilesState<'a> {
 
 impl<'a> CommitFilesState<'a> {
     // The path of the selected file or directory, relative to the top of the repository.
-    pub fn selected_path(&self) -> Option<&str> {
-        self.tree.as_ref()?.selected().map(|r| r.path.as_str())
-    }
-
     // The selected path, and whether it is a directory.
     pub fn selected_entry(&self) -> Option<(&str, bool)> {
         let row = self.tree.as_ref()?.selected()?;
@@ -855,23 +846,12 @@ fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect
     let default = tree_panel_width(inner.width);
     let tree_width = ctx.layout.borrow().size(Panel::DetailTree, default);
     // both keep some room
-    let tree_width = tree_width
-        .clamp(10, inner.width.saturating_sub(10).max(10))
-        .min(inner.width);
-    if tree_width > 0 {
-        let border = Border {
-            panel: Panel::DetailTree,
-            vertical: true,
-            at: inner.left() + tree_width - 1,
-            from: inner.top(),
-            to: inner.bottom(),
-            anchor: inner.left(),
-            forward: true,
-        };
-        ctx.layout.borrow_mut().place(border, tree_width);
-    }
+    let tree_width = fit_size(tree_width, inner.width, 10, 10);
     let [tree_area, side_area] =
         Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(0)]).areas(inner);
+    ctx.layout
+        .borrow_mut()
+        .place(Panel::DetailTree, tree_area, true, true);
     let tree_block = Block::default()
         .borders(Borders::RIGHT)
         .style(Style::default().fg(theme.divider_fg))
@@ -885,17 +865,6 @@ fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect
         ..side_area
     };
     [tree_inner, side_area]
-}
-
-fn dir_line(
-    row: &FileTreeRow,
-    open: bool,
-    search: Option<&str>,
-    theme: &ColorTheme,
-) -> Line<'static> {
-    let mut spans = vec!["  ".repeat(row.depth).into(), fold_marker(open).into()];
-    spans.extend(highlighted_name(&row.name, search, theme));
-    Line::from(spans)
 }
 
 // Renders the `rows` on screen as `line` makes them, scrolled so the cursor is visible,

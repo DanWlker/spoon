@@ -126,3 +126,14 @@ fn parse_date(date: &str) -> DateTime<Utc> {
         .unwrap();
     Utc.from_utc_datetime(&dt)
 }
+
+// Runs git in `dir`, as it is set up there, returning what it prints.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}

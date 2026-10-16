@@ -1,6 +1,7 @@
 // The sizes of the panels that can be resized, with ctrl and the arrow keys or by dragging their
 // borders with the mouse, and the borders drawn in the last frame to drag.
 
+use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
 
 // A size that can be changed: a width for the panels side by side, a height for those on top of
@@ -23,6 +24,13 @@ pub enum Panel {
     Commit,
 }
 
+// A panel's `size` within `total`, at least `min`, leaving `keep` for the panel beside it when
+// there is room for both.
+pub fn fit_size(size: u16, total: u16, min: u16, keep: u16) -> u16 {
+    size.clamp(min, total.saturating_sub(keep).max(min))
+        .min(total)
+}
+
 // Where the focus moves to, from the focused panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -34,18 +42,18 @@ pub enum Direction {
 
 // The border of a panel, where it was drawn: a vertical line is dragged left and right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Border {
-    pub panel: Panel,
-    pub vertical: bool,
+struct Border {
+    panel: Panel,
+    vertical: bool,
     // the x of a vertical line, the y of a horizontal one
-    pub at: u16,
+    at: u16,
     // where the line goes along, [from, to)
-    pub from: u16,
-    pub to: u16,
+    from: u16,
+    to: u16,
     // the size is measured from this edge: the left or top one going forward, else the right or
     // bottom one
-    pub anchor: u16,
-    pub forward: bool,
+    anchor: u16,
+    forward: bool,
 }
 
 impl Border {
@@ -97,8 +105,44 @@ impl PanelLayout {
         self.borders.clear();
     }
 
-    // The border of a panel being drawn, which is `size` big.
-    pub fn place(&mut self, border: Border, size: u16) {
+    // The border of `panel` being drawn in `area`: its right side when `vertical`, else its bottom
+    // side going `forward`, or its top side.
+    pub fn place(&mut self, panel: Panel, area: Rect, vertical: bool, forward: bool) {
+        if area.is_empty() {
+            return;
+        }
+        let (at, from, to, anchor, size) = match (vertical, forward) {
+            (true, _) => (
+                area.right() - 1,
+                area.top(),
+                area.bottom(),
+                area.left(),
+                area.width,
+            ),
+            (false, true) => (
+                area.bottom() - 1,
+                area.left(),
+                area.right(),
+                area.top(),
+                area.height,
+            ),
+            (false, false) => (
+                area.top(),
+                area.left(),
+                area.right(),
+                area.bottom(),
+                area.height,
+            ),
+        };
+        let border = Border {
+            panel,
+            vertical,
+            at,
+            from,
+            to,
+            anchor,
+            forward: forward || vertical,
+        };
         self.borders.push((border, size));
     }
 
@@ -147,36 +191,16 @@ impl PanelLayout {
 mod tests {
     use super::*;
 
-    fn sidebar() -> Border {
-        Border {
-            panel: Panel::Sidebar,
-            vertical: true,
-            at: 29,
-            from: 0,
-            to: 40,
-            anchor: 0,
-            forward: true,
-        }
-    }
-
-    fn details() -> Border {
-        // under the commit list, from y 20 to the bottom at 40
-        Border {
-            panel: Panel::Details,
-            vertical: false,
-            at: 20,
-            from: 30,
-            to: 160,
-            anchor: 40,
-            forward: false,
-        }
+    // the sidebar 30 wide, the details under the commit list from y 20 to the bottom at 40
+    fn place(layout: &mut PanelLayout) {
+        layout.place(Panel::Sidebar, Rect::new(0, 0, 30, 40), true, true);
+        layout.place(Panel::Details, Rect::new(30, 20, 130, 20), false, false);
     }
 
     #[test]
     fn test_drag_borders() {
         let mut layout = PanelLayout::default();
-        layout.place(sidebar(), 30);
-        layout.place(details(), 20);
+        place(&mut layout);
 
         // the line of the panel beside the border grabs it too
         assert!(layout.press(30, 5));
@@ -194,8 +218,7 @@ mod tests {
     #[test]
     fn test_move_borders() {
         let mut layout = PanelLayout::default();
-        layout.place(sidebar(), 30);
-        layout.place(details(), 20);
+        place(&mut layout);
 
         // right widens the sidebar; down lowers the top of the details, which get shorter
         assert!(layout.move_border(Panel::Sidebar, 2));

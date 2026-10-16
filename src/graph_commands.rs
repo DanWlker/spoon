@@ -459,7 +459,7 @@ mod tests {
 
     fn args(command: Result<GraphCommand, String>) -> String {
         match command {
-            Ok(GraphCommand::Dialog(dialog)) => dialog.command().unwrap().args.join(" "),
+            Ok(GraphCommand::Dialog(dialog)) => dialog.command().unwrap().commands[0].join(" "),
             Ok(GraphCommand::Compare { title, .. }) => title,
             Ok(GraphCommand::AmendHead) => "amend head".into(),
             Err(err) => err,
@@ -729,7 +729,10 @@ mod tests {
             "topic",
             hashes[1].clone(),
         );
-        assert_eq!(run(path, tag.unwrap(), "t2").args, ["tag", "t2", "topic"]);
+        assert_eq!(
+            run(path, tag.unwrap(), "t2").commands,
+            [["tag", "t2", "topic"]]
+        );
 
         // a branch at a commit of the graph, checked out
         let branch = command(&repository, UserEvent::CreateBranch, &hashes[2], &[]);

@@ -9,6 +9,8 @@ use ratatui::{
     widgets::{Clear, Paragraph, Widget},
 };
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::{
     color::ColorTheme,
     widget::style::{panel_block, panel_title},
@@ -31,12 +33,10 @@ impl<'a> KeysPopup<'a> {
         let row_width = self
             .keys
             .iter()
-            .map(|(_, description)| {
-                key_width + SEPARATOR.chars().count() + description.chars().count()
-            })
+            .map(|(_, description)| key_width + SEPARATOR.width() + description.width())
             .max()
             .unwrap_or(0)
-            .max(TITLE.chars().count() + 2);
+            .max(TITLE.width() + 2);
         // the borders and a space on each side
         let width = (row_width as u16 + 4).max(MIN_WIDTH);
         let height = (self.keys.len() as u16 + 2).min(MAX_HEIGHT);
@@ -53,7 +53,7 @@ impl<'a> KeysPopup<'a> {
     fn key_width(&self) -> usize {
         self.keys
             .iter()
-            .map(|(key, _)| key.chars().count())
+            .map(|(key, _)| key.width())
             .max()
             .unwrap_or(0)
     }

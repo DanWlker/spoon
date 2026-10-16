@@ -1777,8 +1777,8 @@ pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitTask {
-    // the arguments of the git command
-    pub args: Vec<String>,
+    // the arguments of the git commands, each run when the one before succeeded
+    pub commands: Vec<Vec<String>>,
     // stash the local changes before the command, and reapply them after
     pub stash: bool,
     // talks to a remote
@@ -1792,8 +1792,6 @@ pub struct GitTask {
     pub uses_picks: bool,
     // leaves changes to commit, so the local changes page is shown once it is done
     pub show_local_changes: bool,
-    // more commands run after it, when it succeeded
-    pub then: Vec<Vec<String>>,
     // the commit to select once it is done, like "HEAD~2", as rewriting the history changes its hash
     pub select: Option<String>,
     // the local branch it pushes or pulls, shown beside it in the sidebar while it runs, like lazygit
@@ -1811,8 +1809,8 @@ pub struct BranchStatus {
 impl GitTask {
     // Whether it may make a commit or a tag, which git signs when configured to.
     pub fn may_sign(&self) -> bool {
-        std::iter::once(&self.args)
-            .chain(&self.then)
+        self.commands
+            .iter()
             .filter_map(|args| args.first())
             .any(|command| {
                 matches!(
@@ -1824,7 +1822,7 @@ impl GitTask {
 
     pub fn new(args: &[&str], running: String, done: String) -> Self {
         GitTask {
-            args: args.iter().map(|a| a.to_string()).collect(),
+            commands: vec![args.iter().map(|a| a.to_string()).collect()],
             running,
             done,
             ..Default::default()
@@ -1851,9 +1849,9 @@ impl GitTask {
             ("GIT_CONFIG_VALUE_0", "40"),
         ];
         GitTask {
-            args: ["rebase", "-i", stash, base.unwrap_or("--root")]
+            commands: vec![["rebase", "-i", stash, base.unwrap_or("--root")]
                 .map(String::from)
-                .to_vec(),
+                .to_vec()],
             env: env
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1884,8 +1882,8 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     let pop = || run_task_step(path, &["stash", "pop"].map(String::from), task);
 
     let run = || {
-        std::iter::once(&task.args)
-            .chain(&task.then)
+        task.commands
+            .iter()
             .try_for_each(|args| run_task_step(path, args, task))
     };
     match run() {
@@ -2182,10 +2180,8 @@ mod tests {
         let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
         assert!(task(&["rebase", "-i", "main"]).may_sign());
         assert!(!task(&["fetch", "origin"]).may_sign());
-        let delete_tag = GitTask {
-            then: vec![vec!["tag".into(), "v1".into()]],
-            ..task(&["branch", "-D", "x"])
-        };
+        let mut delete_tag = task(&["branch", "-D", "x"]);
+        delete_tag.commands.push(vec!["tag".into(), "v1".into()]);
         assert!(delete_tag.may_sign());
     }
 

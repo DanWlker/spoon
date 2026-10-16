@@ -3,10 +3,10 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType},
+    widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
 
 use crate::color::ColorTheme;
@@ -80,6 +80,34 @@ pub fn badge<'a>(
     Span::raw(text).fg(theme.accent_text_fg).bg(bg).bold()
 }
 
+// A popup in the middle of `area`, as wide as its `lines` within `widths` (min, max), its border in
+// `color`; returns where its text goes.
+pub fn render_popup(
+    title: Span,
+    color: Color,
+    lines: Vec<Line>,
+    widths: (usize, usize),
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &ColorTheme,
+) -> Rect {
+    // text plus padding and borders
+    let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
+    let width = (text_width.clamp(widths.0, widths.1) as u16 + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = area.centered(Constraint::Length(width), Constraint::Length(height));
+    Clear.render(popup, buf);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .style(Style::default().fg(theme.fg).bg(theme.bg))
+        .title(title)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(popup);
+    Paragraph::new(lines).block(block).render(popup, buf);
+    inner
+}
+
 // The width of the file tree beside a diff or a preview, in `width`.
 pub fn tree_panel_width(width: u16) -> u16 {
     (width / 3).clamp(20, 50).min(width)
@@ -150,6 +178,12 @@ pub fn render_scrollbar(
     }
 }
 
+// The first row shown of a list `height` rows high, moved as little as can be from `offset` to show
+// the `selected` row.
+pub fn scroll_to(offset: usize, selected: usize, height: usize) -> usize {
+    offset.clamp((selected + 1).saturating_sub(height.max(1)), selected)
+}
+
 // The scroll thumb on the right border of the panel `area` (borders all around).
 pub fn render_panel_scrollbar(
     buf: &mut Buffer,
@@ -178,6 +212,14 @@ pub fn mark_selected_bar(buf: &mut Buffer, x: u16, y: u16, focused: bool, theme:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_scroll_to() {
+        assert_eq!(scroll_to(5, 2, 10), 2); // above: scrolls up to it
+        assert_eq!(scroll_to(0, 12, 10), 3); // below: the last row shown
+        assert_eq!(scroll_to(3, 7, 10), 3); // shown: stays
+        assert_eq!(scroll_to(3, 7, 0), 7);
+    }
 
     #[test]
     fn test_focused_title_without_background() {

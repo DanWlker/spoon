@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use crate::widget::tree_query::path_matches;
+use crate::widget::tree_query::{find_around, path_matches};
 
 // A row of a file tree as displayed: directories first, then files, each sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +76,7 @@ impl FileTree {
         keep: impl Fn(&str) -> bool,
     ) -> Vec<FileTreeRow> {
         let mut rows = Vec::new();
-        collect_rows(&self.root, "", 0, &is_open, &keep, &mut rows);
+        collect_rows(&self.root, "", 0, &is_open, &keep, Some(&mut rows));
         rows
     }
 }
@@ -317,25 +317,13 @@ pub fn find_next(
     direction: SearchDirection,
     wanted: impl Fn(&FileTreeRow) -> bool,
 ) -> Option<String> {
-    let matches: Vec<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| !r.is_root() && wanted(r))
-        .map(|(i, _)| i)
-        .collect();
     let cur = current
         .and_then(|path| rows.iter().position(|r| r.path == path))
         .unwrap_or(0);
-    let found = match direction {
-        SearchDirection::Current => matches.iter().find(|&&i| i >= cur),
-        SearchDirection::Next => matches.iter().find(|&&i| i > cur),
-        SearchDirection::Previous => matches.iter().rev().find(|&&i| i < cur),
-    };
-    let wrapped = match direction {
-        SearchDirection::Previous => matches.last(),
-        _ => matches.first(),
-    };
-    found.or(wrapped).map(|&i| rows[i].path.clone())
+    find_around(rows.len(), cur, direction, |i| {
+        !rows[i].is_root() && wanted(&rows[i])
+    })
+    .map(|i| rows[i].path.clone())
 }
 
 // The directories containing `path`, outermost first, starting with the root.
@@ -387,13 +375,14 @@ fn sort_files(node: &mut DirNode) {
 }
 
 // Returns whether any file under `node` is kept; directories without kept files are left out.
+// Without `rows` (a closed directory) it only looks for a kept file, building no rows.
 fn collect_rows(
     node: &DirNode,
     parent: &str,
     depth: usize,
     is_open: &impl Fn(&str) -> bool,
     keep: &impl Fn(&str) -> bool,
-    rows: &mut Vec<FileTreeRow>,
+    mut rows: Option<&mut Vec<FileTreeRow>>,
 ) -> bool {
     let join = |name: &str| {
         if parent.is_empty() {
@@ -405,25 +394,34 @@ fn collect_rows(
     let mut any_kept = false;
     for (name, child) in &node.dirs {
         let path = join(name);
+        let Some(rows) = rows.as_deref_mut() else {
+            if collect_rows(child, &path, depth + 1, is_open, keep, None) {
+                return true;
+            }
+            continue;
+        };
         let mut child_rows = Vec::new();
-        if !collect_rows(child, &path, depth + 1, is_open, keep, &mut child_rows) {
+        let open = is_open(&path);
+        let sink = open.then_some(&mut child_rows);
+        if !collect_rows(child, &path, depth + 1, is_open, keep, sink) {
             continue;
         }
         any_kept = true;
         rows.push(FileTreeRow {
             depth,
             name: name.clone(),
-            path: path.clone(),
+            path,
             file_index: None,
         });
-        if is_open(&path) {
-            rows.extend(child_rows);
-        }
+        rows.extend(child_rows);
     }
     for (name, index) in &node.files {
         let path = join(name);
         if keep(&path) {
             any_kept = true;
+            let Some(rows) = rows.as_deref_mut() else {
+                return true;
+            };
             rows.push(FileTreeRow {
                 depth,
                 name: name.clone(),

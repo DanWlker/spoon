@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Widget},
+    widgets::Widget,
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
 
@@ -13,7 +13,7 @@ use crate::{
     color::ColorTheme,
     event::{KeyHint, UserEvent},
     git::{todo_action, BranchStatus, GitTask, RemoteInfo},
-    widget::style::focused_title,
+    widget::style::{focused_title, render_popup},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,9 +261,7 @@ impl GitDialog {
             RemoteAction::Pull => {
                 let remote = dialog.default_remote(current.as_deref());
                 dialog.push_choice(FieldId::Remote, "Remote", info.remotes.clone(), &remote);
-                dialog
-                    .fields
-                    .push((FieldId::Branch, "Branch".into(), Field::text("", vec![])));
+                dialog.push_text(FieldId::Branch, "Branch", "", vec![]);
                 dialog.update_pull_branch(None);
                 dialog.push_check(FieldId::Rebase, "Rebase instead of merge", info.pull_rebase);
                 let auto_stash = info.auto_stash(info.pull_rebase);
@@ -285,11 +283,7 @@ impl GitDialog {
                     &current,
                 );
                 dialog.push_choice(FieldId::Remote, "To remote", info.remotes.clone(), "");
-                dialog.fields.push((
-                    FieldId::RemoteBranch,
-                    "As branch".into(),
-                    Field::text("", vec![]),
-                ));
+                dialog.push_text(FieldId::RemoteBranch, "As branch", "", vec![]);
                 dialog.push_check(FieldId::Tags, "Push all tags", false);
                 dialog.push_check(FieldId::Force, "Force push (with lease)", false);
                 dialog.push_check(
@@ -437,12 +431,8 @@ impl GitDialog {
     // A branch starting at `from`, one of `branches` or any revision typed.
     pub fn create_branch(from: &str, branches: Vec<String>) -> Self {
         let mut dialog = Self::with(" New branch ", "create", vec![], DialogKind::CreateBranch);
-        dialog
-            .fields
-            .push((FieldId::Name, "Name".into(), Field::text("", vec![])));
-        dialog
-            .fields
-            .push((FieldId::From, "From".into(), Field::text(from, branches)));
+        dialog.push_text(FieldId::Name, "Name", "", vec![]);
+        dialog.push_text(FieldId::From, "From", from, branches);
         dialog.push_check(FieldId::Checkout, "Check it out", true);
         dialog.editing = true;
         dialog
@@ -495,14 +485,8 @@ impl GitDialog {
             upstream: upstream.clone(),
         };
         let mut dialog = Self::with(" Edit branch ", "save", vec![], kind);
-        dialog
-            .fields
-            .push((FieldId::Name, "Name".into(), Field::text(name, vec![])));
-        dialog.fields.push((
-            FieldId::Upstream,
-            "Upstream".into(),
-            Field::text(&upstream, remote_branches),
-        ));
+        dialog.push_text(FieldId::Name, "Name", name, vec![]);
+        dialog.push_text(FieldId::Upstream, "Upstream", &upstream, remote_branches);
         dialog.editing = true;
         dialog
     }
@@ -534,12 +518,8 @@ impl GitDialog {
         url: &str,
     ) -> Self {
         let mut dialog = Self::with(title, verb, vec![], kind);
-        dialog
-            .fields
-            .push((FieldId::Name, "Name".into(), Field::text(name, vec![])));
-        dialog
-            .fields
-            .push((FieldId::Url, "URL".into(), Field::text(url, vec![])));
+        dialog.push_text(FieldId::Name, "Name", name, vec![]);
+        dialog.push_text(FieldId::Url, "URL", url, vec![]);
         dialog
     }
 
@@ -556,15 +536,9 @@ impl GitDialog {
     // A tag at `at`, annotated when it has a message.
     pub fn create_tag(at: &str) -> Self {
         let mut dialog = Self::with(" New tag ", "create", vec![], DialogKind::CreateTag);
-        dialog
-            .fields
-            .push((FieldId::Name, "Name".into(), Field::text("", vec![])));
-        dialog
-            .fields
-            .push((FieldId::Message, "Message".into(), Field::text("", vec![])));
-        dialog
-            .fields
-            .push((FieldId::At, "At".into(), Field::text(at, vec![])));
+        dialog.push_text(FieldId::Name, "Name", "", vec![]);
+        dialog.push_text(FieldId::Message, "Message", "", vec![]);
+        dialog.push_text(FieldId::At, "At", at, vec![]);
         dialog.editing = true;
         dialog
     }
@@ -657,6 +631,12 @@ impl GitDialog {
         let index = options.iter().position(|o| o == value).unwrap_or(0);
         self.fields
             .push((id, label.into(), Field::Choice { options, index }));
+    }
+
+    // A text field, `options` completing it.
+    fn push_text(&mut self, id: FieldId, label: &str, value: &str, options: Vec<String>) {
+        self.fields
+            .push((id, label.into(), Field::text(value, options)));
     }
 
     fn push_check(&mut self, id: FieldId, label: &str, checked: bool) {
@@ -994,7 +974,7 @@ impl GitDialog {
                 }
                 args.extend(target.args.iter().cloned());
                 Ok(GitTask {
-                    args,
+                    commands: vec![args],
                     stash: local_changes == 1,
                     running: format!("Checking out {}", target.label),
                     done: format!("Checked out {}", target.label),
@@ -1012,7 +992,7 @@ impl GitDialog {
                 args.extend(commits.iter().map(|c| c.hash.clone()));
                 let n = count_commits(commits.len());
                 Ok(GitTask {
-                    args,
+                    commands: vec![args],
                     running: format!("Cherry-picking {n}"),
                     done: format!("Cherry-picked {n}"),
                     uses_picks: true,
@@ -1088,25 +1068,24 @@ impl GitDialog {
                 args.extend(names.iter().cloned());
                 let what = names_label("branch", "branches", names);
                 let mut task = GitTask {
-                    args,
+                    commands: vec![args],
                     running: format!("Deleting {what}"),
                     done: format!("Deleted {what}"),
                     ..Default::default()
                 };
                 if self.checked(FieldId::Force) {
-                    task.then = delete_on_remotes(upstreams);
+                    task.commands.extend(delete_on_remotes(upstreams));
                     task.remote = true;
                     task.done = format!("Deleted {what}, also on the remote");
                 }
                 Ok(task)
             }
             DialogKind::DeleteRemoteBranches { branches } => {
-                let mut commands = delete_on_remotes(branches).into_iter();
+                let commands = delete_on_remotes(branches);
                 let names: Vec<String> = branches.iter().map(|(r, b)| format!("{r}/{b}")).collect();
                 let what = names_label("branch", "branches", &names);
                 Ok(GitTask {
-                    args: commands.next().unwrap_or_default(),
-                    then: commands.collect(),
+                    commands,
                     running: format!("Deleting {what}"),
                     done: format!("Deleted {what}"),
                     remote: true,
@@ -1136,11 +1115,11 @@ impl GitDialog {
                     };
                     commands.push(vec!["branch".into(), upstream_arg, new_name.clone()]);
                 }
-                let mut commands = commands.into_iter();
-                let args = commands.next().ok_or("Change the name or the upstream")?;
+                if commands.is_empty() {
+                    return Err("Change the name or the upstream".into());
+                }
                 Ok(GitTask {
-                    args,
-                    then: commands.collect(),
+                    commands,
                     running: format!("Saving {new_name}"),
                     done: format!("Saved {new_name}"),
                     ..Default::default()
@@ -1165,11 +1144,11 @@ impl GitDialog {
                         new_url,
                     ]);
                 }
-                let mut commands = commands.into_iter();
-                let args = commands.next().ok_or("Change the name or the URL")?;
+                if commands.is_empty() {
+                    return Err("Change the name or the URL".into());
+                }
                 Ok(GitTask {
-                    args,
-                    then: commands.collect(),
+                    commands,
                     running: format!("Saving {new_name}"),
                     done: format!("Saved {new_name}"),
                     ..Default::default()
@@ -1178,8 +1157,10 @@ impl GitDialog {
             DialogKind::AddRemote => {
                 let (name, url) = self.remote_values()?;
                 Ok(GitTask {
-                    args: vec!["remote".into(), "add".into(), name.clone(), url],
-                    then: vec![vec!["fetch".into(), name.clone()]],
+                    commands: vec![
+                        vec!["remote".into(), "add".into(), name.clone(), url],
+                        vec!["fetch".into(), name.clone()],
+                    ],
                     running: format!("Adding {name}"),
                     done: format!("Added and fetched {name}"),
                     remote: true,
@@ -1219,7 +1200,7 @@ impl GitDialog {
                 args.extend(names.iter().cloned());
                 let what = names_label("tag", "tags", names);
                 let mut task = GitTask {
-                    args,
+                    commands: vec![args],
                     running: format!("Deleting {what}"),
                     done: format!("Deleted {what}"),
                     ..Default::default()
@@ -1227,7 +1208,7 @@ impl GitDialog {
                 if let Some(remote) = remote.as_ref().filter(|_| self.checked(FieldId::Force)) {
                     let mut push = vec!["push".to_string(), remote.clone(), "--delete".into()];
                     push.extend(names.iter().map(|name| format!("refs/tags/{name}")));
-                    task.then = vec![push];
+                    task.commands.push(push);
                     task.remote = true;
                     task.done = format!("Deleted {what}, also from {remote}");
                 }
@@ -1259,12 +1240,11 @@ impl GitDialog {
                 let mut names = names.clone();
                 names.sort_by_key(|name| std::cmp::Reverse(stash_index(name)));
                 let what = names_label("stash", "stashes", &names);
-                let mut commands = names
+                let commands = names
                     .iter()
                     .map(|name| vec!["stash".to_string(), "drop".into(), name.clone()]);
                 Ok(GitTask {
-                    args: commands.next().unwrap_or_default(),
-                    then: commands.collect(),
+                    commands: commands.collect(),
                     running: format!("Dropping {what}"),
                     done: format!("Dropped {what}"),
                     ..Default::default()
@@ -1278,7 +1258,7 @@ impl GitDialog {
                 args.extend(commits.iter().map(|c| c.hash.clone()));
                 let n = count_commits(commits.len());
                 Ok(GitTask {
-                    args,
+                    commands: vec![args],
                     running: format!("Reverting {n}"),
                     done: format!("Reverted {n}"),
                     uses_picks: true,
@@ -1288,7 +1268,7 @@ impl GitDialog {
             }
             DialogKind::Reset { commit, branch } => {
                 let mode = ["--mixed", "--soft", "--hard"][self.choice(FieldId::ResetMode)];
-                let short = &commit.hash[..7.min(commit.hash.len())];
+                let short = shorten_hash(&commit.hash);
                 Ok(GitTask::new(
                     &["reset", mode, &commit.hash],
                     format!("Resetting {branch} to {short}"),
@@ -1384,7 +1364,7 @@ impl GitDialog {
             }
         };
         Ok(GitTask {
-            args,
+            commands: vec![args],
             remote: true,
             running,
             done,
@@ -1463,8 +1443,9 @@ impl GitDialog {
             format!("git {}", args.join(" "))
         };
         // with those run after it
-        let command = std::iter::once(&task.args)
-            .chain(&task.then)
+        let command = task
+            .commands
+            .iter()
             .map(|args| git(args))
             .collect::<Vec<_>>()
             .join("; ");
@@ -1700,30 +1681,9 @@ impl Widget for GitDialogWidget<'_> {
         }
         lines.push(Line::raw(""));
 
-        let content_width = lines
-            .iter()
-            .map(Line::width)
-            .max()
-            .unwrap_or_default()
-            .clamp(MIN_CONTENT_WIDTH, MAX_CONTENT_WIDTH);
-        let width = (content_width as u16 + 4).min(area.width);
-        let height = (lines.len() as u16 + 2).min(area.height);
-        let popup = Rect::new(
-            area.x + area.width.saturating_sub(width) / 2,
-            area.y + area.height.saturating_sub(height) / 2,
-            width,
-            height,
-        );
-        Clear.render(popup, buf);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.accent_fg))
-            .style(Style::default().fg(theme.fg).bg(theme.bg))
-            .title(focused_title(dialog.title, theme))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(popup);
-        Paragraph::new(lines).block(block).render(popup, buf);
+        let title = focused_title(dialog.title, theme);
+        let widths = (MIN_CONTENT_WIDTH, MAX_CONTENT_WIDTH);
+        let inner = render_popup(title, theme.accent_fg, lines, widths, area, buf, theme);
 
         if let Some((x, y)) = cursor {
             let (x, y) = (inner.x + x, inner.y + y);
@@ -1736,6 +1696,7 @@ impl Widget for GitDialogWidget<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::git::git;
     use ratatui::crossterm::event::KeyModifiers;
     use rustc_hash::FxHashMap;
 
@@ -1769,7 +1730,7 @@ mod tests {
 
     fn args(dialog: &GitDialog) -> String {
         let task = dialog.command().unwrap();
-        task.args.join(" ")
+        task.commands[0].join(" ")
     }
 
     fn commit(n: char) -> DialogCommit {
@@ -2067,16 +2028,6 @@ mod tests {
     }
 
     // Runs git in the repository, returning what it printed.
-    fn git(dir: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {args:?}: {output:?}");
-        String::from_utf8(output.stdout).unwrap()
-    }
-
     fn test_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();

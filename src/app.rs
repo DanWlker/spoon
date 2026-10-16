@@ -36,7 +36,7 @@ use crate::{
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
-    layout::{Border, Direction, Panel, PanelLayout},
+    layout::{fit_size, Direction, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
@@ -860,20 +860,11 @@ impl App<'_> {
         let [sidebar_area, view_area] = self.split_sidebar(app_area);
         // the panels place their borders to drag as they are drawn
         self.ctx.layout.borrow_mut().clear_borders();
-        if !self.shell.sidebar_collapsed && !sidebar_area.is_empty() {
-            let border = Border {
-                panel: Panel::Sidebar,
-                vertical: true,
-                at: sidebar_area.right() - 1,
-                from: sidebar_area.top(),
-                to: sidebar_area.bottom(),
-                anchor: sidebar_area.left(),
-                forward: true,
-            };
+        if !self.shell.sidebar_collapsed {
             self.ctx
                 .layout
                 .borrow_mut()
-                .place(border, sidebar_area.width);
+                .place(Panel::Sidebar, sidebar_area, true, true);
         }
 
         self.update_state(view_area);
@@ -1057,9 +1048,7 @@ impl App<'_> {
             // leave the page some room on narrow terminals, unless resized
             let default = self.ctx.ui_config.refs.width.min(area.width / 3);
             let width = self.ctx.layout.borrow().size(Panel::Sidebar, default);
-            width
-                .clamp(10, area.width.saturating_sub(20).max(10))
-                .min(area.width)
+            fit_size(width, area.width, 10, 20)
         };
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area)
     }

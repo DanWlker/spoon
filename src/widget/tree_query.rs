@@ -8,7 +8,13 @@ use ratatui::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use crate::{color::ColorTheme, widget::file_tree::SearchDirection};
+use crate::{
+    color::ColorTheme,
+    widget::{
+        file_tree::{keeps, FileTreeRow, SearchDirection},
+        style::fold_marker,
+    },
+};
 
 // Searching (`/`) and filtering (`?`) a file tree by path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +101,7 @@ impl TreeQuery {
 
     // Whether `path` passes the filter.
     pub fn keeps(&self, path: &str) -> bool {
-        self.filter.as_deref().is_none_or(|f| path_matches(path, f))
+        keeps(self.filter(), path)
     }
 
     // The query being typed, as shown in the status line: (text, cursor position).
@@ -240,6 +246,18 @@ pub fn patch_range(line: &mut Line<'_>, range: std::ops::Range<usize>, style: St
         offset += len;
     }
     line.spans.extend(spans);
+}
+
+// The row of a directory in a file tree: indented, open or closed, the match of `search` highlighted.
+pub fn dir_line(
+    row: &FileTreeRow,
+    open: bool,
+    search: Option<&str>,
+    theme: &ColorTheme,
+) -> Line<'static> {
+    let mut spans = vec!["  ".repeat(row.depth).into(), fold_marker(open).into()];
+    spans.extend(highlighted_name(&row.name, search, theme));
+    Line::from(spans)
 }
 
 // The spans of a file or directory name, with the match of `search` highlighted.

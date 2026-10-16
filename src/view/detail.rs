@@ -12,7 +12,7 @@ use crate::{
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keybind::Scope,
-    layout::{Border, Direction, Panel},
+    layout::{fit_size, Direction, Panel},
     view::{
         copy_path, graph_hints, handle_search_event, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
@@ -402,12 +402,7 @@ impl<'a> DetailView<'a> {
         // in the file trees, y and Y copy the path of the selected file
         if !self.list_focused {
             if let UserEvent::ShortCopy | UserEvent::FullCopy = event {
-                let path = match self.tab {
-                    DetailTab::Info => None,
-                    DetailTab::Changes => self.changes_state.selected_path(),
-                    DetailTab::Files => self.files_state.selected_path(),
-                };
-                if let Some(path) = path.map(String::from) {
+                if let Some(path) = self.selected_entry().map(|(path, _)| path.to_string()) {
                     let full = event == UserEvent::FullCopy;
                     self.tx.send(copy_path(self.repository, &path, full));
                     return;
@@ -415,12 +410,7 @@ impl<'a> DetailView<'a> {
             }
             // o opens the selected file at this commit on the web host, O copies its link
             if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-                let path = match self.tab {
-                    DetailTab::Info => None,
-                    DetailTab::Changes => self.changes_state.selected_path(),
-                    DetailTab::Files => self.files_state.selected_path(),
-                };
-                if let Some(path) = path.map(String::from) {
+                if let Some(path) = self.selected_entry().map(|(path, _)| path.to_string()) {
                     let target = LinkTarget::File {
                         commit: self.commit.commit_hash.as_str().into(),
                         path,
@@ -433,12 +423,7 @@ impl<'a> DetailView<'a> {
             }
             // i adds the selected file or directory to .gitignore
             if event == UserEvent::Ignore {
-                let entry = match self.tab {
-                    DetailTab::Info => None,
-                    DetailTab::Changes => self.changes_state.selected_entry(),
-                    DetailTab::Files => self.files_state.selected_entry(),
-                };
-                if let Some((path, dir)) = entry {
+                if let Some((path, dir)) = self.selected_entry() {
                     let event = match self.repository.ignore_path(path, dir) {
                         Ok(message) => {
                             self.tx.send(AppEvent::LocalChangesChanged);
@@ -542,19 +527,10 @@ impl<'a> DetailView<'a> {
         let panel_area = detail_area;
         let detail_area = block.inner(panel_area);
         f.render_widget(block, panel_area);
-        let border = Border {
-            panel: Panel::Details,
-            vertical: false,
-            at: panel_area.top(),
-            from: panel_area.left(),
-            to: panel_area.right(),
-            anchor: panel_area.bottom(),
-            forward: false,
-        };
         self.ctx
             .layout
             .borrow_mut()
-            .place(border, panel_area.height);
+            .place(Panel::Details, panel_area, false, false);
 
         match self.tab {
             DetailTab::Info => {
@@ -622,23 +598,26 @@ impl<'a> DetailView<'a> {
         self.focus() == DetailFocus::Pane
     }
 
+    // The path selected in the file tree of the tab, and whether it is a directory.
+    fn selected_entry(&self) -> Option<(&str, bool)> {
+        match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => self.changes_state.selected_entry(),
+            DetailTab::Files => self.files_state.selected_entry(),
+        }
+    }
+
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
     // copying and applying (the search is handled before); others are ignored.
     fn handle_pane_event(&mut self, event: UserEvent) {
         // o opens the file at this commit on the web host, at the selected lines; O copies the link
         if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-            let (path, lines) = match self.tab {
-                DetailTab::Changes => (
-                    self.changes_state.selected_path(),
-                    self.changes_state.selected_lines(),
-                ),
-                DetailTab::Files => (
-                    self.files_state.selected_path(),
-                    self.files_state.selected_line().map(|line| (line, line)),
-                ),
-                DetailTab::Info => (None, None),
+            let lines = match self.tab {
+                DetailTab::Changes => self.changes_state.selected_lines(),
+                DetailTab::Files => self.files_state.selected_line().map(|line| (line, line)),
+                DetailTab::Info => None,
             };
-            if let Some(path) = path.map(String::from) {
+            if let Some(path) = self.selected_entry().map(|(path, _)| path.to_string()) {
                 let target = LinkTarget::File {
                     commit: self.commit.commit_hash.as_str().into(),
                     path,
@@ -1001,9 +980,7 @@ impl<'a> DetailView<'a> {
             .borrow()
             .size(Panel::Details, self.ctx.ui_config.detail.height);
         // the commit list keeps a few rows
-        let detail_height = height
-            .clamp(3, area.height.saturating_sub(4).max(3))
-            .min(area.height);
+        let detail_height = fit_size(height, area.height, 3, 4);
         Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area)
     }
 

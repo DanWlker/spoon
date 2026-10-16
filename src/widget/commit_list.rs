@@ -23,7 +23,11 @@ use crate::{
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{SearchOptions, SearchTarget},
-    widget::style::{mark_selected_bar, panel_block, panel_title, render_panel_scrollbar},
+    widget::{
+        file_tree::SearchDirection,
+        style::{mark_selected_bar, panel_block, panel_title, render_panel_scrollbar},
+        tree_query::find_around,
+    },
 };
 
 static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default().respect_case());
@@ -453,24 +457,16 @@ impl<'a> CommitListState<'a> {
 
     // Selects the next (or previous) picked commit, wrapping around.
     pub fn select_next_pick(&mut self, forward: bool) {
-        let picked: Vec<usize> = self
-            .commits
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| self.is_picked(&c.commit.commit_hash))
-            .map(|(i, _)| i)
-            .collect();
-        let current = self.current_selected_index();
-        let target = if forward {
-            picked.iter().find(|&&i| i > current).or(picked.first())
+        let direction = if forward {
+            SearchDirection::Next
         } else {
-            picked
-                .iter()
-                .rev()
-                .find(|&&i| i < current)
-                .or(picked.last())
+            SearchDirection::Previous
         };
-        if let Some(&index) = target {
+        let current = self.current_selected_index();
+        let target = find_around(self.commits.len(), current, direction, |i| {
+            self.is_picked(&self.commits[i].commit.commit_hash)
+        });
+        if let Some(index) = target {
             self.select_visible_index(index);
         }
     }

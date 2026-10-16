@@ -16,8 +16,8 @@ use crate::{
     widget::{
         commit_list::CommitListState,
         local_changes::{
-            ConflictMove, ExternalRequest, LocalChangesPanel, LocalChangesSection,
-            LocalChangesSnapshot, LocalChangesState,
+            ExternalRequest, LocalChangesPanel, LocalChangesSection, LocalChangesSnapshot,
+            LocalChangesState,
         },
         tree_query::QueryKind,
     },
@@ -62,26 +62,26 @@ impl<'a> LocalChangesView<'a> {
             }
         }
         // while confirming or typing, keys arrive unmapped, see App::run
-        if self.as_state().is_confirming() {
+        if self.local_changes_state.is_confirming() {
             let result = if self.confirms_commit(key) {
-                self.as_mut_state().confirm()
+                self.local_changes_state.confirm()
             } else {
-                self.as_mut_state().handle_confirm_key(key)
+                self.local_changes_state.handle_confirm_key(key)
             };
             self.after_action(result);
             return;
         }
-        if self.as_state().is_editing() {
-            self.as_mut_state().handle_text_key(key);
+        if self.local_changes_state.is_editing() {
+            self.local_changes_state.handle_text_key(key);
             return;
         }
-        if self.as_state().is_typing_query() {
-            self.as_mut_state().handle_query_key(key);
+        if self.local_changes_state.is_typing_query() {
+            self.local_changes_state.handle_query_key(key);
             self.update_query_status();
             return;
         }
-        if self.as_state().is_typing_stash() {
-            let result = self.as_mut_state().handle_stash_key(key);
+        if self.local_changes_state.is_typing_stash() {
+            let result = self.local_changes_state.handle_stash_key(key);
             self.update_stash_status();
             self.after_action(result);
             return;
@@ -89,9 +89,9 @@ impl<'a> LocalChangesView<'a> {
 
         // the diff copies its hunk or line; it doesn't get the keys of the files beside it, see
         // `Scope::LocalChangesDiff`
-        if self.as_state().is_diff_focused() && event == UserEvent::ShortCopy {
-            if let Some(text) = self.as_state().selected_diff_text() {
-                let name = if self.as_state().is_selecting_lines() {
+        if self.local_changes_state.is_diff_focused() && event == UserEvent::ShortCopy {
+            if let Some(text) = self.local_changes_state.selected_diff_text() {
+                let name = if self.local_changes_state.is_selecting_lines() {
                     "Line"
                 } else {
                     "Hunk"
@@ -104,21 +104,21 @@ impl<'a> LocalChangesView<'a> {
             return;
         }
 
-        if self.as_state().is_conflict_focused() {
+        if self.local_changes_state.is_conflict_focused() {
             // the sides are side by side, the tools below them
             let direction = match event {
-                UserEvent::NavigateLeft => Some(ConflictMove::Left),
-                UserEvent::NavigateRight => Some(ConflictMove::Right),
-                UserEvent::NavigateUp | UserEvent::SelectUp => Some(ConflictMove::Up),
-                UserEvent::NavigateDown | UserEvent::SelectDown => Some(ConflictMove::Down),
+                UserEvent::NavigateLeft => Some(Direction::Left),
+                UserEvent::NavigateRight => Some(Direction::Right),
+                UserEvent::NavigateUp | UserEvent::SelectUp => Some(Direction::Up),
+                UserEvent::NavigateDown | UserEvent::SelectDown => Some(Direction::Down),
                 _ => None,
             };
             if let Some(direction) = direction {
-                self.as_mut_state().move_conflict_item(direction);
+                self.local_changes_state.move_conflict_item(direction);
                 return;
             }
         }
-        if self.as_state().is_commit_focused() {
+        if self.local_changes_state.is_commit_focused() {
             // the commit section only has the message, there is nothing to move to
             if let UserEvent::NavigateDown
             | UserEvent::NavigateUp
@@ -139,133 +139,135 @@ impl<'a> LocalChangesView<'a> {
                 // lines -> hunks -> files, or commit section -> files,
                 // then clear the picked files, then the search, then the filter;
                 // the page itself is left with tab, not closed
-                let state = self.as_mut_state();
+                let state = &mut self.local_changes_state;
                 let _ = state.clear_diff_query()
                     || state.back()
                     || state.clear_picks()
                     || state.clear_query();
             }
             UserEvent::ToggleSelect => {
-                self.as_mut_state().toggle_pick();
+                self.local_changes_state.toggle_pick();
             }
             UserEvent::NextPicked => {
-                self.as_mut_state().select_next_pick(true);
+                self.local_changes_state.select_next_pick(true);
             }
             UserEvent::PreviousPicked => {
-                self.as_mut_state().select_next_pick(false);
+                self.local_changes_state.select_next_pick(false);
             }
             UserEvent::Edit => {
-                if let Err(err) = self.as_mut_state().request_edit() {
+                if let Err(err) = self.local_changes_state.request_edit() {
                     self.tx.send(AppEvent::NotifyError(err));
                 }
             }
             UserEvent::Commit => {
-                let result = self.as_mut_state().commit_or_continue();
+                let result = self.local_changes_state.commit_or_continue();
                 self.after_action(result);
             }
             UserEvent::Abort => {
-                if let Err(err) = self.as_mut_state().request_abort() {
+                if let Err(err) = self.local_changes_state.request_abort() {
                     self.tx.send(AppEvent::NotifyError(err));
                 }
             }
             UserEvent::ToggleAmend => {
-                if let Err(err) = self.as_mut_state().toggle_amend() {
+                if let Err(err) = self.local_changes_state.toggle_amend() {
                     self.tx.send(AppEvent::NotifyError(err));
                 }
             }
-            UserEvent::Stash => match self.as_mut_state().start_stash() {
+            UserEvent::Stash => match self.local_changes_state.start_stash() {
                 Ok(()) => self.update_stash_status(),
                 Err(err) => self.tx.send(AppEvent::NotifyError(err)),
             },
             UserEvent::Search => {
-                self.as_mut_state().start_query(QueryKind::Search);
+                self.local_changes_state.start_query(QueryKind::Search);
                 self.update_query_status();
             }
             UserEvent::Filter => {
-                self.as_mut_state().start_query(QueryKind::Filter);
+                self.local_changes_state.start_query(QueryKind::Filter);
                 self.update_query_status();
             }
             UserEvent::GoToNext => {
-                self.as_mut_state().search_next(true);
+                self.local_changes_state.search_next(true);
             }
             UserEvent::GoToPrevious => {
-                self.as_mut_state().search_next(false);
+                self.local_changes_state.search_next(false);
             }
             UserEvent::Confirm => {
-                let result = self.as_mut_state().enter();
+                let result = self.local_changes_state.enter();
                 self.after_action(result);
             }
             UserEvent::ToggleStage => {
-                let result = self.as_mut_state().toggle_stage();
+                let result = self.local_changes_state.toggle_stage();
                 self.after_action(result);
             }
             UserEvent::Discard => {
-                self.as_mut_state().request_discard();
+                self.local_changes_state.request_discard();
             }
             UserEvent::FocusPanel(1) => {
-                self.as_mut_state()
+                self.local_changes_state
                     .focus_section(LocalChangesSection::Unstaged);
             }
             UserEvent::FocusPanel(2) => {
-                self.as_mut_state()
+                self.local_changes_state
                     .focus_section(LocalChangesSection::Staged);
             }
             UserEvent::FocusPanel(3) => {
-                self.as_mut_state().edit_message();
+                self.local_changes_state.edit_message();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                self.as_mut_state().select_next();
+                self.local_changes_state.select_next();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
-                self.as_mut_state().select_prev();
+                self.local_changes_state.select_prev();
             }
             UserEvent::GoToTop => {
-                self.as_mut_state().select_first();
+                self.local_changes_state.select_first();
             }
             UserEvent::GoToBottom => {
-                self.as_mut_state().select_last();
+                self.local_changes_state.select_last();
             }
             UserEvent::NavigateRight => {
-                self.as_mut_state().expand();
+                self.local_changes_state.expand();
             }
             UserEvent::NavigateLeft => {
-                self.as_mut_state().collapse();
+                self.local_changes_state.collapse();
             }
             UserEvent::ScrollDown => {
-                self.as_mut_state().scroll_diff_down(1);
+                self.local_changes_state.scroll_diff_down(1);
             }
             UserEvent::ScrollUp => {
-                self.as_mut_state().scroll_diff_up(1);
+                self.local_changes_state.scroll_diff_up(1);
             }
             UserEvent::PageDown => {
-                let n = self.as_state().diff_page_height();
-                self.as_mut_state().scroll_diff_down(n);
+                let n = self.local_changes_state.diff_page_height();
+                self.local_changes_state.scroll_diff_down(n);
             }
             UserEvent::PageUp => {
-                let n = self.as_state().diff_page_height();
-                self.as_mut_state().scroll_diff_up(n);
+                let n = self.local_changes_state.diff_page_height();
+                self.local_changes_state.scroll_diff_up(n);
             }
             UserEvent::HalfPageDown => {
-                let n = self.as_state().diff_page_height() / 2;
-                self.as_mut_state().scroll_diff_down(n);
+                let n = self.local_changes_state.diff_page_height() / 2;
+                self.local_changes_state.scroll_diff_down(n);
             }
             UserEvent::HalfPageUp => {
-                let n = self.as_state().diff_page_height() / 2;
-                self.as_mut_state().scroll_diff_up(n);
+                let n = self.local_changes_state.diff_page_height() / 2;
+                self.local_changes_state.scroll_diff_up(n);
             }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
             // y and Y copy the path of the selected file
-            UserEvent::ShortCopy | UserEvent::FullCopy if !self.as_state().is_commit_focused() => {
-                if let Some(path) = self.as_state().selected_path() {
+            UserEvent::ShortCopy | UserEvent::FullCopy
+                if !self.local_changes_state.is_commit_focused() =>
+            {
+                if let Some(path) = self.local_changes_state.selected_path() {
                     let full = event == UserEvent::FullCopy;
-                    let repository = self.as_state().repository();
+                    let repository = self.local_changes_state.repository();
                     self.tx.send(copy_path(repository, &path, full));
                 }
             }
-            UserEvent::Ignore if self.as_state().is_files_focused() => {
-                match self.as_mut_state().ignore_selected() {
+            UserEvent::Ignore if self.local_changes_state.is_files_focused() => {
+                match self.local_changes_state.ignore_selected() {
                     Ok(message) if message.is_empty() => {}
                     Ok(message) => self.tx.send(AppEvent::NotifySuccess(message)),
                     Err(err) => self.tx.send(AppEvent::NotifyError(err)),
@@ -279,11 +281,11 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn key_hints(&self) -> Vec<KeyHint> {
-        self.as_state().key_hints()
+        self.local_changes_state.key_hints()
     }
 
     pub fn move_focus(&mut self, direction: Direction) -> bool {
-        let result = self.as_mut_state().move_focus(direction);
+        let result = self.local_changes_state.move_focus(direction);
         let moved = *result.as_ref().unwrap_or(&true);
         self.after_action(result.map(|_| ()));
         moved
@@ -291,7 +293,7 @@ impl<'a> LocalChangesView<'a> {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let panel = LocalChangesPanel::new(self.ctx.clone(), focused);
-        f.render_stateful_widget(panel, area, self.as_mut_state());
+        f.render_stateful_widget(panel, area, &mut self.local_changes_state);
     }
 }
 
@@ -304,26 +306,18 @@ impl<'a> LocalChangesView<'a> {
         self.commit_list_state.as_ref().unwrap()
     }
 
-    fn as_state(&self) -> &LocalChangesState<'a> {
-        &self.local_changes_state
-    }
-
-    fn as_mut_state(&mut self) -> &mut LocalChangesState<'a> {
-        &mut self.local_changes_state
-    }
-
     // Turns amending on, with the message of the last commit in the commit section.
     pub fn start_amend(&mut self) -> Result<(), String> {
-        self.as_mut_state().start_amend()
+        self.local_changes_state.start_amend()
     }
 
     // Another panel takes the focus, leaving the diff and the message.
     pub fn blur(&mut self) {
-        self.as_mut_state().focus_files();
+        self.local_changes_state.focus_files();
     }
 
     pub fn local_change_count(&self) -> usize {
-        self.as_state().count()
+        self.local_changes_state.count()
     }
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
@@ -332,21 +326,21 @@ impl<'a> LocalChangesView<'a> {
 
     // Runs the editor or merge tool the state asked for, in place of the app.
     fn run_external_request(&mut self) {
-        let Some(request) = self.as_mut_state().take_external_request() else {
+        let Some(request) = self.local_changes_state.take_external_request() else {
             return;
         };
         let command = match request {
             ExternalRequest::Editor(path) => editor_command(&path),
             ExternalRequest::MergeTool(path) => {
                 let tool = self.ctx.core_config.git.merge_tool.as_deref();
-                merge_tool_command(self.as_state().toplevel(), &path, tool)
+                merge_tool_command(self.local_changes_state.toplevel(), &path, tool)
             }
         };
         self.tx.send(AppEvent::RunExternal(command));
     }
 
     pub fn is_capturing_keys(&self) -> bool {
-        let state = self.as_state();
+        let state = &self.local_changes_state;
         state.is_editing()
             || state.is_confirming()
             || state.is_typing_query()
@@ -355,7 +349,7 @@ impl<'a> LocalChangesView<'a> {
 
     // Shows the stash message being typed in the status line.
     fn update_stash_status(&self) {
-        match self.as_state().stash_status_input() {
+        match self.local_changes_state.stash_status_input() {
             Some((message, cursor_position, metadata)) => {
                 self.tx.send(AppEvent::UpdateStatusInput {
                     message,
@@ -369,7 +363,7 @@ impl<'a> LocalChangesView<'a> {
 
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
-        match self.as_state().query_status_input() {
+        match self.local_changes_state.query_status_input() {
             Some((message, cursor_position)) => self.tx.send(AppEvent::UpdateStatusInput {
                 message,
                 cursor_position,
@@ -383,7 +377,7 @@ impl<'a> LocalChangesView<'a> {
     // Whether the key commits, or continues the rebase in progress, which git may sign, asking for
     // a passphrase in the terminal (see `App::handle_view_event`).
     pub fn may_sign(&self, event: UserEvent, key: KeyEvent) -> bool {
-        let state = self.as_state();
+        let state = &self.local_changes_state;
         if state.is_confirming() {
             return state.is_confirming_commit()
                 && (key.code == KeyCode::Enter || self.confirms_commit(key));
@@ -395,14 +389,14 @@ impl<'a> LocalChangesView<'a> {
     }
 
     fn confirms_commit(&self, key: KeyEvent) -> bool {
-        self.as_state().is_confirming_commit()
+        self.local_changes_state.is_confirming_commit()
             && self.ctx.keybind.event_in(Scope::LocalChanges, &key) == Some(UserEvent::Commit)
     }
 
     // Whether the key may change the repository: staging, discarding, stashing, committing,
     // aborting or resolving a conflict, or confirming one of these.
     fn changes_repository(&self, event: UserEvent, key: KeyEvent) -> bool {
-        let state = self.as_state();
+        let state = &self.local_changes_state;
         if state.is_confirming() {
             return key.code == KeyCode::Enter || self.confirms_commit(key);
         }
@@ -424,7 +418,7 @@ impl<'a> LocalChangesView<'a> {
     // Like lazygit, reloads the repository after anything that may have changed it, whether it
     // succeeded or not: a failed continue may still have applied some commits before it stopped.
     fn after_action(&mut self, result: Result<(), String>) {
-        if self.as_mut_state().take_needs_refresh() {
+        if self.local_changes_state.take_needs_refresh() {
             self.refresh();
         }
         if let Err(err) = result {
@@ -435,7 +429,7 @@ impl<'a> LocalChangesView<'a> {
     // The panel whose height changes with ctrl-up and ctrl-down: the unstaged files over the
     // staged ones from them, else the commit message under the diff.
     pub fn height_panel(&self) -> Panel {
-        if self.as_state().is_files_focused() {
+        if self.local_changes_state.is_files_focused() {
             Panel::Unstaged
         } else {
             Panel::Commit
@@ -444,7 +438,7 @@ impl<'a> LocalChangesView<'a> {
 
     // The scope of the keys: the diff, or the rest of the page.
     pub fn scope(&self) -> Scope {
-        if self.as_state().is_diff_focused() {
+        if self.local_changes_state.is_diff_focused() {
             Scope::LocalChangesDiff
         } else {
             Scope::LocalChanges
@@ -453,12 +447,12 @@ impl<'a> LocalChangesView<'a> {
 
     // Reloads the changes, keeping the selection, for those made outside the app.
     pub fn reload_files(&mut self) {
-        self.as_mut_state().reload_if_changed();
+        self.local_changes_state.reload_if_changed();
     }
 
     // What to restore of the page, after a refresh or coming back to it.
     pub fn context(&self) -> LocalChangesSnapshot {
-        self.as_state().snapshot()
+        self.local_changes_state.snapshot()
     }
 
     pub fn refresh(&self) {

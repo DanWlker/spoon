@@ -229,20 +229,11 @@ fn stash_message(repository: &Repository, name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::git::git;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::git::SortCommit;
-
-    fn git(dir: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "git {args:?}: {output:?}");
-        String::from_utf8(output.stdout).unwrap()
-    }
 
     // Runs the popup of the event on the selection, after the keys: characters are typed, the
     // others are events.

@@ -14,7 +14,7 @@ use crate::{
     app::{spinner, AppContext},
     git::{split_remote_branch, Head, Ref},
     widget::style::{
-        fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
+        fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar, scroll_to,
     },
 };
 
@@ -497,11 +497,7 @@ impl StatefulWidget for RefList {
         state.offset = state.offset.min(state.visible_rows.len().saturating_sub(1));
         if state.scroll_to_selection {
             if let Some(index) = state.selected_index() {
-                if index < state.offset {
-                    state.offset = index;
-                } else if index >= state.offset + height {
-                    state.offset = index + 1 - height;
-                }
+                state.offset = scroll_to(state.offset, index, height);
             }
             state.scroll_to_selection = false;
         }

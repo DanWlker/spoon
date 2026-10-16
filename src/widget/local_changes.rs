@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, BorderType, Borders, Padding, Paragraph, StatefulWidget, Widget},
 };
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
@@ -17,7 +17,7 @@ use crate::{
     git::{
         ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository,
     },
-    layout::{Border, Direction, Panel},
+    layout::{fit_size, Direction, Panel},
     widget::{
         conflict::ConflictView,
         diff::{
@@ -28,11 +28,13 @@ use crate::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
         style::{
-            badge, fold_marker, mark_selected_row, panel_block, panel_title, popup_title,
-            render_panel_scrollbar, tree_panel_width,
+            badge, mark_selected_row, panel_block, panel_title, popup_title,
+            render_panel_scrollbar, render_popup, tree_panel_width,
         },
         text_area::TextArea,
-        tree_query::{highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery},
+        tree_query::{
+            dir_line, highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery,
+        },
     },
 };
 
@@ -49,15 +51,6 @@ enum ConflictItem {
     Incoming,
     MergeTool,
     Editor,
-}
-
-// A direction to move between the choices of the conflict panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConflictMove {
-    Left,
-    Right,
-    Up,
-    Down,
 }
 
 // An interactive program for the view to run in place of the app.
@@ -93,11 +86,32 @@ struct CommitPreview {
 #[derive(Debug, Default, Clone)]
 pub struct CommitDraft {
     message: TextArea,
+    // set while amending: the parent of HEAD, which the staged section is compared to instead of HEAD,
+    // so it shows the changes of the commit being amended together with what is staged
     amend_base: Option<String>,
+    // the message typed before amending, restored when amending is turned off
     message_before_amend: Option<TextArea>,
+    // amending the commit a rebase stopped at to edit, turned off when the rebase goes on
     amend_for_edit: bool,
-    // git's message was filled in, see `prepare_message`
+    // whether git's prepared message was put in the message box for the operation in progress,
+    // see `prepare_message`
     message_prepared: bool,
+}
+
+impl CommitDraft {
+    // Amends the commit after `base`, its `message` in place of the typed one.
+    fn start_amend(&mut self, base: String, message: &str) {
+        self.amend_base = Some(base);
+        self.message_before_amend =
+            Some(std::mem::replace(&mut self.message, TextArea::new(message)));
+    }
+
+    // Stops amending, the typed message back.
+    fn stop_amend(&mut self) {
+        self.amend_base = None;
+        self.amend_for_edit = false;
+        self.message = self.message_before_amend.take().unwrap_or_default();
+    }
 }
 
 // Where the keys go on the page.
@@ -187,14 +201,8 @@ pub struct LocalChangesState<'a> {
     // searching the diff while it has the focus
     diff_query: TreeQuery,
 
-    message: TextArea,
-    // set while amending: the parent of HEAD, which the staged section is compared to instead of HEAD,
-    // so it shows the changes of the commit being amended together with what is staged
-    amend_base: Option<String>,
-    // the message typed before amending, restored when amending is turned off
-    message_before_amend: Option<TextArea>,
-    // amending the commit a rebase stopped at to edit, turned off when the rebase goes on
-    amend_for_edit: bool,
+    // the message, and amending
+    draft: CommitDraft,
     // a rebase stopped to edit a commit, which committing amends before going on
     editing_commit: bool,
     // set once a commit or stash is made, until the view picks it up to refresh the repository
@@ -211,8 +219,6 @@ pub struct LocalChangesState<'a> {
     external_request: Option<ExternalRequest>,
     // a rebase, merge, cherry-pick or revert stopped and waits to be finished (or aborted)
     operation: Option<Operation>,
-    // whether git's prepared message was put in the message box for the operation in progress
-    message_prepared: bool,
 }
 
 impl<'a> LocalChangesState<'a> {
@@ -241,10 +247,7 @@ impl<'a> LocalChangesState<'a> {
             diff: ParsedDiff::default(),
             cursor: DiffCursor::default(),
             diff_query: TreeQuery::default(),
-            message: TextArea::default(),
-            amend_base: None,
-            message_before_amend: None,
-            amend_for_edit: false,
+            draft: CommitDraft::default(),
             editing_commit: false,
             needs_refresh: false,
             stash_input: None,
@@ -253,20 +256,12 @@ impl<'a> LocalChangesState<'a> {
             conflict_item: ConflictItem::Existing,
             external_request: None,
             operation: repository.operation_in_progress(),
-            message_prepared: false,
         };
         if let Some(snapshot) = snapshot {
-            let draft = *snapshot.commit_draft;
-            state.message = draft.message;
-            state.amend_base = draft.amend_base;
-            state.message_before_amend = draft.message_before_amend;
-            state.amend_for_edit = draft.amend_for_edit;
-            state.message_prepared = draft.message_prepared;
-            if state.amend_base.is_some() {
+            state.draft = *snapshot.commit_draft;
+            if state.draft.amend_base.is_some() {
                 // the staged section shows the last commit too
-                state.changes = state.load_changes();
-                let tree = file_tree(&state.changes.staged);
-                state.sections[1].tree.set_tree(tree);
+                state.reload_staged();
             }
             if let Some(path) = snapshot.selected_path {
                 state.tree_mut().select_path(&path);
@@ -284,7 +279,7 @@ impl<'a> LocalChangesState<'a> {
         LocalChangesSnapshot {
             section: self.section,
             selected_path: self.selected_path(),
-            commit_draft: Box::new(self.commit_draft()),
+            commit_draft: Box::new(self.draft.clone()),
         }
     }
 
@@ -318,7 +313,7 @@ impl<'a> LocalChangesState<'a> {
         if key.code == KeyCode::Esc {
             self.focus = Focus::Commit { editing: false };
         } else {
-            self.message.handle_key(key);
+            self.draft.message.handle_key(key);
         }
     }
 
@@ -345,7 +340,7 @@ impl<'a> LocalChangesState<'a> {
             self.reload();
             return result;
         }
-        if self.message.text().trim().is_empty() {
+        if self.draft.message.text().trim().is_empty() {
             self.edit_message();
             return Ok(());
         }
@@ -361,7 +356,7 @@ impl<'a> LocalChangesState<'a> {
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
     fn request_commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let amend = self.amend_base.is_some();
+        let amend = self.draft.amend_base.is_some();
         let (action, branch) = if self.editing_commit {
             // HEAD is the commit being edited, on no branch while rebasing
             let head = self
@@ -382,7 +377,7 @@ impl<'a> LocalChangesState<'a> {
             };
             (action, branch)
         };
-        let message = self.message.text();
+        let message = self.draft.message.text();
         let mut lines = message.trim().lines().map(String::from);
         let subject = lines.next().unwrap_or_default();
         // the blank line after the subject is shown as a gap
@@ -408,10 +403,10 @@ impl<'a> LocalChangesState<'a> {
 
     // Whether there is something to commit, with a message.
     fn check_commit(&self) -> Result<(), String> {
-        if self.message.text().trim().is_empty() {
+        if self.draft.message.text().trim().is_empty() {
             return Err("Commit message is empty".into());
         }
-        let amend = self.amend_base.is_some();
+        let amend = self.draft.amend_base.is_some();
         // a merge can be committed without changes, when its resolution keeps one side
         if !amend && self.changes.staged.is_empty() && self.operation.is_none() {
             return Err("Nothing staged to commit".into());
@@ -438,22 +433,24 @@ impl<'a> LocalChangesState<'a> {
         let Some(operation) = self.operation else {
             // a squash merge leaves its message without a merge in progress
             match self.repository.squash_message() {
-                Some(message) if !self.message_prepared && self.message.is_empty() => {
-                    self.message = TextArea::new(&message);
-                    self.message_prepared = true;
+                Some(message) if !self.draft.message_prepared && self.draft.message.is_empty() => {
+                    self.draft.message = TextArea::new(&message);
+                    self.draft.message_prepared = true;
                 }
                 Some(_) => {}
-                None => self.message_prepared = false,
+                None => self.draft.message_prepared = false,
             }
             return;
         };
-        if operation.continues_without_commit() || self.message_prepared || !self.message.is_empty()
+        if operation.continues_without_commit()
+            || self.draft.message_prepared
+            || !self.draft.message.is_empty()
         {
             return;
         }
         if let Some(message) = self.repository.prepared_message() {
-            self.message = TextArea::new(&message);
-            self.message_prepared = true;
+            self.draft.message = TextArea::new(&message);
+            self.draft.message_prepared = true;
         }
     }
 
@@ -467,8 +464,8 @@ impl<'a> LocalChangesState<'a> {
     // Commits the staged changes with the typed message, amending HEAD while amend is checked.
     pub fn commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let message = self.message.text();
-        let amend = self.amend_base.is_some();
+        let message = self.draft.message.text();
+        let amend = self.draft.amend_base.is_some();
         self.repository.commit_staged(&message, amend)?;
         // the next commits of a cherry-pick or revert of several commits
         let continued = match self.operation {
@@ -476,11 +473,7 @@ impl<'a> LocalChangesState<'a> {
             None => Ok(()),
         };
 
-        self.message = TextArea::default();
-        self.amend_base = None;
-        self.message_before_amend = None;
-        self.amend_for_edit = false;
-        self.message_prepared = false;
+        self.draft = CommitDraft::default();
         self.needs_refresh = true;
         self.reload();
         continued
@@ -717,36 +710,22 @@ impl<'a> LocalChangesState<'a> {
         )
     }
 
-    pub fn commit_draft(&self) -> CommitDraft {
-        CommitDraft {
-            message: self.message.clone(),
-            amend_base: self.amend_base.clone(),
-            message_before_amend: self.message_before_amend.clone(),
-            amend_for_edit: self.amend_for_edit,
-            message_prepared: self.message_prepared,
-        }
-    }
-
     // Turning amend on shows the changes of HEAD in the staged section, combined with what is staged,
     // and the HEAD message in place of the typed one. Turning it off restores both.
     pub fn toggle_amend(&mut self) -> Result<(), String> {
         if self.editing_commit {
             return Err("The commit being edited is amended; C aborts the rebase".into());
         }
-        if let Some(operation) = self.operation.filter(|_| self.amend_base.is_none()) {
+        if let Some(operation) = self.operation.filter(|_| self.draft.amend_base.is_none()) {
             // HEAD is the commit before the operation, amending it would mix the two up
             return Err(format!("Cannot amend during a {}", operation.name()));
         }
-        if self.amend_base.take().is_some() {
-            self.message = self.message_before_amend.take().unwrap_or_default();
+        if self.draft.amend_base.is_some() {
+            self.draft.stop_amend();
         } else {
             let base = self.repository.amend_base()?;
             let message = self.repository.head_commit_message()?;
-            self.amend_base = Some(base);
-            self.message_before_amend = Some(std::mem::replace(
-                &mut self.message,
-                TextArea::new(&message),
-            ));
+            self.draft.start_amend(base, &message);
         }
         self.reload();
         Ok(())
@@ -754,11 +733,18 @@ impl<'a> LocalChangesState<'a> {
 
     // Turns amending on, if it isn't, focusing the commit section with the message of the commit.
     pub fn start_amend(&mut self) -> Result<(), String> {
-        if self.amend_base.is_none() {
+        if self.draft.amend_base.is_none() {
             self.toggle_amend()?;
         }
         self.focus_commit();
         Ok(())
+    }
+
+    // Loads the changes again, after amending turned on or off changed the staged section.
+    fn reload_staged(&mut self) {
+        self.changes = self.load_changes();
+        let tree = file_tree(&self.changes.staged);
+        self.sections[1].tree.set_tree(tree);
     }
 
     // A rebase stopped to edit a commit turns amending on, with the message of that commit, and
@@ -766,34 +752,26 @@ impl<'a> LocalChangesState<'a> {
     fn sync_edit_stop(&mut self) {
         self.editing_commit =
             self.operation == Some(Operation::Rebase) && self.repository.rebase_stopped_to_edit();
-        let changed = if self.editing_commit && self.amend_base.is_none() {
+        let changed = if self.editing_commit && self.draft.amend_base.is_none() {
             match (
                 self.repository.amend_base(),
                 self.repository.head_commit_message(),
             ) {
                 (Ok(base), Ok(message)) => {
-                    self.amend_base = Some(base);
-                    self.message_before_amend = Some(std::mem::replace(
-                        &mut self.message,
-                        TextArea::new(&message),
-                    ));
-                    self.amend_for_edit = true;
+                    self.draft.start_amend(base, &message);
+                    self.draft.amend_for_edit = true;
                     true
                 }
                 _ => false,
             }
-        } else if !self.editing_commit && self.amend_for_edit {
-            self.amend_base = None;
-            self.message = self.message_before_amend.take().unwrap_or_default();
-            self.amend_for_edit = false;
+        } else if !self.editing_commit && self.draft.amend_for_edit {
+            self.draft.stop_amend();
             true
         } else {
             false
         };
         if changed {
-            self.changes = self.load_changes();
-            let tree = file_tree(&self.changes.staged);
-            self.sections[1].tree.set_tree(tree);
+            self.reload_staged();
         }
     }
 
@@ -849,13 +827,13 @@ impl<'a> LocalChangesState<'a> {
             .is_some_and(Operation::continues_without_commit)
         {
             "continue"
-        } else if self.amend_base.is_some() {
+        } else if self.draft.amend_base.is_some() {
             "amend"
         } else {
             "commit"
         };
         // amending is not available while an operation is in progress, aborting is
-        let amend_or_abort = match (self.operation, self.amend_base.is_some()) {
+        let amend_or_abort = match (self.operation, self.draft.amend_base.is_some()) {
             (Some(_), _) => h(&[Abort], "abort"),
             (None, true) => h(&[ToggleAmend], "stop amending"),
             (None, false) => h(&[ToggleAmend], "amend"),
@@ -947,15 +925,15 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Moves between the sides (side by side) and the tools below them.
-    pub fn move_conflict_item(&mut self, direction: ConflictMove) {
+    pub fn move_conflict_item(&mut self, direction: Direction) {
         use ConflictItem::*;
         self.conflict_item = match (self.conflict_item, direction) {
-            (Existing, ConflictMove::Right) => Incoming,
-            (Incoming, ConflictMove::Left) => Existing,
-            (Existing | Incoming, ConflictMove::Down) => MergeTool,
-            (MergeTool, ConflictMove::Down) => Editor,
-            (Editor, ConflictMove::Up) => MergeTool,
-            (MergeTool, ConflictMove::Up) => Existing,
+            (Existing, Direction::Right) => Incoming,
+            (Incoming, Direction::Left) => Existing,
+            (Existing | Incoming, Direction::Down) => MergeTool,
+            (MergeTool, Direction::Down) => Editor,
+            (Editor, Direction::Up) => MergeTool,
+            (MergeTool, Direction::Up) => Existing,
             (item, _) => item,
         };
     }
@@ -1167,7 +1145,7 @@ impl<'a> LocalChangesState<'a> {
             LocalChangesSection::Unstaged => self.repository.stage_paths(&paths),
             LocalChangesSection::Staged => self
                 .repository
-                .unstage_paths(&paths, self.amend_base.as_deref()),
+                .unstage_paths(&paths, self.draft.amend_base.as_deref()),
         }
     }
 
@@ -1224,7 +1202,7 @@ impl<'a> LocalChangesState<'a> {
 
     fn load_changes(&self) -> LocalChanges {
         let mut changes = self.repository.local_changes();
-        if let Some(base) = &self.amend_base {
+        if let Some(base) = &self.draft.amend_base {
             changes.staged = self.repository.staged_changes_against(base);
         }
         changes
@@ -1461,7 +1439,7 @@ impl<'a> LocalChangesState<'a> {
     // The diff of the picked files, else of the selected row.
     fn diff_text(&self) -> String {
         let staged = self.section == LocalChangesSection::Staged;
-        let base = self.amend_base.as_deref();
+        let base = self.draft.amend_base.as_deref();
         if self.diff_of_picked {
             // untracked files are only shown by diffing each against /dev/null
             let targets = self.target_files();
@@ -1554,50 +1532,35 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let mut layout = self.ctx.layout.borrow_mut();
         // each keeps some room
-        let files_width = layout
-            .size(Panel::Files, tree_panel_width(area.width))
-            .clamp(10, area.width.saturating_sub(20).max(10))
-            .min(area.width);
+        let files_width = fit_size(
+            layout.size(Panel::Files, tree_panel_width(area.width)),
+            area.width,
+            10,
+            20,
+        );
         let [files_area, right_area] =
             Layout::horizontal([Constraint::Length(files_width), Constraint::Min(0)]).areas(area);
-        let commit_height = layout
-            .size(Panel::Commit, COMMIT_AREA_HEIGHT)
-            .clamp(3, right_area.height.saturating_sub(3).max(3))
-            .min(right_area.height);
+        let commit_height = fit_size(
+            layout.size(Panel::Commit, COMMIT_AREA_HEIGHT),
+            right_area.height,
+            3,
+            3,
+        );
         let [diff_area, commit_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(commit_height)])
                 .areas(right_area);
-        let unstaged_height = layout
-            .size(Panel::Unstaged, files_area.height / 2)
-            .clamp(3, files_area.height.saturating_sub(3).max(3))
-            .min(files_area.height);
+        let unstaged_height = fit_size(
+            layout.size(Panel::Unstaged, files_area.height / 2),
+            files_area.height,
+            3,
+            3,
+        );
         let [unstaged_area, staged_area] =
             Layout::vertical([Constraint::Length(unstaged_height), Constraint::Min(0)])
                 .areas(files_area);
-        let borders = [
-            (Panel::Files, true, files_area, true, files_width),
-            (Panel::Unstaged, false, unstaged_area, true, unstaged_height),
-            (Panel::Commit, false, commit_area, false, commit_height),
-        ];
-        for (panel, vertical, area, forward, size) in borders {
-            let (at, from, to, anchor) = match (vertical, forward) {
-                (true, _) => (area.right() - 1, area.top(), area.bottom(), area.left()),
-                (false, true) => (area.bottom() - 1, area.left(), area.right(), area.top()),
-                (false, false) => (area.top(), area.left(), area.right(), area.bottom()),
-            };
-            let border = Border {
-                panel,
-                vertical,
-                at,
-                from,
-                to,
-                anchor,
-                forward,
-            };
-            if !area.is_empty() {
-                layout.place(border, size);
-            }
-        }
+        layout.place(Panel::Files, files_area, true, true);
+        layout.place(Panel::Unstaged, unstaged_area, false, true);
+        layout.place(Panel::Commit, commit_area, false, false);
         drop(layout);
 
         self.render_file_section(state, LocalChangesSection::Unstaged, unstaged_area, buf);
@@ -1637,7 +1600,7 @@ impl LocalChangesPanel<'_> {
         let active = state.section == section;
         let focused = active && self.focused && state.focus_on_files();
         let mut extras = vec![];
-        if section == LocalChangesSection::Staged && state.amend_base.is_some() {
+        if section == LocalChangesSection::Staged && state.draft.amend_base.is_some() {
             extras.push("amending".to_string());
         }
         if !picked.is_empty() {
@@ -1692,13 +1655,8 @@ impl LocalChangesPanel<'_> {
             .map(|row| {
                 let indent = "  ".repeat(row.depth);
                 match row.file_index {
-                    None => {
-                        // everything is expanded while filtering
-                        let symbol = fold_marker(tree.is_open(&row.path));
-                        let mut spans = vec![Span::raw(indent), Span::raw(symbol)];
-                        spans.extend(highlighted_name(&row.name, search, &self.ctx.color_theme));
-                        Line::from(spans)
-                    }
+                    // everything is expanded while filtering
+                    None => dir_line(row, tree.is_open(&row.path), search, &self.ctx.color_theme),
                     Some(i) => {
                         let status = files[i].status;
                         let mut spans = vec![
@@ -1804,7 +1762,7 @@ impl LocalChangesPanel<'_> {
         let focused = self.focused && state.is_commit_focused();
         // amending and rebasing have no controls of their own, the title shows them
         let mut title = panel_title("[3] Commit", "", focused, theme).spans;
-        if state.amend_base.is_some() {
+        if state.draft.amend_base.is_some() {
             title.push(Span::raw(" · amending ").fg(theme.status_warn_fg));
         }
         if let Some(operation) = state.operation {
@@ -1957,7 +1915,16 @@ impl LocalChangesPanel<'_> {
             Line::raw("This cannot be undone.").fg(theme.status_error_fg),
             Line::raw(""),
         ];
-        render_popup(title, theme.status_error_fg, lines, area, buf, theme);
+        let title = popup_title(format!(" {title} "), theme.status_error_fg, theme);
+        render_popup(
+            title,
+            theme.status_error_fg,
+            lines,
+            POPUP_WIDTHS,
+            area,
+            buf,
+            theme,
+        );
     }
 
     // The commit to make: on which branch, the message, the files; like the popups of git commands.
@@ -2022,7 +1989,8 @@ impl LocalChangesPanel<'_> {
             lines.push(Line::styled(more, dim));
         }
         lines.push(Line::raw(""));
-        render_popup(title, color, lines, area, buf, theme);
+        let title = popup_title(format!(" {title} "), color, theme);
+        render_popup(title, color, lines, POPUP_WIDTHS, area, buf, theme);
     }
 
     fn render_message(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -2030,13 +1998,14 @@ impl LocalChangesPanel<'_> {
             return;
         }
         let theme = &self.ctx.color_theme;
-        if state.message.is_empty() && !state.is_editing() {
+        if state.draft.message.is_empty() && !state.is_editing() {
             Paragraph::new(Line::raw("Commit message").fg(theme.status_input_transient_fg))
                 .render(area, buf);
             return;
         }
 
         state
+            .draft
             .message
             .render(area, buf, Style::default().fg(theme.fg), state.is_editing());
     }
@@ -2061,40 +2030,10 @@ impl LocalChangesPanel<'_> {
 }
 
 // The width of the text of a popup; longer lines are cut.
-const MIN_POPUP_WIDTH: usize = 44;
-const MAX_POPUP_WIDTH: usize = 80;
+// the text width of its popups
+const POPUP_WIDTHS: (usize, usize) = (44, 80);
 
 // A popup in the middle of `area`, with a rounded border of `color` and its title in it.
-fn render_popup(
-    title: &str,
-    color: Color,
-    lines: Vec<Line>,
-    area: Rect,
-    buf: &mut Buffer,
-    theme: &crate::color::ColorTheme,
-) {
-    // text plus padding and borders
-    let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
-    let text_width = text_width.clamp(MIN_POPUP_WIDTH, MAX_POPUP_WIDTH);
-    let width = (text_width as u16 + 4).min(area.width);
-    let height = (lines.len() as u16 + 2).min(area.height);
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(width)) / 2,
-        area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    );
-    Clear.render(popup, buf);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-        .style(Style::default().fg(theme.fg).bg(theme.bg))
-        .title(popup_title(format!(" {title} "), color, theme))
-        .padding(Padding::horizontal(1));
-    Paragraph::new(lines).block(block).render(popup, buf);
-}
-
 fn status_symbol(status: LocalChangeStatus) -> &'static str {
     match status {
         LocalChangeStatus::Added => "A",
@@ -2399,7 +2338,7 @@ mod tests {
 
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
-        state.message = TextArea::new("draft");
+        state.draft.message = TextArea::new("draft");
         assert_eq!(paths(&state.changes.staged), vec!["c.txt"]);
 
         // 3, down to the checkbox, enter: the last commit is combined with the staged changes
@@ -2408,7 +2347,7 @@ mod tests {
             paths(&state.changes.staged),
             vec!["a.txt", "b.txt", "c.txt"]
         );
-        assert_eq!(state.message.text(), "second\n\nbody");
+        assert_eq!(state.draft.message.text(), "second\n\nbody");
 
         // the staged diff includes the change made by the last commit
         state.focus_section(LocalChangesSection::Staged);
@@ -2427,7 +2366,7 @@ mod tests {
 
         // turning amend off restores the staged section and the typed message
         state.toggle_amend()?;
-        assert_eq!(state.message.text(), "draft");
+        assert_eq!(state.draft.message.text(), "draft");
         assert_eq!(paths(&state.changes.staged), vec!["b.txt", "c.txt"]);
         assert_eq!(state.changes.staged[0].status, LocalChangeStatus::Deleted);
 
@@ -2486,16 +2425,16 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
 
         // nothing staged, then no message
-        state.message = TextArea::new("first change");
+        state.draft.message = TextArea::new("first change");
         assert!(state.commit().is_err());
         fs::write(repo_path.join("a.txt"), "a\n")?;
         git.add(&["a.txt"]);
         state.reload();
-        state.message = TextArea::new("  \n");
+        state.draft.message = TextArea::new("  \n");
         assert!(state.commit().is_err());
 
         // c with an empty message starts typing it instead
-        state.message = TextArea::default();
+        state.draft.message = TextArea::default();
         state.commit_or_continue()?;
         assert!(state.is_editing());
         state.back();
@@ -2509,7 +2448,7 @@ mod tests {
         state.request_edit()?;
         assert!(state.is_editing());
         state.back();
-        state.message = TextArea::new("typed");
+        state.draft.message = TextArea::new("typed");
         state.enter()?;
         assert!(state.is_confirming_commit());
         state.handle_confirm_key(KeyEvent::from(KeyCode::Esc))?;
@@ -2518,7 +2457,7 @@ mod tests {
         state.back();
 
         // c with a message asks to confirm the commit, showing it
-        state.message = TextArea::new("first change\n\nbody");
+        state.draft.message = TextArea::new("first change\n\nbody");
         state.commit_or_continue()?;
         assert!(state.is_confirming_commit());
         assert_eq!(state.confirm_prompt(), Some("Commit to master"));
@@ -2540,7 +2479,7 @@ mod tests {
             "first change\n\nbody"
         );
         assert!(state.changes.staged.is_empty());
-        assert!(state.message.is_empty());
+        assert!(state.draft.message.is_empty());
 
         // amend with another staged file, keeping the message of HEAD
         fs::write(repo_path.join("b.txt"), "b\n")?;
@@ -2557,7 +2496,7 @@ mod tests {
             git_stdout(repo_path, &["show", "--name-only", "--format=", "HEAD"]),
             "a.txt\nb.txt"
         );
-        assert!(state.amend_base.is_none());
+        assert!(state.draft.amend_base.is_none());
 
         Ok(())
     }
@@ -3163,17 +3102,17 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         assert_eq!(state.operation, Some(Operation::Merge));
         // git's message, without its comment lines
-        assert_eq!(state.message.text(), "Merge branch 'feature'");
+        assert_eq!(state.draft.message.text(), "Merge branch 'feature'");
         assert!(state.toggle_amend().is_err());
         // also when the page opens from a snapshot; once cleared, it stays so
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let restored = LocalChangesState::restore(&repository, Some(Default::default()));
-        assert_eq!(restored.message.text(), "Merge branch 'feature'");
-        state.message = TextArea::default();
+        assert_eq!(restored.draft.message.text(), "Merge branch 'feature'");
+        state.draft.message = TextArea::default();
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let restored = LocalChangesState::restore(&repository, Some(state.snapshot()));
-        assert_eq!(restored.message.text(), "");
-        state.message = TextArea::new("Merge branch 'feature'");
+        assert_eq!(restored.draft.message.text(), "");
+        state.draft.message = TextArea::new("Merge branch 'feature'");
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
@@ -3211,7 +3150,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         assert_eq!(state.operation, Some(Operation::CherryPick));
-        assert_eq!(state.message.text(), "feature change");
+        assert_eq!(state.draft.message.text(), "feature change");
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
@@ -3240,6 +3179,7 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         assert_eq!(state.operation, Some(Operation::Revert));
         assert!(state
+            .draft
             .message
             .text()
             .starts_with("Revert \"feature change\""));
@@ -3274,13 +3214,13 @@ mod tests {
         // the tools ask the view to run them
         state.enter()?;
         assert!(state.is_conflict_focused());
-        state.move_conflict_item(ConflictMove::Down);
+        state.move_conflict_item(Direction::Down);
         state.enter()?;
         assert_eq!(
             state.take_external_request(),
             Some(ExternalRequest::MergeTool("a.txt".into()))
         );
-        state.move_conflict_item(ConflictMove::Down);
+        state.move_conflict_item(Direction::Down);
         state.enter()?;
         let toplevel = state.toplevel().to_path_buf();
         assert_eq!(
@@ -3304,7 +3244,7 @@ mod tests {
 
         // picking a side resolves the file with it
         state.enter()?;
-        state.move_conflict_item(ConflictMove::Right);
+        state.move_conflict_item(Direction::Right);
         state.enter()?;
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "feature\n");
         assert!(state.changes.unstaged.is_empty());
