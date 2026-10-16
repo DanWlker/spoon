@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
+    app::AppContext,
     color::ColorTheme,
     search::{case_insensitive, shared_fuzzy, shared_smart_case},
     widget::{
@@ -293,8 +294,9 @@ pub fn render_tree(
     picked: impl Fn(&str) -> bool,
     cursor: Option<bool>,
     empty: &str,
-    theme: &ColorTheme,
+    ctx: &AppContext,
 ) -> usize {
+    let theme = &ctx.color_theme;
     let rows = tree.rows();
     if rows.is_empty() {
         Paragraph::new(placeholder(empty, theme)).render(area, buf);
@@ -305,7 +307,7 @@ pub fn render_tree(
     if height == 0 {
         return 0;
     }
-    let offset = tree.scroll(height);
+    let offset = tree.scroll(height, ctx.ui_config.common.scrolloff as usize);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -424,7 +426,7 @@ mod tests {
     // Draws `tree` in 20 columns and `height` rows, from column 1, the change letter "M" on each
     // file and `picked` highlighted.
     fn draw_tree(tree: &FileTreeState, height: u16, focused: bool, picked: &str) -> Buffer {
-        let theme = ColorTheme::default();
+        let ctx = crate::test_support::ui::test_ctx();
         let mut buf = Buffer::empty(Rect::new(0, 0, 23, height));
         let area = Rect::new(1, 0, 20, height);
         let symbol = |_| Some("M");
@@ -438,7 +440,7 @@ mod tests {
             is_picked,
             Some(focused),
             "",
-            &theme,
+            &ctx,
         );
         buf
     }

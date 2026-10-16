@@ -2,6 +2,7 @@
 // lazygit's "open in browser": the remote URL becomes https://host/owner/repo, and each kind of
 // host lays out its pages its own way.
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
@@ -312,21 +313,27 @@ fn guess_kind(domain: &str) -> Option<&'static str> {
     .find(|kind| domain.contains(kind))
 }
 
-// Percent-encodes all but letters, digits, "-._~" and "/", for branch names and paths in links.
+// All but letters, digits, "-._~" and "/" are percent-encoded in branch names and paths in links.
+const LINK_PATH: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
+
 fn encode(text: &str) -> String {
-    text.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+    utf8_percent_encode(text, LINK_PATH).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_encode() {
+        // UTF-8 bytes each, "-._~" and "/" as they are
+        assert_eq!(encode("feat/é #1-a.b_c~"), "feat/%C3%A9%20%231-a.b_c~");
+    }
 
     #[test]
     fn test_parse_remote_url() {

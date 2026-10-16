@@ -268,10 +268,25 @@ impl ScrollState {
     }
 }
 
-// The first row shown of a list `height` rows high, moved as little as can be from `offset` to show
-// the `selected` row.
-pub fn scroll_to(offset: usize, selected: usize, height: usize) -> usize {
-    offset.clamp((selected + 1).saturating_sub(height.max(1)), selected)
+// The first row shown of a list of `total` rows, `height` high, moved as little as can be from
+// `offset` to show the `selected` row with `scrolloff` rows above and below it where there are,
+// like vim's; at most half the height, and never past the last row.
+pub fn scroll_to(
+    offset: usize,
+    selected: usize,
+    height: usize,
+    total: usize,
+    scrolloff: usize,
+) -> usize {
+    let height = height.max(1);
+    let margin = scrolloff.min((height - 1) / 2);
+    let bottom = height - 1 - margin;
+    offset
+        .clamp(
+            selected.saturating_sub(bottom),
+            selected.saturating_sub(margin),
+        )
+        .min(total.saturating_sub(height))
 }
 
 // The scroll thumb on the right border of the panel `area` (borders all around).
@@ -323,10 +338,17 @@ mod tests {
 
     #[test]
     fn test_scroll_to() {
-        assert_eq!(scroll_to(5, 2, 10), 2); // above: scrolls up to it
-        assert_eq!(scroll_to(0, 12, 10), 3); // below: the last row shown
-        assert_eq!(scroll_to(3, 7, 10), 3); // shown: stays
-        assert_eq!(scroll_to(3, 7, 0), 7);
+        assert_eq!(scroll_to(5, 2, 10, 20, 0), 2); // above: scrolls up to it
+        assert_eq!(scroll_to(0, 12, 10, 20, 0), 3); // below: the last row shown
+        assert_eq!(scroll_to(3, 7, 10, 20, 0), 3); // shown: stays
+        assert_eq!(scroll_to(3, 7, 0, 20, 0), 7);
+        // with rows kept around it: 2 above, 2 below
+        assert_eq!(scroll_to(5, 6, 10, 20, 2), 4);
+        assert_eq!(scroll_to(0, 8, 10, 20, 2), 1);
+        assert_eq!(scroll_to(3, 7, 10, 20, 2), 3);
+        // never past the last row, never more than half the height
+        assert_eq!(scroll_to(0, 19, 10, 20, 2), 10);
+        assert_eq!(scroll_to(0, 5, 4, 20, 9), 3); // 1 row kept in 4: rows 3 to 6
     }
 
     #[test]

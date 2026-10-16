@@ -312,6 +312,9 @@ pub struct UiConfig {
 pub struct UiCommonConfig {
     #[default(CursorType::Native)]
     pub cursor_type: CursorType,
+    // the rows kept visible above and below the selected one in every list, like vim's
+    #[default = 0]
+    pub scrolloff: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -343,9 +346,6 @@ pub struct CoreExternalConfig {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiListConfig {
-    #[garde(range(min = 0))]
-    #[default = 0]
-    pub scrolloff: u16,
     #[garde(length(min = 1))]
     #[default(vec![
         UserListColumnType::Graph,
@@ -500,9 +500,9 @@ mod tests {
             ui: UiConfig {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Native,
+                    scrolloff: 0,
                 },
                 list: UiListConfig {
-                    scrolloff: 0,
                     columns: vec![
                         UserListColumnType::Graph,
                         UserListColumnType::Marker,
@@ -573,8 +573,8 @@ mod tests {
             "code.example.org" = { commit = "{base}/c/{hash}" }
             [ui.common]
             cursor_type = { virtual = "|" }
-            [ui.list]
             scrolloff = 3
+            [ui.list]
             columns = ["date", "subject", "hash", "graph"]
             subject_min_width = 40
             date_format = "%Y/%m/%d"
@@ -686,9 +686,9 @@ mod tests {
             ui: UiConfig {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Virtual("|".into()),
+                    scrolloff: 3,
                 },
                 list: UiListConfig {
-                    scrolloff: 3,
                     columns: vec![
                         UserListColumnType::Date,
                         UserListColumnType::Subject,
@@ -778,9 +778,9 @@ mod tests {
             ui: UiConfig {
                 common: UiCommonConfig {
                     cursor_type: CursorType::Native,
+                    scrolloff: 0,
                 },
                 list: UiListConfig {
-                    scrolloff: 0,
                     columns: vec![
                         UserListColumnType::Graph,
                         UserListColumnType::Marker,

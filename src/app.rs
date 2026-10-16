@@ -324,7 +324,7 @@ impl<'a> App<'a> {
             graph_cell_width,
             ref_name_to_commit_index_map,
             search_options,
-            ctx.ui_config.list.scrolloff as usize,
+            ctx.ui_config.common.scrolloff as usize,
         );
         // the checked-out branch, or the detached HEAD, marked in the graph and the sidebar
         commit_list_state.set_head(repository.head().clone());
@@ -1004,7 +1004,12 @@ impl App<'_> {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), app_area);
         }
         if let Some(state) = self.shell.command_log.as_mut() {
-            CommandLog::new(&self.ctx.color_theme).render(app_area, f.buffer_mut(), state);
+            let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
+            CommandLog::new(&self.ctx.color_theme, scrolloff).render(
+                app_area,
+                f.buffer_mut(),
+                state,
+            );
         }
         let dismiss = self.ctx.short_keys(&[UserEvent::DismissNotifications]);
         let theme = &self.ctx.color_theme;

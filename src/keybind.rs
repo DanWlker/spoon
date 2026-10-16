@@ -1,6 +1,8 @@
+use crokey::{KeyCombinationFormat, OneToThree};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rustc_hash::FxHashMap;
 use serde::{de::Deserializer, Deserialize};
+use std::sync::LazyLock;
 
 use crate::event::UserEvent;
 
@@ -367,85 +369,18 @@ impl<'de> Deserialize<'de> for KeyBind {
     }
 }
 
+// A key like "ctrl-x" or "H" (shift-h), see `crokey::parse`. Keys pressed together are not
+// supported, only one after another, see `parse_sequence`.
 fn parse_key_event(raw: &str) -> Result<KeyEvent, String> {
-    let raw_lower = raw.to_ascii_lowercase().replace(' ', "");
-    let (remaining, modifiers) = extract_modifiers(&raw_lower);
-    parse_key_code_with_modifiers(remaining, modifiers)
-}
-
-fn extract_modifiers(raw: &str) -> (&str, KeyModifiers) {
-    let mut modifiers = KeyModifiers::empty();
-    let mut current = raw;
-
-    loop {
-        match current {
-            rest if rest.starts_with("ctrl-") => {
-                modifiers.insert(KeyModifiers::CONTROL);
-                current = &rest[5..];
-            }
-            rest if rest.starts_with("alt-") => {
-                modifiers.insert(KeyModifiers::ALT);
-                current = &rest[4..];
-            }
-            rest if rest.starts_with("shift-") => {
-                modifiers.insert(KeyModifiers::SHIFT);
-                current = &rest[6..];
-            }
-            _ => break, // break out of the loop if no known prefix is detected
-        };
+    let key = crokey::parse(&raw.replace(' ', ""))
+        .map_err(|e| e.to_string())?
+        .normalized();
+    match key.codes {
+        OneToThree::One(code) => Ok(KeyEvent::new(code, key.modifiers)),
+        _ => Err(format!(
+            "{raw:?} presses several keys at once, which isn't supported"
+        )),
     }
-
-    (current, modifiers)
-}
-
-fn parse_key_code_with_modifiers(
-    raw: &str,
-    mut modifiers: KeyModifiers,
-) -> Result<KeyEvent, String> {
-    let c = match raw {
-        "esc" => KeyCode::Esc,
-        "enter" => KeyCode::Enter,
-        "left" => KeyCode::Left,
-        "right" => KeyCode::Right,
-        "up" => KeyCode::Up,
-        "down" => KeyCode::Down,
-        "home" => KeyCode::Home,
-        "end" => KeyCode::End,
-        "pageup" => KeyCode::PageUp,
-        "pagedown" => KeyCode::PageDown,
-        "backtab" => {
-            modifiers.insert(KeyModifiers::SHIFT);
-            KeyCode::BackTab
-        }
-        "backspace" => KeyCode::Backspace,
-        "delete" => KeyCode::Delete,
-        "insert" => KeyCode::Insert,
-        "f1" => KeyCode::F(1),
-        "f2" => KeyCode::F(2),
-        "f3" => KeyCode::F(3),
-        "f4" => KeyCode::F(4),
-        "f5" => KeyCode::F(5),
-        "f6" => KeyCode::F(6),
-        "f7" => KeyCode::F(7),
-        "f8" => KeyCode::F(8),
-        "f9" => KeyCode::F(9),
-        "f10" => KeyCode::F(10),
-        "f11" => KeyCode::F(11),
-        "f12" => KeyCode::F(12),
-        "space" => KeyCode::Char(' '),
-        "hyphen" => KeyCode::Char('-'),
-        "minus" => KeyCode::Char('-'),
-        "tab" => KeyCode::Tab,
-        c if c.len() == 1 => {
-            let mut c = c.chars().next().unwrap();
-            if modifiers.contains(KeyModifiers::SHIFT) {
-                c = c.to_ascii_uppercase();
-            }
-            KeyCode::Char(c)
-        }
-        _ => return Err(format!("Unable to parse {raw}")),
-    };
-    Ok(KeyEvent::new(c, modifiers))
 }
 
 // A sequence is displayed with its keys one after another, like "]m".
@@ -454,73 +389,17 @@ pub fn keys_to_string(keys: &[KeyEvent]) -> String {
 }
 
 fn key_event_to_string(key_event: KeyEvent) -> String {
+    // a capital letter alone is shift and the letter, like "H"
     if let KeyCode::Char(c) = key_event.code {
         if key_event.modifiers == KeyModifiers::SHIFT {
             return c.to_ascii_uppercase().into();
         }
     }
-
-    let char;
-    let key_code = match key_event.code {
-        KeyCode::Backspace => "Backspace",
-        KeyCode::Enter => "Enter",
-        KeyCode::Left => "Left",
-        KeyCode::Right => "Right",
-        KeyCode::Up => "Up",
-        KeyCode::Down => "Down",
-        KeyCode::Home => "Home",
-        KeyCode::End => "End",
-        KeyCode::PageUp => "PageUp",
-        KeyCode::PageDown => "PageDown",
-        KeyCode::Tab => "Tab",
-        KeyCode::BackTab => "BackTab",
-        KeyCode::Delete => "Delete",
-        KeyCode::Insert => "Insert",
-        KeyCode::F(n) => {
-            char = format!("F{n}");
-            &char
-        }
-        KeyCode::Char(' ') => "Space",
-        KeyCode::Char(c) => {
-            char = c.to_string();
-            &char
-        }
-        KeyCode::Esc => "Esc",
-        KeyCode::Null => "",
-        KeyCode::CapsLock => "",
-        KeyCode::Menu => "",
-        KeyCode::ScrollLock => "",
-        KeyCode::Media(_) => "",
-        KeyCode::NumLock => "",
-        KeyCode::PrintScreen => "",
-        KeyCode::Pause => "",
-        KeyCode::KeypadBegin => "",
-        KeyCode::Modifier(_) => "",
-    };
-
-    let mut modifiers = Vec::with_capacity(3);
-
-    if key_event.modifiers.intersects(KeyModifiers::CONTROL) {
-        modifiers.push("Ctrl");
-    }
-
-    if key_event.modifiers.intersects(KeyModifiers::SHIFT) {
-        modifiers.push("Shift");
-    }
-
-    if key_event.modifiers.intersects(KeyModifiers::ALT) {
-        modifiers.push("Alt");
-    }
-
-    let mut key = modifiers.join("-");
-
-    if !key.is_empty() {
-        key.push('-');
-    }
-    key.push_str(key_code);
-
-    key
+    KEY_FORMAT.to_string(key_event)
 }
+
+// "Ctrl-Alt-Shift-x", "Enter", "PageUp", "F12"
+static KEY_FORMAT: LazyLock<KeyCombinationFormat> = LazyLock::new(KeyCombinationFormat::default);
 
 // A key as hints show it: names like Enter in lower case, letters as they are ("A" is shift-a).
 fn key_name(key: String) -> String {
@@ -761,6 +640,17 @@ reset = ["d"]"#
 
     #[rustfmt::skip]
     #[test]
+    fn test_parse_key_event() {
+        let key = |code, modifiers| Ok(KeyEvent::new(code, modifiers));
+        assert_eq!(parse_key_event("ctrl-x"), key(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert_eq!(parse_key_event("shift-h"), key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+        assert_eq!(parse_key_event("space"), key(KeyCode::Char(' '), KeyModifiers::empty()));
+        // keys pressed together aren't supported, sequences are: "] v"
+        assert!(parse_key_event("a-b").unwrap_err().contains("several keys"));
+        assert!(parse_key_event("nope").is_err());
+    }
+
+    #[test]
     fn test_key_event_to_string() {
         let key_event = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty());
         assert_eq!(key_event_to_string(key_event), "k");
@@ -790,7 +680,7 @@ reset = ["d"]"#
         assert_eq!(key_event_to_string(key_event), "Ctrl-Shift-l");
 
         let key_event = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT);
-        assert_eq!(key_event_to_string(key_event), "Ctrl-Shift-Alt-l");
+        assert_eq!(key_event_to_string(key_event), "Ctrl-Alt-Shift-l");
 
         let key_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
         assert_eq!(key_event_to_string(key_event), "Esc");

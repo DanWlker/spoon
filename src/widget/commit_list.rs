@@ -28,6 +28,7 @@ use crate::{
         file_tree::SearchDirection,
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
+            scroll_to,
         },
         tree_query::find_around,
     },
@@ -457,14 +458,7 @@ impl<'a> CommitListState<'a> {
             return;
         }
 
-        let margin = self.effective_scrolloff();
-        let bottom = self.height - 1 - margin;
-        let max_offset = self.total.saturating_sub(self.height);
-        if index < self.offset.saturating_add(margin) {
-            self.offset = index.saturating_sub(margin);
-        } else if index > self.offset.saturating_add(bottom) {
-            self.offset = index.saturating_sub(bottom).min(max_offset);
-        }
+        self.offset = scroll_to(self.offset, index, self.height, self.total, self.scrolloff);
         self.selected = index - self.offset;
     }
 

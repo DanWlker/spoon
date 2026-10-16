@@ -1633,7 +1633,7 @@ impl LocalChangesPanel<'_> {
             |path| picked.contains(path),
             active.then_some(self.focused),
             empty,
-            &self.ctx.color_theme,
+            &self.ctx,
         );
         let total = tree.rows().len();
         render_panel_scrollbar(buf, area, total, offset, focused, &self.ctx.color_theme);

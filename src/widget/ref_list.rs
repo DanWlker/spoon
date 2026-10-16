@@ -532,7 +532,11 @@ impl StatefulWidget for RefList {
         state.offset = state.offset.min(state.visible_rows.len().saturating_sub(1));
         if state.scroll_to_selection {
             if let Some(index) = state.selected_index() {
-                state.offset = scroll_to(state.offset, index, height);
+                let (total, scrolloff) = (
+                    state.visible_rows.len(),
+                    self.ctx.ui_config.common.scrolloff,
+                );
+                state.offset = scroll_to(state.offset, index, height, total, scrolloff as usize);
             }
             state.scroll_to_selection = false;
         }

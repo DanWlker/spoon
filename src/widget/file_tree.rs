@@ -163,11 +163,16 @@ impl FileTreeState {
         &self.rows
     }
 
-    // The first row shown in `height` rows, showing the cursor and as many rows as fit, moved as
-    // little as can be since the last time, like the other lists.
-    pub fn scroll(&self, height: usize) -> usize {
-        let offset = scroll_to(self.offset.get(), self.cursor, height)
-            .min(self.rows.len().saturating_sub(height));
+    // The first row shown in `height` rows, showing the cursor with `scrolloff` rows around it,
+    // moved as little as can be since the last time, like the other lists; see `scroll_to`.
+    pub fn scroll(&self, height: usize, scrolloff: usize) -> usize {
+        let offset = scroll_to(
+            self.offset.get(),
+            self.cursor,
+            height,
+            self.rows.len(),
+            scrolloff,
+        );
         self.offset.set(offset);
         offset
     }

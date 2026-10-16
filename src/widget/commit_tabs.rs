@@ -679,7 +679,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
             |_| false,
             Some(tree_focused),
             empty,
-            theme,
+            &self.ctx,
         );
         render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
 
@@ -752,7 +752,7 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                 |_| false,
                 Some(focused),
                 "No matches",
-                theme,
+                &self.ctx,
             );
             render_tree_scrollbar(buf, tree_area, tree, offset, focused, theme);
         }

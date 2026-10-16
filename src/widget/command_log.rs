@@ -77,11 +77,13 @@ impl CommandLogState {
 
 pub struct CommandLog<'a> {
     theme: &'a ColorTheme,
+    // see `scroll_to`
+    scrolloff: usize,
 }
 
 impl<'a> CommandLog<'a> {
-    pub fn new(theme: &'a ColorTheme) -> Self {
-        CommandLog { theme }
+    pub fn new(theme: &'a ColorTheme, scrolloff: usize) -> Self {
+        CommandLog { theme, scrolloff }
     }
 
     pub fn render(self, area: Rect, buf: &mut Buffer, state: &mut CommandLogState) {
@@ -104,7 +106,8 @@ impl<'a> CommandLog<'a> {
             placeholder("No git command has changed the repository yet", theme).render(inner, buf);
         }
         let height = inner.height as usize;
-        state.offset = scroll_to(state.offset, state.selected, height);
+        let total = state.entries.len();
+        state.offset = scroll_to(state.offset, state.selected, height, total, self.scrolloff);
         render_panel_scrollbar(
             buf,
             list_area,
@@ -193,7 +196,7 @@ mod tests {
         let area = Rect::new(0, 0, 60, 12);
         let draw = |state: &mut CommandLogState| {
             let mut buf = Buffer::empty(area);
-            CommandLog::new(&theme).render(area, &mut buf, state);
+            CommandLog::new(&theme, 0).render(area, &mut buf, state);
             buf
         };
         state.select_next();

@@ -32,9 +32,9 @@ clipboard = "auto"
 
 [ui.common]
 cursor_type = "native"
+scrolloff = 0
 
 [ui.list]
-scrolloff = 0
 columns = ["graph", "marker", "subject", "name", "hash", "date"]
 subject_min_width = 20
 date_format = "%Y-%m-%d"
@@ -340,9 +340,9 @@ The type of a cursor to display in the input.
   - `{ virtual = "|" }`: Use a virtual cursor with the specified string.
     - value: `string` - The string to display as the virtual cursor.
 
-### `ui.list.scrolloff`
+### `ui.common.scrolloff`
 
-The minimum number of visible rows to keep above and below the selected commit where possible.
+The minimum number of visible rows to keep above and below the selected row where possible, like vim's `scrolloff`: in the commit list, the file trees, the refs sidebar and the command log.
 
 - type: `u16`
 - default: `0`
