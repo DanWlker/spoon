@@ -53,14 +53,12 @@ pub struct GraphImageManager<'a> {
 impl<'a> GraphImageManager<'a> {
     pub fn new(
         graph: &'a Graph,
-        graph_color_set: &GraphColorSet,
+        image_params: ImageParams,
         cell_width_type: CellWidthType,
         graph_style: GraphStyle,
-        antialias: bool,
         image_width_mode: GraphImageWidthMode,
         image_protocol: ImageProtocol,
     ) -> Self {
-        let image_params = ImageParams::new(graph_color_set, cell_width_type, antialias);
         let drawing_pixels = DrawingPixels::new(&image_params);
 
         GraphImageManager {
@@ -222,6 +220,20 @@ impl ImageParams {
             background_color,
             antialias,
         }
+    }
+
+    // Makes a row image as tall, for its width, as the terminal's cells: (width, height) in pixels.
+    // Terminals placing images by unicode placeholders (kitty in tmux) keep their proportions,
+    // leaving gaps between the rows of a taller cell; the others stretch them to their cells.
+    // shortcut: taken once at start, changing the font size meanwhile brings the gaps back.
+    pub fn fit_cell(mut self, cell_pixels: Option<(u16, u16)>) -> Self {
+        if let Some((cell_width, cell_height)) = cell_pixels.filter(|&(w, h)| w > 0 && h > 0) {
+            // a cell is 25 pixels wide in either width type
+            let height =
+                (25 * u32::from(cell_height) + u32::from(cell_width) / 2) / u32::from(cell_width);
+            self.height = height.clamp(25, 125) as u16;
+        }
+        self
     }
 
     fn edge_color(&self, index: usize) -> image::Rgba<u8> {
@@ -1109,6 +1121,22 @@ mod tests {
     use crate::{config::GraphColorConfig, test_support::image_snapshot::compare_image_snapshot};
 
     use super::*;
+
+    #[test]
+    fn test_fit_cell() {
+        let params = |cell| {
+            let colors = GraphColorSet::new(&crate::config::GraphColorConfig::default());
+            ImageParams::new(&colors, CellWidthType::Double, false).fit_cell(cell)
+        };
+        // as tall as the cells: 9x23 pixels, a line height of 115%
+        assert_eq!(
+            (params(Some((9, 23))).width, params(Some((9, 23))).height),
+            (50, 64)
+        );
+        // unknown, the 1:2 cells assumed
+        assert_eq!(params(None).height, 50);
+        assert_eq!(params(Some((0, 0))).height, 50);
+    }
     use EdgeType::*;
 
     const OUTPUT_DIR: &str = "./out/ut/graph/image";

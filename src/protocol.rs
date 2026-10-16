@@ -34,6 +34,14 @@ fn detect_kitty_graphics_protocol() -> bool {
     || env::var("GHOSTTY_RESOURCES_DIR").is_ok()
 }
 
+// The size of a cell in pixels, (width, height), where the terminal tells it (tmux does, from the
+// terminal around it).
+pub fn cell_pixels() -> Option<(u16, u16)> {
+    let size = ratatui::crossterm::terminal::window_size().ok()?;
+    (size.columns > 0 && size.rows > 0 && size.width > 0 && size.height > 0)
+        .then(|| (size.width / size.columns, size.height / size.rows))
+}
+
 pub fn detect_tmux() -> bool {
     env::var("TMUX").is_ok_and(|tmux| !tmux.is_empty())
         || env::var("TERM").is_ok_and(|term| term.starts_with("tmux"))

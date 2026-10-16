@@ -1329,12 +1329,13 @@ mod tests {
         );
         let graph = calc_graph(&repository, None);
         let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
+        let image_params =
+            crate::graph::ImageParams::new(&graph_color_set, CellWidthType::Double, false);
         let graph_image_manager = GraphImageManager::new(
             &graph,
-            &graph_color_set,
+            image_params,
             CellWidthType::Double,
             GraphStyle::Rounded,
-            false,
             GraphImageWidthMode::Compact,
             image_protocol,
         );

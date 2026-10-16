@@ -232,12 +232,14 @@ fn main() -> Result<()> {
 
         let cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
 
+        let image_params =
+            graph::ImageParams::new(&graph_color_set, cell_width_type, graph_antialias)
+                .fit_cell(protocol::cell_pixels());
         let graph_image_manager = GraphImageManager::new(
             &graph,
-            &graph_color_set,
+            image_params,
             cell_width_type,
             graph_style,
-            graph_antialias,
             graph_image_width_mode,
             image_protocol,
         );
