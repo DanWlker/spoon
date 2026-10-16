@@ -2,12 +2,12 @@
 name = "spoon"
 version = "0.1.0"
 description = "A lazygit-style git TUI with a rich commit graph, forked from serie"
-authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>", "DanWlker"]
+authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>", "DanWlker <danielhee2@gmail.com>"]
 homepage = "https://github.com/DanWlker/spoon"
 repository = "https://github.com/DanWlker/spoon"
 readme = "README.md"
 license = "MIT"
-keywords = ["git", "cli", "tui", "terminal"]
+keywords = ["cli", "git", "terminal", "tui"]
 categories = ["command-line-utilities"]
 edition = "2021"
 rust-version = "1.88.0"
@@ -45,5 +45,5 @@ rstest = "0.27.0"
 tempfile = "3.27.0"
 
 [profile.release]
-codegen-units = 1
 lto = true
+codegen-units = 1
