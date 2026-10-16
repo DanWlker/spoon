@@ -160,7 +160,7 @@ pub struct CoreGitConfig {
 pub struct CoreSearchConfig {
     #[default(SearchTarget::All)]
     pub target: SearchTarget,
-    #[default = false]
+    #[default = true]
     pub ignore_case: bool,
     #[default = false]
     pub fuzzy: bool,
@@ -476,7 +476,7 @@ mod tests {
                 },
                 search: CoreSearchConfig {
                     target: SearchTarget::All,
-                    ignore_case: false,
+                    ignore_case: true,
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
@@ -754,7 +754,7 @@ mod tests {
                 },
                 search: CoreSearchConfig {
                     target: SearchTarget::All,
-                    ignore_case: false,
+                    ignore_case: true,
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {

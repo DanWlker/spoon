@@ -17,7 +17,7 @@ mailmap = false
 
 [core.search]
 target = "all"
-ignore_case = false
+ignore_case = true
 fuzzy = false
 
 [core.user_command]
@@ -245,7 +245,7 @@ The field to search when the application starts. The target can be toggled while
 Whether to enable ignore case when the application starts. The option can be toggled while the commit list is displayed.
 
 - type: `boolean`
-- default: `false`
+- default: `true`
 
 ### `core.search.fuzzy`
 

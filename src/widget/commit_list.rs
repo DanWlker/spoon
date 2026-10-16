@@ -174,8 +174,15 @@ impl SearchMatcher {
             } else {
                 FUZZY_MATCHER.fuzzy_indices(s, &self.query)
             };
+            // the matcher counts chars, the highlight bytes
             result
-                .map(|(_, indices)| indices)
+                .map(|(_, indices)| {
+                    s.char_indices()
+                        .enumerate()
+                        .filter(|(i, _)| indices.binary_search(i).is_ok())
+                        .flat_map(|(_, (b, c))| b..b + c.len_utf8())
+                        .collect()
+                })
                 .map(SearchMatchPosition::new)
         } else {
             let result = if self.ignore_case {
@@ -1189,8 +1196,23 @@ fn highlighted_spans(
     color_theme: &ColorTheme,
     truncate: bool,
 ) -> Vec<Span<'static>> {
+    // whole chars only: lowercasing for the search, or truncating, can move the bytes of a match
+    let text = &s.content;
+    let indices = pos
+        .matched_indices
+        .into_iter()
+        .filter(|&i| i < text.len())
+        .flat_map(|i| {
+            let start = (0..=i)
+                .rev()
+                .find(|&b| text.is_char_boundary(b))
+                .unwrap_or(0);
+            let len = text[start..].chars().next().map_or(1, char::len_utf8);
+            start..start + len
+        })
+        .collect();
     let mut hm = highlight_matched_text(vec![s])
-        .matched_indices(pos.matched_indices)
+        .matched_indices(indices)
         .not_matched_style(Style::default().fg(base_fg).add_modifier(base_modifier))
         .matched_style(
             Style::default()
@@ -2021,6 +2043,37 @@ mod tests {
             search_match.set(&commit, &refs, &matcher, target);
             assert_eq!(search_match.matched(), expected, "{target:?}: {query}");
         }
+    }
+
+    #[test]
+    fn test_matches_highlight_whole_chars() {
+        let theme = ColorTheme::default();
+        let highlight = |text: &str, indices: Vec<usize>, truncate: bool| {
+            let pos = SearchMatchPosition::new(indices);
+            highlighted_spans(
+                text.into(),
+                pos,
+                Color::Reset,
+                Modifier::empty(),
+                &theme,
+                truncate,
+            )
+            .iter()
+            .filter(|span| span.style.bg == Some(theme.list_match_bg))
+            .map(|span| span.content.to_string())
+            .collect::<String>()
+        };
+
+        // the fuzzy matcher counts chars, the highlight takes bytes
+        let fuzzy = SearchMatcher::new("ül", false, true);
+        let pos = fuzzy.matched_position("Müller").unwrap();
+        assert_eq!(pos.matched_indices, vec![1, 2, 3]);
+        assert_eq!(highlight("Müller", pos.matched_indices, false), "ül");
+
+        // a byte inside a char takes the whole char
+        assert_eq!(highlight("Müller", vec![2], false), "ü");
+        // past the end of a truncated text
+        assert_eq!(highlight("Mü…", vec![1, 2, 40], true), "ü");
     }
 
     #[test]
