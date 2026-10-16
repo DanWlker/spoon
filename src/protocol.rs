@@ -6,7 +6,7 @@ use std::{
 
 use base64::Engine;
 use ratatui::{
-    buffer::CellDiffOption,
+    buffer::{Buffer, CellDiffOption},
     style::{Color, Style},
 };
 
@@ -468,7 +468,11 @@ fn kitty_encode(bytes: &[u8], cell_width: usize, cell_height: usize) -> String {
     for (i, chunk) in chunks.enumerate() {
         s.push_str("\x1b_G");
         if i == 0 {
-            s.push_str(&format!("a=T,f=100,c={cell_width},r={cell_height},"));
+            // the whole width of the image, to crop it when something covers its end
+            let pixel_width = png_width(bytes);
+            s.push_str(&format!(
+                "a=T,f=100,c={cell_width},r={cell_height},w={pixel_width},"
+            ));
         }
         if i < total_chunks - 1 {
             s.push_str("m=1;");
@@ -480,6 +484,86 @@ fn kitty_encode(bytes: &[u8], cell_width: usize, cell_height: usize) -> String {
     }
 
     s
+}
+
+// The width of a PNG in pixels, from its header.
+fn png_width(bytes: &[u8]) -> u32 {
+    bytes
+        .get(16..20)
+        .map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+// Crops the graph images (kitty, iTerm2) under what was drawn over them, like a popup: each is one
+// escape sequence in its first cell drawing over the cells after it, which the terminal would
+// draw on top of whatever covers them. A kitty image is cut to the columns before what covers it,
+// an iTerm2 one, which can't be cut, is left out. The images of kitty's unicode placeholders are
+// in each cell, so what covers them replaces them already.
+pub fn crop_covered_images(buf: &mut Buffer) {
+    let area = *buf.area();
+    for y in area.top()..area.bottom() {
+        let mut x = area.left();
+        while x < area.right() {
+            let Some(width) = image_width(buf[(x, y)].symbol()) else {
+                x += 1;
+                continue;
+            };
+            let end = x.saturating_add(width).min(area.right());
+            // the covered cells are no longer skipped, like the image's own
+            let covered = (x + 1..end).find(|&c| buf[(c, y)].diff_option != CellDiffOption::Skip);
+            if let Some(covered) = covered {
+                match kitty_crop(buf[(x, y)].symbol(), covered - x) {
+                    Some(symbol) => {
+                        buf[(x, y)].set_symbol(&symbol);
+                    }
+                    None => (x..covered).for_each(|c| buf[(c, y)].reset()),
+                }
+            }
+            x = end.max(x + 1);
+        }
+    }
+}
+
+// The control data of the image displayed by a kitty or iTerm2 escape sequence, and its width in
+// cells; None for other text.
+fn image_width(symbol: &str) -> Option<u16> {
+    if symbol.starts_with("\x1b_G") {
+        kitty_param(symbol, "c")
+    } else if let Some(rest) = symbol.strip_prefix("\x1b]1337;File=") {
+        let control = rest.split(':').next()?;
+        control
+            .split(';')
+            .find_map(|kv| kv.strip_prefix("width="))?
+            .parse()
+            .ok()
+    } else {
+        None
+    }
+}
+
+// The value of `key` in the control data of kitty's displaying escape sequence ("a=T,...").
+fn kitty_param(symbol: &str, key: &str) -> Option<u16> {
+    let start = symbol.find("\x1b_Ga=T,")? + 3;
+    let control = symbol[start..].split(';').next()?;
+    control
+        .split(',')
+        .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))?
+        .parse()
+        .ok()
+}
+
+// A kitty image showing only its first `columns` cells, of the pixels in them; None for iTerm2.
+fn kitty_crop(symbol: &str, columns: u16) -> Option<String> {
+    let (c, r, w) = (
+        kitty_param(symbol, "c")?,
+        kitty_param(symbol, "r")?,
+        kitty_param(symbol, "w")?,
+    );
+    let cropped_w = u32::from(w) * u32::from(columns) / u32::from(c.max(1));
+    Some(symbol.replacen(
+        &format!("a=T,f=100,c={c},r={r},w={w},"),
+        &format!("a=T,f=100,c={columns},r={r},w={cropped_w},"),
+        1,
+    ))
 }
 
 fn kitty_unicode_prepare(
@@ -599,5 +683,56 @@ fn passthrough_escapes(tmux: bool) -> (&'static str, &'static str, &'static str)
         ("\x1bPtmux;", "\x1b\x1b", "\x1b\\")
     } else {
         ("", "\x1b", "")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+
+    use super::*;
+
+    // A row image 10 cells wide at the left of a buffer of 20; `cover` cells from x=6 drawn over it.
+    fn covered(protocol: ImageProtocol, cover: bool) -> Buffer {
+        // a PNG header, its width (40 pixels) where a PNG has it
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend(40u32.to_be_bytes());
+        png.extend([0; 8]);
+        let image = protocol.prepare_image(&png, 10, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        for (x, cell) in image.cells().iter().enumerate() {
+            let buf_cell = &mut buf[(x as u16, 0)];
+            buf_cell.set_symbol(cell.symbol());
+            buf_cell.set_diff_option(cell.diff_option());
+        }
+        if cover {
+            // like a popup: cleared, then drawn
+            for x in 6..12 {
+                buf[(x, 0)].reset();
+                buf[(x, 0)].set_symbol("│");
+            }
+        }
+        crop_covered_images(&mut buf);
+        buf
+    }
+
+    #[test]
+    fn test_crop_covered_images() {
+        // the kitty image shows its first 6 cells, of the pixels in them
+        let buf = covered(ImageProtocol::Kitty, true);
+        let symbol = buf[(0, 0)].symbol();
+        assert!(symbol.contains("a=T,f=100,c=6,r=1,w=24,"), "{symbol}");
+        assert_eq!(buf[(6, 0)].symbol(), "│");
+
+        // uncovered, it stays whole
+        let buf = covered(ImageProtocol::Kitty, false);
+        assert!(buf[(0, 0)].symbol().contains("a=T,f=100,c=10,r=1,w=40,"));
+
+        // an iTerm2 image can't be cut, it is left out
+        let buf = covered(ImageProtocol::Iterm2, true);
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(5, 0)].diff_option, CellDiffOption::None);
+        let buf = covered(ImageProtocol::Iterm2, false);
+        assert!(buf[(0, 0)].symbol().starts_with("\x1b]1337;File="));
     }
 }

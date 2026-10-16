@@ -897,6 +897,8 @@ impl App<'_> {
             CommandLog::new(&self.ctx.color_theme).render(app_area, f.buffer_mut(), state);
         }
         self.render_status_line(f, status_line_area);
+        // the graph images stop where a popup covers them
+        crate::protocol::crop_covered_images(f.buffer_mut());
     }
 }
 
