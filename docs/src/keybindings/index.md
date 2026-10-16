@@ -210,7 +210,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
-| <kbd>o/O</kbd>                                     | Open a new pull request of the branch, or the remote branch, tag or remote, on the web host; copy its link | `open_in_browser` `copy_link` |
+| <kbd>o/O</kbd>                                     | Open the branch (or a new pull request from it, chosen in the popup), the remote branch, tag or remote on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>a</kbd>                                       | New remote (on a remote; on the remotes header while there are none) | `create_ref` |
 | <kbd>b</kbd>                                       | New branch from the selected branch, remote branch or tag | `create_branch` |
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |

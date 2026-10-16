@@ -113,6 +113,11 @@ enum DialogKind {
     DropStashes {
         names: Vec<String>,
     },
+    // links to open in the browser, or to copy, with what they show
+    OpenLink {
+        links: Vec<(String, String)>,
+        copy: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +146,7 @@ enum FieldId {
     Checkout,
     Pop,
     Url,
+    Link,
 }
 
 #[derive(Debug)]
@@ -158,6 +164,8 @@ pub enum DialogOutcome {
     Close,
     Quit,
     Run(GitTask),
+    // the link chosen, to open in the browser or copy
+    OpenLink { url: String, copy: bool },
     Error(String),
 }
 
@@ -604,6 +612,22 @@ impl GitDialog {
         )
     }
 
+    // Confirms opening a link in the browser, choosing it when there are several; or which to copy.
+    pub fn open_link(links: Vec<(String, String)>, copy: bool) -> Self {
+        let (title, verb, trigger) = if copy {
+            (" Copy link ", "copy", UserEvent::CopyLink)
+        } else {
+            (" Open in browser ", "open", UserEvent::OpenInBrowser)
+        };
+        let labels: Vec<String> = links.iter().map(|(label, _)| label.clone()).collect();
+        let mut dialog = Self::with(title, verb, vec![], DialogKind::OpenLink { links, copy });
+        if labels.len() > 1 {
+            dialog.push_choice(FieldId::Link, "Page", labels, "");
+        }
+        dialog.trigger = Some(trigger);
+        dialog
+    }
+
     pub fn reset(branch: &str, commit: DialogCommit) -> Self {
         let intro = vec![format!("Reset {branch} to"), format!("  {}", commit.line)];
         let kind = DialogKind::Reset {
@@ -846,6 +870,13 @@ impl GitDialog {
     }
 
     fn run(&self) -> DialogOutcome {
+        if let DialogKind::OpenLink { links, copy } = &self.kind {
+            let (_, url) = &links[self.choice(FieldId::Link)];
+            return DialogOutcome::OpenLink {
+                url: url.clone(),
+                copy: *copy,
+            };
+        }
         match self.command() {
             Ok(task) => DialogOutcome::Run(task),
             Err(err) => DialogOutcome::Error(err),
@@ -911,6 +942,8 @@ impl GitDialog {
     fn kind_command(&self) -> Result<GitTask, String> {
         let auto_stash = self.checked(FieldId::AutoStash);
         match &self.kind {
+            // opened, not run, see `run`
+            DialogKind::OpenLink { .. } => Err("Opening a link runs no git command".into()),
             DialogKind::Remote(action, _) => self.remote_command(*action),
             DialogKind::Rebase { onto, description } => {
                 let stash = if auto_stash {
@@ -1409,6 +1442,9 @@ impl GitDialog {
 
     // The git commands it will run, under the fields.
     fn summary(&self) -> String {
+        if let DialogKind::OpenLink { links, .. } = &self.kind {
+            return links[self.choice(FieldId::Link)].1.clone();
+        }
         let task = match self.command() {
             Ok(task) => task,
             Err(err) => return err,
@@ -1647,7 +1683,12 @@ impl Widget for GitDialogWidget<'_> {
                     .bold(),
             );
         }
-        lines.push(Line::raw(dialog.summary()).patch_style(dim).italic());
+        // wrapped, a link or a command can be longer than the popup is wide
+        let summary: Vec<char> = dialog.summary().chars().collect();
+        for part in summary.chunks(MAX_CONTENT_WIDTH) {
+            let part: String = part.iter().collect();
+            lines.push(Line::raw(part).patch_style(dim).italic());
+        }
         lines.push(Line::raw(""));
 
         let content_width = lines
@@ -1815,6 +1856,38 @@ mod tests {
         assert_eq!(args(&dialog), "merge --ff-only feature");
         let dialog = GitDialog::rebase("main", "feature".into(), "feature", false);
         assert_eq!(args(&dialog), "rebase --no-autostash feature");
+    }
+
+    #[test]
+    fn test_open_link() {
+        let links = vec![
+            ("Branch".to_string(), "https://h/o/r/tree/b".to_string()),
+            (
+                "Pull request".to_string(),
+                "https://h/o/r/compare/b".to_string(),
+            ),
+        ];
+        // the branch first, the pull request chosen with the toggle; o again opens it
+        let mut dialog = GitDialog::open_link(links, false);
+        assert_eq!(dialog.summary(), "https://h/o/r/tree/b");
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(
+            press(&mut dialog, UserEvent::OpenInBrowser),
+            DialogOutcome::OpenLink {
+                url: "https://h/o/r/compare/b".into(),
+                copy: false
+            }
+        );
+        // one link, to confirm
+        let mut dialog = GitDialog::open_link(vec![("Link".into(), "https://h/x".into())], false);
+        assert!(dialog.fields.is_empty());
+        assert_eq!(
+            press(&mut dialog, UserEvent::Confirm),
+            DialogOutcome::OpenLink {
+                url: "https://h/x".into(),
+                copy: false
+            }
+        );
     }
 
     #[test]

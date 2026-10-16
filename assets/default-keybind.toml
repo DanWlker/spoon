@@ -107,7 +107,7 @@ create_branch = ["b"]
 create_tag = ["t"]
 # show only the commits of the current branch (the history of HEAD), or all of them again
 branch_only = ["shift-l"]
-# open the page of the selected commit, branch (a new pull request), remote branch, tag or file on
+# open the page of the selected commit, branch (or a new pull request), remote branch, tag or file on
 # the web host of its remote; copy its link
 open_in_browser = ["o"]
 copy_link = ["shift-o"]

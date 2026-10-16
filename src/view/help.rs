@@ -319,7 +319,7 @@ fn build_lines(
         (vec![UserEvent::NextSection, UserEvent::PreviousSection], "Go to the next/previous section, opening it".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
-        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open a new pull request of the branch, the remote branch, tag or remote on the web host; copy its link".into()),
+        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the branch (or a new pull request), the remote branch, tag or remote on the web host; copy its link".into()),
         (vec![UserEvent::CreateBranch], "New branch from the selected branch, remote branch or tag".into()),
         (vec![UserEvent::CreateTag], "New tag at the selected branch, remote branch or tag".into()),
         (vec![UserEvent::CreateRef], "New remote (on the remotes)".into()),

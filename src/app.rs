@@ -1642,6 +1642,11 @@ impl App<'_> {
                 self.start_task(task);
                 return;
             }
+            DialogOutcome::OpenLink { url, copy } => {
+                self.close_dialog();
+                self.open_url(url, copy);
+                return;
+            }
         }
         // any other key shows the popup it acts on
         self.shell.dialog_reveal = None;
@@ -2189,19 +2194,29 @@ impl App<'_> {
         self.shell.app_status.status_line = StatusLine::NotificationError(msg);
     }
 
-    // Opens the page of `target` in the browser, or copies its link.
-    fn open_link(&self, target: &LinkTarget, copy: bool) {
-        let config = &self.ctx.core_config.browser;
-        let event = match browse::link(self.repository, &config.services, target) {
-            Ok(url) if copy => AppEvent::CopyToClipboard {
+    // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull
+    // request from it; copies its link right away, but a branch's which.
+    fn open_link(&mut self, target: &LinkTarget, copy: bool) {
+        let services = &self.ctx.core_config.browser.services;
+        match browse::links(self.repository, services, target) {
+            Ok(mut links) if copy && links.len() == 1 => self.open_url(links.remove(0).1, true),
+            Ok(links) => self.open_dialog(Ok(GitDialog::open_link(links, copy))),
+            Err(err) => self.ec.send(AppEvent::NotifyError(err)),
+        }
+    }
+
+    // Opens `url` in the browser, or copies it.
+    fn open_url(&self, url: String, copy: bool) {
+        let event = if copy {
+            AppEvent::CopyToClipboard {
                 name: "Link".into(),
                 value: url,
-            },
-            Ok(url) => match open::that_detached(&url) {
+            }
+        } else {
+            match open::that_detached(&url) {
                 Ok(()) => AppEvent::NotifySuccess(format!("Opened {url}")),
                 Err(err) => AppEvent::NotifyError(format!("Failed to open {url}: {err}")),
-            },
-            Err(err) => AppEvent::NotifyError(err),
+            }
         };
         self.ec.send(event);
     }

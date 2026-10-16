@@ -11,8 +11,9 @@ use crate::git::{split_remote_branch, Repository};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkTarget {
     Commit(String),
-    // a local branch: a new pull request from it
+    // a local branch: its page, or a new pull request from it, on the remote of its upstream
     Branch(String),
+    PullRequest(String),
     // "origin/main"
     RemoteBranch(String),
     Tag(String),
@@ -124,8 +125,28 @@ enum Page {
     },
 }
 
+// The links of `target` to choose from, with what they show: a local branch's page and a new pull
+// request from it, else the one link.
+pub fn links(
+    repository: &Repository,
+    services: &FxHashMap<String, Service>,
+    target: &LinkTarget,
+) -> Result<Vec<(String, String)>, String> {
+    let link = |target: &LinkTarget| link(repository, services, target);
+    match target {
+        LinkTarget::Branch(branch) => Ok(vec![
+            ("Branch".into(), link(target)?),
+            (
+                "Pull request".into(),
+                link(&LinkTarget::PullRequest(branch.clone()))?,
+            ),
+        ]),
+        _ => Ok(vec![("Link".into(), link(target)?)]),
+    }
+}
+
 // The link of `target`, on the web host of the remote it belongs to.
-pub fn link(
+fn link(
     repository: &Repository,
     services: &FxHashMap<String, Service>,
     target: &LinkTarget,
@@ -162,11 +183,17 @@ pub fn link(
                 .ok_or_else(|| format!("{name} is on no remote"))?;
             (remote.to_string(), Page::Branch(branch.to_string()))
         }
-        // the pull request of its upstream branch, else of a branch of the same name
-        LinkTarget::Branch(branch) => match info.upstreams.get(branch) {
-            Some((remote, upstream)) => (remote.clone(), Page::PullRequest(upstream.clone())),
-            None => (remote_of(None)?, Page::PullRequest(branch.clone())),
-        },
+        // its upstream branch, else a branch of the same name
+        LinkTarget::Branch(branch) | LinkTarget::PullRequest(branch) => {
+            let (remote, name) = match info.upstreams.get(branch) {
+                Some((remote, upstream)) => (remote.clone(), upstream.clone()),
+                None => (remote_of(None)?, branch.clone()),
+            };
+            match target {
+                LinkTarget::Branch(_) => (remote, Page::Branch(name)),
+                _ => (remote, Page::PullRequest(name)),
+            }
+        }
     };
     let url = repository
         .remote_url(&remote)

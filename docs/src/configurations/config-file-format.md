@@ -305,10 +305,10 @@ The clipboard command to use for copy operations.
 
 ### `core.browser`
 
-<kbd>o</kbd> opens the page of the selected commit, branch, tag or file on the web host of its remote, <kbd>O</kbd> copies its link:
+<kbd>o</kbd> opens the page of the selected commit, branch, tag or file on the web host of its remote, after confirming in a popup showing the link (<kbd>o</kbd> again or <kbd>Enter</kbd>); <kbd>O</kbd> copies its link:
 
 - a commit in the graph or the details: the commit
-- a local branch in the sidebar: a new pull request from it (from its upstream branch, when it has one)
+- a local branch in the sidebar: its page, or a new pull request from it, chosen in the popup (its upstream branch, when it has one)
 - a remote branch, a tag or a remote in the sidebar: its page
 - a file in the Changes or Files tab of the details: the file at that commit; from the diff or the file beside it, at the selected hunk or line (`#L5-L9`), where the host's links can point at lines. A line only removed has no line in the file at that commit, so it opens the file.
 
