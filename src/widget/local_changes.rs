@@ -34,7 +34,8 @@ use crate::{
         },
         text_area::TextArea,
         tree_query::{
-            dir_line, highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery,
+            dir_line, guide_span, highlight_match, highlighted_name, QueryChange, QueryKind,
+            TreeQuery,
         },
     },
 };
@@ -1651,19 +1652,21 @@ impl LocalChangesPanel<'_> {
 
         // the search is highlighted in the section it applies to
         let search = state.query_of(section).search();
+        let theme = &self.ctx.color_theme;
         let lines: Vec<Line> = rows
             .iter()
+            .enumerate()
             .skip(offset)
             .take(height)
-            .map(|row| {
-                let indent = "  ".repeat(row.depth);
+            .map(|(index, row)| {
+                let guide = tree.guide(index);
                 match row.file_index {
                     // everything is expanded while filtering
-                    None => dir_line(row, tree.is_open(&row.path), search, &self.ctx.color_theme),
+                    None => dir_line(row, guide, tree.is_open(&row.path), search, theme),
                     Some(i) => {
                         let status = files[i].status;
                         let mut spans = vec![
-                            Span::raw(indent),
+                            guide_span(guide, theme),
                             Span::raw(status_symbol(status)).fg(self.status_color(status)),
                             Span::raw(" "),
                         ];

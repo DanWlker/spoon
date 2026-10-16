@@ -66,6 +66,9 @@ pub struct ColorTheme {
     pub detail_file_change_delete_fg: RatatuiColor,
     #[default(MAUVE)]
     pub detail_file_change_move_fg: RatatuiColor,
+    // the names of the directories in the file trees
+    #[default(BLUE)]
+    pub file_tree_dir_fg: RatatuiColor,
     // the lines added and removed in a diff, Mocha's green and red over its base
     #[default(RatatuiColor::Rgb(0x39, 0x45, 0x45))]
     pub diff_add_bg: RatatuiColor,

@@ -249,16 +249,30 @@ pub fn patch_range(line: &mut Line<'_>, range: std::ops::Range<usize>, style: St
     line.spans.extend(spans);
 }
 
-// The row of a directory in a file tree: indented, open or closed, the match of `search` highlighted.
+// The row of a directory in a file tree: after its `guide` (see `tree_guides`), open or closed,
+// its name in the directory color with the match of `search` highlighted.
 pub fn dir_line(
     row: &FileTreeRow,
+    guide: &str,
     open: bool,
     search: Option<&str>,
     theme: &ColorTheme,
 ) -> Line<'static> {
-    let mut spans = vec!["  ".repeat(row.depth).into(), fold_marker(open).into()];
-    spans.extend(highlighted_name(&row.name, search, theme));
+    let mut spans = vec![guide_span(guide, theme), fold_marker(open).into()];
+    spans.extend(
+        highlighted_name(&row.name, search, theme)
+            .into_iter()
+            .map(|span| match span.style.fg {
+                Some(_) => span,
+                None => span.fg(theme.file_tree_dir_fg),
+            }),
+    );
     Line::from(spans)
+}
+
+// The indent markers of a row, in the color of the dividers.
+pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
+    Span::raw(guide.to_string()).fg(theme.divider_fg)
 }
 
 // The spans of a file or directory name, with the match of `search` highlighted.

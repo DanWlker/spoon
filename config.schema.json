@@ -588,6 +588,11 @@
           "description": "Color for moved file status in the commit detail view.",
           "default": "#cba6f7"
         },
+        "file_tree_dir_fg": {
+          "type": "string",
+          "description": "Color for directory names in the file trees.",
+          "default": "#89b4fa"
+        },
         "diff_add_bg": {
           "type": "string",
           "description": "Background color of the lines added in a diff.",

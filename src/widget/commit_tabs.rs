@@ -24,7 +24,9 @@ use crate::{
             visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
-        tree_query::{dir_line, find_around, highlight_match, highlighted_name, match_range},
+        tree_query::{
+            dir_line, find_around, guide_span, highlight_match, highlighted_name, match_range,
+        },
     },
 };
 
@@ -676,9 +678,10 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
             Paragraph::new(Line::raw(message).fg(theme.status_input_transient_fg))
                 .render(tree_area, buf);
         } else {
-            let line = |row: &FileTreeRow| match row.file_index {
+            let line = |index: usize, row: &FileTreeRow| match row.file_index {
                 None => dir_line(
                     row,
+                    state.tree.guide(index),
                     state.tree.is_open(&row.path),
                     self.search.as_deref(),
                     theme,
@@ -686,7 +689,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
                 Some(i) => {
                     let symbol = state.files[i].symbol;
                     let mut spans = vec![
-                        "  ".repeat(row.depth).into(),
+                        guide_span(state.tree.guide(index), theme),
                         Span::raw(symbol).fg(change_color(symbol, theme)),
                         " ".into(),
                     ];
@@ -762,10 +765,16 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                     .render(tree_area, buf);
             }
             let search = self.search.as_deref();
-            let line = |row: &FileTreeRow| match row.file_index {
-                None => dir_line(row, tree.is_open(&row.path), search, theme),
+            let line = |index: usize, row: &FileTreeRow| match row.file_index {
+                None => dir_line(
+                    row,
+                    tree.guide(index),
+                    tree.is_open(&row.path),
+                    search,
+                    theme,
+                ),
                 Some(_) => {
-                    let mut spans = vec!["  ".repeat(row.depth).into(), "  ".into()];
+                    let mut spans = vec![guide_span(tree.guide(index), theme)];
                     spans.extend(highlighted_name(&row.name, search, theme));
                     Line::from(spans)
                 }
@@ -862,7 +871,7 @@ fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect
 // highlighting the cursor line.
 fn render_rows_with_cursor<'a>(
     rows: &'a [FileTreeRow],
-    line: impl Fn(&'a FileTreeRow) -> Line<'a>,
+    line: impl Fn(usize, &'a FileTreeRow) -> Line<'a>,
     cursor: usize,
     focused: bool,
     theme: &ColorTheme,
@@ -878,7 +887,13 @@ fn render_rows_with_cursor<'a>(
     let divider = Rect::new(area.right() + 1, area.y, 1, area.height);
     // the divider keeps its color
     render_scrollbar(buf, divider, rows.len(), offset, false, theme);
-    let lines: Vec<Line> = rows.iter().skip(offset).take(height).map(line).collect();
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(height)
+        .map(|(index, row)| line(index, row))
+        .collect();
     Paragraph::new(lines).fg(theme.fg).render(area, buf);
 
     if let Ok(y) = u16::try_from(cursor - offset) {

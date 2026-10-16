@@ -113,17 +113,25 @@ impl<'a> LocalChangesView<'a> {
                 return;
             }
         }
-        if self.local_changes_state.is_commit_focused() {
-            // the commit section only has the message, there is nothing to move to
-            if let UserEvent::NavigateDown
-            | UserEvent::NavigateUp
-            | UserEvent::NavigateLeft
-            | UserEvent::NavigateRight
-            | UserEvent::SelectDown
-            | UserEvent::SelectUp = event
-            {
-                return;
-            }
+        // the keys of the file list do nothing in the commit section, the focus stays there
+        if self.local_changes_state.is_commit_focused()
+            && matches!(
+                event,
+                UserEvent::Search
+                    | UserEvent::Filter
+                    | UserEvent::GoToNext
+                    | UserEvent::GoToPrevious
+                    | UserEvent::ToggleSelect
+                    | UserEvent::NextPicked
+                    | UserEvent::PreviousPicked
+                    | UserEvent::NextFile
+                    | UserEvent::PreviousFile
+                    | UserEvent::Discard
+                    | UserEvent::NavigateLeft
+                    | UserEvent::NavigateRight
+            )
+        {
+            return;
         }
 
         match event {

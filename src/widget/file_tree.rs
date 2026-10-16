@@ -93,6 +93,8 @@ pub struct FileTreeState {
     // only files whose path matches are shown, with all directories expanded
     filter: Option<String>,
     rows: Vec<FileTreeRow>,
+    // the indent markers of the rows, see `tree_guides`
+    guides: Vec<String>,
     cursor: usize,
 }
 
@@ -114,6 +116,7 @@ impl FileTreeState {
             toggled: HashSet::new(),
             filter: None,
             rows: Vec::new(),
+            guides: Vec::new(),
             cursor: 0,
         };
         state.rebuild_rows();
@@ -129,6 +132,7 @@ impl FileTreeState {
             toggled: self.toggled.clone(),
             filter: self.filter.clone(),
             rows: Vec::new(),
+            guides: Vec::new(),
             cursor: 0,
         };
         state.rebuild_rows();
@@ -147,6 +151,11 @@ impl FileTreeState {
 
     pub fn rows(&self) -> &[FileTreeRow] {
         &self.rows
+    }
+
+    // The indent markers before the row at `index`, see `tree_guides`.
+    pub fn guide(&self, index: usize) -> &str {
+        self.guides.get(index).map_or("", String::as_str)
     }
 
     // All rows with every directory expanded, passing the filter, to search in.
@@ -282,11 +291,51 @@ impl FileTreeState {
         } else {
             rows
         };
+        self.guides = tree_guides(&self.rows);
         self.select_index(self.cursor);
         if let Some(path) = selected {
             self.select_path(&path);
         }
     }
+}
+
+// The indent markers before each row, like nvim-tree's: a line down the entries of each
+// directory, "└" at its last one, two columns a level. A directory's fold marker goes after its
+// guide, in its own column; a file's own marker is in the guide.
+pub fn tree_guides(rows: &[FileTreeRow]) -> Vec<String> {
+    // whether each row is the last entry of its directory, from the end
+    let mut last = vec![false; rows.len()];
+    let mut seen: Vec<bool> = vec![];
+    for (i, row) in rows.iter().enumerate().rev() {
+        seen.resize(row.depth + 1, false);
+        last[i] = !seen[row.depth];
+        seen[row.depth] = true;
+    }
+    // whether the directory at each depth has entries after it, from the start
+    let mut continues: Vec<bool> = vec![];
+    rows.iter()
+        .zip(last)
+        .map(|(row, last)| {
+            let depth = row.depth;
+            // the top level has no line
+            let mut guide: String = (0..depth)
+                .map(|level| match continues.get(level) {
+                    Some(true) if level > 0 => "│ ",
+                    _ => "  ",
+                })
+                .collect();
+            if !row.is_dir() {
+                guide.push_str(match (depth, last) {
+                    (0, _) => "  ",
+                    (_, true) => "└ ",
+                    _ => "│ ",
+                });
+            }
+            continues.resize(depth + 1, false);
+            continues[depth] = !last;
+            guide
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,6 +497,31 @@ mod tests {
             path: path.into(),
             file_index,
         }
+    }
+
+    #[test]
+    fn test_tree_guides() {
+        // like nvim-tree's indent markers: a line down each directory, "└" at its last entry
+        let tree = FileTree::new(["a/b/x.rs", "a/b/w.rs", "a/y.rs", "z.rs"]);
+        let state = FileTreeState::new(tree, true);
+        let lines: Vec<String> = (0..state.rows().len())
+            .map(|i| {
+                let row = &state.rows()[i];
+                let marker = if row.is_dir() { "> " } else { "" };
+                format!("{}{marker}{}", state.guide(i), row.name)
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "> a",
+                "  > b",
+                "  │ │ w.rs",
+                "  │ └ x.rs",
+                "  └ y.rs",
+                "  z.rs",
+            ]
+        );
     }
 
     #[test]
