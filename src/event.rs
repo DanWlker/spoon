@@ -1,29 +1,33 @@
 use std::{
     fmt::{self, Debug, Formatter},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use serde::{
     de::{self, Deserializer, Visitor},
     Deserialize,
 };
 
 use crate::{
-    browse::LinkTarget, git::GitTask, keybind::Scope, view::RefreshViewContext,
+    browse::LinkTarget,
+    git::{FilesSnapshot, GitTask},
+    keybind::Scope,
+    view::RefreshViewContext,
     widget::commit_tabs::DetailTab,
 };
 
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
-    // pressing, dragging and releasing the left button, to drag the borders of the panels
+    // pressing, dragging and releasing the left button, to drag the borders of the panels, and the
+    // wheel, see `App::scroll_wheel`
     Mouse(MouseEvent),
     Resize(usize, usize),
     Quit,
@@ -36,14 +40,16 @@ pub enum AppEvent {
     RunExternal(Vec<String>),
     // the working tree changed, the count of the local changes in the sidebar is updated
     LocalChangesChanged,
-    // the local changes are reloaded every few seconds, for those made outside the app
-    FilesTick,
+    // the local changes, loaded every few seconds in the background, for those made outside the app
+    FilesTick(FilesSnapshot),
     // where the local branches and HEAD point, every few seconds, see `git::refs_snapshot`
     RefsSnapshot(String),
-    // the terminal got the focus back, everything is reloaded
+    // the terminal got the focus back, what changed meanwhile is checked right away
     FocusGained,
     // redraws the spinner of the git command running in the background
     SpinnerTick,
+    // runs a git command in the background, see `App::start_task`
+    StartTask(GitTask),
     // a git command running in the background finished
     TaskFinished {
         task: GitTask,
@@ -56,6 +62,11 @@ pub enum AppEvent {
     CopyToClipboard {
         name: String,
         value: String,
+    },
+    // opens the link in the browser, or copies it
+    OpenUrl {
+        url: String,
+        copy: bool,
     },
     // opens the page of the target on the web host of its remote, or copies its link
     Link {
@@ -108,6 +119,10 @@ impl Receiver {
         self.rx.recv().unwrap()
     }
 
+    fn try_recv(&self) -> Option<AppEvent> {
+        self.rx.try_recv().ok()
+    }
+
     fn recv_timeout(&self, timeout: std::time::Duration) -> Option<AppEvent> {
         match self.rx.recv_timeout(timeout) {
             Ok(event) => Some(event),
@@ -129,6 +144,8 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    // wakes the refresher up, see `refresh_now`
+    poke: Mutex<Option<mpsc::Sender<()>>>,
 }
 
 impl EventController {
@@ -142,6 +159,7 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
+            poke: Mutex::new(None),
         };
         controller.start();
 
@@ -163,17 +181,9 @@ impl EventController {
                             tx.send(AppEvent::Key(key));
                         }
                         ratatui::crossterm::event::Event::Mouse(mouse) => match mouse.kind {
-                            // the wheel moves like the arrow keys, as the terminal does without
-                            // the mouse captured
-                            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                                let code = if mouse.kind == MouseEventKind::ScrollDown {
-                                    KeyCode::Down
-                                } else {
-                                    KeyCode::Up
-                                };
-                                tx.send(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
-                            }
-                            MouseEventKind::Down(MouseButton::Left)
+                            MouseEventKind::ScrollDown
+                            | MouseEventKind::ScrollUp
+                            | MouseEventKind::Down(MouseButton::Left)
                             | MouseEventKind::Drag(MouseButton::Left)
                             | MouseEventKind::Up(MouseButton::Left) => {
                                 tx.send(AppEvent::Mouse(mouse));
@@ -243,32 +253,29 @@ impl EventController {
         }
     }
 
-    // Checks for changes made outside the app like lazygit's refresher: the branches and HEAD every
-    // `refs_interval`, the local changes every `files_interval` (a multiple of it).
+    // Checks for changes made outside the app like lazygit's refresher, see `spawn_refresher`.
     pub fn start_refresher(
         &self,
-        path: std::path::PathBuf,
-        refs_interval: std::time::Duration,
-        files_interval: std::time::Duration,
+        work_tree: PathBuf,
+        git_dir: Option<PathBuf>,
+        refs_interval: Duration,
+        files_interval: Duration,
     ) {
-        let tx = self.tx.clone();
-        let files_every = (files_interval.as_millis() / refs_interval.as_millis()).max(1);
-        thread::spawn(move || {
-            // stops once the app quits and the events are no longer received
-            let mut tick = 0u128;
-            loop {
-                thread::sleep(refs_interval);
-                tick += 1;
-                if let Ok(snapshot) = crate::git::refs_snapshot(&path) {
-                    if tx.tx.send(AppEvent::RefsSnapshot(snapshot)).is_err() {
-                        break;
-                    }
-                }
-                if tick.is_multiple_of(files_every) && tx.tx.send(AppEvent::FilesTick).is_err() {
-                    break;
-                }
-            }
-        });
+        let poke = spawn_refresher(
+            self.tx.clone(),
+            work_tree,
+            git_dir,
+            refs_interval,
+            files_interval,
+        );
+        *self.poke.lock().unwrap() = Some(poke);
+    }
+
+    // Checks right away, like when the terminal gets the focus back.
+    pub fn refresh_now(&self) {
+        if let Some(poke) = self.poke.lock().unwrap().as_ref() {
+            let _ = poke.send(());
+        }
     }
 
     pub fn sender(&self) -> Sender {
@@ -283,10 +290,53 @@ impl EventController {
         self.rx.recv()
     }
 
+    // The next event if one is waiting.
+    pub fn try_recv(&self) -> Option<AppEvent> {
+        self.rx.try_recv()
+    }
+
     // The next event, or None once `timeout` passed without one.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> Option<AppEvent> {
         self.rx.recv_timeout(timeout)
     }
+}
+
+// Checks in the background, without holding up the app, for changes made outside it like lazygit's
+// refresher: the branches and HEAD every `refs_interval`, the local changes every `files_interval`
+// (a multiple of it), and both whenever poked through the sender returned.
+fn spawn_refresher(
+    tx: Sender,
+    work_tree: PathBuf,
+    git_dir: Option<PathBuf>,
+    refs_interval: Duration,
+    files_interval: Duration,
+) -> mpsc::Sender<()> {
+    let (poke, poked) = mpsc::channel();
+    let files_every = (files_interval.as_millis() / refs_interval.as_millis()).max(1);
+    thread::spawn(move || {
+        // stops once the app quits and the events are no longer received
+        let mut tick = 0u128;
+        loop {
+            let now = match poked.recv_timeout(refs_interval) {
+                Ok(()) => true,
+                Err(mpsc::RecvTimeoutError::Timeout) => false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            tick += 1;
+            if let Ok(snapshot) = crate::git::refs_snapshot(&work_tree) {
+                if tx.tx.send(AppEvent::RefsSnapshot(snapshot)).is_err() {
+                    break;
+                }
+            }
+            if now || tick.is_multiple_of(files_every) {
+                let files = FilesSnapshot::load(&work_tree, git_dir.as_deref());
+                if tx.tx.send(AppEvent::FilesTick(files)).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    poke
 }
 
 // A hint in the status bar: the events of a key, and what it does.
@@ -612,5 +662,70 @@ impl UserEvent {
                 | UserEvent::Push
                 | UserEvent::UserCommand(_)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::git::GitRepository;
+
+    // A repository with an untracked file, and a refresher reporting to the receiver returned.
+    fn refresher(
+        refs_interval: Duration,
+        files_interval: Duration,
+    ) -> (
+        tempfile::TempDir,
+        mpsc::Sender<()>,
+        mpsc::Receiver<AppEvent>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        std::fs::write(path.join("a"), "a\n").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let poke = spawn_refresher(
+            Sender { tx },
+            path.to_path_buf(),
+            Some(path.join(".git")),
+            refs_interval,
+            files_interval,
+        );
+        (dir, poke, rx)
+    }
+
+    fn next(rx: &mpsc::Receiver<AppEvent>) -> AppEvent {
+        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
+    #[test]
+    fn test_refresher_ticks() {
+        let ms = Duration::from_millis;
+        let (_dir, _poke, rx) = refresher(ms(10), ms(20));
+        // the refs every tick, the files every other one
+        assert!(matches!(next(&rx), AppEvent::RefsSnapshot(_)));
+        assert!(matches!(next(&rx), AppEvent::RefsSnapshot(_)));
+        let AppEvent::FilesTick(files) = next(&rx) else {
+            panic!("no files after the second tick");
+        };
+        assert_eq!(files.changes.unstaged[0].path, "a");
+    }
+
+    #[test]
+    fn test_refresher_poked() {
+        // the intervals don't pass during the test, only a poke wakes it up
+        let hour = Duration::from_secs(3600);
+        let (_dir, poke, rx) = refresher(hour, hour);
+        poke.send(()).unwrap();
+        assert!(matches!(next(&rx), AppEvent::RefsSnapshot(_)));
+        assert!(matches!(next(&rx), AppEvent::FilesTick(_)));
+        // it stops once the app no longer pokes it
+        drop(poke);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
     }
 }

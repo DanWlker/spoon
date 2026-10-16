@@ -9,9 +9,10 @@ use crate::{
     layout::Direction,
     search::SearchOptions,
     view::{
-        detail::DetailView, help::HelpView, list::ListView, local_changes::LocalChangesView,
+        detail::DetailView, list::ListView, local_changes::LocalChangesView,
         user_command::UserCommandView,
     },
+    widget::commit_tabs::DetailTab,
     widget::{
         commit_list::{CommitListState, SearchRefreshContext},
         file_tree::ROOT_PATH,
@@ -95,7 +96,6 @@ pub enum ViewKind {
     Compare,
     UserCommand,
     LocalChanges,
-    Help,
 }
 
 #[derive(Debug, Default)]
@@ -106,7 +106,6 @@ pub enum View<'a> {
     Detail(Box<DetailView<'a>>),
     UserCommand(Box<UserCommandView<'a>>),
     LocalChanges(Box<LocalChangesView<'a>>),
-    Help(Box<HelpView<'a>>),
 }
 
 impl<'a> View<'a> {
@@ -117,7 +116,6 @@ impl<'a> View<'a> {
             View::Detail(view) => view.handle_event(event, key_event),
             View::UserCommand(view) => view.handle_event(event, key_event),
             View::LocalChanges(view) => view.handle_event(event, key_event),
-            View::Help(view) => view.handle_event(event, key_event),
         }
     }
 
@@ -130,7 +128,6 @@ impl<'a> View<'a> {
             View::Detail(view) => view.render(f, area, focused),
             View::UserCommand(view) => view.render(f, area),
             View::LocalChanges(view) => view.render(f, area, focused),
-            View::Help(view) => view.render(f, area),
         }
     }
 
@@ -140,7 +137,7 @@ impl<'a> View<'a> {
             View::List(view) => view.update_layout(area),
             View::Detail(view) => view.update_layout(area),
             View::UserCommand(view) => view.update_layout(area),
-            View::LocalChanges(_) | View::Help(_) => {}
+            View::LocalChanges(view) => view.update_layout(),
         }
     }
 
@@ -150,7 +147,7 @@ impl<'a> View<'a> {
             View::List(view) => view.prepare_graph_uploads(),
             View::Detail(view) => view.prepare_graph_uploads(),
             View::UserCommand(view) => view.prepare_graph_uploads(),
-            View::LocalChanges(_) | View::Help(_) => {}
+            View::LocalChanges(_) => {}
         }
     }
 
@@ -160,7 +157,7 @@ impl<'a> View<'a> {
             View::List(view) => view.drain_pending_graph_uploads(),
             View::Detail(view) => view.drain_pending_graph_uploads(),
             View::UserCommand(view) => view.drain_pending_graph_uploads(),
-            View::LocalChanges(_) | View::Help(_) => Vec::new(),
+            View::LocalChanges(_) => Vec::new(),
         }
     }
 
@@ -171,7 +168,6 @@ impl<'a> View<'a> {
             View::Detail(view) => view.graph_image_ids_sorted(),
             View::UserCommand(view) => view.graph_image_ids_sorted(),
             View::LocalChanges(view) => view.graph_image_ids_sorted(),
-            View::Help(view) => view.graph_image_ids_sorted(),
         }
     }
 
@@ -181,7 +177,7 @@ impl<'a> View<'a> {
             View::List(view) => view.key_hints(),
             View::Detail(view) => view.key_hints(),
             View::LocalChanges(view) => view.key_hints(),
-            View::UserCommand(_) | View::Help(_) => vec![hint(UserEvent::Cancel, "close")],
+            View::UserCommand(_) => vec![hint(UserEvent::Cancel, "close")],
             View::Default => vec![],
         }
     }
@@ -204,7 +200,6 @@ impl<'a> View<'a> {
             View::Detail(_) => ViewKind::Detail,
             View::UserCommand(_) => ViewKind::UserCommand,
             View::LocalChanges(_) => ViewKind::LocalChanges,
-            View::Help(_) => ViewKind::Help,
         }
     }
 
@@ -213,7 +208,7 @@ impl<'a> View<'a> {
             View::Default | View::List(_) => None,
             View::Detail(view) => Some(view.image_clear_area(area)),
             View::UserCommand(view) => Some(view.image_clear_area(area)),
-            View::LocalChanges(_) | View::Help(_) => Some(area),
+            View::LocalChanges(_) => Some(area),
         }
     }
 
@@ -239,7 +234,7 @@ impl<'a> View<'a> {
             View::Detail(view) => Some(view.take_list_state()),
             View::UserCommand(view) => Some(view.take_list_state()),
             View::LocalChanges(view) => Some(view.take_list_state()),
-            View::Default | View::Help(_) => None,
+            View::Default => None,
         }
     }
 
@@ -249,7 +244,7 @@ impl<'a> View<'a> {
             View::List(view) => Some(view.as_list_state()),
             View::Detail(view) => Some(view.as_list_state()),
             View::UserCommand(view) => Some(view.as_list_state()),
-            View::Default | View::LocalChanges(_) | View::Help(_) => None,
+            View::Default | View::LocalChanges(_) => None,
         }
     }
 
@@ -329,10 +324,6 @@ impl<'a> View<'a> {
         )))
     }
 
-    pub fn of_help(before: View<'a>, ctx: Rc<AppContext>, tx: Sender) -> Self {
-        View::Help(Box::new(HelpView::new(before, ctx, tx)))
-    }
-
     pub fn refresh(&mut self) {
         match self {
             View::Default => {}
@@ -340,7 +331,6 @@ impl<'a> View<'a> {
             View::Detail(view) => view.refresh(),
             View::UserCommand(view) => view.refresh(),
             View::LocalChanges(view) => view.refresh(),
-            View::Help(_) => {}
         }
     }
 
@@ -351,7 +341,7 @@ impl<'a> View<'a> {
             View::Detail(view) => Some(view.refresh_context()),
             View::UserCommand(view) => Some(view.refresh_context()),
             View::LocalChanges(view) => Some(view.refresh_context()),
-            View::Default | View::Help(_) => None,
+            View::Default => None,
         }
     }
 }
@@ -363,6 +353,8 @@ pub enum RefreshViewContext {
     },
     Detail {
         list_context: ListRefreshViewContext,
+        // the tab shown
+        tab: DetailTab,
     },
     UserCommand {
         list_context: ListRefreshViewContext,
@@ -378,7 +370,7 @@ impl RefreshViewContext {
     pub fn list_context_mut(&mut self) -> &mut ListRefreshViewContext {
         match self {
             RefreshViewContext::List { list_context }
-            | RefreshViewContext::Detail { list_context }
+            | RefreshViewContext::Detail { list_context, .. }
             | RefreshViewContext::UserCommand { list_context, .. }
             | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
         }
@@ -387,7 +379,7 @@ impl RefreshViewContext {
     pub fn list_context(&self) -> &ListRefreshViewContext {
         match self {
             RefreshViewContext::List { list_context }
-            | RefreshViewContext::Detail { list_context }
+            | RefreshViewContext::Detail { list_context, .. }
             | RefreshViewContext::UserCommand { list_context, .. }
             | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
         }

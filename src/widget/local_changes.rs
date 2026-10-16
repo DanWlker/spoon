@@ -15,7 +15,8 @@ use crate::{
     app::AppContext,
     event::{KeyHint, UserEvent},
     git::{
-        ConflictSide, Head, LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, Repository,
+        ConflictSide, FilesSnapshot, GitTask, Head, LocalChangeFile, LocalChangeStatus,
+        LocalChanges, Operation, Repository,
     },
     layout::{fit_size, Direction, Panel},
     widget::{
@@ -205,8 +206,14 @@ pub struct LocalChangesState<'a> {
     draft: CommitDraft,
     // a rebase stopped to edit a commit, which committing amends before going on
     editing_commit: bool,
-    // set once a commit or stash is made, until the view picks it up to refresh the repository
+    // set once a stash is made, until the view picks it up to refresh the repository
     needs_refresh: bool,
+    // a git command for the app to run in the background, see `take_task`
+    task: Option<GitTask>,
+    // the cursor moved to another row, whose diff loads once used, see `move_cursor`
+    diff_stale: bool,
+    // the fingerprint of the files as loaded, see `reload_if_changed`
+    files_stamp: u64,
     // the message typed before stashing, see `start_stash`
     stash_input: Option<Input>,
 
@@ -230,6 +237,7 @@ impl<'a> LocalChangesState<'a> {
     // Loads the page as it was in `snapshot`, loading the diff once, for the selected file.
     pub fn restore(repository: &'a Repository, snapshot: Option<LocalChangesSnapshot>) -> Self {
         let changes = repository.take_loaded_local_changes();
+        let files_stamp = repository.files_stamp(&changes);
         let sections = [
             Section::new(&changes.unstaged),
             Section::new(&changes.staged),
@@ -250,6 +258,9 @@ impl<'a> LocalChangesState<'a> {
             draft: CommitDraft::default(),
             editing_commit: false,
             needs_refresh: false,
+            task: None,
+            diff_stale: false,
+            files_stamp,
             stash_input: None,
             confirm: None,
             conflict: None,
@@ -334,11 +345,18 @@ impl<'a> LocalChangesState<'a> {
     // finishes a merge, cherry-pick or revert), or starts typing the message when there is none yet.
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
         if let Some(operation) = self.continuing_operation() {
-            let result = self.repository.continue_operation(operation);
-            // a continue that stops on the next conflict has still applied commits
-            self.needs_refresh = true;
-            self.reload();
-            return result;
+            let name = operation.name();
+            self.task = Some(GitTask {
+                commands: self
+                    .repository
+                    .continue_args(operation)
+                    .into_iter()
+                    .collect(),
+                running: format!("Continuing the {name}"),
+                done: format!("Continued the {name}"),
+                ..Default::default()
+            });
+            return Ok(());
         }
         if self.draft.message.text().trim().is_empty() {
             self.edit_message();
@@ -461,22 +479,56 @@ impl<'a> LocalChangesState<'a> {
             .filter(|o| o.continues_without_commit() && !self.editing_commit)
     }
 
-    // Commits the staged changes with the typed message, amending HEAD while amend is checked.
+    // Commits the staged changes with the typed message, amending HEAD while amend is checked, then
+    // goes on with the rebase, cherry-pick or revert it concludes a stop of; the app runs it, see
+    // `take_task`, and clears the message once the commit is made.
     pub fn commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let message = self.draft.message.text();
         let amend = self.draft.amend_base.is_some();
-        self.repository.commit_staged(&message, amend)?;
-        // the next commits of a cherry-pick or revert of several commits
-        let continued = match self.operation {
-            Some(operation) => self.repository.continue_operation(operation),
-            None => Ok(()),
+        // the message is read from stdin so no editor is opened
+        let mut commit = vec!["commit".to_string(), "--quiet".into(), "--file=-".into()];
+        if amend {
+            commit.push("--amend".into());
+        }
+        let continued = self
+            .operation
+            .and_then(|operation| self.repository.continue_args(operation));
+        let (running, done) = if amend {
+            ("Amending the last commit", "Amended the last commit")
+        } else {
+            ("Committing", "Committed")
         };
+        self.task = Some(GitTask {
+            commands: std::iter::once(commit).chain(continued).collect(),
+            input: Some(self.draft.message.text()),
+            running: running.into(),
+            done: done.into(),
+            ..Default::default()
+        });
+        Ok(())
+    }
 
-        self.draft = CommitDraft::default();
-        self.needs_refresh = true;
+    // The git command for the app to run in the background, like a commit.
+    pub fn take_task(&mut self) -> Option<GitTask> {
+        self.task.take()
+    }
+
+    // Runs the git command asked for as the app does, see `App::finish_task`, then reloads.
+    #[cfg(test)]
+    fn run_task(&mut self) -> Result<(), String> {
+        let task = self.take_task().expect("a git command to run");
+        let head = self.repository.head_commit();
+        let result = crate::git::run_task(self.repository.path(), &task);
+        if task.input.is_some() && self.repository.head_commit() != head {
+            self.clear_draft();
+        }
         self.reload();
-        continued
+        result
+    }
+
+    // Empties the message box and stops amending, once the commit is made.
+    pub fn clear_draft(&mut self) {
+        self.draft = CommitDraft::default();
     }
 
     // Returns true once after the repository may have changed, by a commit, stash, continue or abort.
@@ -664,8 +716,14 @@ impl<'a> LocalChangesState<'a> {
                 result
             }
             ConfirmAction::Abort(operation) => {
-                self.needs_refresh = true;
-                self.repository.abort_operation(operation)
+                let name = operation.name();
+                self.task = Some(GitTask {
+                    commands: vec![vec![name.to_string(), "--abort".into()]],
+                    running: format!("Aborting the {name}"),
+                    done: format!("Aborted the {name}"),
+                    ..Default::default()
+                });
+                return Ok(());
             }
             // reloads itself
             ConfirmAction::Commit(_) => return self.commit(),
@@ -1149,24 +1207,27 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Reloads for changes made outside the app, leaving the page as it is (scroll, focus) when
-    // nothing it shows changed.
-    pub fn reload_if_changed(&mut self) {
-        let unchanged = self.load_changes() == self.changes
-            && self.repository.operation_in_progress() == self.operation
-            && self.diff_text() == self.diff.raw
-            && self.load_conflict() == self.conflict;
-        if !unchanged {
-            self.reload();
+    // Reloads with `files`, loaded in the background, for changes made outside the app, leaving the
+    // page as it is (scroll, focus) when nothing it shows changed.
+    pub fn reload_if_changed(&mut self, files: FilesSnapshot) {
+        if files.stamp != self.files_stamp
+            || self.repository.operation_in_progress() != self.operation
+        {
+            self.reload_with(files.changes);
         }
     }
 
     // Reloads the changes, keeping each section's selection on the same path if it still exists,
     // otherwise on the same position, like lazygit does after staging.
     pub fn reload(&mut self) {
+        self.reload_with(self.repository.local_changes());
+    }
+
+    fn reload_with(&mut self, changes: LocalChanges) {
         let selected_path = self.selected_path();
 
-        self.changes = self.load_changes();
+        self.files_stamp = self.repository.files_stamp(&changes);
+        self.changes = self.with_amend(changes);
         self.operation = self.repository.operation_in_progress();
         self.prepare_message();
         self.sync_edit_stop();
@@ -1201,7 +1262,11 @@ impl<'a> LocalChangesState<'a> {
     }
 
     fn load_changes(&self) -> LocalChanges {
-        let mut changes = self.repository.local_changes();
+        self.with_amend(self.repository.local_changes())
+    }
+
+    // While amending, the staged section shows the changes of HEAD too, see `amend_base`.
+    fn with_amend(&self, mut changes: LocalChanges) -> LocalChanges {
         if let Some(base) = &self.draft.amend_base {
             changes.staged = self.repository.staged_changes_against(base);
         }
@@ -1419,10 +1484,18 @@ impl<'a> LocalChangesState<'a> {
         self.tree().cursor()
     }
 
+    // Moves the cursor in the files; the diff of the row loads once used, see `load_stale_diff`.
     fn move_cursor(&mut self, cursor: usize) {
         let before = self.cursor();
         self.tree_mut().select_index(cursor);
         if self.cursor() != before {
+            self.diff_stale = true;
+        }
+    }
+
+    // Loads the diff of the selected row, when the cursor moved since it was.
+    pub fn load_stale_diff(&mut self) {
+        if std::mem::take(&mut self.diff_stale) {
             self.load_diff();
         }
     }
@@ -1432,6 +1505,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     fn load_diff(&mut self) {
+        self.diff_stale = false;
         let diff = self.diff_text();
         self.set_diff(&diff);
     }
@@ -1446,18 +1520,10 @@ impl<'a> LocalChangesState<'a> {
             let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = targets
                 .into_iter()
                 .partition(|f| f.status == LocalChangeStatus::Untracked);
-            let mut diff =
+            let diff =
                 self.repository
                     .local_change_diff(&file_paths(&tracked), false, staged, base);
-            for file in untracked {
-                diff.push_str(&self.repository.local_change_diff(
-                    &[&file.path],
-                    true,
-                    staged,
-                    base,
-                ));
-            }
-            return diff;
+            return diff + &self.repository.untracked_diff(&file_paths(&untracked));
         }
         self.selected_row()
             .map(|row| {
@@ -2065,12 +2131,40 @@ mod tests {
     fn select_row(state: &mut LocalChangesState, path: &str) {
         let pos = state.rows().iter().position(|r| r.path == path).unwrap();
         state.move_cursor(pos);
+        // as the next key, or drawing, does
+        state.load_stale_diff();
     }
 
     fn paths(files: &[LocalChangeFile]) -> Vec<&str> {
         let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         paths.sort_unstable();
         paths
+    }
+
+    #[test]
+    fn test_diff_loads_once_the_cursor_settles() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(repo_path.join(name), format!("{name}\n"))?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let shown = state.diff.raw.clone();
+
+        // like a held key, moving over the rows loads no diff
+        for path in ["a.txt", "b.txt", "c.txt"] {
+            let pos = state.rows().iter().position(|r| r.path == path).unwrap();
+            state.move_cursor(pos);
+            assert_eq!(state.diff.raw, shown);
+        }
+        // the row it stops on is loaded once, before the next key or the next frame
+        state.load_stale_diff();
+        assert!(state.diff.raw.contains("+c.txt"));
+        Ok(())
     }
 
     #[test]
@@ -2470,10 +2564,8 @@ mod tests {
             preview.files,
             vec![(LocalChangeStatus::Added, "a.txt".to_string())]
         );
-        assert!(!state.take_needs_refresh());
         state.confirm()?;
-        assert!(state.take_needs_refresh());
-        assert!(!state.take_needs_refresh());
+        state.run_task()?;
         assert_eq!(
             git_stdout(repo_path, &["log", "-1", "--format=%B"]),
             "first change\n\nbody"
@@ -2487,6 +2579,7 @@ mod tests {
         state.reload();
         state.toggle_amend()?;
         state.commit()?;
+        state.run_task()?;
         assert_eq!(git_stdout(repo_path, &["rev-list", "--count", "HEAD"]), "2");
         assert_eq!(
             git_stdout(repo_path, &["log", "-1", "--format=%s"]),
@@ -2943,7 +3036,8 @@ mod tests {
         );
 
         // continuing with the conflict unresolved fails and keeps rebasing
-        assert!(state.commit_or_continue().is_err());
+        state.commit_or_continue()?;
+        assert!(state.run_task().is_err());
         assert_eq!(state.operation, Some(Operation::Rebase));
 
         // resolve, stage, then c continues instead of committing
@@ -2952,7 +3046,7 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.toggle_stage()?;
         state.commit_or_continue()?;
-        assert!(state.take_needs_refresh());
+        state.run_task()?;
         assert_eq!(state.operation, None);
         assert_eq!(
             git_stdout(repo_path, &["log", "--format=%s", "-2"]),
@@ -2985,7 +3079,7 @@ mod tests {
 
         state.request_abort()?;
         state.handle_confirm_key(key(KeyCode::Enter))?;
-        assert!(state.take_needs_refresh());
+        state.run_task()?;
         assert_eq!(state.operation, None);
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(
@@ -3049,17 +3143,19 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "a.txt");
         state.scroll_diff_down(3);
+        // as loaded in the background
+        let files = || FilesSnapshot::load(repo_path, repository.git_dir());
 
         // nothing changed: the diff stays scrolled
-        state.reload_if_changed();
+        state.reload_if_changed(files());
         assert_eq!(state.cursor.offset, 3);
 
-        // the file changed: the diff is loaded again
+        // the file changed, still modified: the diff is loaded again
         fs::write(
             repo_path.join("a.txt"),
             numbered_lines(30).replace("line 3\n", "three\n"),
         )?;
-        state.reload_if_changed();
+        state.reload_if_changed(files());
         assert_eq!(state.cursor.offset, 0);
         assert!(state.diff.raw.contains("+three"));
         Ok(())
@@ -3117,6 +3213,7 @@ mod tests {
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
         state.confirm()?;
+        state.run_task()?;
         assert_eq!(state.operation, None);
         // a merge commit, with both parents
         let parents = git_stdout(repo_path, &["log", "-1", "--format=%p"]);
@@ -3134,6 +3231,7 @@ mod tests {
             Some("Abort the merge and go back to where it started?")
         );
         state.handle_confirm_key(key(KeyCode::Enter))?;
+        state.run_task()?;
         assert_eq!(state.operation, None);
         assert_eq!(git_stdout(repo_path, &["rev-parse", "HEAD"]), before);
         Ok(())
@@ -3155,6 +3253,7 @@ mod tests {
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
         state.confirm()?;
+        state.run_task()?;
         assert_eq!(state.operation, None);
         assert_eq!(
             git_stdout(repo_path, &["log", "--format=%s", "-3"]),
@@ -3186,6 +3285,7 @@ mod tests {
 
         state.request_abort()?;
         state.handle_confirm_key(key(KeyCode::Enter))?;
+        state.run_task()?;
         assert_eq!(state.operation, None);
         assert!(state.request_abort().is_err());
         Ok(())

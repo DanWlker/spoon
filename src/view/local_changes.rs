@@ -1,15 +1,12 @@
 use std::rc::Rc;
 
-use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent},
-    layout::Rect,
-    Frame,
-};
+use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
     event::{AppEvent, KeyHint, Sender, UserEvent},
     external::{editor_command, merge_tool_command},
+    git::FilesSnapshot,
     keybind::Scope,
     layout::{Direction, Panel},
     view::{copy_path, ListRefreshViewContext, RefreshViewContext},
@@ -27,6 +24,8 @@ use crate::{
 pub struct LocalChangesView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     local_changes_state: LocalChangesState<'a>,
+    // the last key's event, the repeats of a key moving the cursor loading no diff
+    last_event: Option<UserEvent>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -42,25 +41,32 @@ impl<'a> LocalChangesView<'a> {
         LocalChangesView {
             commit_list_state: Some(commit_list_state),
             local_changes_state,
+            last_event: None,
             ctx,
             tx,
         }
     }
 
+    // Before drawing: the diff of the row the cursor moved to.
+    pub fn update_layout(&mut self) {
+        self.local_changes_state.load_stale_diff();
+    }
+
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
+        // held, a key moving the cursor loads the diff once it is let go (or drawn)
+        if self.last_event != Some(event) {
+            self.local_changes_state.load_stale_diff();
+        }
+        self.last_event = Some(event);
         self.handle_event_inner(event, key);
         self.run_external_request();
+        // a commit, continue or abort runs in the background, the app refreshing once it is done
+        if let Some(task) = self.local_changes_state.take_task() {
+            self.tx.send(AppEvent::StartTask(task));
+        }
     }
 
     fn handle_event_inner(&mut self, event: UserEvent, key: KeyEvent) {
-        // like lazygit, the files are not changed while a git command runs in the background,
-        // which could fail on the locked index or end up in the middle of its stash and pop
-        if self.changes_repository(event, key) {
-            if let Some(message) = self.ctx.busy_message() {
-                self.tx.send(AppEvent::NotifyWarn(message));
-                return;
-            }
-        }
         // while confirming or typing, keys arrive unmapped, see App::run
         if self.local_changes_state.is_confirming() {
             let result = if self.confirms_commit(key) {
@@ -373,54 +379,18 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    // Whether the key is the commit key, while the popup asks to confirm a commit.
-    // Whether the key commits, or continues the rebase in progress, which git may sign, asking for
-    // a passphrase in the terminal (see `App::handle_view_event`).
-    pub fn may_sign(&self, event: UserEvent, key: KeyEvent) -> bool {
-        let state = &self.local_changes_state;
-        if state.is_confirming() {
-            return state.is_confirming_commit()
-                && (key.code == KeyCode::Enter || self.confirms_commit(key));
-        }
-        !self.is_capturing_keys()
-            && state.continuing_operation().is_some()
-            && (event == UserEvent::Commit
-                || (event == UserEvent::Confirm && state.is_commit_focused()))
-    }
-
     fn confirms_commit(&self, key: KeyEvent) -> bool {
         self.local_changes_state.is_confirming_commit()
             && self.ctx.keybind.event_in(Scope::LocalChanges, &key) == Some(UserEvent::Commit)
     }
 
-    // Whether the key may change the repository: staging, discarding, stashing, committing,
-    // aborting or resolving a conflict, or confirming one of these.
-    fn changes_repository(&self, event: UserEvent, key: KeyEvent) -> bool {
-        let state = &self.local_changes_state;
-        if state.is_confirming() {
-            return key.code == KeyCode::Enter || self.confirms_commit(key);
-        }
-        if state.is_typing_stash() {
-            return key.code == KeyCode::Enter;
-        }
-        if state.is_editing() || state.is_typing_query() {
-            return false;
-        }
-        match event {
-            UserEvent::Commit | UserEvent::Abort | UserEvent::Stash | UserEvent::Discard => true,
-            // in the commit section, space types the message and enter commits (or continues)
-            UserEvent::ToggleStage => !state.is_commit_focused(),
-            UserEvent::Confirm => state.is_conflict_focused() || state.is_commit_focused(),
-            _ => false,
-        }
-    }
-
     // Like lazygit, reloads the repository after anything that may have changed it, whether it
-    // succeeded or not: a failed continue may still have applied some commits before it stopped.
+    // succeeded or not.
     fn after_action(&mut self, result: Result<(), String>) {
         if self.local_changes_state.take_needs_refresh() {
             self.refresh();
         }
+
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
         }
@@ -446,8 +416,13 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // Reloads the changes, keeping the selection, for those made outside the app.
-    pub fn reload_files(&mut self) {
-        self.local_changes_state.reload_if_changed();
+    pub fn reload_files(&mut self, files: FilesSnapshot) {
+        self.local_changes_state.reload_if_changed(files);
+    }
+
+    // Empties the message box once its commit is made.
+    pub fn clear_draft(&mut self) {
+        self.local_changes_state.clear_draft();
     }
 
     // What to restore of the page, after a refresh or coming back to it.

@@ -115,6 +115,12 @@ pub struct Repository {
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
     loaded_local_changes: std::cell::RefCell<Option<LocalChanges>>,
+    // what runs in the background, the repository refusing to be changed meanwhile, see `run`
+    busy: std::cell::RefCell<Option<String>>,
+    // the fingerprint of the refs when loaded, see `refs_snapshot`
+    refs_snapshot: Option<String>,
+    // how far each local branch is ahead and behind its upstream when loaded, see `branch_tracking`
+    tracking: FxHashMap<String, (usize, usize)>,
     commit_map: CommitMap,
 
     parents_map: CommitsMap,
@@ -152,7 +158,32 @@ impl Repository {
     ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
+        // what doesn't depend on the commits loads alongside them
+        std::thread::scope(|scope| {
+            let local_changes = scope.spawn(|| load_local_changes(path));
+            let remotes = scope.spawn(|| load_remotes(path));
+            let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
+            let refs_snapshot = scope.spawn(|| refs_snapshot(path).ok());
+            let tracking = scope.spawn(|| load_branch_tracking(path));
+            let mut repository = Self::load_commits(path, sort, max_count, mailmap, revisions)?;
+            repository.git_dir = git_dir;
+            repository.remotes = remotes.join().unwrap_or_default();
+            repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
+            repository.loaded_local_changes = local_changes.join().ok().into();
+            repository.refs_snapshot = refs_snapshot.join().unwrap_or_default();
+            repository.tracking = tracking.join().unwrap_or_default();
+            Ok(repository)
+        })
+    }
 
+    // The commits and refs, see `load_scoped`.
+    fn load_commits(
+        path: &Path,
+        sort: SortCommit,
+        max_count: Option<usize>,
+        mailmap: bool,
+        revisions: Option<&[String]>,
+    ) -> Result<Self> {
         let (mut ref_map, head) = load_refs(path);
 
         let stashes = if revisions.is_some() {
@@ -174,7 +205,7 @@ impl Repository {
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
-        let mut repository = Self::new(
+        Ok(Self::new(
             path.to_path_buf(),
             commit_map,
             parents_map,
@@ -182,12 +213,7 @@ impl Repository {
             ref_map,
             head,
             commit_hashes,
-        );
-        repository.git_dir = git_dir;
-        repository.remotes = load_remotes(path);
-        repository.textconv_drivers = load_textconv_drivers(path);
-        repository.loaded_local_changes = Some(load_local_changes(path)).into();
-        Ok(repository)
+        ))
     }
 
     pub fn new(
@@ -203,6 +229,9 @@ impl Repository {
             path,
             git_dir: None,
             loaded_local_changes: Default::default(),
+            busy: Default::default(),
+            refs_snapshot: None,
+            tracking: Default::default(),
             commit_map,
             parents_map,
             children_map,
@@ -336,13 +365,22 @@ impl Repository {
 
     // The local changes as they were when the repository was loaded the first time it is called,
     // so the sidebar and the page share one `git status`, and as they are now after that.
-    // Loads the local changes again after the working tree changed, for the local changes page to
+    // The local changes loaded again after the working tree changed, for the local changes page to
     // show them; returns how many there are.
-    pub fn reload_local_changes(&self) -> usize {
-        let changes = self.local_changes();
+    pub fn set_local_changes(&self, changes: LocalChanges) -> usize {
         let count = changes.count();
         *self.loaded_local_changes.borrow_mut() = Some(changes);
         count
+    }
+
+    // The git directory, None when git can't tell.
+    pub fn git_dir(&self) -> Option<&Path> {
+        self.git_dir.as_deref()
+    }
+
+    // See `files_stamp`.
+    pub fn files_stamp(&self, changes: &LocalChanges) -> u64 {
+        files_stamp(&self.path, self.git_dir(), changes)
     }
 
     pub fn take_loaded_local_changes(&self) -> LocalChanges {
@@ -364,6 +402,33 @@ impl Repository {
             return String::new();
         }
         load_local_change_diff(&self.path, paths, untracked, staged, staged_base)
+    }
+
+    // The diffs of untracked files, which git diffs only one at a time (against /dev/null), so a few
+    // run side by side.
+    pub fn untracked_diff(&self, paths: &[&str]) -> String {
+        let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+        let chunk = paths.len().div_ceil(workers).max(1);
+        let work_tree = self.path.as_path();
+        std::thread::scope(|scope| {
+            let diffs: Vec<_> = paths
+                .chunks(chunk)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|path| {
+                                load_local_change_diff(work_tree, &[path], true, false, None)
+                            })
+                            .collect::<String>()
+                    })
+                })
+                .collect();
+            diffs
+                .into_iter()
+                .map(|diff| diff.join().unwrap_or_default())
+                .collect()
+        })
     }
 
     // The tree to compare the index to while amending: the parent of HEAD, or the empty tree for a root commit.
@@ -526,7 +591,7 @@ impl Repository {
         let mut args = vec!["add", "--all", "--"];
         let paths = pathspecs(paths);
         args.extend(paths.iter().map(String::as_str));
-        run_git(&self.path, &args, None)
+        self.run(&args, None)
     }
 
     // Resets the index entries of `paths` to `staged_base`, HEAD when None.
@@ -540,7 +605,7 @@ impl Repository {
         args.push("--");
         let paths = pathspecs(paths);
         args.extend(paths.iter().map(String::as_str));
-        run_git(&self.path, &args, None)
+        self.run(&args, None)
     }
 
     // Discards the unstaged changes of `tracked` files (restoring them from the index) and deletes `untracked` files.
@@ -558,7 +623,7 @@ impl Repository {
             let mut args = vec!["reset", "--quiet", "--"];
             let specs = pathspecs(conflicted);
             args.extend(specs.iter().map(String::as_str));
-            run_git(&self.path, &args, None)?;
+            self.run(&args, None)?;
             let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
             args.extend_from_slice(conflicted);
             let in_head = git_output(&self.path, &args)?;
@@ -575,13 +640,13 @@ impl Repository {
             let mut args = vec!["checkout", "--quiet", "--"];
             let specs = pathspecs(&tracked);
             args.extend(specs.iter().map(String::as_str));
-            run_git(&self.path, &args, None)?;
+            self.run(&args, None)?;
         }
         if !untracked.is_empty() {
             let mut args = vec!["clean", "--force", "--quiet", "--"];
             let specs = pathspecs(&untracked);
             args.extend(specs.iter().map(String::as_str));
-            run_git(&self.path, &args, None)?;
+            self.run(&args, None)?;
         }
         Ok(())
     }
@@ -629,7 +694,7 @@ impl Repository {
             args.push("--reverse");
         }
         args.push("-");
-        run_git(&self.path, &args, Some(patch))
+        self.run(&args, Some(patch))
     }
 
     // Stashes the changes of `paths` (all changes when empty), including untracked files.
@@ -643,7 +708,7 @@ impl Repository {
             args.push("--");
             args.extend(specs.iter().map(String::as_str));
         }
-        run_git(&self.path, &args, None)
+        self.run(&args, None)
     }
 
     // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
@@ -665,26 +730,13 @@ impl Repository {
 
     // The commits each local branch with an upstream has that it lacks (ahead, to push) and the
     // other way round (behind, to pull), by branch name.
-    pub fn branch_tracking(&self) -> FxHashMap<String, (usize, usize)> {
-        // the full name: the short one is "heads/v2" when a tag is named v2 too
-        let format = "--format=%(refname)%00%(upstream:track,nobracket)";
-        let refs =
-            git_output(&self.path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
-        refs.lines()
-            .filter_map(|line| {
-                let (name, track) = line.split_once('\0')?;
-                let name = name.strip_prefix("refs/heads/")?;
-                // like "ahead 2, behind 1", empty when in sync or without an upstream
-                let count = |what: &str| {
-                    track
-                        .split(", ")
-                        .find_map(|part| part.strip_prefix(what)?.trim().parse().ok())
-                        .unwrap_or(0)
-                };
-                let counts = (count("ahead "), count("behind "));
-                (counts != (0, 0)).then(|| (name.to_string(), counts))
-            })
-            .collect()
+    pub fn branch_tracking(&self) -> &FxHashMap<String, (usize, usize)> {
+        &self.tracking
+    }
+
+    // The fingerprint of the refs as loaded, see `refs_snapshot`.
+    pub fn refs_snapshot(&self) -> Option<&str> {
+        self.refs_snapshot.as_deref()
     }
 
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
@@ -782,6 +834,20 @@ impl Repository {
         self.config(key).as_deref().and_then(parse_git_bool)
     }
 
+    // Refuses changes to the repository while `running` (a git command in the background), which
+    // could fail on its locked index or end up in the middle of its stash and pop, like lazygit.
+    pub fn set_busy(&self, running: Option<String>) {
+        *self.busy.borrow_mut() = running;
+    }
+
+    // Runs a git command changing the repository, unless one runs in the background, see `set_busy`.
+    fn run(&self, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
+        if let Some(running) = self.busy.borrow().as_ref() {
+            return Err(format!("{running}, wait for it to finish"));
+        }
+        run_git(&self.path, args, stdin)
+    }
+
     // The top directory of the working tree, which file paths of local changes are relative to.
     pub fn path(&self) -> &Path {
         &self.path
@@ -815,19 +881,19 @@ impl Repository {
             // one side deleted the file: it is kept as it is on the side taken
             let kept = self.stage_blob(path, side.stage()).is_some();
             return if kept {
-                run_git(&self.path, &["checkout", side.option(), "--", spec], None)
-                    .and_then(|_| run_git(&self.path, &["add", "--", spec], None))
+                self.run(&["checkout", side.option(), "--", spec], None)
+                    .and_then(|_| self.run(&["add", "--", spec], None))
             } else {
-                run_git(&self.path, &["rm", "--quiet", "--", spec], None)
+                self.run(&["rm", "--quiet", "--", spec], None)
             };
         };
         match self.merge_file_favoring(path, side, ours, theirs) {
             Some(merged) => std::fs::write(self.path.join(path), merged)
                 .map_err(|e| format!("failed to write {path}: {e}"))?,
             // a binary file can't be merged by lines, so it is taken whole
-            None => run_git(&self.path, &["checkout", side.option(), "--", spec], None)?,
+            None => self.run(&["checkout", side.option(), "--", spec], None)?,
         }
-        run_git(&self.path, &["add", "--", spec], None)
+        self.run(&["add", "--", spec], None)
     }
 
     // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`.
@@ -886,54 +952,14 @@ impl Repository {
         Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
     }
 
-    // Continues a rebase, or the remaining commits of a cherry-pick or revert of several commits.
-    pub fn continue_operation(&self, operation: Operation) -> std::result::Result<(), String> {
-        if operation == Operation::Merge {
-            return Ok(());
-        }
-        let command = operation.name();
-        // a single cherry-pick or revert is done once committed, only a sequence goes on
-        if operation != Operation::Rebase && !self.git_path("sequencer").is_some_and(|p| p.exists())
-        {
-            return Ok(());
-        }
-        let started = Instant::now();
-        let output = git_command()
-            .args([command, "--continue"])
-            // keep the messages of the commits instead of opening an editor
-            .env("GIT_EDITOR", "true")
-            .current_dir(&self.path)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("failed to run git {command} --continue: {e}"))?;
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        log_command(
-            &[command, "--continue"],
-            output.status.success(),
-            &text,
-            started,
-        );
-        if output.status.success() {
-            Ok(())
-        } else {
-            // git explains conflicts left to resolve on stdout
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let reason = [stderr.trim(), stdout.trim()]
-                .into_iter()
-                .find(|s| !s.is_empty())
-                .unwrap_or_default()
-                .to_string();
-            Err(format!("git {command} --continue failed: {reason}"))
-        }
-    }
-
-    pub fn abort_operation(&self, operation: Operation) -> std::result::Result<(), String> {
-        run_git(&self.path, &[operation.name(), "--abort"], None)
+    // The command continuing a rebase, or the remaining commits of a cherry-pick or revert of
+    // several commits, after the commit concluding the stop; None when that commit concludes it.
+    pub fn continue_args(&self, operation: Operation) -> Option<Vec<String>> {
+        // a merge, or a single cherry-pick or revert, is done once committed
+        let goes_on = operation == Operation::Rebase
+            || (operation != Operation::Merge
+                && self.git_path("sequencer").is_some_and(|p| p.exists()));
+        goes_on.then(|| vec![operation.name().to_string(), "--continue".into()])
     }
 
     fn git_path(&self, name: &str) -> Option<PathBuf> {
@@ -943,15 +969,6 @@ impl Repository {
         git_output(&self.path, &["rev-parse", "--git-path", name])
             .map(|p| self.path.join(p.trim()))
             .ok()
-    }
-
-    pub fn commit_staged(&self, message: &str, amend: bool) -> std::result::Result<(), String> {
-        // the message is read from stdin so no editor is opened
-        let mut args = vec!["commit", "--quiet", "--file=-"];
-        if amend {
-            args.push("--amend");
-        }
-        run_git(&self.path, &args, Some(message))
     }
 
     // Stages (or unstages, with `reverse`) the changes in `patch`, a diff produced by `local_change_diff`.
@@ -965,7 +982,7 @@ impl Repository {
             args.push("--reverse");
         }
         args.push("-");
-        run_git(&self.path, &args, Some(patch))
+        self.run(&args, Some(patch))
     }
 }
 
@@ -1534,7 +1551,7 @@ impl Operation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LocalChangeStatus {
     Added,
     Modified,
@@ -1562,7 +1579,7 @@ impl LocalChangeStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LocalChangeFile {
     pub path: String,
     // the source path of a rename or copy
@@ -1592,7 +1609,14 @@ impl LocalChanges {
 }
 
 fn load_local_changes(path: &Path) -> LocalChanges {
-    let args = ["status", "--porcelain=v1", "--untracked-files=all", "-z"];
+    // without refreshing the index, whose lock would make a git command running meanwhile fail
+    let args = [
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "-z",
+    ];
     // fails in bare repositories, which have no working tree
     git_output_bytes(path, &args)
         .map(|out| parse_status_porcelain(&out))
@@ -1754,6 +1778,68 @@ impl RemoteInfo {
     }
 }
 
+// The local changes and a fingerprint of their files, loaded in the background every few seconds
+// for the local changes page to reload when something changed, see `files_stamp`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilesSnapshot {
+    pub changes: LocalChanges,
+    pub stamp: u64,
+}
+
+impl FilesSnapshot {
+    pub fn load(work_tree: &Path, git_dir: Option<&Path>) -> Self {
+        let changes = load_local_changes(work_tree);
+        let stamp = files_stamp(work_tree, git_dir, &changes);
+        FilesSnapshot { changes, stamp }
+    }
+}
+
+// A fingerprint of the local changes and what they are made of: the index, and each changed file's
+// size and time of change, which an edit to an already changed file changes without changing its
+// status.
+pub fn files_stamp(work_tree: &Path, git_dir: Option<&Path>, changes: &LocalChanges) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = rustc_hash::FxBuildHasher.build_hasher();
+    let mut stat = |path: &Path| match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            meta.len().hash(&mut hasher);
+            meta.modified().ok().hash(&mut hasher);
+        }
+        Err(_) => hasher.write_u8(0),
+    };
+    if let Some(git_dir) = git_dir {
+        stat(&git_dir.join("index"));
+    }
+    for file in changes.unstaged.iter().chain(&changes.staged) {
+        stat(&work_tree.join(&file.path));
+    }
+    changes.unstaged.hash(&mut hasher);
+    changes.staged.hash(&mut hasher);
+    hasher.finish()
+}
+
+// How far each local branch is ahead and behind its upstream, those in sync left out.
+fn load_branch_tracking(path: &Path) -> FxHashMap<String, (usize, usize)> {
+    // the full name: the short one is "heads/v2" when a tag is named v2 too
+    let format = "--format=%(refname)%00%(upstream:track,nobracket)";
+    let refs = git_output(path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
+    refs.lines()
+        .filter_map(|line| {
+            let (name, track) = line.split_once('\0')?;
+            let name = name.strip_prefix("refs/heads/")?;
+            // like "ahead 2, behind 1", empty when in sync or without an upstream
+            let count = |what: &str| {
+                track
+                    .split(", ")
+                    .find_map(|part| part.strip_prefix(what)?.trim().parse().ok())
+                    .unwrap_or(0)
+            };
+            let counts = (count("ahead "), count("behind "));
+            (counts != (0, 0)).then(|| (name.to_string(), counts))
+        })
+        .collect()
+}
+
 // A fingerprint of the local branches, HEAD and the stashes, which changes when they are changed
 // from outside the app, like lazygit's `RefsSnapshot`: where each branch points, the branch
 // checked out or the commit when detached, and every stash, as the sidebar drops them by position.
@@ -1796,6 +1882,12 @@ pub struct GitTask {
     pub select: Option<String>,
     // the local branch it pushes or pulls, shown beside it in the sidebar while it runs, like lazygit
     pub branch_status: Option<BranchStatus>,
+    // what the first command reads, like the message of a commit
+    pub input: Option<String>,
+    // said when it fails instead of git's error, which may tell little
+    pub failed: Option<String>,
+    // changes only the working tree, so the page stays as it is instead of being reloaded
+    pub keeps_view: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1818,6 +1910,31 @@ impl GitTask {
                     "commit" | "rebase" | "cherry-pick" | "merge" | "revert" | "tag" | "pull"
                 )
             })
+    }
+
+    // Whether it moves or rewrites HEAD, which git refuses or tangles up while a rebase, merge,
+    // cherry-pick or revert waits to be continued or aborted; going on with it or aborting it doesn't.
+    pub fn moves_head(&self) -> bool {
+        self.commands.iter().any(|args| {
+            let resumes = args
+                .iter()
+                .any(|a| matches!(a.as_str(), "--continue" | "--abort" | "--skip" | "--quit"));
+            let command = args.first().map(String::as_str);
+            !resumes
+                && matches!(
+                    command,
+                    Some(
+                        "checkout"
+                            | "switch"
+                            | "rebase"
+                            | "merge"
+                            | "cherry-pick"
+                            | "revert"
+                            | "reset"
+                            | "pull"
+                    )
+                )
+        })
     }
 
     pub fn new(args: &[&str], running: String, done: String) -> Self {
@@ -1876,15 +1993,16 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
         let before = stash_top();
         let message = format!("spoon: {}", task.running);
         let args = ["stash", "push", "--include-untracked", "-m", &message].map(String::from);
-        run_task_step(path, &args, task)?;
+        run_task_step(path, &args, None, task)?;
         stash_top() != before
     };
-    let pop = || run_task_step(path, &["stash", "pop"].map(String::from), task);
+    let pop = || run_task_step(path, &["stash", "pop"].map(String::from), None, task);
 
     let run = || {
-        task.commands
-            .iter()
-            .try_for_each(|args| run_task_step(path, args, task))
+        task.commands.iter().enumerate().try_for_each(|(i, args)| {
+            let input = task.input.as_deref().filter(|_| i == 0);
+            run_task_step(path, args, input, task)
+        })
     };
     match run() {
         Ok(()) => {}
@@ -1910,11 +2028,22 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
 
 // It runs while the app owns the terminal, so git must not prompt: no editor (the messages git
 // prepares are used as they are), and credentials come from a helper or an agent.
-fn run_task_step(path: &Path, args: &[String], task: &GitTask) -> std::result::Result<(), String> {
+fn run_task_step(
+    path: &Path,
+    args: &[String],
+    input: Option<&str>,
+    task: &GitTask,
+) -> std::result::Result<(), String> {
     let mut cmd = git_command();
     cmd.args(args)
         .current_dir(path)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .envs(task.env.iter().map(|(k, v)| (k, v)));
@@ -1927,9 +2056,15 @@ fn run_task_step(path: &Path, args: &[String], task: &GitTask) -> std::result::R
         }
     }
     let started = Instant::now();
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
+    let command_error = |e: std::io::Error| format!("failed to run git {}: {e}", args.join(" "));
+    let mut child = cmd.spawn().map_err(command_error)?;
+    if let Some(input) = input {
+        use std::io::Write;
+        // closed once written, so git can finish
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin.write_all(input.as_bytes()).map_err(command_error)?;
+    }
+    let output = child.wait_with_output().map_err(command_error)?;
     // git reports progress and results of many commands on stderr
     let text = format!(
         "{}{}",
@@ -2176,6 +2311,149 @@ mod tests {
     }
 
     #[test]
+    fn test_load_alongside_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = crate::test_support::git::GitRepository::new(path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        std::fs::write(path.join("a"), "a\n").unwrap();
+        git_output(
+            path,
+            &["remote", "add", "origin", "https://example.com/r.git"],
+        )
+        .unwrap();
+
+        // the status, remotes and refs are loaded in the background while the commits are
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert_eq!(repository.loaded_local_change_count(), 1);
+        assert_eq!(repository.remotes(), ["origin"]);
+        assert_eq!(
+            repository.refs_snapshot(),
+            Some(refs_snapshot(path).unwrap().as_str())
+        );
+        assert!(repository.branch_tracking().is_empty());
+    }
+
+    #[test]
+    fn test_untracked_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = crate::test_support::git::GitRepository::new(path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        let names: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
+        for name in &names {
+            std::fs::write(path.join(name), format!("{name}\n")).unwrap();
+        }
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+
+        // side by side, the same as one after another, in order
+        let one_by_one: String = paths
+            .iter()
+            .map(|p| repository.local_change_diff(&[p], true, false, None))
+            .collect();
+        assert_eq!(repository.untracked_diff(&paths), one_by_one);
+        assert!(one_by_one.contains("+f00") && one_by_one.contains("+f19"));
+        assert_eq!(repository.untracked_diff(&[]), "");
+    }
+
+    #[test]
+    fn test_files_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = crate::test_support::git::GitRepository::new(path);
+        git.init();
+        std::fs::write(path.join("a"), "a\n").unwrap();
+        git.add(&["a"]);
+        git.commit("init", "2024-01-01");
+        std::fs::write(path.join("a"), "b\n").unwrap();
+        let git_dir = path.join(".git");
+        let load = || FilesSnapshot::load(path, Some(&git_dir));
+
+        let before = load();
+        assert_eq!(load(), before);
+        // edited again, still modified: the status is the same, the fingerprint isn't
+        std::fs::write(path.join("a"), "bc\n").unwrap();
+        let edited = load();
+        assert_eq!(edited.changes, before.changes);
+        assert_ne!(edited.stamp, before.stamp);
+        // staged, from outside the app
+        git.add(&["a"]);
+        assert_ne!(load().stamp, edited.stamp);
+    }
+
+    #[test]
+    fn test_busy_repository_refuses_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = crate::test_support::git::GitRepository::new(path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        std::fs::write(path.join("a"), "a\n").unwrap();
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+
+        // while a git command runs in the background
+        repository.set_busy(Some("Pushing main".into()));
+        assert_eq!(
+            repository.stage_paths(&["a"]),
+            Err("Pushing main, wait for it to finish".into())
+        );
+        repository.set_busy(None);
+        repository.stage_paths(&["a"]).unwrap();
+    }
+
+    #[test]
+    fn test_task_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = crate::test_support::git::GitRepository::new(path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        // the first command reads it, like the message of a commit
+        let task = GitTask {
+            input: Some("from stdin".into()),
+            ..GitTask::new(
+                &[
+                    "-c",
+                    "user.name=T",
+                    "-c",
+                    "user.email=t@e",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "--no-verify",
+                    "-F",
+                    "-",
+                ],
+                String::new(),
+                String::new(),
+            )
+        };
+        run_task(path, &task).unwrap();
+        let message = git_output(path, &["log", "-1", "--format=%s"]).unwrap();
+        assert_eq!(message.trim(), "from stdin");
+    }
+
+    #[test]
+    fn test_task_moves_head() {
+        let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
+        assert!(task(&["checkout", "-b", "topic", "HEAD"]).moves_head());
+        assert!(task(&["pull", "origin", "main"]).moves_head());
+        assert!(!task(&["branch", "--no-track", "topic", "HEAD"]).moves_head());
+        // going on with the operation, or aborting it
+        assert!(!task(&["rebase", "--continue"]).moves_head());
+        assert!(!task(&["merge", "--abort"]).moves_head());
+        let mut tag_then_reset = task(&["tag", "v1"]);
+        tag_then_reset
+            .commands
+            .push(vec!["reset".into(), "--hard".into()]);
+        assert!(tag_then_reset.moves_head());
+    }
+
+    #[test]
     fn test_task_may_sign() {
         let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
         assert!(task(&["rebase", "-i", "main"]).may_sign());
@@ -2304,16 +2582,17 @@ mod tests {
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
 
         // in sync, then two commits to push and, once they are pushed and one undone, one to pull
-        assert!(repository.branch_tracking().is_empty());
+        let tracking = || load_branch_tracking(&work);
+        assert!(tracking().is_empty());
         repo.commit("second", "2024-01-02");
         repo.commit("third", "2024-01-03");
-        assert_eq!(repository.branch_tracking()["master"], (2, 0));
+        assert_eq!(tracking()["master"], (2, 0));
         run("push origin master:main").unwrap();
         git_output(&work, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
-        assert_eq!(repository.branch_tracking()["master"], (0, 1));
+        assert_eq!(tracking()["master"], (0, 1));
         // also with a tag of the same name
         git_output(&work, &["tag", "master"]).unwrap();
-        assert_eq!(repository.branch_tracking()["master"], (0, 1));
+        assert_eq!(tracking()["master"], (0, 1));
     }
 
     #[test]

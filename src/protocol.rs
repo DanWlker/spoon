@@ -477,9 +477,10 @@ fn kitty_encode(bytes: &[u8], cell_width: usize, cell_height: usize) -> String {
         s.push_str("\x1b_G");
         if i == 0 {
             // the whole width of the image, to crop it when something covers its end
-            let pixel_width = png_width(bytes);
-            s.push_str(&format!(
-                "a=T,f=100,c={cell_width},r={cell_height},w={pixel_width},"
+            s.push_str(&kitty_display_control(
+                cell_width as u16,
+                cell_height as u16,
+                png_width(bytes),
             ));
         }
         if i < total_chunks - 1 {
@@ -505,8 +506,10 @@ fn png_width(bytes: &[u8]) -> u32 {
 // escape sequence in its first cell drawing over the cells after it, which the terminal would
 // draw on top of whatever covers them. A kitty image is cut to the columns before what covers it,
 // an iTerm2 one, which can't be cut, is left out. The images of kitty's unicode placeholders are
-// in each cell, so what covers them replaces them already.
-pub fn crop_covered_images(buf: &mut Buffer) {
+// in each cell, so what covers them replaces them already. Returns where the images are drawn:
+// their first cells, and their widths once cropped.
+pub fn crop_covered_images(buf: &mut Buffer) -> Vec<(u16, u16, u16)> {
+    let mut images = Vec::new();
     let area = *buf.area();
     for y in area.top()..area.bottom() {
         let mut x = area.left();
@@ -518,24 +521,27 @@ pub fn crop_covered_images(buf: &mut Buffer) {
             let end = x.saturating_add(width).min(area.right());
             // the covered cells are no longer skipped, like the image's own
             let covered = (x + 1..end).find(|&c| buf[(c, y)].diff_option != CellDiffOption::Skip);
-            if let Some(covered) = covered {
-                match kitty_crop(buf[(x, y)].symbol(), covered - x) {
+            match covered {
+                Some(covered) => match kitty_crop(buf[(x, y)].symbol(), covered - x) {
                     Some(symbol) => {
                         buf[(x, y)].set_symbol(&symbol);
+                        images.push((x, y, covered - x));
                     }
                     None => (x..covered).for_each(|c| buf[(c, y)].reset()),
-                }
+                },
+                None => images.push((x, y, end - x)),
             }
             x = end.max(x + 1);
         }
     }
+    images
 }
 
 // The control data of the image displayed by a kitty or iTerm2 escape sequence, and its width in
 // cells; None for other text.
 fn image_width(symbol: &str) -> Option<u16> {
     if symbol.starts_with("\x1b_G") {
-        kitty_param(symbol, "c")
+        kitty_param(symbol, "c")?.try_into().ok()
     } else if let Some(rest) = symbol.strip_prefix("\x1b]1337;File=") {
         let control = rest.split(':').next()?;
         control
@@ -549,7 +555,7 @@ fn image_width(symbol: &str) -> Option<u16> {
 }
 
 // The value of `key` in the control data of kitty's displaying escape sequence ("a=T,...").
-fn kitty_param(symbol: &str, key: &str) -> Option<u16> {
+fn kitty_param(symbol: &str, key: &str) -> Option<u32> {
     let start = symbol.find("\x1b_Ga=T,")? + 3;
     let control = symbol[start..].split(';').next()?;
     control
@@ -559,17 +565,21 @@ fn kitty_param(symbol: &str, key: &str) -> Option<u16> {
         .ok()
 }
 
+// The control data displaying a PNG in kitty over `columns` by `rows` cells, of its first
+// `pixel_width` columns of pixels; `kitty_param` reads it back.
+fn kitty_display_control(columns: u16, rows: u16, pixel_width: u32) -> String {
+    format!("a=T,f=100,c={columns},r={rows},w={pixel_width},")
+}
+
 // A kitty image showing only its first `columns` cells, of the pixels in them; None for iTerm2.
 fn kitty_crop(symbol: &str, columns: u16) -> Option<String> {
-    let (c, r, w) = (
-        kitty_param(symbol, "c")?,
-        kitty_param(symbol, "r")?,
-        kitty_param(symbol, "w")?,
-    );
-    let cropped_w = u32::from(w) * u32::from(columns) / u32::from(c.max(1));
+    let c: u16 = kitty_param(symbol, "c")?.try_into().ok()?;
+    let r: u16 = kitty_param(symbol, "r")?.try_into().ok()?;
+    let w = kitty_param(symbol, "w")?;
+    let cropped_w = w * u32::from(columns) / u32::from(c.max(1));
     Some(symbol.replacen(
-        &format!("a=T,f=100,c={c},r={r},w={w},"),
-        &format!("a=T,f=100,c={columns},r={r},w={cropped_w},"),
+        &kitty_display_control(c, r, w),
+        &kitty_display_control(columns, r, cropped_w),
         1,
     ))
 }
@@ -701,7 +711,8 @@ mod tests {
     use super::*;
 
     // A row image 10 cells wide at the left of a buffer of 20; `cover` cells from x=6 drawn over it.
-    fn covered(protocol: ImageProtocol, cover: bool) -> Buffer {
+    // The buffer, and where the images are drawn.
+    fn covered(protocol: ImageProtocol, cover: bool) -> (Buffer, Vec<(u16, u16, u16)>) {
         // a PNG header, its width (40 pixels) where a PNG has it
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
         png.extend(40u32.to_be_bytes());
@@ -720,27 +731,36 @@ mod tests {
                 buf[(x, 0)].set_symbol("│");
             }
         }
-        crop_covered_images(&mut buf);
-        buf
+        let images = crop_covered_images(&mut buf);
+        (buf, images)
     }
 
     #[test]
     fn test_crop_covered_images() {
         // the kitty image shows its first 6 cells, of the pixels in them
-        let buf = covered(ImageProtocol::Kitty, true);
+        let (buf, images) = covered(ImageProtocol::Kitty, true);
         let symbol = buf[(0, 0)].symbol();
-        assert!(symbol.contains("a=T,f=100,c=6,r=1,w=24,"), "{symbol}");
+        assert!(symbol.contains(&kitty_display_control(6, 1, 24)), "{symbol}");
         assert_eq!(buf[(6, 0)].symbol(), "│");
+        assert_eq!(images, [(0, 0, 6)]);
 
         // uncovered, it stays whole
-        let buf = covered(ImageProtocol::Kitty, false);
-        assert!(buf[(0, 0)].symbol().contains("a=T,f=100,c=10,r=1,w=40,"));
+        let (buf, images) = covered(ImageProtocol::Kitty, false);
+        assert!(buf[(0, 0)].symbol().contains(&kitty_display_control(10, 1, 40)));
+        assert_eq!(images, [(0, 0, 10)]);
 
         // an iTerm2 image can't be cut, it is left out
-        let buf = covered(ImageProtocol::Iterm2, true);
+        let (buf, images) = covered(ImageProtocol::Iterm2, true);
         assert_eq!(buf[(0, 0)].symbol(), " ");
         assert_eq!(buf[(5, 0)].diff_option, CellDiffOption::None);
-        let buf = covered(ImageProtocol::Iterm2, false);
+        assert!(images.is_empty());
+        let (buf, images) = covered(ImageProtocol::Iterm2, false);
         assert!(buf[(0, 0)].symbol().starts_with("\x1b]1337;File="));
+        assert_eq!(images, [(0, 0, 10)]);
+
+        // what is written is read back, wide images too
+        let symbol = format!("\x1b_G{}m=0;AAAA\x1b\\", kitty_display_control(3, 1, 70_000));
+        assert_eq!(kitty_param(&symbol, "w"), Some(70_000));
+        assert_eq!(image_width(&symbol), Some(3));
     }
 }

@@ -11,7 +11,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    event::{KeyHint, UserEvent},
+    event::{AppEvent, KeyHint, UserEvent},
     git::{todo_action, BranchStatus, GitTask, RemoteInfo},
     widget::style::{focused_title, render_popup},
 };
@@ -159,14 +159,13 @@ enum Field {
     Check(bool),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum DialogOutcome {
     None,
     Close,
     Quit,
-    Run(GitTask),
-    // the link chosen, to open in the browser or copy
-    OpenLink { url: String, copy: bool },
+    // what the popup leads to, for the app once it closes: its git command, or the link chosen
+    Send(Box<AppEvent>),
     Error(String),
 }
 
@@ -856,17 +855,20 @@ impl GitDialog {
     }
 
     fn run(&self) -> DialogOutcome {
-        if let DialogKind::OpenLink { links, copy } = &self.kind {
-            let (_, url) = &links[self.choice(FieldId::Link)];
-            return DialogOutcome::OpenLink {
-                url: url.clone(),
-                copy: *copy,
-            };
-        }
-        match self.command() {
-            Ok(task) => DialogOutcome::Run(task),
-            Err(err) => DialogOutcome::Error(err),
-        }
+        let event = match &self.kind {
+            DialogKind::OpenLink { links, copy } => {
+                let (_, url) = &links[self.choice(FieldId::Link)];
+                AppEvent::OpenUrl {
+                    url: url.clone(),
+                    copy: *copy,
+                }
+            }
+            _ => match self.command() {
+                Ok(task) => AppEvent::StartTask(task),
+                Err(err) => return DialogOutcome::Error(err),
+            },
+        };
+        DialogOutcome::Send(Box::new(event))
     }
 
     // Changes the selected field to its next or previous option, or toggles it.
@@ -1724,6 +1726,28 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    // The git command the popup runs.
+    fn run(outcome: DialogOutcome) -> GitTask {
+        match outcome {
+            DialogOutcome::Send(event) => match *event {
+                AppEvent::StartTask(task) => task,
+                event => panic!("no git command but {event:?}"),
+            },
+            outcome => panic!("nothing runs but {outcome:?}"),
+        }
+    }
+
+    // The link the popup opens or copies.
+    fn opened(outcome: DialogOutcome) -> (String, bool) {
+        match outcome {
+            DialogOutcome::Send(event) => match *event {
+                AppEvent::OpenUrl { url, copy } => (url, copy),
+                event => panic!("no link but {event:?}"),
+            },
+            outcome => panic!("nothing opens but {outcome:?}"),
+        }
+    }
+
     fn press(dialog: &mut GitDialog, event: UserEvent) -> DialogOutcome {
         dialog.handle_key(Some(event), key(KeyCode::Null))
     }
@@ -1781,7 +1805,10 @@ mod tests {
         assert!(dialog.command().unwrap().remote);
         press(&mut dialog, UserEvent::NavigateRight);
         assert_eq!(args(&dialog), "fetch fork");
-        assert_eq!(press(&mut dialog, UserEvent::Cancel), DialogOutcome::Close);
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Cancel),
+            DialogOutcome::Close
+        ));
     }
 
     #[test]
@@ -1842,21 +1869,15 @@ mod tests {
         assert_eq!(dialog.summary(), "https://h/o/r/tree/b");
         press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
-            press(&mut dialog, UserEvent::OpenInBrowser),
-            DialogOutcome::OpenLink {
-                url: "https://h/o/r/compare/b".into(),
-                copy: false
-            }
+            opened(press(&mut dialog, UserEvent::OpenInBrowser)),
+            ("https://h/o/r/compare/b".into(), false)
         );
         // one link, to confirm
         let mut dialog = GitDialog::open_link(vec![("Link".into(), "https://h/x".into())], false);
         assert!(dialog.fields.is_empty());
         assert_eq!(
-            press(&mut dialog, UserEvent::Confirm),
-            DialogOutcome::OpenLink {
-                url: "https://h/x".into(),
-                copy: false
-            }
+            opened(press(&mut dialog, UserEvent::Confirm)),
+            ("https://h/x".into(), false)
         );
     }
 
@@ -1864,10 +1885,7 @@ mod tests {
     fn test_trigger_key_runs() {
         // pressing the key opening the popup again runs it
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
-        let outcome = press(&mut dialog, UserEvent::Pull);
-        let DialogOutcome::Run(task) = outcome else {
-            panic!("the pull did not run");
-        };
+        let task = run(press(&mut dialog, UserEvent::Pull));
         assert_eq!(task.running, "Pulling origin/main");
         // the sidebar shows it beside the checked-out branch
         let status = task.branch_status.unwrap();
@@ -1930,7 +1948,7 @@ mod tests {
         assert_eq!(args(&dialog), "pull --no-rebase --autostash origin dev");
 
         let outcome = press(&mut dialog, UserEvent::Confirm);
-        assert!(matches!(outcome, DialogOutcome::Run(t) if t.running == "Pulling origin/dev"));
+        assert_eq!(run(outcome).running, "Pulling origin/dev");
     }
 
     #[test]

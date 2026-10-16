@@ -610,6 +610,7 @@ mod tests {
         git.add(&["new"]);
         state.commit_or_continue().unwrap();
         state.confirm().unwrap();
+        crate::git::run_task(path, &state.take_task().unwrap()).unwrap();
         let repository = load();
         let _ = LocalChangesState::load(&repository);
         assert_eq!(output(&["log", "--format=%s"]), "c3\nc2\nc1\n");

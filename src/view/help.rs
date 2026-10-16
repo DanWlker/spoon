@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Stylize},
     text::{Line, Span},
@@ -15,13 +14,11 @@ use crate::{
     config::CoreConfig,
     event::{AppEvent, Sender, UserEvent},
     keybind::KeyBind,
-    view::View,
 };
 
+// The keys of the whole app, over the page, see `AppShell::help`.
 #[derive(Debug)]
-pub struct HelpView<'a> {
-    before: View<'a>,
-
+pub struct HelpView {
     help_key_lines: Vec<Line<'static>>,
     help_value_lines: Vec<Line<'static>>,
     help_key_line_max_width: u16,
@@ -32,8 +29,8 @@ pub struct HelpView<'a> {
     tx: Sender,
 }
 
-impl HelpView<'_> {
-    pub fn new<'a>(before: View<'a>, ctx: Rc<AppContext>, tx: Sender) -> HelpView<'a> {
+impl HelpView {
+    pub fn new(ctx: Rc<AppContext>, tx: Sender) -> HelpView {
         let (help_key_lines, help_value_lines) =
             build_lines(&ctx.color_theme, &ctx.keybind, &ctx.core_config);
         let help_key_line_max_width = help_key_lines
@@ -42,7 +39,6 @@ impl HelpView<'_> {
             .max()
             .unwrap_or_default() as u16;
         HelpView {
-            before,
             help_key_lines,
             help_value_lines,
             help_key_line_max_width,
@@ -52,7 +48,7 @@ impl HelpView<'_> {
         }
     }
 
-    pub fn handle_event(&mut self, event: UserEvent, _: KeyEvent) {
+    pub fn handle_event(&mut self, event: UserEvent) {
         match event {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
@@ -130,15 +126,7 @@ impl HelpView<'_> {
     }
 }
 
-impl<'a> HelpView<'a> {
-    pub fn take_before_view(&mut self) -> View<'a> {
-        std::mem::take(&mut self.before)
-    }
-
-    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        self.before.graph_image_ids_sorted()
-    }
-
+impl HelpView {
     fn scroll_down(&mut self) {
         self.offset = self.offset.saturating_add(1);
     }

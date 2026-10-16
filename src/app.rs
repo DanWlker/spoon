@@ -9,13 +9,13 @@ use std::{
 use ratatui::{
     backend::Backend,
     crossterm::{
-        event::{KeyEvent, MouseEventKind},
+        event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind},
         SynchronizedUpdate,
     },
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, Clear, Paragraph},
     DefaultTerminal, Frame, Terminal,
 };
 use rustc_hash::FxHashMap;
@@ -31,7 +31,7 @@ use crate::{
         validate_marked_hash, ExternalCommandParameters,
     },
     git::{
-        refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository,
+        run_task, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head, Ref, Repository,
     },
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -41,7 +41,8 @@ use crate::{
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
     view::{
-        user_command_height, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind,
+        user_command_height, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View,
+        ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -127,6 +128,9 @@ impl AppContext {
     }
 }
 
+// The longest the events waiting are handled for before drawing, see `App::run`.
+const MAX_BATCH: Duration = Duration::from_millis(100);
+
 // How often the spinner of a running task turns, see `spinner`.
 pub const SPINNER_RATE: Duration = Duration::from_millis(180);
 
@@ -154,11 +158,6 @@ struct FrameLayout {
     sidebar_collapsed: bool,
     // the sizes of the panels, see `PanelLayout`
     panels: u64,
-    dialog: bool,
-    command_log: bool,
-    notices: usize,
-    // the size of the keys popup
-    keys_popup: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Default)]
@@ -168,6 +167,8 @@ struct AppStatus {
     pending_keys: Vec<KeyEvent>,
     view_area: Rect,
     pending_clear: PendingClear,
+    // where the graph images were drawn in the last frame, see `App::draw`
+    images: Vec<(u16, u16, u16)>,
 }
 
 // The parts of the app that don't depend on the loaded repository, kept when it is reloaded:
@@ -194,18 +195,34 @@ pub struct AppShell {
     // the branches and HEAD as loaded, see `git::refs_snapshot`, so the app's own changes are not
     // taken for outside ones
     refs_snapshot: Option<String>,
-    // only the commits of the current branch are loaded, see `UserEvent::BranchOnly`
-    branch_only: bool,
-    // two refs diffed from the sidebar, the graph showing only their history while their
-    // comparison is open: asked for, until the repository is reloaded for it, then open
-    compare_request: Option<RefCompare>,
-    compare: Option<RefCompare>,
+    // the history the graph shows
+    graph_filter: GraphFilter,
     // the keys of the focused panel shown in a popup, see `UserEvent::KeysToggle`
     keys_popup: bool,
     // the git commands run, over everything, see `UserEvent::CommandLog`
     command_log: Option<CommandLogState>,
+    // the keys of the whole app, over the page and the sidebar, see `UserEvent::HelpToggle`
+    help: Option<HelpView>,
     // errors and warnings at the top right, until dismissed
     notices: Vec<Notice>,
+    // HEAD while committing the message of the local changes page, see `finish_task`
+    head_before_commit: Option<CommitHash>,
+}
+
+// The history the graph shows, its commits only are loaded.
+#[derive(Debug, Clone, Default)]
+enum GraphFilter {
+    #[default]
+    All,
+    // the current branch's, see `UserEvent::BranchOnly`
+    BranchOnly,
+    // that of two refs diffed from the sidebar while their comparison is open; `opened` once it is
+    // (the repository is first reloaded for it), going back to `branch_only` once it closes
+    Compare {
+        refs: RefCompare,
+        opened: bool,
+        branch_only: bool,
+    },
 }
 
 // The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
@@ -218,29 +235,27 @@ struct RefCompare {
 impl AppShell {
     // The revisions whose history the graph shows, None for all.
     pub fn graph_revisions(&self) -> Option<Vec<String>> {
-        match self.compare_request.as_ref().or(self.compare.as_ref()) {
-            Some(compare) => Some(vec![compare.base.clone(), compare.target.clone()]),
-            None if self.branch_only => Some(vec!["HEAD".into()]),
-            None => None,
+        match &self.graph_filter {
+            GraphFilter::All => None,
+            GraphFilter::BranchOnly => Some(vec!["HEAD".into()]),
+            GraphFilter::Compare { refs, .. } => Some(vec![refs.base.clone(), refs.target.clone()]),
         }
     }
 
     // What the graph shows, when not all of the history, for the title of the commit list.
     fn graph_filter_note(&self, repository: &Repository) -> Option<String> {
-        match self.compare_request.as_ref().or(self.compare.as_ref()) {
-            Some(compare) => Some(format!("{} ↔ {}", compare.base, compare.target)),
-            None if self.branch_only => Some(format!(
+        match &self.graph_filter {
+            GraphFilter::All => None,
+            GraphFilter::BranchOnly => Some(format!(
                 "{} only",
                 repository.current_branch().unwrap_or_else(|| "HEAD".into())
             )),
-            None => None,
+            GraphFilter::Compare { refs, .. } => Some(format!("{} ↔ {}", refs.base, refs.target)),
         }
     }
 
     pub fn reset_graph_filter(&mut self) {
-        self.branch_only = false;
-        self.compare_request = None;
-        self.compare = None;
+        self.graph_filter = GraphFilter::All;
     }
 }
 
@@ -272,7 +287,7 @@ impl<'a> App<'a> {
         let head_history = repository.head_history();
         let comparing_refs = shell
             .as_ref()
-            .is_some_and(|s| s.compare_request.is_some() || s.compare.is_some());
+            .is_some_and(|s| matches!(s.graph_filter, GraphFilter::Compare { .. }));
         let commits = graph
             .commits
             .iter()
@@ -324,7 +339,7 @@ impl<'a> App<'a> {
 
         let refs = repository.all_refs();
         let local_change_count = repository.loaded_local_change_count();
-        let loaded_refs = refs_snapshot(repository.path()).ok();
+        let loaded_refs = repository.refs_snapshot().map(String::from);
         let mut shell = match shell {
             Some(mut shell) => {
                 shell
@@ -344,15 +359,24 @@ impl<'a> App<'a> {
                 last_frame: None,
                 app_status: AppStatus::default(),
                 refs_snapshot: loaded_refs,
-                branch_only: false,
-                compare_request: None,
-                compare: None,
+                graph_filter: GraphFilter::All,
                 keys_popup: false,
                 command_log: None,
+                help: None,
                 notices: Vec::new(),
+                head_before_commit: None,
             },
         };
-        shell.sidebar.set_tracking(repository.branch_tracking());
+        // a git command still running from before the reload
+        let running = ctx
+            .running_task
+            .borrow()
+            .as_ref()
+            .map(|t| t.running.clone());
+        repository.set_busy(running);
+        shell
+            .sidebar
+            .set_tracking(repository.branch_tracking().clone());
         shell.sidebar.set_head(repository.head());
 
         let mut app = Self {
@@ -376,6 +400,33 @@ impl<'a> App<'a> {
 
         app
     }
+
+    // Shows `view` in place of the page; once the comparison of refs diffed from the sidebar is
+    // closed, the graph shows the history it showed before again.
+    fn replace_view(&mut self, view: View<'a>) {
+        let was_comparing = matches!(&self.view, View::Detail(view) if view.is_comparing());
+        self.view = view;
+        let comparing = matches!(&self.view, View::Detail(view) if view.is_comparing());
+        let opened = matches!(
+            self.shell.graph_filter,
+            GraphFilter::Compare { opened: true, .. }
+        );
+        if opened && was_comparing && !comparing {
+            self.end_ref_compare();
+        }
+    }
+
+    // The graph shows the history it showed before the refs were diffed from the sidebar again.
+    fn end_ref_compare(&mut self) {
+        if let GraphFilter::Compare { branch_only, .. } = self.shell.graph_filter {
+            self.shell.graph_filter = if branch_only {
+                GraphFilter::BranchOnly
+            } else {
+                GraphFilter::All
+            };
+            self.view.refresh();
+        }
+    }
 }
 
 impl App<'_> {
@@ -386,7 +437,6 @@ impl App<'_> {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
-            self.end_ref_compare();
             self.prepare_render(terminal)?;
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
@@ -411,220 +461,235 @@ impl App<'_> {
                 },
                 None => self.ec.recv(),
             };
-            match event {
-                AppEvent::Key(key) => {
-                    match self.shell.app_status.status_line {
-                        StatusLine::None | StatusLine::Input { .. } => {
-                            // do nothing
-                        }
-                        StatusLine::Transient(_)
-                        | StatusLine::SearchResult { .. }
-                        | StatusLine::NotificationInfo(_)
-                        | StatusLine::NotificationSuccess(_) => {
-                            // Clear message and pass key input as is
-                            self.clear_status_line();
-                        }
-                    }
-
-                    if self.shell.command_log.is_some() {
-                        self.handle_command_log_key(key);
-                        continue;
-                    }
-                    if self.shell.dialog.is_some() {
-                        self.handle_dialog_key(key);
-                        continue;
-                    }
-
-                    let scope = self.current_scope();
-                    if self.view.is_capturing_keys() {
-                        if let Some(UserEvent::ForceQuit) =
-                            self.ctx.keybind.event_in(Scope::Global, &key)
-                        {
-                            self.ec.send(AppEvent::Quit);
-                        } else {
-                            let event = UserEvent::Unknown;
-                            self.handle_view_event(event, key);
-                        }
-                        continue;
-                    }
-
-                    // key sequences wait for their next key, typed text (the search input) is no
-                    // sequence; the focused scope decides, like ] cycling the tabs of the details
-                    // where elsewhere it starts "] v"
-                    if !matches!(self.shell.app_status.status_line, StatusLine::Input { .. }) {
-                        let had_pending = !self.shell.app_status.pending_keys.is_empty();
-                        self.shell.app_status.pending_keys.push(key);
-                        match self
-                            .ctx
-                            .keybind
-                            .resolve(scope, &self.shell.app_status.pending_keys)
-                        {
-                            SequenceMatch::Partial => continue,
-                            SequenceMatch::Complete(ue) => {
-                                self.shell.app_status.pending_keys.clear();
-                                self.dispatch(ue, key);
-                                continue;
-                            }
-                            SequenceMatch::None => {
-                                self.shell.app_status.pending_keys.clear();
-                                // Esc only cancels the started sequence
-                                if had_pending
-                                    && self.ctx.keybind.event_in(scope, &key)
-                                        == Some(UserEvent::Cancel)
-                                {
-                                    continue;
-                                }
-                                // otherwise the key goes on as usual
-                            }
-                        }
-                    }
-
-                    let user_event = self.ctx.keybind.event_in(scope, &key).filter(|ue| {
-                        // digits focus the panels of the page, where it has them
-                        match ue {
-                            UserEvent::FocusPanel(n) => {
-                                !matches!(self.view, View::Help(_))
-                                    && (*n == 0 || self.view.has_panels())
-                            }
-                            _ => true,
-                        }
-                    });
-
-                    match user_event {
-                        Some(UserEvent::ForceQuit) => {
-                            self.ec.send(AppEvent::Quit);
-                        }
-                        Some(ue) => self.dispatch(ue, key),
-                        None => {
-                            if let StatusLine::Input { .. } = self.shell.app_status.status_line {
-                                // In input mode, pass all key events to the view
-                                // fixme: currently, the only thing that processes key_event is searching the list,
-                                //        so this probably works, but it's not the right process...
-                                self.view.handle_event(UserEvent::Unknown, key);
-                            }
-                        }
-                    }
+            // handles it and what came meanwhile, like the repeats of a held key, before drawing
+            // again, so the screen keeps up; what the views load for a selection waits for the draw
+            let started = Instant::now();
+            let mut next = Some(event);
+            while let Some(event) = next {
+                if let Some(ret) = self.handle_event(event)? {
+                    return Ok(ret);
                 }
-                AppEvent::Mouse(mouse) => {
-                    let mut layout = self.ctx.layout.borrow_mut();
-                    match mouse.kind {
-                        MouseEventKind::Down(_) => {
-                            layout.press(mouse.column, mouse.row);
-                        }
-                        MouseEventKind::Drag(_) => {
-                            layout.drag_to(mouse.column, mouse.row);
-                        }
-                        _ => layout.release(),
-                    }
-                }
-                AppEvent::Resize(w, h) => {
-                    let _ = (w, h);
-                }
-                AppEvent::Quit => {
-                    self.cleanup_graph_images()?;
-                    return Ok(Ret::Quit);
-                }
-                AppEvent::OpenDetail(tab) => {
-                    self.open_detail(tab);
-                }
-                AppEvent::CloseDetail => {
-                    self.close_detail();
-                }
-                AppEvent::OpenUserCommand(n) => {
-                    self.open_user_command(n);
-                }
-                AppEvent::CloseUserCommand => {
-                    self.close_user_command();
-                }
-                AppEvent::RunExternal(command) => {
-                    self.run_external(&command);
-                }
-                AppEvent::TaskFinished { task, result } => {
-                    self.finish_task(task, result);
-                }
-                AppEvent::LocalChangesChanged => {
-                    let count = self.repository.reload_local_changes();
-                    self.shell.sidebar.set_local_change_count(count);
-                }
-                AppEvent::FilesTick if !self.refresh_paused() => self.reload_files(),
-                AppEvent::RefsSnapshot(snapshot) if !self.refresh_paused() => {
-                    self.check_refs(snapshot);
-                }
-                // what changed meanwhile, without reloading everything when nothing did
-                AppEvent::FocusGained if !self.refresh_paused() => {
-                    self.reload_files();
-                    if let Ok(snapshot) = refs_snapshot(self.repository.path()) {
-                        self.check_refs(snapshot);
-                    }
-                }
-                // checked again on the next tick
-                AppEvent::FilesTick | AppEvent::RefsSnapshot(_) | AppEvent::FocusGained => {}
-                // only redraws
-                AppEvent::SpinnerTick => {}
-                AppEvent::OpenHelp => {
-                    self.open_help();
-                }
-                AppEvent::CloseHelp => {
-                    self.close_help();
-                }
-                AppEvent::SelectOlderCommit => {
-                    self.select_older_commit();
-                }
-                AppEvent::SelectNewerCommit => {
-                    self.select_newer_commit();
-                }
-                AppEvent::CopyToClipboard { name, value } => {
-                    self.copy_to_clipboard(name, value);
-                }
-                AppEvent::Link { target, copy } => self.open_link(&target, copy),
-                AppEvent::Refresh(context) => {
-                    self.cleanup_graph_images()?;
-                    // the details open again on the same tab, but a comparison
-                    match &self.view {
-                        View::Detail(view) if view.is_comparing() => {
-                            self.shell.parked_detail_tab = None
-                        }
-                        View::Detail(view) => self.shell.parked_detail_tab = Some(view.tab()),
-                        _ => {}
-                    }
-                    // the graph is drawn again from scratch
-                    self.shell.last_frame = None;
-                    return Ok(Ret::Refresh(Box::new(context)));
-                }
-                AppEvent::ClearStatusLine => {
-                    self.clear_status_line();
-                }
-                AppEvent::UpdateStatusInput {
-                    message,
-                    cursor_position,
-                    metadata,
-                } => {
-                    self.update_status_input(message, cursor_position, metadata);
-                }
-                AppEvent::UpdateStatusTransient(msg) => {
-                    self.update_status_transient(msg);
-                }
-                AppEvent::UpdateSearchResult {
-                    message,
-                    options,
-                    matched,
-                } => {
-                    self.update_search_result(message, options, matched);
-                }
-                AppEvent::NotifyInfo(msg) => {
-                    self.info_notification(msg);
-                }
-                AppEvent::NotifySuccess(msg) => {
-                    self.success_notification(msg);
-                }
-                AppEvent::NotifyWarn(msg) => {
-                    self.warn_notification(msg);
-                }
-                AppEvent::NotifyError(msg) => {
-                    self.error_notification(msg);
-                }
+                next = (started.elapsed() < MAX_BATCH)
+                    .then(|| self.ec.try_recv())
+                    .flatten();
             }
         }
+    }
+
+    // Handles one event; returns what ends the app or reloads it.
+    fn handle_event(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
+        match event {
+            AppEvent::Key(key) => {
+                match self.shell.app_status.status_line {
+                    StatusLine::None | StatusLine::Input { .. } => {
+                        // do nothing
+                    }
+                    StatusLine::Transient(_)
+                    | StatusLine::SearchResult { .. }
+                    | StatusLine::NotificationInfo(_)
+                    | StatusLine::NotificationSuccess(_) => {
+                        // Clear message and pass key input as is
+                        self.clear_status_line();
+                    }
+                }
+
+                if self.shell.command_log.is_some() {
+                    self.handle_command_log_key(key);
+                    return Ok(None);
+                }
+                if self.shell.dialog.is_some() {
+                    self.handle_dialog_key(key);
+                    return Ok(None);
+                }
+                if let Some(help) = self.shell.help.as_mut() {
+                    match self.ctx.keybind.event_in(Scope::Global, &key) {
+                        Some(UserEvent::ForceQuit) => self.ec.send(AppEvent::Quit),
+                        Some(event) => help.handle_event(event),
+                        None => {}
+                    }
+                    return Ok(None);
+                }
+
+                let scope = self.current_scope();
+                if self.view.is_capturing_keys() {
+                    if let Some(UserEvent::ForceQuit) =
+                        self.ctx.keybind.event_in(Scope::Global, &key)
+                    {
+                        self.ec.send(AppEvent::Quit);
+                    } else {
+                        let event = UserEvent::Unknown;
+                        self.handle_view_event(event, key);
+                    }
+                    return Ok(None);
+                }
+
+                // key sequences wait for their next key, typed text (the search input) is no
+                // sequence; the focused scope decides, like ] cycling the tabs of the details
+                // where elsewhere it starts "] v"
+                if !matches!(self.shell.app_status.status_line, StatusLine::Input { .. }) {
+                    let had_pending = !self.shell.app_status.pending_keys.is_empty();
+                    self.shell.app_status.pending_keys.push(key);
+                    match self
+                        .ctx
+                        .keybind
+                        .resolve(scope, &self.shell.app_status.pending_keys)
+                    {
+                        SequenceMatch::Partial => return Ok(None),
+                        SequenceMatch::Complete(ue) => {
+                            self.shell.app_status.pending_keys.clear();
+                            self.dispatch(ue, key);
+                            return Ok(None);
+                        }
+                        SequenceMatch::None => {
+                            self.shell.app_status.pending_keys.clear();
+                            // Esc only cancels the started sequence
+                            if had_pending
+                                && self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel)
+                            {
+                                return Ok(None);
+                            }
+                            // otherwise the key goes on as usual
+                        }
+                    }
+                }
+
+                let user_event = self.ctx.keybind.event_in(scope, &key).filter(|ue| {
+                    // digits focus the panels of the page, where it has them
+                    match ue {
+                        UserEvent::FocusPanel(n) => *n == 0 || self.view.has_panels(),
+                        _ => true,
+                    }
+                });
+
+                match user_event {
+                    Some(UserEvent::ForceQuit) => {
+                        self.ec.send(AppEvent::Quit);
+                    }
+                    Some(ue) => self.dispatch(ue, key),
+                    None => {
+                        if let StatusLine::Input { .. } = self.shell.app_status.status_line {
+                            // In input mode, pass all key events to the view
+                            // fixme: currently, the only thing that processes key_event is searching the list,
+                            //        so this probably works, but it's not the right process...
+                            self.view.handle_event(UserEvent::Unknown, key);
+                        }
+                    }
+                }
+            }
+            AppEvent::Mouse(mouse)
+                if matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                ) =>
+            {
+                self.scroll_wheel(mouse.kind == MouseEventKind::ScrollDown);
+            }
+            AppEvent::Mouse(mouse) => {
+                let mut layout = self.ctx.layout.borrow_mut();
+                match mouse.kind {
+                    MouseEventKind::Down(_) => {
+                        layout.press(mouse.column, mouse.row);
+                    }
+                    MouseEventKind::Drag(_) => {
+                        layout.drag_to(mouse.column, mouse.row);
+                    }
+                    _ => layout.release(),
+                }
+            }
+            AppEvent::Resize(w, h) => {
+                let _ = (w, h);
+            }
+            AppEvent::Quit => {
+                self.cleanup_graph_images()?;
+                return Ok(Some(Ret::Quit));
+            }
+            AppEvent::OpenDetail(tab) => {
+                self.open_detail(tab);
+            }
+            AppEvent::CloseDetail => {
+                self.close_detail();
+            }
+            AppEvent::OpenUserCommand(n) => {
+                self.open_user_command(n);
+            }
+            AppEvent::CloseUserCommand => {
+                self.close_user_command();
+            }
+            AppEvent::RunExternal(command) => {
+                self.run_external(&command);
+            }
+            AppEvent::StartTask(task) => self.start_task(task),
+            AppEvent::TaskFinished { task, result } => {
+                self.finish_task(task, result);
+            }
+            // what changed meanwhile, without reloading everything when nothing did, loaded in the
+            // background
+            AppEvent::LocalChangesChanged | AppEvent::FocusGained => self.ec.refresh_now(),
+            AppEvent::FilesTick(files) if !self.refresh_paused() => self.reload_files(files),
+            AppEvent::RefsSnapshot(snapshot) if !self.refresh_paused() => {
+                self.check_refs(snapshot);
+            }
+            // checked again on the next tick
+            AppEvent::FilesTick(_) | AppEvent::RefsSnapshot(_) => {}
+            // only redraws
+            AppEvent::SpinnerTick => {}
+            AppEvent::OpenHelp => {
+                self.open_help();
+            }
+            AppEvent::CloseHelp => {
+                self.close_help();
+            }
+            AppEvent::SelectOlderCommit => {
+                self.select_older_commit();
+            }
+            AppEvent::SelectNewerCommit => {
+                self.select_newer_commit();
+            }
+            AppEvent::CopyToClipboard { name, value } => {
+                self.copy_to_clipboard(name, value);
+            }
+            AppEvent::Link { target, copy } => self.open_link(&target, copy),
+            AppEvent::OpenUrl { url, copy } => self.open_url(url, copy),
+            AppEvent::Refresh(context) => {
+                self.cleanup_graph_images()?;
+                // the graph is drawn again from scratch
+                self.shell.last_frame = None;
+                return Ok(Some(Ret::Refresh(Box::new(context))));
+            }
+            AppEvent::ClearStatusLine => {
+                self.clear_status_line();
+            }
+            AppEvent::UpdateStatusInput {
+                message,
+                cursor_position,
+                metadata,
+            } => {
+                self.update_status_input(message, cursor_position, metadata);
+            }
+            AppEvent::UpdateStatusTransient(msg) => {
+                self.update_status_transient(msg);
+            }
+            AppEvent::UpdateSearchResult {
+                message,
+                options,
+                matched,
+            } => {
+                self.update_search_result(message, options, matched);
+            }
+            AppEvent::NotifyInfo(msg) => {
+                self.info_notification(msg);
+            }
+            AppEvent::NotifySuccess(msg) => {
+                self.success_notification(msg);
+            }
+            AppEvent::NotifyWarn(msg) => {
+                self.warn_notification(msg);
+            }
+            AppEvent::NotifyError(msg) => {
+                self.error_notification(msg);
+            }
+        }
+        Ok(None)
     }
 
     fn prepare_render(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
@@ -639,7 +704,8 @@ impl App<'_> {
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
         let keys = self.keys_popup_keys();
-        match self.frame_clear(&keys) {
+        let clear = self.frame_clear();
+        match clear {
             PendingClear::None => {}
             PendingClear::ViewImages => self.clear_view_image_area(terminal)?,
             PendingClear::Screen => {
@@ -648,7 +714,16 @@ impl App<'_> {
             }
         }
         self.flush_pending_graph_uploads()?;
+        let images = self.shell.app_status.images.clone();
         terminal.draw(|f| self.render(f, &keys))?;
+        // a graph image covered by something drawn over it, like a popup or the help, or no longer
+        // covered: the terminal would keep showing what isn't drawn again, so the frame is drawn
+        // again on a cleared screen
+        if clear != PendingClear::Screen && self.shell.app_status.images != images {
+            self.ctx.image_protocol.clear();
+            clear_fullscreen(terminal)?;
+            terminal.draw(|f| self.render(f, &keys))?;
+        }
         Ok(())
     }
 
@@ -669,6 +744,8 @@ impl App<'_> {
             ]
         } else if let Some(dialog) = self.visible_dialog() {
             dialog.key_hints()
+        } else if self.shell.help.is_some() {
+            vec![hint(UserEvent::Cancel, "close")]
         } else if self.shell.sidebar_focused {
             self.sidebar_hints()
         } else {
@@ -676,8 +753,8 @@ impl App<'_> {
         }
     }
 
-    // The keys and what they do, without those waiting for the operation in progress (see
-    // `blocked_by_operation`) or bound to no key.
+    // The keys and what they do, without those waiting for the operation in progress (their
+    // commands are refused, see `blocked_by_operation`) or bound to no key.
     fn shown_keys(&self, mut hints: Vec<KeyHint>) -> Vec<(String, String)> {
         if self.repository.operation_in_progress().is_some() {
             hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
@@ -706,11 +783,16 @@ impl App<'_> {
 
     // Moves in the command log, scrolls the output of the selected command, copies it, or closes.
     fn handle_command_log_key(&mut self, key: KeyEvent) {
+        let event = self.ctx.keybind.event_in(Scope::Global, &key);
+        self.handle_command_log_event(event);
+    }
+
+    fn handle_command_log_event(&mut self, event: Option<UserEvent>) {
         let Some(state) = self.shell.command_log.as_mut() else {
             return;
         };
         let page = state.output_page();
-        match self.ctx.keybind.event_in(Scope::Global, &key) {
+        match event {
             Some(UserEvent::ForceQuit | UserEvent::Quit) => self.ec.send(AppEvent::Quit),
             Some(UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog) => {
                 self.shell.command_log = None
@@ -743,10 +825,26 @@ impl App<'_> {
         self.visible_dialog().is_some()
             || self.shell.command_log.is_some()
             || self.is_typing()
-            || matches!(self.view, View::Help(_))
+            || self.shell.help.is_some()
     }
 
     // Whether text is being typed or a prompt answered, in the view or the status bar.
+    // The wheel moves the selection of what has the focus like j and k, whatever keys they are bound
+    // to; over a popup, or while typing, it does nothing.
+    fn scroll_wheel(&mut self, down: bool) {
+        let event = if down {
+            UserEvent::NavigateDown
+        } else {
+            UserEvent::NavigateUp
+        };
+        if self.shell.command_log.is_some() {
+            self.handle_command_log_event(Some(event));
+        } else if self.shell.dialog.is_none() && !self.is_typing() {
+            let code = if down { KeyCode::Down } else { KeyCode::Up };
+            self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+    }
+
     fn is_typing(&self) -> bool {
         self.view.is_capturing_keys()
             || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
@@ -789,17 +887,13 @@ impl App<'_> {
 
     // What to clear before drawing the frame: the graph images stay on the screen until cleared,
     // so they are when the layout changes. Text views cover the area of the images they replace,
-    // and the whole screen is cleared when the graph comes back, or moves.
-    fn frame_clear(&mut self, keys: &[(String, String)]) -> PendingClear {
+    // and the whole screen is cleared when the graph comes back, or moves; what is drawn over the
+    // images is seen to in `draw`.
+    fn frame_clear(&mut self) -> PendingClear {
         let layout = FrameLayout {
             view: self.view.kind(),
             sidebar_collapsed: self.shell.sidebar_collapsed,
             panels: self.ctx.layout.borrow().version(),
-            dialog: self.visible_dialog().is_some(),
-            command_log: self.shell.command_log.is_some(),
-            notices: self.shell.notices.len(),
-            keys_popup: (!keys.is_empty())
-                .then(|| KeysPopup::new(keys, &self.ctx.color_theme).size()),
         };
         let clear = match self.shell.last_frame.replace(layout) {
             None => PendingClear::Screen,
@@ -810,20 +904,8 @@ impl App<'_> {
             {
                 PendingClear::Screen
             }
-            // images of the graph would cover the popup
-            Some(last)
-                if last.dialog != layout.dialog
-                    || last.keys_popup != layout.keys_popup
-                    || last.command_log != layout.command_log
-                    || last.notices != layout.notices =>
-            {
-                PendingClear::Screen
-            }
             Some(last) if last.view == layout.view => PendingClear::None,
-            Some(last)
-                if layout.view == ViewKind::List
-                    || matches!(last.view, ViewKind::Help | ViewKind::LocalChanges) =>
-            {
+            Some(last) if layout.view == ViewKind::List || last.view == ViewKind::LocalChanges => {
                 PendingClear::Screen
             }
             Some(_) => PendingClear::ViewImages,
@@ -854,7 +936,7 @@ impl App<'_> {
         let base = Block::default()
             .fg(self.ctx.color_theme.fg)
             .bg(self.ctx.color_theme.bg);
-        f.render_widget(base, f.area());
+        f.render_widget(base.clone(), f.area());
 
         let [app_area, status_line_area] = split_app_areas(f.area());
         let [sidebar_area, view_area] = self.split_sidebar(app_area);
@@ -882,6 +964,11 @@ impl App<'_> {
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
+        if let Some(help) = self.shell.help.as_mut() {
+            f.render_widget(Clear, app_area);
+            f.render_widget(base, app_area);
+            help.render(f, app_area);
+        }
         if !keys.is_empty() {
             let popup = KeysPopup::new(keys, &self.ctx.color_theme);
             f.render_widget(popup, app_area);
@@ -903,7 +990,7 @@ impl App<'_> {
         );
         self.render_status_line(f, status_line_area);
         // the graph images stop where a popup covers them
-        crate::protocol::crop_covered_images(f.buffer_mut());
+        self.shell.app_status.images = crate::protocol::crop_covered_images(f.buffer_mut());
     }
 }
 
@@ -920,7 +1007,7 @@ impl App<'_> {
             _ if self.shell.sidebar_focused => ("REFS", theme.status_warn_fg),
             View::LocalChanges(_) => ("CHANGES", theme.status_success_fg),
             View::UserCommand(_) => ("COMMAND", theme.highlight_fg),
-            View::Help(_) => ("HELP", theme.highlight_fg),
+            _ if self.shell.help.is_some() => ("HELP", theme.highlight_fg),
             _ => ("GRAPH", theme.accent_fg),
         };
         // the first letter only on narrow terminals, like the mode
@@ -1038,11 +1125,9 @@ impl App<'_> {
 }
 
 impl App<'_> {
-    // The sidebar on the left and the page; the help takes the whole area.
+    // The sidebar on the left and the page.
     fn split_sidebar(&self, area: Rect) -> [Rect; 2] {
-        let width = if matches!(self.view, View::Help(_)) {
-            0
-        } else if self.shell.sidebar_collapsed {
+        let width = if self.shell.sidebar_collapsed {
             COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
             // leave the page some room on narrow terminals, unless resized
@@ -1094,7 +1179,7 @@ impl App<'_> {
             return;
         };
         let (commit, changes, refs) = selected_commit_details(self.repository, &commit_list_state);
-        self.view = View::of_detail(
+        self.replace_view(View::of_detail(
             commit_list_state,
             commit,
             changes,
@@ -1102,7 +1187,7 @@ impl App<'_> {
             self.repository,
             self.ctx.clone(),
             self.ec.sender(),
-        );
+        ));
         if let View::Detail(ref mut view) = self.view {
             view.show_tab(tab);
         }
@@ -1152,13 +1237,13 @@ impl App<'_> {
                 let Some(commit_list_state) = self.view.take_list_state() else {
                     return;
                 };
-                self.view = View::of_user_command(
+                self.replace_view(View::of_user_command(
                     commit_list_state,
                     output,
                     user_command_number,
                     self.ctx.clone(),
                     self.ec.sender(),
-                );
+                ));
             }
             Err(err) => {
                 self.ec.send(AppEvent::NotifyError(err));
@@ -1245,9 +1330,9 @@ impl App<'_> {
     // Handles what works on every page (the sidebar, switching pages, fetch, pull and push),
     // else hands the event to the focused sidebar or the page.
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
-        // keys typed into the search of the list, or over the help, belong to the view
+        // keys typed into the search of the list belong to the view
         let typing = matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
-        if typing || matches!(self.view, View::Help(_)) {
+        if typing {
             self.view.handle_event(event, key);
             return;
         }
@@ -1307,19 +1392,8 @@ impl App<'_> {
         }
     }
 
-    // Hands the key to the page; one committing while git signs commits gets the terminal back
-    // meanwhile, for a passphrase asked there, like the git commands of the popups.
     fn handle_view_event(&mut self, event: UserEvent, key: KeyEvent) {
-        let signs = matches!(&self.view, View::LocalChanges(view) if view.may_sign(event, key))
-            && self.repository.signs();
-        if signs {
-            self.ec.suspend();
-        }
         self.view.handle_event(event, key);
-        if signs {
-            self.ec.resume();
-            self.shell.app_status.pending_clear = PendingClear::Screen;
-        }
     }
 
     fn handle_sidebar_event(&mut self, event: UserEvent, key: KeyEvent) {
@@ -1532,7 +1606,11 @@ impl App<'_> {
         let Some(commit_list_state) = self.view.take_list_state() else {
             return false;
         };
-        self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+        self.replace_view(View::of_list(
+            commit_list_state,
+            self.ctx.clone(),
+            self.ec.sender(),
+        ));
         true
     }
 
@@ -1550,12 +1628,12 @@ impl App<'_> {
         };
         // as it was when left, or before a refresh
         let snapshot = self.shell.parked_local_changes.take();
-        self.view = View::of_local_changes(
+        self.replace_view(View::of_local_changes(
             commit_list_state,
             LocalChangesState::restore(self.repository, snapshot),
             self.ctx.clone(),
             self.ec.sender(),
-        );
+        ));
     }
 
     // The commit list, with the details when they were open before the local changes page.
@@ -1596,7 +1674,6 @@ impl App<'_> {
     fn handle_remote_event(&mut self, event: UserEvent) -> bool {
         let action = match event {
             UserEvent::Fetch => RemoteAction::Fetch,
-            UserEvent::Pull if self.blocked_by_operation(event) => return true,
             UserEvent::Pull => RemoteAction::Pull,
             UserEvent::Push => RemoteAction::Push,
             UserEvent::FetchAll => {
@@ -1627,6 +1704,11 @@ impl App<'_> {
             return;
         }
         match dialog {
+            // the popup would only lead to refusing its command
+            Ok(dialog)
+                if dialog
+                    .command()
+                    .is_ok_and(|task| self.blocked_by_operation(&task)) => {}
             Ok(dialog) => {
                 self.shell.dialog = Some(dialog);
             }
@@ -1648,14 +1730,9 @@ impl App<'_> {
             DialogOutcome::Close => self.close_dialog(),
             DialogOutcome::Quit => self.ec.send(AppEvent::Quit),
             DialogOutcome::Error(err) => self.ec.send(AppEvent::NotifyError(err)),
-            DialogOutcome::Run(task) => {
+            DialogOutcome::Send(event) => {
                 self.close_dialog();
-                self.start_task(task);
-                return;
-            }
-            DialogOutcome::OpenLink { url, copy } => {
-                self.close_dialog();
-                self.open_url(url, copy);
+                self.ec.send(*event);
                 return;
             }
         }
@@ -1682,7 +1759,15 @@ impl App<'_> {
             self.ec.send(AppEvent::NotifyWarn(message));
             return;
         }
+        if self.blocked_by_operation(&task) {
+            return;
+        }
         *self.ctx.running_task.borrow_mut() = Some(task.clone());
+        self.repository.set_busy(Some(task.running.clone()));
+        // a commit made clears the message box, see `finish_task`
+        if commits(&task) {
+            self.shell.head_before_commit = Some(self.repository.head_commit().unwrap_or_default());
+        }
         let path = self.repository.path().to_path_buf();
         // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
         if task.may_sign() && self.repository.signs() {
@@ -1710,10 +1795,37 @@ impl App<'_> {
         });
     }
 
-    fn finish_task(&mut self, task: GitTask, result: Result<(), String>) {
+    fn finish_task(&mut self, task: GitTask, mut result: Result<(), String>) {
         *self.ctx.running_task.borrow_mut() = None;
-        // the page under the help shows the outcome, which could not be refreshed under it
-        self.close_help();
+        self.repository.set_busy(None);
+        if let (Err(_), Some(failed)) = (&result, &task.failed) {
+            result = Err(failed.clone());
+        }
+        // the message is committed, even when going on with a rebase stopped afterwards
+        let committed = self
+            .shell
+            .head_before_commit
+            .take()
+            .is_some_and(|before| self.repository.head_commit().unwrap_or_default() != before);
+        if committed {
+            match &mut self.view {
+                View::LocalChanges(view) => view.clear_draft(),
+                _ => {
+                    if let Some(snapshot) = self.shell.parked_local_changes.as_mut() {
+                        *snapshot.commit_draft = Default::default();
+                    }
+                }
+            }
+        }
+        // only the working tree changed, the page stays as it is
+        if task.keeps_view {
+            self.ec.send(AppEvent::LocalChangesChanged);
+            match result {
+                Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
+                Err(err) => self.ec.send(AppEvent::NotifyError(err)),
+            }
+            return;
+        }
         let typing = self.is_typing();
         if result.is_ok() && task.uses_picks {
             self.view.clear_picked_commits();
@@ -1732,6 +1844,10 @@ impl App<'_> {
                 list_context.scroll_to_top = false;
             }
             if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
+                // the details open again when coming back to the graph
+                if let RefreshViewContext::Detail { tab, .. } = context {
+                    self.shell.parked_detail_tab = Some(tab);
+                }
                 // the page opens once the repository is reloaded
                 let snapshot = self.shell.parked_local_changes.take().unwrap_or_default();
                 context = RefreshViewContext::LocalChanges {
@@ -1768,16 +1884,16 @@ impl App<'_> {
 
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
-        if self.blocked_by_operation(event) {
-            return;
-        }
         if event == UserEvent::BranchOnly && self.is_diffing() {
             self.notify_already_diffing();
             return;
         }
         if event == UserEvent::BranchOnly {
             // the commits are loaded again, of the current branch or of all
-            self.shell.branch_only = !self.shell.branch_only;
+            self.shell.graph_filter = match self.shell.graph_filter {
+                GraphFilter::BranchOnly => GraphFilter::All,
+                _ => GraphFilter::BranchOnly,
+            };
             self.view.refresh();
             return;
         }
@@ -1795,9 +1911,6 @@ impl App<'_> {
     // The commands of the commit graph on the branch, remote branch or tag selected in the
     // sidebar, see `ref_graph_command`.
     fn handle_sidebar_graph_event(&mut self, event: UserEvent) {
-        if self.blocked_by_operation(event) {
-            return;
-        }
         if event == UserEvent::BranchOnly {
             self.handle_graph_event(event);
             return;
@@ -1888,8 +2001,7 @@ impl App<'_> {
 
     // Whether a diff of two commits or refs is open, also under the details of one of its commits.
     fn is_diffing(&self) -> bool {
-        self.shell.compare.is_some()
-            || self.shell.compare_request.is_some()
+        matches!(self.shell.graph_filter, GraphFilter::Compare { .. })
             || matches!(&self.view, View::Detail(view) if view.is_comparing())
     }
 
@@ -1898,10 +2010,11 @@ impl App<'_> {
         self.ec.send(AppEvent::NotifyWarn(msg));
     }
 
-    // Whether `event` moves or rewrites HEAD while a rebase, merge, cherry-pick or revert waits to
+    // Whether the task moves or rewrites HEAD while a rebase, merge, cherry-pick or revert waits to
     // be continued or aborted, which git refuses or tangles up; tells so when it does.
-    fn blocked_by_operation(&self, event: UserEvent) -> bool {
-        let Some(operation) = moves_head(event)
+    fn blocked_by_operation(&self, task: &GitTask) -> bool {
+        let Some(operation) = task
+            .moves_head()
             .then(|| self.repository.operation_in_progress())
             .flatten()
         else {
@@ -1958,7 +2071,12 @@ impl App<'_> {
         if let View::LocalChanges(view) = &self.view {
             self.shell.parked_local_changes = Some(view.context());
         }
-        self.shell.compare_request = Some(compare);
+        let branch_only = matches!(self.shell.graph_filter, GraphFilter::BranchOnly);
+        self.shell.graph_filter = GraphFilter::Compare {
+            refs: compare,
+            opened: false,
+            branch_only,
+        };
         self.shell.sidebar.clear_picks();
         self.set_sidebar_focused(false);
         let list_context = context.list_context().clone();
@@ -1969,14 +2087,15 @@ impl App<'_> {
     // Opens the comparison of the refs diffed from the sidebar, once the repository is loaded
     // for it, and again after a refresh while it is open.
     fn open_ref_compare(&mut self) {
-        let Some(compare) = self
-            .shell
-            .compare_request
-            .take()
-            .or_else(|| self.shell.compare.take())
-        else {
+        let GraphFilter::Compare { refs, .. } = &self.shell.graph_filter else {
             return;
         };
+        let compare = refs.clone();
+        // another page shows after the reload, like the local changes after a merge
+        if !matches!(self.view, View::List(_) | View::Detail(_)) {
+            self.end_ref_compare();
+            return;
+        }
         let resolved = self
             .repository
             .resolve(&compare.base)
@@ -1987,26 +2106,13 @@ impl App<'_> {
                 "Cannot diff {} and {}, one of them is gone",
                 compare.base, compare.target
             )));
-            self.view.refresh();
+            self.end_ref_compare();
             return;
         };
         let title = format!("Diff {} → {}", compare.base, compare.target);
         self.open_compare(base, target, title);
-        self.shell.compare = Some(compare);
-    }
-
-    // Once the comparison of refs diffed from the sidebar is closed, the graph shows all the
-    // history again.
-    fn end_ref_compare(&mut self) {
-        let comparing = match &self.view {
-            View::Detail(view) => view.is_comparing(),
-            // over the comparison
-            View::Help(_) => true,
-            _ => false,
-        };
-        if self.shell.compare.is_some() && !comparing {
-            self.shell.compare = None;
-            self.view.refresh();
+        if let GraphFilter::Compare { opened, .. } = &mut self.shell.graph_filter {
+            *opened = true;
         }
     }
 
@@ -2033,10 +2139,7 @@ impl App<'_> {
     // Whether reloading in the background would get in the way, like lazygit pausing its refreshes:
     // while a git command runs, a popup is open or something is being typed or confirmed.
     fn refresh_paused(&self) -> bool {
-        self.ctx.busy_message().is_some()
-            || self.shell.dialog.is_some()
-            || self.is_typing()
-            || matches!(self.view, View::Help(_))
+        self.ctx.busy_message().is_some() || self.shell.dialog.is_some() || self.is_typing()
     }
 
     // Reloads everything when the branches or HEAD changed since they were loaded, from outside the
@@ -2050,11 +2153,11 @@ impl App<'_> {
 
     // Reloads the local changes, made outside the app too: the page showing them, else their
     // count in the sidebar.
-    fn reload_files(&mut self) {
+    fn reload_files(&mut self, files: FilesSnapshot) {
         match &mut self.view {
-            View::LocalChanges(view) => view.reload_files(),
+            View::LocalChanges(view) => view.reload_files(files),
             _ => {
-                let count = self.repository.reload_local_changes();
+                let count = self.repository.set_local_changes(files.changes);
                 self.shell.sidebar.set_local_change_count(count);
             }
         }
@@ -2090,7 +2193,7 @@ impl App<'_> {
         };
         let (commit, changes) = self.repository.commit_detail(&shown);
         let refs = self.repository.refs(&shown).into_iter().cloned().collect();
-        self.view = View::of_detail(
+        self.replace_view(View::of_detail(
             commit_list_state,
             commit,
             changes,
@@ -2098,21 +2201,18 @@ impl App<'_> {
             self.repository,
             self.ctx.clone(),
             self.ec.sender(),
-        );
+        ));
         if let View::Detail(ref mut view) = self.view {
             view.start_compare(base, target, title);
         }
     }
 
     fn open_help(&mut self) {
-        let before_view = std::mem::take(&mut self.view);
-        self.view = View::of_help(before_view, self.ctx.clone(), self.ec.sender());
+        self.shell.help = Some(HelpView::new(self.ctx.clone(), self.ec.sender()));
     }
 
     fn close_help(&mut self) {
-        if let View::Help(ref mut view) = self.view {
-            self.view = view.take_before_view();
-        }
+        self.shell.help = None;
     }
 
     fn select_older_commit(&mut self) {
@@ -2145,10 +2245,7 @@ impl App<'_> {
         }
         match context {
             RefreshViewContext::List { .. } => {}
-            RefreshViewContext::Detail { .. } => {
-                let tab = self.shell.parked_detail_tab.take().unwrap_or_default();
-                self.open_detail(tab);
-            }
+            RefreshViewContext::Detail { tab, .. } => self.open_detail(tab),
             RefreshViewContext::UserCommand {
                 user_command_context,
                 ..
@@ -2245,7 +2342,16 @@ impl App<'_> {
     }
 }
 
-// Whether `event` moves or rewrites HEAD, which waits while an operation is in progress.
+// Whether the task commits the message of the local changes page.
+fn commits(task: &GitTask) -> bool {
+    task.commands
+        .first()
+        .is_some_and(|args| args[0] == "commit")
+        && task.input.is_some()
+}
+
+// Whether the command of `event` usually moves or rewrites HEAD, for its key not to be shown while an
+// operation is in progress; the commands themselves decide, see `GitTask::moves_head`.
 fn moves_head(event: UserEvent) -> bool {
     matches!(
         event,

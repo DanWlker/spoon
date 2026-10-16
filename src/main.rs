@@ -257,6 +257,7 @@ fn main() -> Result<()> {
             );
             ec.start_refresher(
                 repository.path().to_path_buf(),
+                repository.git_dir().map(Path::to_path_buf),
                 std::time::Duration::from_secs(2),
                 std::time::Duration::from_secs(10),
             );

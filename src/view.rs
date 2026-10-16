@@ -2,6 +2,7 @@ mod views;
 
 mod detail;
 mod help;
+pub use help::HelpView;
 mod list;
 mod local_changes;
 mod user_command;

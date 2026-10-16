@@ -10,7 +10,7 @@ use crate::{
     app::AppContext,
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
-    git::{Commit, CommitHash, FileChange, Ref, Repository},
+    git::{Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     keybind::Scope,
     layout::{fit_size, Direction, Panel},
     view::{
@@ -69,6 +69,10 @@ pub struct DetailView<'a> {
     parked_compare: Option<(String, CommitChangesState<'a>)>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
     list_focused: bool,
+    // the selection moved to another commit, whose details load once used, see `load_selected`
+    stale: bool,
+    // the last key's event, the repeats of a key moving the selection loading nothing
+    last_event: Option<UserEvent>,
     repository: &'a Repository,
 
     ctx: Rc<AppContext>,
@@ -101,6 +105,8 @@ impl<'a> DetailView<'a> {
             compare: None,
             parked_compare: None,
             list_focused: false,
+            stale: false,
+            last_event: None,
             repository,
             ctx,
             tx,
@@ -321,6 +327,11 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
+        // held, a key moving the selection loads the details once it is let go (or drawn)
+        if self.last_event != Some(event) {
+            self.load_selected();
+        }
+        self.last_event = Some(event);
         // typing a search or filter, keys arrive unmapped, see App::run
         if self.is_typing_query() {
             if let Some(query) = self.query_mut() {
@@ -582,6 +593,7 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn update_layout(&mut self, area: Rect) {
+        self.load_selected();
         let [list_area, _] = self.split_areas(area);
         self.as_mut_list_state()
             .update_height(commit_list_inner_height(list_area.height));
@@ -713,27 +725,24 @@ impl<'a> DetailView<'a> {
         let Some(patch) = self.changes_state.selected_patch() else {
             return;
         };
-        // a running task, like a checkout stashing the changes, works on the working tree too
-        if let Some(message) = self.ctx.busy_message() {
-            self.tx.send(AppEvent::NotifyWarn(message));
-            return;
-        }
         let what = if self.changes_state.is_selecting_lines() {
             "line"
         } else {
             "hunk"
         };
-        let event = match self.repository.apply_patch_to_worktree(&patch, false) {
-            Ok(()) => {
-                self.tx.send(AppEvent::LocalChangesChanged);
-                AppEvent::NotifySuccess(format!("Applied the {what} to the working tree"))
-            }
+        let task = GitTask {
+            commands: vec![vec!["apply".into(), "-".into()]],
+            input: Some(patch),
+            running: format!("Applying the {what} to the working tree"),
+            done: format!("Applied the {what} to the working tree"),
             // git names the lines that differ, which tells little more
-            Err(_) => AppEvent::NotifyError(format!(
+            failed: Some(format!(
                 "The {what} doesn't apply to the working tree, the file differs there"
             )),
+            keeps_view: true,
+            ..Default::default()
         };
-        self.tx.send(event);
+        self.tx.send(AppEvent::StartTask(task));
     }
 
     // Scrolls the diff of the changes tab, from the files or the diff; returns whether the event
@@ -1002,6 +1011,14 @@ impl<'a> DetailView<'a> {
             // the comparison stays, the selection only moves in the list
             return;
         }
+        self.stale = true;
+    }
+
+    // Loads the details of the selected commit, when the selection moved since they were.
+    pub fn load_selected(&mut self) {
+        if !std::mem::take(&mut self.stale) {
+            return;
+        }
         let repository = self.repository;
         let selected = self.as_list_state().selected_commit_hash().clone();
         let (commit, changes) = repository.commit_detail(&selected);
@@ -1041,7 +1058,10 @@ impl<'a> DetailView<'a> {
         if self.is_comparing() {
             RefreshViewContext::List { list_context }
         } else {
-            RefreshViewContext::Detail { list_context }
+            RefreshViewContext::Detail {
+                list_context,
+                tab: self.tab,
+            }
         }
     }
 }
