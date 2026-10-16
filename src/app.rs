@@ -391,15 +391,21 @@ impl App<'_> {
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
-            let event = match self.shell.dialog_reveal {
+            // woken up to show the popup waiting for a second press, or to drop expired notices
+            let expiry = self.shell.notices.iter().map(|n| n.until).min();
+            let event = match self.shell.dialog_reveal.into_iter().chain(expiry).min() {
                 Some(at) => match self
                     .ec
                     .recv_timeout(at.saturating_duration_since(Instant::now()))
                 {
                     Some(event) => event,
-                    // no second press, the popup shows
                     None => {
-                        self.shell.dialog_reveal = None;
+                        let now = Instant::now();
+                        // no second press, the popup shows
+                        if self.shell.dialog_reveal.is_some_and(|at| at <= now) {
+                            self.shell.dialog_reveal = None;
+                        }
+                        self.shell.notices.retain(|n| n.until > now);
                         continue;
                     }
                 },
@@ -2203,19 +2209,11 @@ impl App<'_> {
     }
 
     fn warn_notification(&mut self, message: String) {
-        let notice = Notice {
-            error: false,
-            message,
-        };
-        push_notice(&mut self.shell.notices, notice);
+        push_notice(&mut self.shell.notices, Notice::new(false, message));
     }
 
     fn error_notification(&mut self, message: String) {
-        let notice = Notice {
-            error: true,
-            message,
-        };
-        push_notice(&mut self.shell.notices, notice);
+        push_notice(&mut self.shell.notices, Notice::new(true, message));
     }
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull

@@ -121,7 +121,7 @@ pub fn mark_selected_row(buf: &mut Buffer, inner: Rect, y: u16, focused: bool, t
     }
 }
 
-// A scroll thumb on `column` (one cell wide: a panel's border, or a divider), when `total` rows
+// A scroll thumb, a full block, on `column` (one cell wide: a panel's border, or a divider), when `total` rows
 // don't fit its height; the border stays as the track.
 pub fn render_scrollbar(
     buf: &mut Buffer,
@@ -139,7 +139,7 @@ pub fn render_scrollbar(
     let top = offset.min(max_offset) * (height - thumb) / max_offset;
     let style = Style::default().fg(theme.divider_fg);
     for y in top..top + thumb {
-        buf.set_string(column.x, column.y + y as u16, "┃", style);
+        buf.set_string(column.x, column.y + y as u16, "█", style);
     }
 }
 

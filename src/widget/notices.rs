@@ -1,5 +1,7 @@
 // Errors and warnings in boxes at the top right, the newest first, like snacks.nvim's notifier;
-// they stay until dismissed. Other messages go to the status bar.
+// they go after a while, or when dismissed. Other messages go to the status bar.
+
+use std::time::{Duration, Instant};
 
 use ratatui::{
     buffer::Buffer,
@@ -17,15 +19,36 @@ const MAX_NOTICES: usize = 5;
 // the lines of a message shown, git's errors can be long
 const MAX_LINES: usize = 6;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// how long they show, an error longer to read it
+const WARNING_DURATION: Duration = Duration::from_secs(5);
+const ERROR_DURATION: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone)]
 pub struct Notice {
     pub error: bool,
     pub message: String,
+    // dropped then, unless dismissed before
+    pub until: Instant,
+}
+
+impl Notice {
+    pub fn new(error: bool, message: String) -> Self {
+        let duration = if error {
+            ERROR_DURATION
+        } else {
+            WARNING_DURATION
+        };
+        Notice {
+            error,
+            message,
+            until: Instant::now() + duration,
+        }
+    }
 }
 
 // Adds a notice, the newest last; the same message again replaces the older one.
 pub fn push_notice(notices: &mut Vec<Notice>, notice: Notice) {
-    notices.retain(|n| *n != notice);
+    notices.retain(|n| (n.error, &n.message) != (notice.error, &notice.message));
     notices.push(notice);
     let excess = notices.len().saturating_sub(MAX_NOTICES);
     notices.drain(..excess);
@@ -131,10 +154,7 @@ mod tests {
 
     #[test]
     fn test_push_notice() {
-        let notice = |m: &str| Notice {
-            error: true,
-            message: m.into(),
-        };
+        let notice = |m: &str| Notice::new(true, m.into());
         let mut notices = vec![];
         for m in ["a", "b", "a", "c", "d", "e", "f"] {
             push_notice(&mut notices, notice(m));

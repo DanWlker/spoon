@@ -21,7 +21,7 @@ The default key bindings can be overridden.
 | <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
 | <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
 | <kbd>@</kbd>                   | Show the command log (see below) | `command_log` |
-| <kbd>,</kbd>                   | Dismiss the errors and warnings at the top right | `dismiss_notifications` |
+| <kbd>,</kbd>                   | Dismiss the errors and warnings at the top right (they also go after 10 and 5 seconds) | `dismiss_notifications` |
 | <kbd>w</kbd>                   | Wrap the long lines of the diffs and file previews, or not | `toggle_wrap` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |

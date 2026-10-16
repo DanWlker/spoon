@@ -861,7 +861,7 @@ pub fn render_visual_rows(
 }
 
 // `line` in rows of `width` columns, the rows after the first indented past its first span, the
-// line numbers, and keeping its style (the background of a change).
+// line numbers, in their style, and keeping the line's style (the background of a change).
 fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
     let indent = if line.spans.len() > 1 {
         line.spans[0].width()
@@ -872,6 +872,8 @@ fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
         return vec![owned(line)];
     }
     let style = line.style;
+    // the line numbers' style under them too, like the selection's
+    let gutter_style = line.spans.first().map(|s| s.style).unwrap_or_default();
     let mut rows = Vec::new();
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0;
@@ -884,7 +886,7 @@ fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
                     spans.push(Span::styled(std::mem::take(&mut run), span.style));
                 }
                 rows.push(Line::from(std::mem::take(&mut spans)).style(style));
-                spans.push(Span::raw(" ".repeat(indent)));
+                spans.push(Span::styled(" ".repeat(indent), gutter_style));
                 used = indent;
             }
             run.push(c);
@@ -959,8 +961,13 @@ mod tests {
         };
         // past the line numbers, continued under them
         let rows = wrap_line(line("abcdefgh"), 7);
-        let rows: Vec<String> = rows.iter().map(text).collect();
-        assert_eq!(rows, ["12 abcd", "   efgh"]);
+        let texts: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(texts, ["12 abcd", "   efgh"]);
+        // the indent styled like the line numbers, a selection's highlight going down
+        let mut selected = line("abcdefgh");
+        selected.spans[0] = selected.spans[0].clone().bg(ratatui::style::Color::Red);
+        let rows = wrap_line(selected, 7);
+        assert_eq!(rows[1].spans[0].style.bg, Some(ratatui::style::Color::Red));
 
         // the selected row kept in view below the rows wrapping above it
         let lines = (0..3).map(|i| (i, line("abcdefghijkl")));

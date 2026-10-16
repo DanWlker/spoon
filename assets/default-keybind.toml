@@ -144,7 +144,7 @@ full_copy = ["shift-y"]
 ignore = ["i"]
 # show the git commands the app ran that changed the repository, with their output
 command_log = ["@"]
-# hide the errors and warnings shown at the top right
+# hide the errors and warnings shown at the top right (they also go after 10 and 5 seconds)
 dismiss_notifications = [","]
 # wrap the long lines of the diffs and file previews, or not
 toggle_wrap = ["w"]
