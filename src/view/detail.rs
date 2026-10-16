@@ -558,8 +558,13 @@ impl<'a> DetailView<'a> {
 
         match self.tab {
             DetailTab::Info => {
-                let commit_detail =
-                    CommitDetail::new(&self.commit, &self.changes, &self.refs, self.ctx.clone());
+                let commit_detail = CommitDetail::new(
+                    &self.commit,
+                    &self.changes,
+                    &self.refs,
+                    self.repository.head(),
+                    self.ctx.clone(),
+                );
                 f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
             }
             DetailTab::Changes => {

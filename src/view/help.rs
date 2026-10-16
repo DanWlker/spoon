@@ -209,6 +209,8 @@ fn build_lines(
         (vec![UserEvent::FocusLeft, UserEvent::FocusRight, UserEvent::FocusUp, UserEvent::FocusDown], "Focus the panel beside, above or under the focused one".into()),
         (vec![UserEvent::KeysToggle], "Show/hide the keys of the focused panel".into()),
         (vec![UserEvent::CommandLog], "Show the git commands run that changed the repository, with their output".into()),
+        (vec![UserEvent::DismissNotifications], "Dismiss the errors and warnings at the top right".into()),
+        (vec![UserEvent::ToggleWrap], "Wrap the long lines of the diffs and file previews, or not".into()),
         (vec![UserEvent::Fetch], "Fetch from a remote".into()),
         (vec![UserEvent::FetchAll], "Fetch all remotes".into()),
         (vec![UserEvent::Pull], "Pull a branch of a remote".into()),

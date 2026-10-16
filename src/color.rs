@@ -59,12 +59,6 @@ pub struct ColorTheme {
     #[default(TEXT)]
     pub detail_hash_fg: RatatuiColor,
     #[default(GREEN)]
-    pub detail_ref_branch_fg: RatatuiColor,
-    #[default(GREEN)]
-    pub detail_ref_remote_branch_fg: RatatuiColor,
-    #[default(YELLOW)]
-    pub detail_ref_tag_fg: RatatuiColor,
-    #[default(GREEN)]
     pub detail_file_change_add_fg: RatatuiColor,
     #[default(YELLOW)]
     pub detail_file_change_modify_fg: RatatuiColor,

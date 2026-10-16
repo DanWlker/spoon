@@ -13,7 +13,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{spinner, AppContext},
     git::{split_remote_branch, Head, Ref},
-    widget::style::{fold_marker, mark_selected_row, panel_block, panel_title},
+    widget::style::{
+        fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
+    },
 };
 
 const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
@@ -503,6 +505,8 @@ impl StatefulWidget for RefList {
             }
             state.scroll_to_selection = false;
         }
+        let total = state.visible_rows.len();
+        render_panel_scrollbar(buf, area, total, state.offset, theme);
 
         let item_style = Style::default().fg(theme.fg);
         // the sections stand out from the refs in them

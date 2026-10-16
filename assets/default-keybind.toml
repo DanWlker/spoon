@@ -88,7 +88,7 @@ rebase = ["r"]
 # merge the selected branch into the current branch, after confirming
 merge = ["m"]
 # check out the selected branch or commit, after confirming
-checkout = ["c"]
+checkout = ["c", "space"]
 # cherry-pick the picked commits, or the selected one, after confirming
 cherry_pick = ["shift-c"]
 # squash the picked commits, or the selected one, into their parents, after confirming
@@ -144,3 +144,7 @@ full_copy = ["shift-y"]
 ignore = ["i"]
 # show the git commands the app ran that changed the repository, with their output
 command_log = ["@"]
+# hide the errors and warnings shown at the top right
+dismiss_notifications = [","]
+# wrap the long lines of the diffs and file previews, or not
+toggle_wrap = ["w"]

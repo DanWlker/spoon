@@ -21,15 +21,15 @@ use crate::{
     widget::{
         conflict::ConflictView,
         diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, select_diff_line,
-            DiffCursor, DiffHunk, ParsedDiff, Step, CONVERTED_DIFF,
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
+            ParsedDiff, Step, CONVERTED_DIFF,
         },
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
         style::{
             badge, fold_marker, mark_selected_row, panel_block, panel_title, popup_title,
-            tree_panel_width,
+            render_panel_scrollbar, tree_panel_width,
         },
         text_area::TextArea,
         tree_query::{highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery},
@@ -1674,6 +1674,7 @@ impl LocalChangesPanel<'_> {
         // keep the cursor visible when the tree is taller than the section
         let height = inner.height as usize;
         let offset = (cursor + 1).saturating_sub(height);
+        render_panel_scrollbar(buf, area, rows.len(), offset, &self.ctx.color_theme);
 
         // the search is highlighted in the section it applies to
         let search = state.query_of(section).search();
@@ -1759,6 +1760,7 @@ impl LocalChangesPanel<'_> {
         };
         let range = state.cursor.fit(count, inner.height as usize);
         let offset = range.start;
+        render_panel_scrollbar(buf, area, count, offset, &self.ctx.color_theme);
 
         let mut lines = if selected {
             diff_lines(&state.diff, &self.ctx.color_theme, range)
@@ -1779,16 +1781,14 @@ impl LocalChangesPanel<'_> {
             _ => 0..0,
         };
         let search = state.diff_query.search().filter(|_| selected);
-        for (row, line) in (offset..).zip(lines.iter_mut()) {
-            if highlighted.contains(&row) {
-                select_diff_line(line, &self.ctx.color_theme);
-            }
-            if let Some(query) = search {
+        if let Some(query) = search {
+            for line in lines.iter_mut() {
                 highlight_match(line, query, &self.ctx.color_theme);
             }
         }
-
-        render_diff_lines(lines, self.ctx.color_theme.fg, inner, buf);
+        let rows = offset..offset + lines.len();
+        let (wrap, theme) = (self.ctx.wrap.get(), &self.ctx.color_theme);
+        render_diff_lines(lines, rows, highlighted, wrap, theme, inner, buf);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {

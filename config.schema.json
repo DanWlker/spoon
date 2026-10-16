@@ -568,21 +568,6 @@
           "description": "Color for the commit hash in the commit detail view.",
           "default": "#cdd6f4"
         },
-        "detail_ref_branch_fg": {
-          "type": "string",
-          "description": "Color for local branches in the commit detail view.",
-          "default": "#a6e3a1"
-        },
-        "detail_ref_remote_branch_fg": {
-          "type": "string",
-          "description": "Color for remote branches in the commit detail view.",
-          "default": "#a6e3a1"
-        },
-        "detail_ref_tag_fg": {
-          "type": "string",
-          "description": "Color for tags in the commit detail view.",
-          "default": "#f9e2af"
-        },
         "detail_file_change_add_fg": {
           "type": "string",
           "description": "Color for added file status in the commit detail view.",
@@ -841,6 +826,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "command_log": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dismiss_notifications": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_wrap": {
           "$ref": "#/definitions/keybindArray"
         },
         "filter": {
@@ -1155,6 +1146,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "command_log": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "dismiss_notifications": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_wrap": {
           "$ref": "#/definitions/keybindArray"
         },
         "filter": {

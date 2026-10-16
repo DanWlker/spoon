@@ -147,6 +147,7 @@ enum FieldId {
     Pop,
     Url,
     Link,
+    NoVerify,
 }
 
 #[derive(Debug)]
@@ -291,6 +292,11 @@ impl GitDialog {
                 ));
                 dialog.push_check(FieldId::Tags, "Push all tags", false);
                 dialog.push_check(FieldId::Force, "Force push (with lease)", false);
+                dialog.push_check(
+                    FieldId::NoVerify,
+                    "Skip the pre-push hook (--no-verify)",
+                    false,
+                );
                 dialog.update_push_remote();
             }
         }
@@ -1349,6 +1355,9 @@ impl GitDialog {
                 if self.checked(FieldId::Tags) {
                     args.push("--tags".into());
                 }
+                if self.checked(FieldId::NoVerify) {
+                    args.push("--no-verify".into());
+                }
                 // a branch without an upstream tracks the branch it is pushed to
                 if !self.info().upstreams.contains_key(&branch) {
                     args.push("--set-upstream".into());
@@ -1602,7 +1611,7 @@ impl Widget for GitDialogWidget<'_> {
             let selected = i == dialog.selected;
             // the field being changed has a bar beside it, like huh's forms
             let bar = if selected {
-                Span::raw("┃ ").fg(theme.accent_fg)
+                Span::raw("▌ ").fg(theme.highlight_fg)
             } else {
                 Span::raw("  ")
             };
@@ -1992,6 +2001,9 @@ mod tests {
             args(&dialog),
             "push --force-with-lease --tags --set-upstream origin refs/heads/topic:refs/heads/topic2"
         );
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert!(args(&dialog).starts_with("push --force-with-lease --tags --no-verify "));
     }
 
     #[test]

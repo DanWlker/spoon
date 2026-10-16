@@ -372,6 +372,8 @@ pub enum UserEvent {
     DeleteRef,
     EditRef,
     ApplyStash,
+    DismissNotifications,
+    ToggleWrap,
     OpenInBrowser,
     CopyLink,
     NextSection,
@@ -502,6 +504,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "edit_ref" => Ok(UserEvent::EditRef),
                         "apply_stash" => Ok(UserEvent::ApplyStash),
                         "open_in_browser" => Ok(UserEvent::OpenInBrowser),
+                        "dismiss_notifications" => Ok(UserEvent::DismissNotifications),
+                        "toggle_wrap" => Ok(UserEvent::ToggleWrap),
                         "copy_link" => Ok(UserEvent::CopyLink),
                         "next_section" => Ok(UserEvent::NextSection),
                         "previous_section" => Ok(UserEvent::PreviousSection),
@@ -600,6 +604,8 @@ impl UserEvent {
                 | UserEvent::FocusDown
                 | UserEvent::KeysToggle
                 | UserEvent::CommandLog
+                | UserEvent::DismissNotifications
+                | UserEvent::ToggleWrap
                 | UserEvent::Fetch
                 | UserEvent::FetchAll
                 | UserEvent::Pull

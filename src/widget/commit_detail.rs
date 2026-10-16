@@ -4,14 +4,15 @@ use chrono::{DateTime, FixedOffset};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph, StatefulWidget, Widget},
 };
 
 use crate::{
     app::AppContext,
-    git::{Commit, FileChange, Ref},
+    git::{Commit, FileChange, Head, Ref},
+    widget::commit_list::{ref_color, ref_label_style},
 };
 
 #[derive(Debug, Default)]
@@ -58,6 +59,7 @@ pub struct CommitDetail<'a> {
     commit: &'a Commit,
     changes: &'a Vec<FileChange>,
     refs: &'a Vec<Ref>,
+    head: &'a Head,
     ctx: Rc<AppContext>,
 }
 
@@ -66,12 +68,14 @@ impl<'a> CommitDetail<'a> {
         commit: &'a Commit,
         changes: &'a Vec<FileChange>,
         refs: &'a Vec<Ref>,
+        head: &'a Head,
         ctx: Rc<AppContext>,
     ) -> Self {
         Self {
             commit,
             changes,
             refs,
+            head,
             ctx,
         }
     }
@@ -134,7 +138,7 @@ impl CommitDetail<'_> {
             value_lines.push(self.parents_line());
         }
 
-        if has_refs(self.refs) {
+        if has_refs(self.refs) || self.detached_here() {
             label_lines.push(Line::from("     Refs: ").fg(self.ctx.color_theme.detail_label_fg));
             value_lines.push(self.refs_line());
         }
@@ -215,34 +219,31 @@ impl CommitDetail<'_> {
         Line::from(spans)
     }
 
+    // Labels like those of the commit list.
     fn refs_line(&self) -> Line<'_> {
-        let ref_spans = self.refs.iter().filter_map(|r| match r {
-            Ref::Branch { name, .. } => Some(
-                Span::raw(name)
-                    .fg(self.ctx.color_theme.detail_ref_branch_fg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Ref::RemoteBranch { name, .. } => Some(
-                Span::raw(name)
-                    .fg(self.ctx.color_theme.detail_ref_remote_branch_fg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Ref::Tag { name, .. } => Some(
-                Span::raw(name)
-                    .fg(self.ctx.color_theme.detail_ref_tag_fg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Ref::Stash { .. } => None,
-        });
-
+        let theme = &self.ctx.color_theme;
+        let head_branch = match self.head {
+            Head::Branch { name } => Some(name.as_str()),
+            _ => None,
+        };
         let mut spans = Vec::new();
-        for (i, ref_span) in ref_spans.enumerate() {
-            spans.push(ref_span);
-            if i < self.refs.len() - 1 {
-                spans.push(Span::raw(" "));
-            }
+        if self.detached_here() {
+            spans.push(Span::styled(
+                " HEAD ",
+                ref_label_style(theme.list_ref_head_fg),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        for r in self.refs.iter().filter(|r| !matches!(r, Ref::Stash { .. })) {
+            let style = ref_label_style(ref_color(r, head_branch, theme));
+            spans.push(Span::styled(format!(" {} ", r.name()), style));
+            spans.push(Span::raw(" "));
         }
         Line::from(spans)
+    }
+
+    fn detached_here(&self) -> bool {
+        matches!(self.head, Head::Detached { target } if *target == self.commit.commit_hash)
     }
 
     fn commit_message_lines(&self) -> Vec<Line<'_>> {

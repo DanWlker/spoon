@@ -202,6 +202,7 @@ fn main() -> Result<()> {
         running_task: Default::default(),
         key_names: Default::default(),
         layout: Default::default(),
+        wrap: Default::default(),
     });
 
     let ec = event::EventController::init();

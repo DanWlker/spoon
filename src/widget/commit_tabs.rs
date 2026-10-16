@@ -13,11 +13,14 @@ use crate::{
     color::ColorTheme,
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{Border, Panel},
-    widget::style::{focused_title, fold_marker, mark_selected_row, panel_title, tree_panel_width},
+    widget::style::{
+        focused_title, fold_marker, mark_selected_row, panel_title, render_scrollbar,
+        tree_panel_width,
+    },
     widget::{
         diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, select_diff_line,
-            DiffCursor, DiffHunk, ParsedDiff, Step,
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, render_visual_rows,
+            visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
         tree_query::{find_around, highlight_match, highlighted_name, match_range},
@@ -714,20 +717,20 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
         let Some(diff) = &state.diff else {
             return;
         };
+        let border = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
+        render_scrollbar(buf, border, count, range.start, theme);
         let mut lines = diff_lines(diff, theme, range.clone());
         let highlighted = match state.focus {
             ChangesFocus::Files => 0..0,
             focus => state.cursor.highlighted(diff, focus == ChangesFocus::Lines),
         };
-        for (row, line) in range.zip(lines.iter_mut()) {
-            if highlighted.contains(&row) {
-                select_diff_line(line, theme);
-            }
-            if let Some(query) = &self.diff_search {
+        if let Some(query) = &self.diff_search {
+            for line in lines.iter_mut() {
                 highlight_match(line, query, theme);
             }
         }
-        render_diff_lines(lines, theme.fg, diff_area, buf);
+        let wrap = self.ctx.wrap.get();
+        render_diff_lines(lines, range, highlighted, wrap, theme, diff_area, buf);
     }
 }
 
@@ -790,28 +793,35 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                 // only the visible lines are built, files can be long
                 let width = lines.len().to_string().len();
                 let range = state.cursor.fit(lines.len(), preview_area.height as usize);
+                let border =
+                    Rect::new(preview_area.right(), preview_area.y, 1, preview_area.height);
+                render_scrollbar(buf, border, lines.len(), range.start, theme);
                 let highlight_style = Style::default().bg(theme.list_selected_bg);
-                let visible: Vec<Line> = lines[range.start.min(lines.len())..]
-                    .iter()
-                    .zip(range)
-                    .map(|(line, i)| {
-                        let mut line = Line::from(vec![
-                            Span::raw(format!("{:>width$} ", i + 1))
-                                .fg(theme.status_input_transient_fg),
-                            Span::raw(line.replace('\t', "    ")),
-                        ]);
-                        if let Some(query) = &self.preview_search {
-                            highlight_match(&mut line, query, theme);
-                        }
-                        if state.preview_focused && i == state.cursor.line {
-                            line.style = line.style.patch(highlight_style);
-                        }
-                        line
-                    })
-                    .collect();
-                Paragraph::new(visible)
-                    .fg(theme.fg)
-                    .render(preview_area, buf);
+                let selected = if state.preview_focused {
+                    state.cursor.line..state.cursor.line + 1
+                } else {
+                    0..0
+                };
+                let visible =
+                    lines[range.start.min(lines.len())..]
+                        .iter()
+                        .zip(range)
+                        .map(|(line, i)| {
+                            let mut line = Line::from(vec![
+                                Span::raw(format!("{:>width$} ", i + 1))
+                                    .fg(theme.status_input_transient_fg),
+                                Span::raw(line.replace('\t', "    ")),
+                            ]);
+                            if let Some(query) = &self.preview_search {
+                                highlight_match(&mut line, query, theme);
+                            }
+                            if selected.contains(&i) {
+                                line.style = line.style.patch(highlight_style);
+                            }
+                            (i, line)
+                        });
+                let visual = visual_rows(visible, self.ctx.wrap.get(), &selected, preview_area);
+                render_visual_rows(visual, &selected, theme, preview_area, buf);
                 return;
             }
             Some(FilePreview::Binary) => dim("Binary file".into()),
@@ -887,6 +897,9 @@ fn render_rows_with_cursor<'a>(
     }
     let height = area.height as usize;
     let offset = (cursor + 1).saturating_sub(height);
+    // on the divider beside the tree, past its padding
+    let divider = Rect::new(area.right() + 1, area.y, 1, area.height);
+    render_scrollbar(buf, divider, rows.len(), offset, theme);
     let lines: Vec<Line> = rows.iter().skip(offset).take(height).map(line).collect();
     Paragraph::new(lines).fg(theme.fg).render(area, buf);
 

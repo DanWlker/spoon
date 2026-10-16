@@ -21,12 +21,14 @@ The default key bindings can be overridden.
 | <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
 | <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
 | <kbd>@</kbd>                   | Show the command log (see below) | `command_log` |
+| <kbd>,</kbd>                   | Dismiss the errors and warnings at the top right | `dismiss_notifications` |
+| <kbd>w</kbd>                   | Wrap the long lines of the diffs and file previews, or not | `toggle_wrap` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
 | <kbd>P</kbd>                   | Push a branch to a remote (chosen in a popup) | `push` |
 
-The command log (<kbd>@</kbd>) lists the git commands the app ran that changed the repository, the newest first: whether each succeeded, when it ran, how long it took, and the command. The output of the selected one (its last 200 lines) is under them, the full story of an error the status bar shows in one line. <kbd>j/k</kbd> move, <kbd>Ctrl-d/u</kbd> scroll the output, <kbd>y</kbd> copies the command and its output, <kbd>Esc</kbd> or <kbd>@</kbd> closes it. Reading commands, like those of the refresh every few seconds, aren't logged; the last 500 commands are kept until the app quits, and a password in a URL is shown as `***`.
+The command log (<kbd>@</kbd>) lists the git commands the app ran that changed the repository, the newest first: whether each succeeded, when it ran, how long it took, and the command. The output of the selected one (its last 200 lines) is under them, the full story of an error shown at the top right. <kbd>j/k</kbd> move, <kbd>Ctrl-d/u</kbd> scroll the output, <kbd>y</kbd> copies the command and its output, <kbd>Esc</kbd> or <kbd>@</kbd> closes it. Reading commands, like those of the refresh every few seconds, aren't logged; the last 500 commands are kept until the app quits, and a password in a URL is shown as `***`.
 
 The borders between the panels can also be dragged with the mouse. The sizes are kept until the app quits.
 With the mouse captured, the terminal selects text while Shift is held.
@@ -37,7 +39,7 @@ With the mouse captured, the terminal selects text while Shift is held.
 
 - Fetch: the remote to fetch from.
 - Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
-- Push: the local branch, the remote and the branch to push it to, whether to push all tags too, and whether to force push (`--force-with-lease`). A branch without an upstream starts tracking the branch it is pushed to.
+- Push: the local branch, the remote and the branch to push it to, whether to push all tags too, whether to force push (`--force-with-lease`), and whether to skip the pre-push hook (`--no-verify`). A branch without an upstream starts tracking the branch it is pushed to.
 
 In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
@@ -63,7 +65,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
-| <kbd>c</kbd>                         | Check out the selected branch or commit            | `checkout`                                   |
+| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the selected branch or commit            | `checkout`                                   |
 | <kbd>C</kbd>                         | Cherry-pick the picked commits, or the selected one | `cherry_pick`                               |
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
@@ -216,7 +218,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
-| <kbd>Space</kbd>                                   | Apply the stash | `apply_stash` |
+| <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `apply_stash` |
 | <kbd>v</kbd>                                       | Pick/Unpick the ref (only refs of one kind together) | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 

@@ -12,7 +12,7 @@ use ratatui::{
 use crate::{
     color::ColorTheme,
     git::{command_log, LoggedCommand},
-    widget::style::{mark_selected_row, panel_block, panel_title},
+    widget::style::{mark_selected_row, panel_block, panel_title, render_panel_scrollbar},
 };
 
 #[derive(Debug, Default)]
@@ -114,6 +114,7 @@ impl<'a> CommandLog<'a> {
         } else if state.selected >= state.offset + height {
             state.offset = state.selected + 1 - height;
         }
+        render_panel_scrollbar(buf, list_area, state.entries.len(), state.offset, theme);
         for (row, entry) in state
             .entries
             .iter()

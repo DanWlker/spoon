@@ -4,11 +4,12 @@ use std::{
 };
 
 use similar::DiffTag;
+use unicode_width::UnicodeWidthChar;
 
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -18,6 +19,7 @@ use crate::{
     git::Repository,
     widget::{
         file_tree::SearchDirection,
+        style::mark_selected_bar,
         tree_query::{find_around, match_range, patch_range},
     },
 };
@@ -771,7 +773,7 @@ pub fn diff_lines<'a>(
 }
 
 // Marks a line of `diff_lines` selected on its line numbers, keeping the colors of the change.
-pub fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
+fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
     if let Some(gutter) = line.spans.first_mut() {
         gutter.style = gutter
             .style
@@ -781,14 +783,128 @@ pub fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
     }
 }
 
-// Renders the lines of `diff_lines`, a line's background (added, removed, selected) across `area`.
-pub fn render_diff_lines(lines: Vec<Line>, fg: Color, area: Rect, buf: &mut Buffer) {
-    for (y, line) in (area.y..area.bottom()).zip(&lines) {
+// Renders the lines of `diff_lines` for `rows`, a line's background (added, removed) across
+// `area`, the `selected` rows marked on their line numbers and by the bar left of `area`;
+// long lines wrapped, when `wrap`.
+pub fn render_diff_lines(
+    lines: Vec<Line>,
+    rows: Range<usize>,
+    selected: Range<usize>,
+    wrap: bool,
+    theme: &ColorTheme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let lines = rows.zip(lines).map(|(row, mut line)| {
+        if selected.contains(&row) {
+            select_diff_line(&mut line, theme);
+        }
+        (row, line)
+    });
+    let visual = visual_rows(lines, wrap, &selected, area);
+    for (y, (_, line)) in (area.y..).zip(&visual) {
         if let Some(bg) = line.style.bg {
             buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(bg));
         }
     }
-    Paragraph::new(lines).fg(fg).render(area, buf);
+    render_visual_rows(visual, &selected, theme, area, buf);
+}
+
+// The screen rows showing `lines` (a row of the text each) in `area`: wrapped at its width when
+// `wrap`, and starting further down when wrapping pushed the `selected` rows out of it.
+pub fn visual_rows<'a>(
+    lines: impl Iterator<Item = (usize, Line<'a>)>,
+    wrap: bool,
+    selected: &Range<usize>,
+    area: Rect,
+) -> Vec<(usize, Line<'a>)> {
+    let width = area.width as usize;
+    let mut visual: Vec<(usize, Line<'a>)> = Vec::new();
+    for (row, line) in lines {
+        if wrap {
+            visual.extend(wrap_line(line, width).into_iter().map(|l| (row, l)));
+        } else {
+            visual.push((row, line));
+        }
+    }
+    let height = area.height as usize;
+    let first = visual.iter().position(|(row, _)| selected.contains(row));
+    let last = visual.iter().rposition(|(row, _)| selected.contains(row));
+    if let (Some(first), Some(last)) = (first, last) {
+        let skip = (last + 1).saturating_sub(height).min(first);
+        visual.drain(..skip);
+    }
+    visual.truncate(height);
+    visual
+}
+
+// Draws the rows of `visual_rows`, with the bar left of `area` beside the `selected` ones.
+pub fn render_visual_rows(
+    visual: Vec<(usize, Line)>,
+    selected: &Range<usize>,
+    theme: &ColorTheme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let selected_ys: Vec<u16> = (area.y..)
+        .zip(&visual)
+        .filter(|(_, (row, _))| selected.contains(row))
+        .map(|(y, _)| y)
+        .collect();
+    let lines: Vec<Line> = visual.into_iter().map(|(_, line)| line).collect();
+    Paragraph::new(lines).fg(theme.fg).render(area, buf);
+    if area.x > 0 {
+        for y in selected_ys {
+            mark_selected_bar(buf, area.x - 1, y, true, theme);
+        }
+    }
+}
+
+// `line` in rows of `width` columns, the rows after the first indented past its first span, the
+// line numbers, and keeping its style (the background of a change).
+fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
+    let indent = if line.spans.len() > 1 {
+        line.spans[0].width()
+    } else {
+        0
+    };
+    if width <= indent + 1 {
+        return vec![owned(line)];
+    }
+    let style = line.style;
+    let mut rows = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in line.spans {
+        let mut run = String::new();
+        for c in span.content.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width && used > indent {
+                if !run.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut run), span.style));
+                }
+                rows.push(Line::from(std::mem::take(&mut spans)).style(style));
+                spans.push(Span::raw(" ".repeat(indent)));
+                used = indent;
+            }
+            run.push(c);
+            used += w;
+        }
+        if !run.is_empty() {
+            spans.push(Span::styled(run, span.style));
+        }
+    }
+    rows.push(Line::from(spans).style(style));
+    rows
+}
+
+fn owned(line: Line<'_>) -> Line<'static> {
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|s| Span::styled(s.content.into_owned(), s.style))
+        .collect();
+    Line::from(spans).style(line.style)
 }
 
 #[cfg(test)]
@@ -830,6 +946,30 @@ mod tests {
             (4..7, format!("{header}{hunk2}")),
         ];
         assert_eq!(hunks, expected_hunks);
+    }
+
+    #[test]
+    fn test_wrap_rows() {
+        let line = |text: &str| Line::from(vec![Span::raw("12 "), Span::raw(text.to_string())]);
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        // past the line numbers, continued under them
+        let rows = wrap_line(line("abcdefgh"), 7);
+        let rows: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(rows, ["12 abcd", "   efgh"]);
+
+        // the selected row kept in view below the rows wrapping above it
+        let lines = (0..3).map(|i| (i, line("abcdefghijkl")));
+        let visual = visual_rows(lines, true, &(2..3), Rect::new(0, 0, 7, 4));
+        let rows: Vec<usize> = visual.iter().map(|(row, _)| *row).collect();
+        assert_eq!(rows, [1, 2, 2, 2]);
+        let lines = (0..3).map(|i| (i, line("abcdefghijkl")));
+        let visual = visual_rows(lines, false, &(2..3), Rect::new(0, 0, 7, 4));
+        assert_eq!(visual.len(), 3);
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod file_tree;
 pub mod git_dialog;
 pub mod keys_popup;
 pub mod local_changes;
+pub mod notices;
 pub mod ref_list;
 pub mod style;
 pub mod text_area;

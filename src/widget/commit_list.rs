@@ -23,7 +23,7 @@ use crate::{
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{SearchOptions, SearchTarget},
-    widget::style::{panel_block, panel_title},
+    widget::style::{mark_selected_bar, panel_block, panel_title, render_panel_scrollbar},
 };
 
 static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default().respect_case());
@@ -816,7 +816,20 @@ pub fn render_commit_list_panel<'a>(
     ));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    f.render_stateful_widget(CommitList::new(ctx), inner, state);
+    f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
+    // the bar on the border, the graph starts right after it
+    let y = inner.y + state.selected as u16;
+    if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
+        mark_selected_bar(f.buffer_mut(), inner.x - 1, y, focused, &ctx.color_theme);
+    }
+    let theme = &ctx.color_theme;
+    render_panel_scrollbar(
+        f.buffer_mut(),
+        area,
+        state.commits.len(),
+        state.offset,
+        theme,
+    );
 }
 
 impl<'a> CommitList<'a> {
@@ -1113,20 +1126,12 @@ fn refs_spans<'a>(
         _ => None,
     };
     for r in &commit_info.refs {
-        let (name, color) = match r {
-            Ref::Branch { name, .. } if head_branch == Some(name.as_str()) => {
-                (name, color_theme.list_ref_head_fg)
-            }
-            Ref::Branch { name, .. } => (name, color_theme.list_ref_branch_fg),
-            Ref::RemoteBranch { name, .. } => (name, color_theme.list_ref_remote_branch_fg),
-            Ref::Tag { name, .. } => (name, color_theme.list_ref_tag_fg),
-            Ref::Stash { name, .. } => (name, color_theme.list_ref_stash_fg),
-        };
-        let style = ref_label_style(color);
+        let name = r.name();
+        let style = ref_label_style(ref_color(r, head_branch, color_theme));
         let fg = style.fg.unwrap_or_default();
         let bg = style.bg.unwrap_or_default();
         let label = format!(" {name} ");
-        let label_spans = match refs_matches.get(name.as_str()) {
+        let label_spans = match refs_matches.get(name) {
             // the match positions are of the name, the label has a space before it
             Some(pos) => {
                 let mut pos = pos.clone();
@@ -1150,8 +1155,19 @@ fn refs_spans<'a>(
     spans
 }
 
+// The color of the label of `r`, the checked-out branch's its own.
+pub fn ref_color(r: &Ref, head_branch: Option<&str>, theme: &ColorTheme) -> Color {
+    match r {
+        Ref::Branch { name, .. } if head_branch == Some(name.as_str()) => theme.list_ref_head_fg,
+        Ref::Branch { .. } => theme.list_ref_branch_fg,
+        Ref::RemoteBranch { .. } => theme.list_ref_remote_branch_fg,
+        Ref::Tag { .. } => theme.list_ref_tag_fg,
+        Ref::Stash { .. } => theme.list_ref_stash_fg,
+    }
+}
+
 // A ref label in `color`, on a dark tint of it.
-fn ref_label_style(color: Color) -> Style {
+pub fn ref_label_style(color: Color) -> Style {
     let style = Style::default().add_modifier(Modifier::BOLD);
     match color {
         Color::Rgb(r, g, b) => {
@@ -1382,6 +1398,7 @@ mod tests {
                     running_task: Default::default(),
                     key_names: Default::default(),
                     layout: Default::default(),
+                    wrap: Default::default(),
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1487,6 +1504,7 @@ mod tests {
                 running_task: Default::default(),
                 key_names: Default::default(),
                 layout: Default::default(),
+                wrap: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
             let mut before = Buffer::empty(area);

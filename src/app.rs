@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     io::{self, Write},
     rc::Rc,
     sync::mpsc::RecvTimeoutError,
@@ -50,8 +50,9 @@ use crate::{
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
         keys_popup::KeysPopup,
         local_changes::LocalChangesState,
+        notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, DETACHED_HEAD},
-        style::{badge, key_hints},
+        style::key_hints,
         tree_query,
     },
 };
@@ -73,8 +74,6 @@ enum StatusLine {
     },
     NotificationInfo(String),
     NotificationSuccess(String),
-    NotificationWarn(String),
-    NotificationError(String),
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +105,8 @@ pub struct AppContext {
     pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
     // the sizes of the panels, set by the user, kept across refreshes
     pub layout: RefCell<PanelLayout>,
+    // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
+    pub wrap: Cell<bool>,
 }
 
 impl AppContext {
@@ -155,6 +156,7 @@ struct FrameLayout {
     panels: u64,
     dialog: bool,
     command_log: bool,
+    notices: usize,
     // the size of the keys popup
     keys_popup: Option<(u16, u16)>,
 }
@@ -202,6 +204,8 @@ pub struct AppShell {
     keys_popup: bool,
     // the git commands run, over everything, see `UserEvent::CommandLog`
     command_log: Option<CommandLogState>,
+    // errors and warnings at the top right, until dismissed
+    notices: Vec<Notice>,
 }
 
 // The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
@@ -345,6 +349,7 @@ impl<'a> App<'a> {
                 compare: None,
                 keys_popup: false,
                 command_log: None,
+                notices: Vec::new(),
             },
         };
         shell.sidebar.set_tracking(repository.branch_tracking());
@@ -409,17 +414,9 @@ impl App<'_> {
                         StatusLine::Transient(_)
                         | StatusLine::SearchResult { .. }
                         | StatusLine::NotificationInfo(_)
-                        | StatusLine::NotificationSuccess(_)
-                        | StatusLine::NotificationWarn(_) => {
+                        | StatusLine::NotificationSuccess(_) => {
                             // Clear message and pass key input as is
                             self.clear_status_line();
-                        }
-                        StatusLine::NotificationError(_) => {
-                            // Clear message and cancel key input, but a key typed into text
-                            self.clear_status_line();
-                            if !self.view.is_capturing_keys() {
-                                continue;
-                            }
                         }
                     }
 
@@ -794,6 +791,7 @@ impl App<'_> {
             panels: self.ctx.layout.borrow().version(),
             dialog: self.visible_dialog().is_some(),
             command_log: self.shell.command_log.is_some(),
+            notices: self.shell.notices.len(),
             keys_popup: (!keys.is_empty())
                 .then(|| KeysPopup::new(keys, &self.ctx.color_theme).size()),
         };
@@ -810,7 +808,8 @@ impl App<'_> {
             Some(last)
                 if last.dialog != layout.dialog
                     || last.keys_popup != layout.keys_popup
-                    || last.command_log != layout.command_log =>
+                    || last.command_log != layout.command_log
+                    || last.notices != layout.notices =>
             {
                 PendingClear::Screen
             }
@@ -896,6 +895,15 @@ impl App<'_> {
         if let Some(state) = self.shell.command_log.as_mut() {
             CommandLog::new(&self.ctx.color_theme).render(app_area, f.buffer_mut(), state);
         }
+        let dismiss = self.ctx.short_keys(&[UserEvent::DismissNotifications]);
+        let theme = &self.ctx.color_theme;
+        render_notices(
+            &self.shell.notices,
+            &dismiss,
+            app_area,
+            f.buffer_mut(),
+            theme,
+        );
         self.render_status_line(f, status_line_area);
         // the graph images stop where a popup covers them
         crate::protocol::crop_covered_images(f.buffer_mut());
@@ -982,17 +990,6 @@ impl App<'_> {
                         .fg(theme.status_success_fg)
                         .bold(),
                 );
-            }
-            StatusLine::NotificationWarn(msg) => {
-                left.push(
-                    Span::raw(format!("! {msg}"))
-                        .fg(theme.status_warn_fg)
-                        .bold(),
-                );
-            }
-            StatusLine::NotificationError(msg) => {
-                left.push(badge(" ERROR ", theme.status_error_fg, theme));
-                left.push(Span::raw(format!(" {msg}")).fg(theme.status_error_fg));
             }
         }
 
@@ -1284,6 +1281,14 @@ impl App<'_> {
                 self.shell.command_log = Some(CommandLogState::new());
                 return;
             }
+            UserEvent::DismissNotifications => {
+                self.shell.notices.clear();
+                return;
+            }
+            UserEvent::ToggleWrap => {
+                self.ctx.wrap.set(!self.ctx.wrap.get());
+                return;
+            }
             UserEvent::FocusPanel(0) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
                 if self.shell.sidebar_focused && !self.shell.sidebar_collapsed {
@@ -1323,6 +1328,15 @@ impl App<'_> {
     }
 
     fn handle_sidebar_event(&mut self, event: UserEvent, key: KeyEvent) {
+        // space applies a stash, and checks out the other refs, as it does on the graph
+        let stash = matches!(
+            self.shell.sidebar.selection(),
+            RefSelection::Ref(RefSection::Stashes, _)
+        );
+        let event = match event {
+            UserEvent::ApplyStash if !stash => UserEvent::Checkout,
+            event => event,
+        };
         if !self.sidebar_command_applies(event) {
             return;
         }
@@ -2188,12 +2202,20 @@ impl App<'_> {
         self.shell.app_status.status_line = StatusLine::NotificationSuccess(msg);
     }
 
-    fn warn_notification(&mut self, msg: String) {
-        self.shell.app_status.status_line = StatusLine::NotificationWarn(msg);
+    fn warn_notification(&mut self, message: String) {
+        let notice = Notice {
+            error: false,
+            message,
+        };
+        push_notice(&mut self.shell.notices, notice);
     }
 
-    fn error_notification(&mut self, msg: String) {
-        self.shell.app_status.status_line = StatusLine::NotificationError(msg);
+    fn error_notification(&mut self, message: String) {
+        let notice = Notice {
+            error: true,
+            message,
+        };
+        push_notice(&mut self.shell.notices, notice);
     }
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull
