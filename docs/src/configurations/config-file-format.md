@@ -249,7 +249,7 @@ Whether to enable ignore case when the application starts. The option can be tog
 
 ### `core.search.fuzzy`
 
-Whether to enable fuzzy matching when the application starts. The option can be toggled while the commit list is displayed.
+Whether to enable fuzzy matching when the application starts. The option can be toggled while the commit list is displayed. The search (<kbd>/</kbd>) and filter (<kbd>?</kbd>) of the file trees match paths fuzzily too when it is on, without a toggle; searching a diff or a file stays a plain match.
 
 - type: `boolean`
 - default: `false`

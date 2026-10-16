@@ -19,6 +19,7 @@ use ratatui::{
     DefaultTerminal, Frame, Terminal,
 };
 use rustc_hash::FxHashMap;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     color::ColorTheme,
@@ -50,6 +51,7 @@ use crate::{
         local_changes::LocalChangesState,
         ref_list::{RefList, RefListState, RefSection, RefSelection, DETACHED_HEAD},
         style::{badge, key_hints},
+        tree_query,
     },
 };
 
@@ -286,6 +288,7 @@ impl<'a> App<'a> {
             })
             .collect();
         let graph_cell_width = graph_image_manager.graph_cell_width();
+        tree_query::set_fuzzy_paths(ctx.core_config.search.fuzzy);
         let mut commit_list_state = CommitListState::new(
             commits,
             graph_image_manager,
@@ -937,7 +940,7 @@ impl App<'_> {
                     None => {
                         // shortened like neovim's pathshorten when it would crowd the keys
                         let mut path = home_relative(self.repository.path());
-                        if path.chars().count() > area.width as usize / 4 {
+                        if path.width() > area.width as usize / 4 {
                             path = shorten_path(&path);
                         }
                         left.push(Span::raw(format!("󰉋 {path}")).fg(theme.status_bar_fg));

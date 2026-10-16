@@ -108,7 +108,7 @@
             },
             "fuzzy": {
               "type": "boolean",
-              "description": "Whether to enable fuzzy matching by default.",
+              "description": "Whether to enable fuzzy matching by default, in the commit list and in the search and filter of the file trees.",
               "default": false
             }
           },

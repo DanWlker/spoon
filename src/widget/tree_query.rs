@@ -1,8 +1,11 @@
+use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
+use once_cell::sync::Lazy;
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent},
     style::{Style, Stylize},
     text::{Line, Span},
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{color::ColorTheme, widget::file_tree::SearchDirection};
@@ -134,9 +137,27 @@ fn prefix(kind: QueryKind) -> &'static str {
     }
 }
 
-// Substring match, ignoring case unless the query has an uppercase letter (smart case).
+// Whether paths are searched and filtered fuzzily, like the commit list with core.search.fuzzy.
+// shortcut: set once from the config at startup, the commit list's fuzzy toggle doesn't change it;
+// keep it in `TreeQuery` if the trees get a toggle of their own.
+static FUZZY_PATHS: AtomicBool = AtomicBool::new(false);
+
+// smart case: ignoring it unless the query has an uppercase letter
+static PATH_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(SkimMatcherV2::default);
+
+pub fn set_fuzzy_paths(fuzzy: bool) {
+    FUZZY_PATHS.store(fuzzy, Ordering::Relaxed);
+}
+
+// Whether `path` matches `query`: fuzzily, or as a substring; smart case either way.
 pub fn path_matches(path: &str, query: &str) -> bool {
-    if query.chars().any(char::is_uppercase) {
+    path_matches_with(path, query, FUZZY_PATHS.load(Ordering::Relaxed))
+}
+
+fn path_matches_with(path: &str, query: &str, fuzzy: bool) -> bool {
+    if fuzzy {
+        PATH_MATCHER.fuzzy_match(path, query).is_some()
+    } else if query.chars().any(char::is_uppercase) {
         path.contains(query)
     } else {
         path.to_lowercase().contains(&query.to_lowercase())
@@ -227,16 +248,43 @@ pub fn highlighted_name(
     search: Option<&str>,
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
-    let Some(range) = search.and_then(|query| match_range(name, query)) else {
-        return vec![Span::raw(name.to_string())];
+    let fuzzy = FUZZY_PATHS.load(Ordering::Relaxed);
+    let ranges = search.map_or(vec![], |query| name_match_ranges(name, query, fuzzy));
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for range in ranges {
+        spans.push(Span::raw(name[at..range.start].to_string()));
+        spans.push(
+            Span::raw(name[range.clone()].to_string())
+                .fg(theme.list_match_fg)
+                .bg(theme.list_match_bg),
+        );
+        at = range.end;
+    }
+    spans.push(Span::raw(name[at..].to_string()));
+    spans
+}
+
+// The byte ranges of `name` matching `query`: the letters a fuzzy match picks, joined where they
+// follow each other, or the substring. None when only the rest of the path matches.
+fn name_match_ranges(name: &str, query: &str, fuzzy: bool) -> Vec<std::ops::Range<usize>> {
+    if !fuzzy {
+        return match_range(name, query).into_iter().collect();
+    }
+    let Some((_, indices)) = PATH_MATCHER.fuzzy_indices(name, query) else {
+        return vec![];
     };
-    vec![
-        Span::raw(name[..range.start].to_string()),
-        Span::raw(name[range.clone()].to_string())
-            .fg(theme.list_match_fg)
-            .bg(theme.list_match_bg),
-        Span::raw(name[range.end..].to_string()),
-    ]
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, (at, c)) in name.char_indices().enumerate() {
+        if !indices.contains(&i) {
+            continue;
+        }
+        match ranges.last_mut() {
+            Some(last) if last.end == at => last.end = at + c.len_utf8(),
+            _ => ranges.push(at..at + c.len_utf8()),
+        }
+    }
+    ranges
 }
 
 #[cfg(test)]
@@ -288,5 +336,17 @@ mod tests {
         assert!(path_matches("src/Main.rs", "Main"));
         assert_eq!(match_range("src/Main.rs", "main"), Some(4..8));
         assert_eq!(match_range("README", "x"), None);
+    }
+
+    #[test]
+    fn test_fuzzy_paths() {
+        assert!(path_matches_with("src/widget/diff.rs", "swd", true));
+        assert!(!path_matches_with("src/widget/diff.rs", "swd", false));
+        assert!(!path_matches_with("src/main.rs", "Main", true));
+        assert!(!path_matches_with("src/main.rs", "xyz", true));
+        // the picked letters of the name, joined where they follow each other; by bytes
+        assert_eq!(name_match_ranges("dïff.rs", "dïrs", true), [0..3, 6..8]);
+        // only the rest of the path matched
+        assert!(name_match_ranges("diff.rs", "src", true).is_empty());
     }
 }

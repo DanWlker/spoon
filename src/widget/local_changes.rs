@@ -2031,28 +2031,9 @@ impl LocalChangesPanel<'_> {
             return;
         }
 
-        // scroll to keep the cursor visible
-        let (row, col) = state.message.cursor();
-        let (width, height) = (area.width as usize, area.height as usize);
-        let row_offset = (row + 1).saturating_sub(height);
-        let col_offset = (col + 1).saturating_sub(width);
-        let lines: Vec<Line> = state
+        state
             .message
-            .lines()
-            .iter()
-            .skip(row_offset)
-            .map(|line| Line::raw(line.chars().skip(col_offset).collect::<String>()))
-            .collect();
-        Paragraph::new(lines).fg(theme.fg).render(area, buf);
-
-        if state.is_editing() {
-            let x = area.x + (col - col_offset) as u16;
-            let y = area.y + (row - row_offset) as u16;
-            buf.set_style(
-                Rect::new(x, y, 1, 1),
-                Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
-            );
-        }
+            .render(area, buf, Style::default().fg(theme.fg), state.is_editing());
     }
 
     fn status_color(&self, status: LocalChangeStatus) -> Color {

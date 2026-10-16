@@ -274,7 +274,7 @@ While a merge, cherry-pick or revert is stopped on conflicts, the message box is
 Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
 The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
 <kbd>3</kbd> starts typing the message; in the commit section, <kbd>Space</kbd> or <kbd>e</kbd> start typing it again.
-While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>.
+While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>, with Emacs-like editing keys: <kbd>Ctrl-u</kbd> undoes and <kbd>Ctrl-r</kbd> redoes, <kbd>Alt-b</kbd>/<kbd>Alt-f</kbd> or <kbd>Ctrl-Left</kbd>/<kbd>Ctrl-Right</kbd> move by word, <kbd>Ctrl-w</kbd> deletes the word before the cursor, <kbd>Ctrl-k</kbd> the rest of the line. Long lines wrap at words on screen; the message keeps them as typed.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
 Unstaging while amending removes changes from the commit being amended. Turning it off restores the previous message.

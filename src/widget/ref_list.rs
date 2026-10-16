@@ -8,6 +8,7 @@ use ratatui::{
 };
 use rustc_hash::FxHashMap;
 use semver::Version;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{spinner, AppContext},
@@ -584,16 +585,16 @@ impl StatefulWidget for RefList {
             }
             if let Some(status) = running {
                 // shortened to "↑ ∙●∙" when the name leaves no room for "Pushing ∙●∙"
-                let room = (remaining as usize).saturating_sub(row.name.chars().count() + 1);
+                let room = (remaining as usize).saturating_sub(row.name.width() + 1);
                 let label = format!("{} {}", status.label, spinner());
-                let label = if label.chars().count() <= room {
+                let label = if label.width() <= room {
                     label
                 } else {
                     format!("{} {}", status.short, spinner())
                 };
                 counts.push((label, theme.highlight_fg));
             }
-            let counts_width: usize = counts.iter().map(|(c, _)| c.chars().count() + 1).sum();
+            let counts_width: usize = counts.iter().map(|(c, _)| c.width() + 1).sum();
             let name_width = (remaining as usize).saturating_sub(counts_width);
             let (mut x, _) = buf.set_stringn(text_x, y, &row.name, name_width, style);
             for (count, fg) in counts {
