@@ -14,3 +14,4 @@ TODO:
 1. selections should all start with that purple bar, styling should be same i mean
 1. example config file
    - need to check whether this is too complicated and whether can be simplified
+1. `w` should toggle wrap on the file previews and changes also stuff
