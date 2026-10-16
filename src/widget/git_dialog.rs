@@ -156,6 +156,7 @@ enum Field {
 pub enum DialogOutcome {
     None,
     Close,
+    Quit,
     Run(GitTask),
     Error(String),
 }
@@ -488,6 +489,7 @@ impl GitDialog {
             "Upstream".into(),
             Field::text(&upstream, remote_branches),
         ));
+        dialog.editing = true;
         dialog
     }
 
@@ -497,7 +499,9 @@ impl GitDialog {
             name: name.to_string(),
             url: url.to_string(),
         };
-        Self::remote_form(" Edit remote ", "save", kind, name, url)
+        let mut dialog = Self::remote_form(" Edit remote ", "save", kind, name, url);
+        dialog.editing = true;
+        dialog
     }
 
     // A new remote, fetched once added, like lazygit.
@@ -757,7 +761,8 @@ impl GitDialog {
             return self.run();
         }
         match event {
-            Some(UserEvent::Cancel | UserEvent::Close | UserEvent::Quit) => DialogOutcome::Close,
+            Some(UserEvent::Cancel | UserEvent::Close) => DialogOutcome::Close,
+            Some(UserEvent::Quit) => DialogOutcome::Quit,
             Some(UserEvent::NavigateDown | UserEvent::SelectDown) => {
                 self.selected = (self.selected + 1) % len;
                 DialogOutcome::None

@@ -42,6 +42,7 @@ use crate::{
         user_command_height, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind,
     },
     widget::{
+        command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
@@ -150,6 +151,7 @@ struct FrameLayout {
     // the sizes of the panels, see `PanelLayout`
     panels: u64,
     dialog: bool,
+    command_log: bool,
     // the size of the keys popup
     keys_popup: Option<(u16, u16)>,
 }
@@ -195,6 +197,8 @@ pub struct AppShell {
     compare: Option<RefCompare>,
     // the keys of the focused panel shown in a popup, see `UserEvent::KeysToggle`
     keys_popup: bool,
+    // the git commands run, over everything, see `UserEvent::CommandLog`
+    command_log: Option<CommandLogState>,
 }
 
 // The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
@@ -336,6 +340,7 @@ impl<'a> App<'a> {
                 compare_request: None,
                 compare: None,
                 keys_popup: false,
+                command_log: None,
             },
         };
         shell.sidebar.set_tracking(repository.branch_tracking());
@@ -414,6 +419,10 @@ impl App<'_> {
                         }
                     }
 
+                    if self.shell.command_log.is_some() {
+                        self.handle_command_log_key(key);
+                        continue;
+                    }
                     if self.shell.dialog.is_some() {
                         self.handle_dialog_key(key);
                         continue;
@@ -637,7 +646,20 @@ impl App<'_> {
 
     // The keys of what has the focus: the popup, the sidebar or the view.
     fn local_hints(&self) -> Vec<KeyHint> {
-        if let Some(dialog) = self.visible_dialog() {
+        if self.shell.command_log.is_some() {
+            vec![
+                (
+                    vec![UserEvent::NavigateDown, UserEvent::NavigateUp],
+                    "move".into(),
+                ),
+                (
+                    vec![UserEvent::HalfPageDown, UserEvent::HalfPageUp],
+                    "scroll output".into(),
+                ),
+                hint(UserEvent::ShortCopy, "copy"),
+                hint(UserEvent::Cancel, "close"),
+            ]
+        } else if let Some(dialog) = self.visible_dialog() {
             dialog.key_hints()
         } else if self.shell.sidebar_focused {
             self.sidebar_hints()
@@ -669,14 +691,51 @@ impl App<'_> {
             hint(UserEvent::Fetch, "fetch"),
             hint(UserEvent::RefList, "switch page"),
             hint(UserEvent::Refresh, "refresh"),
+            hint(UserEvent::CommandLog, "log"),
             hint(UserEvent::HelpToggle, "help"),
         ]
+    }
+
+    // Moves in the command log, scrolls the output of the selected command, copies it, or closes.
+    fn handle_command_log_key(&mut self, key: KeyEvent) {
+        let Some(state) = self.shell.command_log.as_mut() else {
+            return;
+        };
+        let page = state.output_page();
+        match self.ctx.keybind.event_in(Scope::Global, &key) {
+            Some(UserEvent::ForceQuit | UserEvent::Quit) => self.ec.send(AppEvent::Quit),
+            Some(UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog) => {
+                self.shell.command_log = None
+            }
+            Some(UserEvent::NavigateDown | UserEvent::SelectDown) => state.select_next(),
+            Some(UserEvent::NavigateUp | UserEvent::SelectUp) => state.select_prev(),
+            Some(UserEvent::GoToTop) => state.select_first(),
+            Some(UserEvent::GoToBottom) => state.select_last(),
+            Some(UserEvent::ScrollDown) => state.scroll_output_down(1),
+            Some(UserEvent::ScrollUp) => state.scroll_output_up(1),
+            Some(UserEvent::PageDown) => state.scroll_output_down(page),
+            Some(UserEvent::PageUp) => state.scroll_output_up(page),
+            Some(UserEvent::HalfPageDown) => state.scroll_output_down(page / 2),
+            Some(UserEvent::HalfPageUp) => state.scroll_output_up(page / 2),
+            Some(UserEvent::ShortCopy | UserEvent::FullCopy) => {
+                if let Some(text) = state.selected_text() {
+                    self.ec.send(AppEvent::CopyToClipboard {
+                        name: "Command and output".into(),
+                        value: text,
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 
     // Whether the keys go to a popup, typed text or the help, which take only their own: then
     // these are in the status bar, else those of the whole app, the others in the keys popup.
     fn keys_are_local(&self) -> bool {
-        self.visible_dialog().is_some() || self.is_typing() || matches!(self.view, View::Help(_))
+        self.visible_dialog().is_some()
+            || self.shell.command_log.is_some()
+            || self.is_typing()
+            || matches!(self.view, View::Help(_))
     }
 
     // Whether text is being typed or a prompt answered, in the view or the status bar.
@@ -729,6 +788,7 @@ impl App<'_> {
             sidebar_collapsed: self.shell.sidebar_collapsed,
             panels: self.ctx.layout.borrow().version(),
             dialog: self.visible_dialog().is_some(),
+            command_log: self.shell.command_log.is_some(),
             keys_popup: (!keys.is_empty())
                 .then(|| KeysPopup::new(keys, &self.ctx.color_theme).size()),
         };
@@ -742,7 +802,11 @@ impl App<'_> {
                 PendingClear::Screen
             }
             // images of the graph would cover the popup
-            Some(last) if last.dialog != layout.dialog || last.keys_popup != layout.keys_popup => {
+            Some(last)
+                if last.dialog != layout.dialog
+                    || last.keys_popup != layout.keys_popup
+                    || last.command_log != layout.command_log =>
+            {
                 PendingClear::Screen
             }
             Some(last) if last.view == layout.view => PendingClear::None,
@@ -823,6 +887,9 @@ impl App<'_> {
         }
         if let Some(dialog) = self.visible_dialog() {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), view_area);
+        }
+        if let Some(state) = self.shell.command_log.as_mut() {
+            CommandLog::new(&self.ctx.color_theme).render(app_area, f.buffer_mut(), state);
         }
         self.render_status_line(f, status_line_area);
     }
@@ -1206,6 +1273,10 @@ impl App<'_> {
                 self.shell.keys_popup = !self.shell.keys_popup;
                 return;
             }
+            UserEvent::CommandLog => {
+                self.shell.command_log = Some(CommandLogState::new());
+                return;
+            }
             UserEvent::FocusPanel(0) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
                 if self.shell.sidebar_focused && !self.shell.sidebar_collapsed {
@@ -1541,6 +1612,7 @@ impl App<'_> {
         match dialog.handle_key(event, key) {
             DialogOutcome::None => {}
             DialogOutcome::Close => self.close_dialog(),
+            DialogOutcome::Quit => self.ec.send(AppEvent::Quit),
             DialogOutcome::Error(err) => self.ec.send(AppEvent::NotifyError(err)),
             DialogOutcome::Run(task) => {
                 self.close_dialog();

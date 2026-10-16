@@ -788,6 +788,9 @@
         "ignore": {
           "$ref": "#/definitions/keybindArray"
         },
+        "command_log": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "filter": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1085,6 +1088,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "ignore": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "command_log": {
           "$ref": "#/definitions/keybindArray"
         },
         "filter": {

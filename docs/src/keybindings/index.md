@@ -20,10 +20,13 @@ The default key bindings can be overridden.
 | <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
 | <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
 | <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
+| <kbd>@</kbd>                   | Show the command log (see below) | `command_log` |
 | <kbd>f</kbd>                   | Fetch from a remote (chosen in a popup) | `fetch` |
 | <kbd>F</kbd>                   | Fetch all remotes | `fetch_all` |
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
 | <kbd>P</kbd>                   | Push a branch to a remote (chosen in a popup) | `push` |
+
+The command log (<kbd>@</kbd>) lists the git commands the app ran that changed the repository, the newest first: whether each succeeded, when it ran, how long it took, and the command. The output of the selected one (its last 200 lines) is under them, the full story of an error the status bar shows in one line. <kbd>j/k</kbd> move, <kbd>Ctrl-d/u</kbd> scroll the output, <kbd>y</kbd> copies the command and its output, <kbd>Esc</kbd> or <kbd>@</kbd> closes it. Reading commands, like those of the refresh every few seconds, aren't logged; the last 500 commands are kept until the app quits, and a password in a URL is shown as `***`.
 
 The borders between the panels can also be dragged with the mouse. The sizes are kept until the app quits.
 With the mouse captured, the terminal selects text while Shift is held.

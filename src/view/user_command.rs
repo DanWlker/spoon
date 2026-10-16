@@ -113,6 +113,9 @@ impl<'a> UserCommandView<'a> {
             UserEvent::Refresh => {
                 self.refresh();
             }
+            UserEvent::Quit => {
+                self.tx.send(AppEvent::Quit);
+            }
             _ => {}
         }
     }

@@ -27,7 +27,9 @@ use crate::{
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
-        style::{badge, mark_selected_row, panel_block, panel_title, tree_panel_width},
+        style::{
+            badge, mark_selected_row, panel_block, panel_title, popup_title, tree_panel_width,
+        },
         text_area::TextArea,
         tree_query::{highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery},
     },
@@ -2079,7 +2081,7 @@ impl LocalChangesPanel<'_> {
 const MIN_POPUP_WIDTH: usize = 44;
 const MAX_POPUP_WIDTH: usize = 80;
 
-// A popup in the middle of `area`, with a rounded border of `color` and its title as a badge.
+// A popup in the middle of `area`, with a rounded border of `color` and its title in it.
 fn render_popup(
     title: &str,
     color: Color,
@@ -2105,7 +2107,7 @@ fn render_popup(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
         .style(Style::default().fg(theme.fg).bg(theme.bg))
-        .title(badge(format!(" {title} "), color, theme))
+        .title(popup_title(format!(" {title} "), color, theme))
         .padding(Padding::horizontal(1));
     Paragraph::new(lines).block(block).render(popup, buf);
 }

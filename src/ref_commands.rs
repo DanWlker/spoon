@@ -497,6 +497,8 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        // it opens typing the name
+        dialog.handle_key(None, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         dialog.handle_key(
             Some(UserEvent::NavigateDown),
             KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),

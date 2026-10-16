@@ -374,6 +374,7 @@ pub enum UserEvent {
     ShortCopy,
     FullCopy,
     Ignore,
+    CommandLog,
     Unknown,
 }
 
@@ -453,6 +454,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "ignore" => Ok(UserEvent::Ignore),
+                        "command_log" => Ok(UserEvent::CommandLog),
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
                         "toggle_select" => Ok(UserEvent::ToggleSelect),
                         "next_picked" => Ok(UserEvent::NextPicked),
@@ -581,6 +583,7 @@ impl UserEvent {
                 | UserEvent::FocusUp
                 | UserEvent::FocusDown
                 | UserEvent::KeysToggle
+                | UserEvent::CommandLog
                 | UserEvent::Fetch
                 | UserEvent::FetchAll
                 | UserEvent::Pull

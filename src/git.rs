@@ -1,11 +1,14 @@
 use std::{
+    collections::VecDeque,
     hash::Hash,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Local};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Result;
@@ -894,6 +897,7 @@ impl Repository {
         {
             return Ok(());
         }
+        let started = Instant::now();
         let output = git_command()
             .args([command, "--continue"])
             // keep the messages of the commits instead of opening an editor
@@ -902,6 +906,17 @@ impl Repository {
             .stdin(Stdio::null())
             .output()
             .map_err(|e| format!("failed to run git {command} --continue: {e}"))?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        log_command(
+            &[command, "--continue"],
+            output.status.success(),
+            &text,
+            started,
+        );
         if output.status.success() {
             Ok(())
         } else {
@@ -1913,6 +1928,7 @@ fn run_task_step(path: &Path, args: &[String], task: &GitTask) -> std::result::R
             cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         }
     }
+    let started = Instant::now();
     let output = cmd
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
@@ -1922,6 +1938,7 @@ fn run_task_step(path: &Path, args: &[String], task: &GitTask) -> std::result::R
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    log_command(args, output.status.success(), &text, started);
     if output.status.success() {
         Ok(())
     } else {
@@ -1985,6 +2002,7 @@ fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, 
 
 fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
     let command_error = |e: std::io::Error| format!("failed to run git {}: {e}", args.join(" "));
+    let started = Instant::now();
     let mut child = git_command()
         .args(args)
         .current_dir(path)
@@ -1993,7 +2011,7 @@ fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Resu
         } else {
             Stdio::null()
         })
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(command_error)?;
@@ -2008,11 +2026,72 @@ fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Resu
     }
 
     let output = child.wait_with_output().map_err(command_error)?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    log_command(args, output.status.success(), &text, started);
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git {} failed: {}", args[0], stderr.trim()))
+    }
+}
+
+// A git command the app ran that changes the repository, for the command log. Reads, like
+// those of the refresh every few seconds, are left out.
+#[derive(Debug, Clone)]
+pub struct LoggedCommand {
+    pub at: DateTime<Local>,
+    // "git push origin main", with passwords in URLs hidden
+    pub command: String,
+    pub ok: bool,
+    // stdout then stderr, its last lines
+    pub output: String,
+    pub duration: Duration,
+}
+
+// shortcut: kept in memory, the last ones only; written to a file if they're needed after quitting
+const COMMAND_LOG_SIZE: usize = 500;
+const COMMAND_LOG_OUTPUT_LINES: usize = 200;
+static COMMAND_LOG: Mutex<VecDeque<LoggedCommand>> = Mutex::new(VecDeque::new());
+
+fn log_command(args: &[impl AsRef<str>], ok: bool, output: &str, started: Instant) {
+    let args: Vec<String> = args.iter().map(|a| hide_password(a.as_ref())).collect();
+    let lines: Vec<&str> = output.lines().collect();
+    let output = lines[lines.len().saturating_sub(COMMAND_LOG_OUTPUT_LINES)..].join("\n");
+    let entry = LoggedCommand {
+        at: Local::now(),
+        command: format!("git {}", args.join(" ")),
+        ok,
+        output,
+        duration: started.elapsed(),
+    };
+    // a command run while another thread panicked holding it still gets logged
+    let mut log = COMMAND_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    log.push_front(entry);
+    log.truncate(COMMAND_LOG_SIZE);
+}
+
+// The commands logged, the newest first.
+pub fn command_log() -> Vec<LoggedCommand> {
+    let log = COMMAND_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    log.iter().cloned().collect()
+}
+
+// "https://user:token@host/r.git" -> "https://***@host/r.git"
+fn hide_password(arg: &str) -> String {
+    let Some(scheme_end) = arg.find("://").map(|i| i + 3) else {
+        return arg.to_string();
+    };
+    let host_end = arg[scheme_end..]
+        .find('/')
+        .map_or(arg.len(), |i| scheme_end + i);
+    match arg[scheme_end..host_end].rfind('@') {
+        Some(at) => format!("{}***{}", &arg[..scheme_end], &arg[scheme_end + at..]),
+        None => arg.to_string(),
     }
 }
 
@@ -2478,6 +2557,44 @@ mod tests {
         let status = git_output(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert_eq!(status, "?? .gitignore\n?? keep.txt\n");
         assert_eq!(gitignore_pattern("#x ", false), "/\\#x\\ ");
+    }
+
+    #[test]
+    fn test_command_log() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("a", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        // the log is shared by the tests running at the same time, so this one is found by name
+        assert!(repository
+            .stage_paths(&["no-such-file-for-the-log"])
+            .is_err());
+        let log = command_log();
+        let entry = log
+            .iter()
+            .find(|e| e.command.contains("no-such-file-for-the-log"))
+            .unwrap();
+        assert!(!entry.ok);
+        assert!(entry.command.starts_with("git add --all -- "));
+        assert!(
+            entry.output.contains("did not match any files"),
+            "{}",
+            entry.output
+        );
+
+        assert_eq!(
+            hide_password("https://me:token@github.com/a/b.git"),
+            "https://***@github.com/a/b.git"
+        );
+        assert_eq!(
+            hide_password("git@github.com:a/b.git"),
+            "git@github.com:a/b.git"
+        );
+        assert_eq!(hide_password("https://host/a@b"), "https://host/a@b");
     }
 
     #[test]

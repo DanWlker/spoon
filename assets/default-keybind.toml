@@ -135,3 +135,5 @@ short_copy = ["y"]
 full_copy = ["shift-y"]
 # add the selected file or directory to the .gitignore at the top of the repository
 ignore = ["i"]
+# show the git commands the app ran that changed the repository, with their output
+command_log = ["@"]

@@ -50,6 +50,18 @@ pub fn focused_title<'a>(
     }
 }
 
+// The title of a popup in `color`, styled like the focused title: text alone, or a badge.
+pub fn popup_title<'a>(
+    text: impl Into<std::borrow::Cow<'a, str>>,
+    color: Color,
+    theme: &ColorTheme,
+) -> Span<'a> {
+    match theme.panel_title_focused_bg {
+        Color::Reset => Span::raw(text).fg(color).bold(),
+        _ => badge(text, color, theme),
+    }
+}
+
 // Text on a colored background, like an error.
 pub fn badge<'a>(
     text: impl Into<std::borrow::Cow<'a, str>>,

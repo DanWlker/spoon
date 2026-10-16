@@ -208,6 +208,7 @@ fn build_lines(
         (vec![UserEvent::ResizeUp, UserEvent::ResizeDown], "Move the border above or under the focused panel (or drag it)".into()),
         (vec![UserEvent::FocusLeft, UserEvent::FocusRight, UserEvent::FocusUp, UserEvent::FocusDown], "Focus the panel beside, above or under the focused one".into()),
         (vec![UserEvent::KeysToggle], "Show/hide the keys of the focused panel".into()),
+        (vec![UserEvent::CommandLog], "Show the git commands run that changed the repository, with their output".into()),
         (vec![UserEvent::Fetch], "Fetch from a remote".into()),
         (vec![UserEvent::FetchAll], "Fetch all remotes".into()),
         (vec![UserEvent::Pull], "Pull a branch of a remote".into()),
