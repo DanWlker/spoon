@@ -38,6 +38,15 @@ pub fn panel_block<'a>(focused: bool, theme: &ColorTheme) -> Block<'a> {
         .border_style(Style::default().fg(fg))
 }
 
+// The marker of a folder or section that opens: nvim-tree's chevrons (Nerd Font, Octicons).
+pub fn fold_marker(open: bool) -> &'static str {
+    if open {
+        "\u{f47c} "
+    } else {
+        "\u{f460} "
+    }
+}
+
 // The title of the focused panel: a badge, or colored text alone when its background is "reset".
 pub fn focused_title<'a>(
     text: impl Into<std::borrow::Cow<'a, str>>,

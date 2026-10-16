@@ -13,7 +13,7 @@ use crate::{
     color::ColorTheme,
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{Border, Panel},
-    widget::style::{focused_title, mark_selected_row, panel_title, tree_panel_width},
+    widget::style::{focused_title, fold_marker, mark_selected_row, panel_title, tree_panel_width},
     widget::{
         diff::{
             diff_line_count, diff_lines, parse_diff, render_diff_lines, select_diff_line,
@@ -851,8 +851,7 @@ fn dir_line(
     search: Option<&str>,
     theme: &ColorTheme,
 ) -> Line<'static> {
-    let symbol = if open { "▾ " } else { "▸ " };
-    let mut spans = vec!["  ".repeat(row.depth).into(), symbol.into()];
+    let mut spans = vec!["  ".repeat(row.depth).into(), fold_marker(open).into()];
     spans.extend(highlighted_name(&row.name, search, theme));
     Line::from(spans)
 }

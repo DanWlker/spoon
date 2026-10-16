@@ -28,7 +28,8 @@ use crate::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
         style::{
-            badge, mark_selected_row, panel_block, panel_title, popup_title, tree_panel_width,
+            badge, fold_marker, mark_selected_row, panel_block, panel_title, popup_title,
+            tree_panel_width,
         },
         text_area::TextArea,
         tree_query::{highlight_match, highlighted_name, QueryChange, QueryKind, TreeQuery},
@@ -1685,11 +1686,7 @@ impl LocalChangesPanel<'_> {
                 match row.file_index {
                     None => {
                         // everything is expanded while filtering
-                        let symbol = if tree.is_open(&row.path) {
-                            "▾ "
-                        } else {
-                            "▸ "
-                        };
+                        let symbol = fold_marker(tree.is_open(&row.path));
                         let mut spans = vec![Span::raw(indent), Span::raw(symbol)];
                         spans.extend(highlighted_name(&row.name, search, &self.ctx.color_theme));
                         Line::from(spans)

@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{spinner, AppContext},
     git::{split_remote_branch, Head, Ref},
-    widget::style::{mark_selected_row, panel_block, panel_title},
+    widget::style::{fold_marker, mark_selected_row, panel_block, panel_title},
 };
 
 const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
@@ -530,10 +530,8 @@ impl StatefulWidget for RefList {
                 "● "
             } else if !row.has_children {
                 "  "
-            } else if state.opened.contains(&row.identifier) {
-                "▾ "
             } else {
-                "▸ "
+                fold_marker(state.opened.contains(&row.identifier))
             };
             let prefix = format!("{}{symbol}", "  ".repeat(row.depth));
             let symbol_style = if head {
