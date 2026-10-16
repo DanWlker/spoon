@@ -37,6 +37,9 @@ impl<'a> GitRepository<'a> {
 
     pub fn init(&self) {
         self.run(&["init", "-b", "master"], "");
+        // spoon's own git commands commit too, without the identity of the environment
+        self.run(&["config", "user.name", &self.author_name], "");
+        self.run(&["config", "user.email", &self.author_email], "");
     }
 
     pub fn commit(&self, message: &str, date: &str) {

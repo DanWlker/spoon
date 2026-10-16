@@ -301,6 +301,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "t"]);
+        git(path, &["config", "user.email", "t@t"]);
         git(path, &["commit", "-q", "--allow-empty", "-m", "c1"]);
         git(
             path,
