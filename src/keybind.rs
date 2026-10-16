@@ -20,7 +20,7 @@ const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 // ├─ local_changes
 // │  └─ local_changes_diff
 // └─ dialog                 the popups of the git commands
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
     Global,
     Graph,

@@ -214,7 +214,7 @@ pub struct AppShell {
 }
 
 // The history the graph shows, its commits only are loaded.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default, Clone)]
 enum GraphFilter {
     #[default]
     All,

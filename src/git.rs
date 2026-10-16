@@ -495,7 +495,7 @@ impl Repository {
             .map(|(i, h)| (h, i))
             .collect();
         let position = |h: &CommitHash| positions.get(h).copied().unwrap_or(usize::MAX);
-        hashes.sort_by_cached_key(|h| position(h));
+        hashes.sort_by_cached_key(position);
     }
 
     // The parents of a commit, asked of git as they may not be loaded (with `--max-count`).
@@ -1906,7 +1906,7 @@ pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
 }
 
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GitTask {
     // the arguments of the git commands, each run when the one before succeeded
     pub commands: Vec<Vec<String>>,
