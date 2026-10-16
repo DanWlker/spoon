@@ -1,4 +1,5 @@
 mod app;
+mod browse;
 mod check;
 mod color;
 mod config;

@@ -10,6 +10,7 @@ use smart_default::SmartDefault;
 use umbra::optional;
 
 use crate::{
+    browse::Service,
     color::{ColorTheme, OptionalColorTheme},
     graph::GraphImageWidthMode,
     keybind::KeyBind,
@@ -121,6 +122,19 @@ pub struct CoreConfig {
     #[garde(dive)]
     #[nested]
     pub external: CoreExternalConfig,
+    #[garde(skip)]
+    #[nested]
+    pub browser: CoreBrowserConfig,
+}
+
+// Opening the pages of commits, branches, tags and files on the web host of a remote.
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+pub struct CoreBrowserConfig {
+    // the command opening a link, given as its last argument; xdg-open, or open on macOS
+    pub open_command: Option<Vec<String>>,
+    // the kind of host of a domain the name doesn't tell: "git.company.com" = "gitlab"
+    pub services: FxHashMap<String, Service>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -443,6 +457,7 @@ pub struct GraphColorConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::browse::Links;
 
     #[test]
     fn test_config_default() {
@@ -488,6 +503,7 @@ mod tests {
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
+                browser: CoreBrowserConfig::default(),
             },
             ui: UiConfig {
                 common: UiCommonConfig {
@@ -560,6 +576,11 @@ mod tests {
             commands_10 = { name = "echo world", type = "inline", commands = ["echo", "world"], refresh = false }
             commands_3 = { name = "open vim", type = "suspend", commands = ["vim"] }
             tab_width = 2
+            [core.browser]
+            open_command = ["firefox"]
+            [core.browser.services]
+            "git.company.com" = "gitlab"
+            "code.example.org" = { commit = "{base}/c/{hash}" }
             [ui.common]
             cursor_type = { virtual = "|" }
             [ui.list]
@@ -654,6 +675,22 @@ mod tests {
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
+                browser: CoreBrowserConfig {
+                    open_command: Some(vec!["firefox".into()]),
+                    services: FxHashMap::from_iter([
+                        ("git.company.com".into(), Service::Kind("gitlab".into())),
+                        (
+                            "code.example.org".into(),
+                            Service::Links(Links {
+                                commit: Some("{base}/c/{hash}".into()),
+                                branch: None,
+                                pull_request: None,
+                                tag: None,
+                                file: None,
+                            }),
+                        ),
+                    ]),
+                },
             },
             ui: UiConfig {
                 common: UiCommonConfig {
@@ -745,6 +782,7 @@ mod tests {
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
+                browser: CoreBrowserConfig::default(),
             },
             ui: UiConfig {
                 common: UiCommonConfig {

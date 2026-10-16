@@ -27,6 +27,11 @@ tab_width = 4
 [core.external]
 clipboard = "auto"
 
+[core.browser]
+# open_command = ["xdg-open"]
+[core.browser.services]
+# "git.company.com" = "gitlab"
+
 [ui.common]
 cursor_type = "native"
 
@@ -299,6 +304,41 @@ The clipboard command to use for copy operations.
     - `clipboard = "auto"`
     - `clipboard = { custom = { commands = ["wl-copy"] } }`
     - `clipboard = { custom = { commands = ["xclip", "-selection", "clipboard"] } }`
+
+### `core.browser`
+
+<kbd>o</kbd> opens the page of the selected commit, branch, tag or file on the web host of its remote, <kbd>O</kbd> copies its link:
+
+- a commit in the graph or the details: the commit
+- a local branch in the sidebar: a new pull request from it (from its upstream branch, when it has one)
+- a remote branch, a tag or a remote in the sidebar: its page
+- a file in the Changes or Files tab of the details: the file at that commit
+
+The remote is the one of the branch (a local branch's upstream), else the upstream remote of the current branch, else `origin`, else the first. Its URL (`git@host:owner/repo.git`, `https://…`, `ssh://…`) becomes `https://host/owner/repo`. A commit not pushed yet opens a page that doesn't exist.
+
+#### `core.browser.open_command`
+
+The command opening a link, given as its last argument.
+
+- type: `array of strings`
+- default: `["xdg-open"]`, `["open"]` on macOS
+
+#### `core.browser.services`
+
+How to link to the pages of a host. GitHub, GitLab, Bitbucket and Gitea/Forgejo (Codeberg) are known by a domain naming them; others are named here by their domain (with its port when the remote URL has one):
+
+- a kind of host: `"git.company.com" = "gitlab"`, one of `github`, `gitlab`, `bitbucket` and `gitea`
+- a kind and the domain of its pages, for an ssh alias: `"github.com-work" = "github:github.com"`
+- link patterns of its own, where `{base}` is `https://host/owner/repo`, and `{hash}`, `{branch}`, `{tag}` and `{path}` what is linked to:
+
+  ```toml
+  [core.browser.services."code.example.org"]
+  commit = "{base}/commit/{hash}"
+  branch = "{base}/branch/{branch}"
+  pull_request = "{base}/new-review?from={branch}"
+  tag = "{base}/tag/{tag}"
+  file = "{base}/file/{hash}/{path}"
+  ```
 
 ### `ui.common.cursor_type`
 

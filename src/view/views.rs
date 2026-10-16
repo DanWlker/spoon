@@ -38,6 +38,7 @@ pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
         hint(UserEvent::CreateBranch, "branch"),
         hint(UserEvent::CreateTag, "tag"),
         hint(UserEvent::BranchOnly, "branch only"),
+        hint(UserEvent::OpenInBrowser, "open in browser"),
         hint(UserEvent::Revert, "revert"),
         hint(UserEvent::Reset, "reset"),
         hint(UserEvent::Search, "search"),

@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
+    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keybind::Scope,
@@ -412,6 +413,23 @@ impl<'a> DetailView<'a> {
                     return;
                 }
             }
+            // o opens the selected file at this commit on the web host, O copies its link
+            if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
+                let path = match self.tab {
+                    DetailTab::Info => None,
+                    DetailTab::Changes => self.changes_state.selected_path(),
+                    DetailTab::Files => self.files_state.selected_path(),
+                };
+                if let Some(path) = path.map(String::from) {
+                    let target = LinkTarget::File {
+                        commit: self.commit.commit_hash.as_str().into(),
+                        path,
+                    };
+                    let copy = event == UserEvent::CopyLink;
+                    self.tx.send(AppEvent::Link { target, copy });
+                    return;
+                }
+            }
             // i adds the selected file or directory to .gitignore
             if event == UserEvent::Ignore {
                 let entry = match self.tab {
@@ -479,6 +497,12 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::FullCopy => {
                 self.copy_commit_hash();
+            }
+            UserEvent::OpenInBrowser | UserEvent::CopyLink => {
+                self.tx.send(AppEvent::Link {
+                    target: LinkTarget::Commit(self.commit.commit_hash.as_str().into()),
+                    copy: event == UserEvent::CopyLink,
+                });
             }
             UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));

@@ -16,7 +16,8 @@ use serde::{
 };
 
 use crate::{
-    git::GitTask, keybind::Scope, view::RefreshViewContext, widget::commit_tabs::DetailTab,
+    browse::LinkTarget, git::GitTask, keybind::Scope, view::RefreshViewContext,
+    widget::commit_tabs::DetailTab,
 };
 
 #[derive(Debug)]
@@ -55,6 +56,11 @@ pub enum AppEvent {
     CopyToClipboard {
         name: String,
         value: String,
+    },
+    // opens the page of the target on the web host of its remote, or copies its link
+    Link {
+        target: LinkTarget,
+        copy: bool,
     },
     Refresh(RefreshViewContext),
     ClearStatusLine,
@@ -366,6 +372,8 @@ pub enum UserEvent {
     DeleteRef,
     EditRef,
     ApplyStash,
+    OpenInBrowser,
+    CopyLink,
     NextSection,
     PreviousSection,
     ApplyChange,
@@ -493,6 +501,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "edit_ref" => Ok(UserEvent::EditRef),
                         "apply_stash" => Ok(UserEvent::ApplyStash),
+                        "open_in_browser" => Ok(UserEvent::OpenInBrowser),
+                        "copy_link" => Ok(UserEvent::CopyLink),
                         "next_section" => Ok(UserEvent::NextSection),
                         "previous_section" => Ok(UserEvent::PreviousSection),
                         "apply_change" => Ok(UserEvent::ApplyChange),

@@ -165,6 +165,45 @@
           },
           "additionalProperties": false
         },
+        "browser": {
+          "type": "object",
+          "description": "Opening the pages of commits, branches, tags and files on the web host of a remote (o), or copying their links (O).",
+          "properties": {
+            "open_command": {
+              "type": "array",
+              "description": "The command opening a link, given as its last argument. Default: xdg-open, or open on macOS.",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "services": {
+              "type": "object",
+              "description": "The kind of host of a domain its name doesn't tell: \"github\", \"gitlab\", \"bitbucket\" or \"gitea\"; \"kind:domain\" for an ssh alias whose pages are on another domain; or link patterns of its own.",
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Link patterns: {base} is https://host/owner/repo; {hash}, {branch}, {tag} and {path} what is linked to.",
+                    "properties": {
+                      "commit": { "type": "string" },
+                      "branch": { "type": "string" },
+                      "pull_request": { "type": "string" },
+                      "tag": { "type": "string" },
+                      "file": { "type": "string" }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "external": {
           "type": "object",
           "description": "Configuration for external commands used by the application.",
@@ -910,6 +949,12 @@
         "branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
+        "open_in_browser": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "copy_link": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "create_ref": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1216,6 +1261,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "branch_only": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "open_in_browser": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "copy_link": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {

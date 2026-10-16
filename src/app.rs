@@ -22,12 +22,13 @@ use rustc_hash::FxHashMap;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
+    browse::{self, LinkTarget},
     color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{hint, AppEvent, EventController, KeyHint, UserEvent},
     external::{
         copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
-        validate_marked_hash, ExternalCommandParameters,
+        open_in_browser, validate_marked_hash, ExternalCommandParameters,
     },
     git::{
         refs_snapshot, run_task, Commit, CommitHash, FileChange, GitTask, Head, Ref, Repository,
@@ -572,6 +573,7 @@ impl App<'_> {
                 AppEvent::CopyToClipboard { name, value } => {
                     self.copy_to_clipboard(name, value);
                 }
+                AppEvent::Link { target, copy } => self.open_link(&target, copy),
                 AppEvent::Refresh(context) => {
                     self.cleanup_graph_images()?;
                     // the details open again on the same tab, but a comparison
@@ -1375,6 +1377,17 @@ impl App<'_> {
                 }
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
+            UserEvent::OpenInBrowser | UserEvent::CopyLink => {
+                let target = match self.shell.sidebar.selection() {
+                    RefSelection::Ref(RefSection::Branches, name) => LinkTarget::Branch(name),
+                    RefSelection::Ref(RefSection::Remotes, name) => LinkTarget::RemoteBranch(name),
+                    RefSelection::Ref(RefSection::Tags, name) => LinkTarget::Tag(name),
+                    RefSelection::Folder(RefSection::Remotes, name) => LinkTarget::Remote(name),
+                    _ => return,
+                };
+                let copy = event == UserEvent::CopyLink;
+                self.ec.send(AppEvent::Link { target, copy });
+            }
             event @ (UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
@@ -1440,6 +1453,7 @@ impl App<'_> {
             hint(UserEvent::Diff, "diff"),
             hint(UserEvent::ToggleSelect, "pick"),
             hint(UserEvent::ShortCopy, "copy name"),
+            hint(UserEvent::OpenInBrowser, "open in browser"),
         ];
         hints.extend(
             commands
@@ -2173,6 +2187,23 @@ impl App<'_> {
 
     fn error_notification(&mut self, msg: String) {
         self.shell.app_status.status_line = StatusLine::NotificationError(msg);
+    }
+
+    // Opens the page of `target` in the browser, or copies its link.
+    fn open_link(&self, target: &LinkTarget, copy: bool) {
+        let config = &self.ctx.core_config.browser;
+        let event = match browse::link(self.repository, &config.services, target) {
+            Ok(url) if copy => AppEvent::CopyToClipboard {
+                name: "Link".into(),
+                value: url,
+            },
+            Ok(url) => match open_in_browser(&url, config.open_command.as_deref()) {
+                Ok(()) => AppEvent::NotifySuccess(format!("Opened {url}")),
+                Err(err) => AppEvent::NotifyError(err),
+            },
+            Err(err) => AppEvent::NotifyError(err),
+        };
+        self.ec.send(event);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {

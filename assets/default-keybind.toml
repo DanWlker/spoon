@@ -106,7 +106,11 @@ create_branch = ["b"]
 # create a tag at the selected commit; in the refs sidebar at the selected ref
 create_tag = ["t"]
 # show only the commits of the current branch (the history of HEAD), or all of them again
-branch_only = ["o"]
+branch_only = ["shift-l"]
+# open the page of the selected commit, branch (a new pull request), remote branch, tag or file on
+# the web host of its remote; copy its link
+open_in_browser = ["o"]
+copy_link = ["shift-o"]
 
 # the refs sidebar: create a remote (on a remote, or on the remotes header while there are none), delete the selected branch
 # or tag or drop the selected stash, rename a branch or change its upstream, apply a stash

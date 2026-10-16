@@ -32,6 +32,8 @@ pub fn ref_command_applies(
         | UserEvent::ToggleSelect
         | UserEvent::DeleteRef
         | UserEvent::EditRef
+        | UserEvent::OpenInBrowser
+        | UserEvent::CopyLink
             if detached =>
         {
             false
@@ -62,6 +64,11 @@ pub fn ref_command_applies(
             _ => false,
         },
         UserEvent::ApplyStash => matches!(selection, RefSelection::Ref(Stashes, _)),
+        UserEvent::OpenInBrowser | UserEvent::CopyLink => match selection {
+            RefSelection::Ref(section, _) => *section != Stashes,
+            RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
+            _ => false,
+        },
         _ if graph => on_ref,
         _ => true,
     }

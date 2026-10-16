@@ -4,6 +4,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
+    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
     view::{graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
@@ -80,6 +81,13 @@ impl<'a> ListView<'a> {
             }
             UserEvent::FullCopy => {
                 self.copy_commit_hash();
+            }
+            UserEvent::OpenInBrowser | UserEvent::CopyLink => {
+                let hash = self.as_list_state().selected_commit_hash().as_str().into();
+                self.tx.send(AppEvent::Link {
+                    target: LinkTarget::Commit(hash),
+                    copy: event == UserEvent::CopyLink,
+                });
             }
             UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
