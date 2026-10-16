@@ -11,3 +11,4 @@ TODO:
 1. Simplify
 1. Code Review
 1. Github workflow to prepare for release
+1. See if the profile pics can be rendered alongside the name in commit graph
