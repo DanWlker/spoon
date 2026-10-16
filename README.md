@@ -2,7 +2,7 @@
 
 [![Built With Ratatui](https://img.shields.io/badge/Built_With-Ratatui-000?logo=ratatui&logoColor=fff&labelColor=000&color=fff)](https://ratatui.rs)
 
-A lazygit-style git client in your terminal, with a rich commit graph 🥄
+A lazygit-style git client in your terminal, with a rich commit graph 🥄. Aiming to approach the UX of [fork](https://git-fork.com).
 
 <img src="./img/demo.gif">
 
@@ -10,7 +10,7 @@ A lazygit-style git client in your terminal, with a rich commit graph 🥄
 
 ## About
 
-Spoon is a terminal UI for everyday git work: staging, committing, branching, rebasing, pushing and pulling, with keys and flows modeled on [lazygit](https://github.com/jesseduffield/lazygit). It is a fork of [Serie](https://github.com/lusingander/serie), and keeps Serie's commit graph, drawn as images with your terminal's image protocol, as the centerpiece.
+Spoon is a terminal UI for everyday git work: staging, committing, branching, rebasing, pushing and pulling, with keys and flows modeled on [lazygit](https://github.com/jesseduffield/lazygit) and [fork](https://git-fork.com). It is a fork of [Serie](https://github.com/lusingander/serie), and keeps Serie's commit graph, drawn as images with your terminal's image protocol, as the centerpiece.
 
 ### Features
 
@@ -142,7 +142,7 @@ Git commands confirm in a popup showing what they run:
 
 ## Credits
 
-Spoon is built on [Serie](https://github.com/lusingander/serie) by [Kyosuke Fujimoto](https://github.com/lusingander), and takes its keys and flows from [lazygit](https://github.com/jesseduffield/lazygit).
+Spoon is a fork of [Serie](https://github.com/lusingander/serie) by [Kyosuke Fujimoto](https://github.com/lusingander). It takes its keys and flows from [lazygit](https://github.com/jesseduffield/lazygit) and [fork](https://git-fork.com).
 
 ## License
 

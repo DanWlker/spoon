@@ -14,3 +14,5 @@ TODO:
 1. Git push should have `--no-verify`
 1. space should able to checkout at side tab & commit graph
 1. selections should all start with that purple bar, styling should be same i mean
+1. example config file
+   - need to check whether this is too complicated
