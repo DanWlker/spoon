@@ -709,7 +709,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
         };
         let border = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
         render_scrollbar(buf, border, count, range.start, self.focused, theme);
-        let mut lines = diff_lines(diff, theme, range.clone());
+        let mut lines = diff_lines(diff, theme, range.clone(), diff_area.width);
         let highlighted = match state.focus {
             ChangesFocus::Files => 0..0,
             focus => state.cursor.highlighted(diff, focus == ChangesFocus::Lines),
@@ -877,8 +877,8 @@ fn render_rows_with_cursor<'a>(
     let offset = (cursor + 1).saturating_sub(height);
     // on the divider beside the tree, past its padding
     let divider = Rect::new(area.right() + 1, area.y, 1, area.height);
-    // the divider keeps its color
-    render_scrollbar(buf, divider, rows.len(), offset, false, theme);
+    // the accent's while the tree has the focus, like the other panels' scrollbars
+    render_scrollbar(buf, divider, rows.len(), offset, focused, theme);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -907,6 +907,40 @@ mod tests {
 
     fn selected(tree: &FileTreeState) -> &str {
         &tree.selected().unwrap().path
+    }
+
+    #[test]
+    fn test_tree_rows_look_like_the_other_lists() {
+        use crate::{
+            test_support::ui::{assert_guides_keep_color, assert_only_bg_changed, assert_row_bg},
+            widget::file_tree::FileTree,
+        };
+
+        let theme = ColorTheme::default();
+        let mut tree = FileTreeState::new(FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]), true);
+        let draw = |tree: &FileTreeState, focused: bool| {
+            let area = Rect::new(1, 0, 20, 5);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 23, 5));
+            let line = |index: usize, row: &FileTreeRow| match row.file_index {
+                None => dir_line(row, tree.guide(index), true, None, &theme),
+                Some(_) => Line::from(vec![
+                    guide_span(tree.guide(index), &theme),
+                    row.name.clone().into(),
+                ]),
+            };
+            render_rows_with_cursor(tree, line, focused, &theme, area, &mut buf);
+            buf
+        };
+        for focused in [true, false] {
+            tree.select_path("z.rs");
+            let plain = draw(&tree, focused);
+            tree.select_path("a/x.rs");
+            let selected = draw(&tree, focused);
+            let row = Rect::new(1, 1, 20, 1);
+            assert_row_bg(&selected, row, theme.list_selected_bg);
+            assert_only_bg_changed(&plain, &selected, row);
+            assert_guides_keep_color(&selected, row, &theme);
+        }
     }
 
     #[test]

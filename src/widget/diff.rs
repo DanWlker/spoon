@@ -747,11 +747,13 @@ pub fn diff_line_count(diff: &ParsedDiff) -> usize {
 }
 
 // The lines displaying `diff` in `range` (of `diff_line_count`), only those on screen:
-// line numbers of both sides, then the colored text.
+// line numbers of both sides, then the colored text; the path of each file of a diff of several
+// as a separator line across the `panel_width`.
 pub fn diff_lines<'a>(
     diff: &'a ParsedDiff,
     theme: &ColorTheme,
     range: Range<usize>,
+    panel_width: u16,
 ) -> Vec<Line<'a>> {
     let dim = theme.status_input_transient_fg;
     if diff.raw.is_empty() {
@@ -774,12 +776,21 @@ pub fn diff_lines<'a>(
         .skip(range.start)
         .take(range.len())
         .map(|row| {
+            if row.kind == DiffRowKind::File {
+                let path = format!("{} ", row.text);
+                let fill =
+                    (panel_width as usize).saturating_sub(3 + Span::raw(path.as_str()).width());
+                return Line::from(vec![
+                    Span::raw("── ").fg(theme.divider_fg),
+                    Span::raw(path).fg(theme.detail_file_change_modify_fg),
+                    Span::raw("─".repeat(fill)).fg(theme.divider_fg),
+                ]);
+            }
             let gutter = format!("{} {} ", number(row.old), number(row.new));
             let text_color = match row.kind {
                 DiffRowKind::Hunk => theme.status_info_fg,
                 DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Context => theme.fg,
-                DiffRowKind::Meta => dim,
-                DiffRowKind::File => theme.detail_file_change_modify_fg,
+                DiffRowKind::Meta | DiffRowKind::File => dim,
             };
             let mut line = Line::from(vec![
                 Span::raw(gutter).fg(dim),
@@ -940,6 +951,29 @@ fn owned(line: Line<'_>) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_file_separators() {
+        // a diff of several files: each one's path on a line across the panel
+        let file = |name: &str| {
+            format!(
+                "diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-a\n+b\n"
+            )
+        };
+        let diff = parse_diff(&format!("{}{}", file("x.rs"), file("y.rs")));
+        let theme = ColorTheme::default();
+        let lines = diff_lines(&diff, &theme, 0..diff.rows.len(), 30);
+        let separators: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.to_string().starts_with("── "))
+            .collect();
+        assert_eq!(separators.len(), 2);
+        for line in separators {
+            assert_eq!(line.width(), 30, "{line}");
+            assert!(line.to_string().ends_with('─'));
+            assert_eq!(line.spans[0].style.fg, Some(theme.divider_fg));
+        }
+    }
 
     #[test]
     fn test_parse_diff() {

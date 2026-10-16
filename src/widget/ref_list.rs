@@ -13,8 +13,13 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{spinner, AppContext},
     git::{split_remote_branch, CommitHash, Head, Ref},
-    widget::style::{
-        fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar, scroll_to,
+    widget::{
+        file_tree::tree_guides,
+        style::{
+            fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
+            scroll_to,
+        },
+        tree_query::keep_guide_color,
     },
 };
 
@@ -536,12 +541,21 @@ impl StatefulWidget for RefList {
         // the sections stand out from the refs in them
         let root_style = item_style.add_modifier(Modifier::BOLD);
 
-        for (line, row) in state
+        // the lines of the tree, like the file trees'; a folder's fold marker and the checked-out
+        // branch's dot go in their own column
+        let guides = tree_guides(state.visible_rows.iter().map(|row| {
+            let head = row.depth > 0
+                && row.identifier[0] == TREE_BRANCH_ROOT_IDENT
+                && state.head_branch.as_deref() == row.identifier.last().map(String::as_str);
+            (row.depth, row.separator || row.has_children || head)
+        }));
+        for ((line, row), guide) in state
             .visible_rows
             .iter()
             .skip(state.offset)
             .take(height)
             .enumerate()
+            .zip(guides.iter().skip(state.offset))
         {
             let y = inner.y + line as u16;
             if row.separator {
@@ -557,18 +571,24 @@ impl StatefulWidget for RefList {
             let symbol = if head {
                 "● "
             } else if !row.has_children {
-                "  "
+                ""
             } else {
                 fold_marker(state.opened.contains(&row.identifier))
             };
-            let prefix = format!("{}{symbol}", "  ".repeat(row.depth));
+            let (guide_x, _) = buf.set_stringn(
+                inner.x,
+                y,
+                guide,
+                inner.width as usize,
+                Style::default().fg(theme.divider_fg),
+            );
             let symbol_style = if head {
                 Style::default().fg(theme.list_ref_head_fg)
             } else {
                 Style::default().fg(theme.status_input_transient_fg)
             };
-            let (text_x, _) =
-                buf.set_stringn(inner.x, y, prefix, inner.width as usize, symbol_style);
+            let room = inner.right().saturating_sub(guide_x) as usize;
+            let (text_x, _) = buf.set_stringn(guide_x, y, symbol, room, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
             let picked = !row.folder
                 && row.identifier.len() > 1
@@ -627,10 +647,17 @@ impl StatefulWidget for RefList {
                 let width = inner.right().saturating_sub(x + 1) as usize;
                 (x, _) = buf.set_stringn(x + 1, y, count, width, Style::default().fg(fg));
             }
-            // the selection only shows while moving in the sidebar
-            if self.focused && row.identifier == state.selected {
-                mark_selected_row(buf, inner, y, true, theme);
+            // picked across the row, like picked commits and files
+            if picked {
+                let picked_style = Style::default()
+                    .fg(theme.list_picked_fg)
+                    .bg(theme.list_picked_bg);
+                buf.set_style(Rect::new(inner.x, y, inner.width, 1), picked_style);
             }
+            if row.identifier == state.selected {
+                mark_selected_row(buf, inner, y, self.focused, theme);
+            }
+            keep_guide_color(buf, inner, y, guide, theme);
         }
     }
 }
@@ -853,7 +880,72 @@ fn parse_semantic_version_tag(tag: &str) -> Option<Version> {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::StatefulWidget};
+
     use super::*;
+    use crate::{
+        color::ColorTheme,
+        test_support::ui::{
+            assert_guides_keep_color, assert_only_bg_changed, assert_row_bg, find_row, panel_row,
+            test_ctx,
+        },
+    };
+
+    // Renders the sidebar, `focused` or not, into a buffer.
+    fn draw(state: &mut RefListState, focused: bool) -> Buffer {
+        let area = Rect::new(0, 0, 30, 12);
+        let mut buf = Buffer::empty(area);
+        RefList::new(test_ctx(), focused, false).render(area, &mut buf, state);
+        buf
+    }
+
+    // Moves the selection to the row named `name`, from the top.
+    fn select(state: &mut RefListState, name: &str) {
+        state.select_first();
+        for _ in 0..50 {
+            if state.selected.last().map(String::as_str) == Some(name) {
+                return;
+            }
+            state.select_next();
+        }
+        panic!("no row {name}");
+    }
+
+    #[test]
+    fn test_rows_look_like_the_other_lists() {
+        let branch = |name: &str| Ref::Branch {
+            name: name.into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let (one, two, main) = (branch("feature/one"), branch("feature/two"), branch("main"));
+        let mut state = RefListState::new(&[&one, &two, &main], &[], 0);
+        state.select_branches();
+        select(&mut state, "feature");
+        state.open_node();
+        let theme = ColorTheme::default();
+
+        for focused in [true, false] {
+            select(&mut state, "feature/two");
+            let plain = draw(&mut state, focused);
+            select(&mut state, "feature/one");
+            let selected = draw(&mut state, focused);
+            let y = find_row(&selected, "one");
+            let row = panel_row(&selected, "Refs", y, 1);
+            // the background across the row, focused or not; the text as it was
+            assert_row_bg(&selected, row, theme.list_selected_bg);
+            assert_only_bg_changed(&plain, &selected, row);
+            assert_guides_keep_color(&selected, row, &theme);
+        }
+
+        // a picked branch: across the row too
+        state.toggle_pick().unwrap();
+        select(&mut state, "main");
+        let buf = draw(&mut state, true);
+        let y = find_row(&buf, "one");
+        let row = panel_row(&buf, "Refs", y, 1);
+        assert_row_bg(&buf, row, theme.list_picked_bg);
+        assert_guides_keep_color(&buf, row, &theme);
+    }
 
     #[test]
     fn test_picks_of_one_section() {

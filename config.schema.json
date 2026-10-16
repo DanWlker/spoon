@@ -465,12 +465,12 @@
         },
         "list_selected_fg": {
           "type": "string",
-          "description": "Foreground color for a selected item in lists.",
+          "description": "Color of the line numbers of the selected lines of a diff; selected rows of lists keep their text colors.",
           "default": "#cdd6f4"
         },
         "list_selected_bg": {
           "type": "string",
-          "description": "Background color for a selected item in lists.",
+          "description": "Background of the selected row in every list and file tree, and of the line numbers of the selected lines of a diff.",
           "default": "#313244"
         },
         "list_picked_fg": {
@@ -612,16 +612,6 @@
           "type": "string",
           "description": "Background color of the part of a removed line that differs from the line replacing it.",
           "default": "#694459"
-        },
-        "ref_selected_fg": {
-          "type": "string",
-          "description": "Foreground color for a selected item in the refs list.",
-          "default": "#cdd6f4"
-        },
-        "ref_selected_bg": {
-          "type": "string",
-          "description": "Background color for a selected item in the refs list.",
-          "default": "#313244"
         },
         "help_block_title_fg": {
           "type": "string",

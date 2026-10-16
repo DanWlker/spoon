@@ -291,7 +291,7 @@ impl FileTreeState {
         } else {
             rows
         };
-        self.guides = tree_guides(&self.rows);
+        self.guides = tree_guides(self.rows.iter().map(|r| (r.depth, r.is_dir())));
         self.select_index(self.cursor);
         if let Some(path) = selected {
             self.select_path(&path);
@@ -299,24 +299,25 @@ impl FileTreeState {
     }
 }
 
-// The indent markers before each row, like nvim-tree's: a line down the entries of each
-// directory, "└" at its last one, two columns a level. A directory's fold marker goes after its
-// guide, in its own column; a file's own marker is in the guide.
-pub fn tree_guides(rows: &[FileTreeRow]) -> Vec<String> {
+// The indent markers before each row of a tree, given as its depth and whether it shows a marker
+// of its own, like nvim-tree's: a line down the entries of each directory, "└" at its last one,
+// two columns a level. A row's own marker, like a directory's fold marker, goes after its guide;
+// the guide of the other rows, like files, ends with their line.
+pub fn tree_guides(rows: impl IntoIterator<Item = (usize, bool)>) -> Vec<String> {
+    let rows: Vec<(usize, bool)> = rows.into_iter().collect();
     // whether each row is the last entry of its directory, from the end
     let mut last = vec![false; rows.len()];
     let mut seen: Vec<bool> = vec![];
-    for (i, row) in rows.iter().enumerate().rev() {
-        seen.resize(row.depth + 1, false);
-        last[i] = !seen[row.depth];
-        seen[row.depth] = true;
+    for (i, &(depth, _)) in rows.iter().enumerate().rev() {
+        seen.resize(depth + 1, false);
+        last[i] = !seen[depth];
+        seen[depth] = true;
     }
     // whether the directory at each depth has entries after it, from the start
     let mut continues: Vec<bool> = vec![];
     rows.iter()
         .zip(last)
-        .map(|(row, last)| {
-            let depth = row.depth;
+        .map(|(&(depth, own_marker), last)| {
             // the top level has no line
             let mut guide: String = (0..depth)
                 .map(|level| match continues.get(level) {
@@ -324,7 +325,7 @@ pub fn tree_guides(rows: &[FileTreeRow]) -> Vec<String> {
                     _ => "  ",
                 })
                 .collect();
-            if !row.is_dir() {
+            if !own_marker {
                 guide.push_str(match (depth, last) {
                     (0, _) => "  ",
                     (_, true) => "└ ",

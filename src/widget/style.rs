@@ -4,7 +4,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
@@ -125,24 +125,15 @@ pub fn key_hints(hints: &[(&str, &str)], theme: &ColorTheme) -> Line<'static> {
     Line::from(spans)
 }
 
-// Highlights the selected row of a list in a panel with a horizontal padding of one,
-// putting a bar in that padding. A list without the focus keeps a quieter mark.
+// Highlights the selected row of a list in a panel with a horizontal padding of one: its
+// background across the row, the text keeping its colors, like the commit list; and a bar in
+// that padding, quieter while the list doesn't have the focus.
 pub fn mark_selected_row(buf: &mut Buffer, inner: Rect, y: u16, focused: bool, theme: &ColorTheme) {
     if y < inner.top() || y >= inner.bottom() {
         return;
     }
     let row = Rect::new(inner.x, y, inner.width, 1);
-    if focused {
-        let style = Style::default()
-            .fg(theme.ref_selected_fg)
-            .bg(theme.ref_selected_bg);
-        buf.set_style(row, style);
-    } else {
-        let style = Style::default()
-            .fg(theme.highlight_fg)
-            .add_modifier(Modifier::BOLD);
-        buf.set_style(row, style);
-    }
+    buf.set_style(row, Style::default().bg(theme.list_selected_bg));
     if inner.x > 0 {
         mark_selected_bar(buf, inner.x - 1, y, focused, theme);
     }

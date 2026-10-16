@@ -1097,10 +1097,9 @@ impl CommitList<'_> {
         spans.insert(0, Span::raw(" "));
         spans.push(Span::raw(" "));
         let mut line = Line::from(spans);
+        // the selection only colors the background, the text keeps its colors
         if i == state.selected {
-            line = line
-                .bg(self.ctx.color_theme.list_selected_bg)
-                .fg(self.ctx.color_theme.list_selected_fg);
+            line = line.bg(self.ctx.color_theme.list_selected_bg);
         } else if state.is_picked(&state.commits[state.offset + i].commit.commit_hash) {
             // spans keep their own colors over the line's, so recolor each one to stay readable
             let fg = self.ctx.color_theme.list_picked_fg;
@@ -1398,6 +1397,50 @@ mod tests {
         for c in query.chars() {
             state.handle_search_input(KeyEvent::from(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn test_rows_look_like_the_other_lists() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        use crate::test_support::ui::{
+            assert_only_bg_changed, assert_row_bg, column_of, find_row, panel_row, test_ctx,
+        };
+
+        let theme = ColorTheme::default();
+        with_commit_list_state(&["first", "second"], |state| {
+            for focused in [true, false] {
+                let draw = |state: &mut CommitListState| {
+                    // as the app does before drawing
+                    state.ensure_visible_graph_uploaded();
+                    let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
+                    terminal
+                        .draw(|f| render_commit_list_panel(f, f.area(), state, test_ctx(), focused))
+                        .unwrap();
+                    terminal.backend().buffer().clone()
+                };
+                state.select_next();
+                let plain = draw(state);
+                state.select_prev();
+                let selected = draw(state);
+                let y = find_row(&selected, "first");
+                let row = panel_row(&selected, "Commits", y, 0);
+                // the graph is images, drawn over the cells: from the space before the subject
+                let x = column_of(&selected, y, "first") - 1;
+                let text = Rect::new(x, y, row.right() - x, 1);
+                assert_row_bg(&selected, text, theme.list_selected_bg);
+                assert_only_bg_changed(&plain, &selected, text);
+
+                // a picked commit: across the row too
+                state.toggle_pick();
+                state.select_next();
+                let buf = draw(state);
+                let text = Rect::new(x, y, row.right() - x, 1);
+                assert_row_bg(&buf, text, theme.list_picked_bg);
+                state.select_prev();
+                state.toggle_pick();
+            }
+        });
     }
 
     #[test]

@@ -1736,7 +1736,7 @@ impl LocalChangesPanel<'_> {
         render_panel_scrollbar(buf, area, count, offset, diff_focused, theme);
 
         let mut lines = if selected {
-            diff_lines(&state.diff, &self.ctx.color_theme, range)
+            diff_lines(&state.diff, &self.ctx.color_theme, range, inner.width)
         } else {
             let message = if state.count() == 0 {
                 "No local changes"
@@ -2045,6 +2045,69 @@ mod tests {
         // the row it stops on is loaded once, before the next key or the next frame
         state.load_stale_diff();
         assert!(state.diff.raw.contains("+c.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_rows_look_like_the_other_lists() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::color::ColorTheme;
+        use crate::test_support::ui::{
+            assert_guides_keep_color, assert_only_bg_changed, assert_row_bg, column_of, find_row,
+            panel_row, test_ctx,
+        };
+        use ratatui::buffer::Buffer;
+
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::create_dir(repo_path.join("dir"))?;
+        for file in ["dir/a.txt", "dir/b.txt", "top.txt"] {
+            fs::write(repo_path.join(file), "1\n")?;
+        }
+        git.add(&["dir/a.txt", "dir/b.txt", "top.txt"]);
+        git.commit("init", "2024-01-01");
+        for file in ["dir/a.txt", "dir/b.txt", "top.txt"] {
+            fs::write(repo_path.join(file), "2\n")?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let theme = ColorTheme::default();
+        let draw = |state: &mut LocalChangesState, focused: bool| {
+            let area = Rect::new(0, 0, 90, 16);
+            let mut buf = Buffer::empty(area);
+            LocalChangesPanel::new(test_ctx(), focused).render(area, &mut buf, state);
+            buf
+        };
+
+        for focused in [true, false] {
+            select_row(&mut state, "top.txt");
+            let plain = draw(&mut state, focused);
+            select_row(&mut state, "dir/a.txt");
+            let selected = draw(&mut state, focused);
+            let y = find_row(&selected, "M a.txt");
+            let row = panel_row(&selected, "Unstaged", y, 1);
+            assert_row_bg(&selected, row, theme.list_selected_bg);
+            assert_only_bg_changed(&plain, &selected, row);
+            assert_guides_keep_color(&selected, row, &theme);
+        }
+
+        // a picked file: across the row, its tree lines as they are
+        select_row(&mut state, "dir/b.txt");
+        state.toggle_pick();
+        select_row(&mut state, "top.txt");
+        let buf = draw(&mut state, true);
+        let y = find_row(&buf, "M b.txt");
+        let row = panel_row(&buf, "Unstaged", y, 1);
+        assert_row_bg(&buf, row, theme.list_picked_bg);
+        assert_guides_keep_color(&buf, row, &theme);
+
+        // directories in their color
+        let y = find_row(&buf, " dir ");
+        assert_eq!(
+            buf[(column_of(&buf, y, " dir ") + 1, y)].fg,
+            theme.file_tree_dir_fg
+        );
         Ok(())
     }
 

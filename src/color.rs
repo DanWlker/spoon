@@ -80,11 +80,6 @@ pub struct ColorTheme {
     #[default(RatatuiColor::Rgb(0x69, 0x44, 0x59))]
     pub diff_delete_word_bg: RatatuiColor,
 
-    #[default(TEXT)]
-    pub ref_selected_fg: RatatuiColor,
-    #[default(SURFACE0)]
-    pub ref_selected_bg: RatatuiColor,
-
     #[default(MAUVE)]
     pub help_block_title_fg: RatatuiColor,
     #[default(BLUE)]

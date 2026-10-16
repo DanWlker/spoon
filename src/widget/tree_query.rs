@@ -286,15 +286,20 @@ pub fn unhighlight_guides(
     offset: usize,
     theme: &ColorTheme,
 ) {
-    // the background of the highlight stays, the whole row shows selected
+    for (y, index) in (area.top()..area.bottom()).zip(offset..tree.rows().len()) {
+        keep_guide_color(buf, area, y, tree.guide(index), theme);
+    }
+}
+
+// Gives the indent markers of the row at `y` of `area` their color back, see `unhighlight_guides`.
+pub fn keep_guide_color(buf: &mut Buffer, area: Rect, y: u16, guide: &str, theme: &ColorTheme) {
+    // the background of a highlight stays, the whole row shows selected
     let style = Style::new()
         .fg(theme.divider_fg)
         .remove_modifier(Modifier::BOLD);
-    for (y, index) in (area.top()..area.bottom()).zip(offset..tree.rows().len()) {
-        // the markers are one column each
-        let width = (tree.guide(index).chars().count() as u16).min(area.width);
-        buf.set_style(Rect::new(area.x, y, width, 1), style);
-    }
+    // the markers are one column each
+    let width = (guide.chars().count() as u16).min(area.width);
+    buf.set_style(Rect::new(area.x, y, width, 1), style);
 }
 
 // The spans of a file or directory name, with the match of `search` highlighted.
