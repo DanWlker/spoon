@@ -71,11 +71,11 @@ We welcome pull requests, but please note that they are not guaranteed to be acc
 - Update user documentation when behavior, command-line options, configuration, or keybindings change.
 - Update `config.schema.json`, `assets/default-keybind.toml`, and existing tests when they are affected by the change.
 
-### Continuous Integration
+### Checks
 
-We use [GitHub Actions](https://github.com/lusingander/serie/blob/master/.github/workflows/build.yml) to build and test with both stable Rust and the minimum supported Rust version specified by `rust-version` in `Cargo.toml`.
+The code builds with stable Rust and the minimum supported Rust version specified by `rust-version` in `Cargo.toml`.
 
-CI also checks `derive` ordering with [cargo-sort-derives](https://github.com/lusingander/cargo-sort-derives), using the order defined in [sort-derives.toml](./sort-derives.toml). Install the same version used in CI:
+`derive` ordering is checked with [cargo-sort-derives](https://github.com/lusingander/cargo-sort-derives), using the order defined in [sort-derives.toml](./sort-derives.toml):
 
 ```sh
 cargo install --locked cargo-sort-derives

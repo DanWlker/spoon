@@ -1,6 +1,6 @@
 [package]
 name = "spoon"
-version = "0.10.0"
+version = "0.1.0"
 description = "A lazygit-style git TUI with a rich commit graph, forked from serie"
 authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>", "DanWlker"]
 homepage = "https://github.com/DanWlker/spoon"
