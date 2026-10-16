@@ -31,7 +31,8 @@ use crate::{
         validate_marked_hash, ExternalCommandParameters,
     },
     git::{
-        run_task, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head, Ref, Repository,
+        moves_head_command, run_task, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
+        Ref, Repository,
     },
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -515,24 +516,20 @@ impl App<'_> {
                     self.handle_dialog_key(key);
                     return Ok(None);
                 }
-                if let Some(help) = self.shell.help.as_mut() {
-                    match self.ctx.keybind.event_in(Scope::Global, &key) {
-                        Some(UserEvent::ForceQuit) => self.ec.send(AppEvent::Quit),
-                        Some(event) => help.handle_event(event),
-                        None => {}
+                if self.shell.help.is_some() {
+                    let event = self.ctx.keybind.event_in(Scope::Global, &key);
+                    if let (false, Some(event), Some(help)) =
+                        (self.force_quit(&key), event, self.shell.help.as_mut())
+                    {
+                        help.handle_event(event);
                     }
                     return Ok(None);
                 }
 
                 let scope = self.current_scope();
                 if self.view.is_capturing_keys() {
-                    if let Some(UserEvent::ForceQuit) =
-                        self.ctx.keybind.event_in(Scope::Global, &key)
-                    {
-                        self.ec.send(AppEvent::Quit);
-                    } else {
-                        let event = UserEvent::Unknown;
-                        self.handle_view_event(event, key);
+                    if !self.force_quit(&key) {
+                        self.handle_view_event(UserEvent::Unknown, key);
                     }
                     return Ok(None);
                 }
@@ -840,10 +837,7 @@ impl App<'_> {
             Some(event) if state.scroll_output(event) => {}
             Some(UserEvent::ShortCopy | UserEvent::FullCopy) => {
                 if let Some(text) = state.selected_text() {
-                    self.ec.send(AppEvent::CopyToClipboard {
-                        name: "Command and output".into(),
-                        value: text,
-                    });
+                    self.ec.send(AppEvent::copy("Command and output", text));
                 }
             }
             _ => {}
@@ -1252,20 +1246,8 @@ impl App<'_> {
     }
 
     fn open_user_command_inline(&mut self, user_command_number: usize) {
-        let Some(commit_list_state) = self.view.as_list_state() else {
-            return;
-        };
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
-        let result = build_external_command_parameters_and_exec_command(
-            &commit,
-            &refs,
-            commit_list_state.picked_commit_hashes(),
-            user_command_number,
-            self.shell.app_status.view_area,
-            &self.ctx,
-        );
-        match result {
-            Ok(output) => {
+        match self.with_user_command(user_command_number, exec_user_command) {
+            Some(Ok(output)) => {
                 // take list state only when the command execution is successful, to avoid losing the state when the command fails
                 let Some(commit_list_state) = self.view.take_list_state() else {
                     return;
@@ -1278,68 +1260,70 @@ impl App<'_> {
                     self.ec.sender(),
                 ));
             }
-            Err(err) => {
-                self.ec.send(AppEvent::NotifyError(err));
-            }
-        };
+            Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
+            None => {}
+        }
     }
 
     fn open_user_command_silent(&mut self, user_command_number: usize) {
-        let Some(commit_list_state) = self.view.as_list_state() else {
-            return;
-        };
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
-        let result = build_external_command_parameters_and_exec_command(
-            &commit,
-            &refs,
-            commit_list_state.picked_commit_hashes(),
-            user_command_number,
-            self.shell.app_status.view_area,
-            &self.ctx,
-        );
-        match result {
-            Ok(_) => {
-                if extract_user_command_refresh_by_number(user_command_number, &self.ctx) {
-                    self.view.refresh();
-                }
-            }
-            Err(err) => {
-                self.ec.send(AppEvent::NotifyError(err));
-            }
-        }
+        let result = self.with_user_command(user_command_number, exec_user_command);
+        self.after_user_command(user_command_number, result.map(|r| r.map(|_| ())));
     }
 
     fn open_user_command_suspend(&mut self, user_command_number: usize) {
-        let Some(commit_list_state) = self.view.as_list_state() else {
-            return;
-        };
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
-        match build_external_command_parameters(
-            &commit,
+        let result = self.with_user_command(user_command_number, |params| {
+            self.suspended(|| exec_user_command_suspend(params))
+        });
+        self.after_user_command(user_command_number, result);
+    }
+
+    // Runs `run` with the parameters of user command `number` on the selected commit, and the
+    // picked ones; None without a commit list.
+    fn with_user_command<T>(
+        &self,
+        number: usize,
+        run: impl FnOnce(ExternalCommandParameters) -> Result<T, String>,
+    ) -> Option<Result<T, String>> {
+        let commit_list_state = self.view.as_list_state()?;
+        let selected = commit_list_state.selected_commit_hash();
+        let commit = self.repository.commit(selected)?;
+        let refs: Vec<Ref> = self
+            .repository
+            .refs(selected)
+            .into_iter()
+            .cloned()
+            .collect();
+        let params = build_external_command_parameters(
+            commit,
             &refs,
             commit_list_state.picked_commit_hashes(),
-            user_command_number,
+            number,
             self.shell.app_status.view_area,
             &self.ctx,
-        ) {
-            Ok(params) => {
-                self.ec.suspend();
-                let exec_result = exec_user_command_suspend(params);
-                self.ec.resume();
+        );
+        Some(params.and_then(run))
+    }
 
-                if extract_user_command_refresh_by_number(user_command_number, &self.ctx) {
-                    self.view.refresh();
-                }
-
-                // notify after resuming and refreshing
-                if let Err(err) = exec_result {
-                    self.ec.send(AppEvent::NotifyError(err));
-                }
-            }
-            Err(err) => {
-                self.ec.send(AppEvent::NotifyError(err));
-            }
+    // After a user command run without showing its output: the repository reloaded when it is
+    // configured to, then its error, if any.
+    fn after_user_command(&mut self, number: usize, result: Option<Result<(), String>>) {
+        let Some(result) = result else {
+            return;
+        };
+        if extract_user_command_refresh_by_number(number, &self.ctx) {
+            self.view.refresh();
         }
+        if let Err(err) = result {
+            self.ec.send(AppEvent::NotifyError(err));
+        }
+    }
+
+    // Runs `run` with the terminal given back to it, like an editor or a user command.
+    fn suspended<T>(&self, run: impl FnOnce() -> T) -> T {
+        self.ec.suspend();
+        let result = run();
+        self.ec.resume();
+        result
     }
 
     fn close_user_command(&mut self) {
@@ -1349,9 +1333,7 @@ impl App<'_> {
     }
 
     fn run_external(&mut self, command: &[String]) {
-        self.ec.suspend();
-        let result = exec_interactive(command);
-        self.ec.resume();
+        let result = self.suspended(|| exec_interactive(command));
         self.shell.app_status.pending_clear = PendingClear::Screen;
         // the command may have changed files, or resolved conflicts
         self.view.refresh();
@@ -1435,12 +1417,15 @@ impl App<'_> {
 
     // Runs the user command shown for the selected commit, when the selection moved since it ran.
     fn run_user_command(&mut self) {
-        if let View::UserCommand(view) = &mut self.view {
-            view.run_selected(
-                self.repository,
-                self.shell.app_status.view_area,
-                build_external_command_parameters_and_exec_command,
-            );
+        let View::UserCommand(view) = &mut self.view else {
+            return;
+        };
+        let Some(number) = view.take_stale() else {
+            return;
+        };
+        let output = self.with_user_command(number, exec_user_command);
+        if let (View::UserCommand(view), Some(output)) = (&mut self.view, output) {
+            view.show_output(output);
         }
     }
 
@@ -1711,10 +1696,7 @@ impl App<'_> {
             RefSelection::Ref(RefSection::Tags, tag) => ("Tag Name", tag),
             _ => return,
         };
-        self.ec.send(AppEvent::CopyToClipboard {
-            name: name.into(),
-            value,
-        });
+        self.ec.send(AppEvent::copy(name, value));
     }
 
     // Opens the fetch, pull or push popup, or fetches all remotes, for the event bound to them.
@@ -1765,6 +1747,9 @@ impl App<'_> {
     }
 
     fn handle_dialog_key(&mut self, key: KeyEvent) {
+        if self.force_quit(&key) {
+            return;
+        }
         let Some(dialog) = self.shell.dialog.as_mut() else {
             return;
         };
@@ -1777,10 +1762,6 @@ impl App<'_> {
             }
             _ => self.ctx.keybind.event_in(Scope::Dialog, &key),
         };
-        if event == Some(UserEvent::ForceQuit) {
-            self.ec.send(AppEvent::Quit);
-            return;
-        }
         match dialog.handle_key(event, key) {
             DialogOutcome::None => {}
             DialogOutcome::Close => self.close_dialog(),
@@ -1794,6 +1775,16 @@ impl App<'_> {
         }
         // any other key shows the popup it acts on
         self.shell.dialog_reveal = None;
+    }
+
+    // Quits for the force-quit key, which works even where the keys are typed, like in a
+    // popup or the commit message; returns whether it was that key.
+    fn force_quit(&self, key: &KeyEvent) -> bool {
+        let quit = self.ctx.keybind.event_in(Scope::Global, key) == Some(UserEvent::ForceQuit);
+        if quit {
+            self.ec.send(AppEvent::Quit);
+        }
+        quit
     }
 
     fn close_dialog(&mut self) {
@@ -1821,7 +1812,7 @@ impl App<'_> {
         *self.ctx.running_task.borrow_mut() = Some(task.clone());
         self.repository.set_busy(Some(task.running.clone()));
         // a commit made clears the message box, see `finish_task`
-        if commits(&task) {
+        if task.commits() {
             self.shell.head_before_commit = Some(self.repository.head_commit().unwrap_or_default());
         }
         let path = self.repository.path().to_path_buf();
@@ -1940,8 +1931,7 @@ impl App<'_> {
 
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
-        if event == UserEvent::BranchOnly && self.is_diffing() {
-            self.notify_already_diffing();
+        if self.refused_while_diffing(event) {
             return;
         }
         if event == UserEvent::BranchOnly {
@@ -1951,10 +1941,6 @@ impl App<'_> {
                 _ => GraphFilter::BranchOnly,
             };
             self.view.refresh();
-            return;
-        }
-        if event == UserEvent::Diff && self.is_diffing() {
-            self.notify_already_diffing();
             return;
         }
         let Some((selected, picked)) = self.graph_selection() else {
@@ -1971,8 +1957,7 @@ impl App<'_> {
             self.handle_graph_event(event);
             return;
         }
-        if event == UserEvent::Diff && self.is_diffing() {
-            self.notify_already_diffing();
+        if self.refused_while_diffing(event) {
             return;
         }
         if event == UserEvent::Diff {
@@ -2056,9 +2041,15 @@ impl App<'_> {
             || matches!(&self.view, View::Detail(view) if view.is_comparing())
     }
 
-    fn notify_already_diffing(&self) {
-        let msg = "A diff is open, close it first (esc)".to_string();
-        self.ec.send(AppEvent::NotifyWarn(msg));
+    // Whether `event` would open another diff, or change the commits shown, while a diff is
+    // open; tells so when it does.
+    fn refused_while_diffing(&self, event: UserEvent) -> bool {
+        let refused = matches!(event, UserEvent::Diff | UserEvent::BranchOnly) && self.is_diffing();
+        if refused {
+            let msg = "A diff is open, close it first (esc)".to_string();
+            self.ec.send(AppEvent::NotifyWarn(msg));
+        }
+        refused
     }
 
     // Whether the task moves or rewrites HEAD while a rebase, merge, cherry-pick or revert waits to
@@ -2360,10 +2351,7 @@ impl App<'_> {
     // Opens `url` in the browser, or copies it.
     fn open_url(&self, url: String, copy: bool) {
         let event = if copy {
-            AppEvent::CopyToClipboard {
-                name: "Link".into(),
-                value: url,
-            }
+            AppEvent::copy("Link", url)
         } else {
             match open::that_detached(&url) {
                 Ok(()) => AppEvent::NotifySuccess(format!("Opened {url}")),
@@ -2387,29 +2375,23 @@ impl App<'_> {
 }
 
 // Whether the task commits the message of the local changes page.
-fn commits(task: &GitTask) -> bool {
-    task.commands
-        .first()
-        .is_some_and(|args| args[0] == "commit")
-        && task.input.is_some()
-}
-
-// Whether the command of `event` usually moves or rewrites HEAD, for its key not to be shown while an
+// Whether the command of `event` moves or rewrites HEAD, for its key not to be shown while an
 // operation is in progress; the commands themselves decide, see `GitTask::moves_head`.
 fn moves_head(event: UserEvent) -> bool {
-    matches!(
-        event,
-        UserEvent::Rebase
-            | UserEvent::Merge
-            | UserEvent::Checkout
-            | UserEvent::CherryPick
-            | UserEvent::Squash
-            | UserEvent::Revert
-            | UserEvent::AmendCommit
-            | UserEvent::DropCommit
-            | UserEvent::Reset
-            | UserEvent::Pull
-    )
+    // the git command each runs: squashing, dropping and amending an older commit rebase
+    let command = match event {
+        UserEvent::Rebase | UserEvent::Squash | UserEvent::DropCommit | UserEvent::AmendCommit => {
+            "rebase"
+        }
+        UserEvent::Merge => "merge",
+        UserEvent::Checkout => "checkout",
+        UserEvent::CherryPick => "cherry-pick",
+        UserEvent::Revert => "revert",
+        UserEvent::Reset => "reset",
+        UserEvent::Pull => "pull",
+        _ => return false,
+    };
+    moves_head_command(command)
 }
 
 // The path with the home directory as ~, like a shell prompt.
@@ -2483,25 +2465,6 @@ fn extract_user_command_refresh_by_number(user_command_number: usize, ctx: &AppC
     extract_user_command_by_number(user_command_number, ctx)
         .map(|c| c.refresh)
         .unwrap_or_default()
-}
-
-fn build_external_command_parameters_and_exec_command(
-    commit: &Commit,
-    refs: &[Ref],
-    picked_commit_hashes: &[CommitHash],
-    user_command_number: usize,
-    view_area: Rect,
-    ctx: &AppContext,
-) -> Result<String, String> {
-    build_external_command_parameters(
-        commit,
-        refs,
-        picked_commit_hashes,
-        user_command_number,
-        view_area,
-        ctx,
-    )
-    .and_then(exec_user_command)
 }
 
 fn build_external_command_parameters<'a>(

@@ -11,7 +11,6 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
-    git::{Commit, CommitHash, Ref, Repository},
     layout::{fit_size, Panel},
     view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
     widget::{
@@ -21,9 +20,6 @@ use crate::{
         style::{panel_block, ScrollState},
     },
 };
-
-type ExecCommandFn =
-    fn(&Commit, &[Ref], &[CommitHash], usize, Rect, &AppContext) -> Result<String, String>;
 
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
@@ -183,34 +179,19 @@ impl<'a> UserCommandView<'a> {
     }
 
     // Runs the command for the selected commit, when the selection moved since it last ran.
-    pub fn run_selected(
-        &mut self,
-        repository: &Repository,
-        view_area: Rect,
-        exec_command: ExecCommandFn,
-    ) {
-        if !std::mem::take(&mut self.stale) {
-            return;
-        }
-        let commit_list_state = self.as_list_state();
-        let selected = commit_list_state.selected_commit_hash().clone();
-        let picked_commit_hashes = commit_list_state.picked_commit_hashes().to_vec();
-        let (commit, _) = repository.commit_detail(&selected);
-        let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
-        self.user_command_output_lines = exec_command(
-            &commit,
-            &refs,
-            &picked_commit_hashes,
-            self.user_command_number,
-            view_area,
-            &self.ctx,
-        )
-        .and_then(|output| build_user_command_output_lines(output, self.ctx.clone()))
-        .unwrap_or_else(|err| {
-            self.tx.send(AppEvent::NotifyError(err));
-            vec![]
-        });
+    // The number of the user command to run again, once the selection moved to another commit.
+    pub fn take_stale(&mut self) -> Option<usize> {
+        std::mem::take(&mut self.stale).then_some(self.user_command_number)
+    }
 
+    // Shows the output of the user command run again, or tells its error.
+    pub fn show_output(&mut self, output: Result<String, String>) {
+        self.user_command_output_lines = output
+            .and_then(|output| build_user_command_output_lines(output, self.ctx.clone()))
+            .unwrap_or_else(|err| {
+                self.tx.send(AppEvent::NotifyError(err));
+                vec![]
+            });
         self.commit_user_command_state.offset = 0;
     }
 

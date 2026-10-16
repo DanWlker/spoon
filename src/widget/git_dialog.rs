@@ -1907,11 +1907,9 @@ impl Widget for GitDialogWidget<'_> {
                     .bold(),
             );
         }
-        // wrapped, a link or a command can be longer than the popup is wide
-        let summary: Vec<char> = dialog.summary().chars().collect();
-        for part in summary.chunks(MAX_CONTENT_WIDTH) {
-            let part: String = part.iter().collect();
-            lines.push(Line::raw(part).patch_style(dim).italic());
+        // wrapped at spaces, a link or a command can be longer than the popup is wide
+        for part in textwrap::wrap(&dialog.summary(), MAX_CONTENT_WIDTH) {
+            lines.push(Line::raw(part.into_owned()).patch_style(dim).italic());
         }
         lines.push(Line::raw(""));
 

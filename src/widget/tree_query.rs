@@ -1,5 +1,4 @@
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
-use once_cell::sync::Lazy;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, KeyCode, KeyEvent},
@@ -8,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use std::sync::LazyLock;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
@@ -146,9 +146,9 @@ fn prefix(kind: QueryKind) -> &'static str {
     }
 }
 
-static SMART_CASE_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(SkimMatcherV2::default);
-static CASE_SENSITIVE_MATCHER: Lazy<SkimMatcherV2> =
-    Lazy::new(|| SkimMatcherV2::default().respect_case());
+static SMART_CASE_MATCHER: LazyLock<SkimMatcherV2> = LazyLock::new(SkimMatcherV2::default);
+static CASE_SENSITIVE_MATCHER: LazyLock<SkimMatcherV2> =
+    LazyLock::new(|| SkimMatcherV2::default().respect_case());
 
 fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
     if smart_case {

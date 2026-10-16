@@ -95,6 +95,16 @@ pub enum AppEvent {
     NotifyError(String),
 }
 
+impl AppEvent {
+    // Copies `value` to the clipboard, telling it as `name`, like "Commit SHA".
+    pub fn copy(name: &str, value: impl Into<String>) -> Self {
+        AppEvent::CopyToClipboard {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Sender {
     tx: mpsc::Sender<AppEvent>,

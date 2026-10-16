@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::{
     collections::VecDeque,
     hash::Hash,
@@ -196,11 +197,9 @@ impl Repository {
     ) -> Result<Self> {
         let (mut ref_map, head) = load_refs(path);
 
-        let stashes = if revisions.is_some() {
-            vec![]
-        } else {
-            load_all_stashes(path, mailmap)
-        };
+        let (stashes, stash_ref_map) = load_stashes(path, mailmap);
+        // a graph of some refs leaves the stashes out, they stay in the sidebar
+        let stashes = if revisions.is_some() { vec![] } else { stashes };
         let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, revisions);
         if commits.is_empty() {
             return Err("no commits in the repository".into());
@@ -212,7 +211,6 @@ impl Repository {
         let (parents_map, children_map) = build_commits_maps(&commits);
         let commit_map = to_commit_map(commits);
 
-        let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
         Ok(Self::new(
@@ -355,12 +353,19 @@ impl Repository {
 
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
-        let changes = if commit.parent_commit_hashes.is_empty() {
-            get_initial_commit_additions(&self.path, commit_hash)
-        } else {
-            get_diff_summary(&self.path, commit_hash)
-        };
+        let changes = self
+            .commit_base(commit_hash)
+            .map(|base| diff_summary(&self.path, &base, commit_hash.as_str()))
+            .unwrap_or_default();
         (commit, changes)
+    }
+
+    // What a commit changed is compared to: its first parent, or the empty tree for a root commit.
+    fn commit_base(&self, commit_hash: &CommitHash) -> Option<String> {
+        match self.parents_hash(commit_hash).first() {
+            Some(parent) => Some(parent.as_str().to_string()),
+            None => empty_tree(&self.path).ok(),
+        }
     }
 
     pub fn local_changes(&self) -> LocalChanges {
@@ -452,14 +457,9 @@ impl Repository {
 
     // The diff of `paths` (all files when empty) made by a commit, against its first parent.
     pub fn commit_diff(&self, commit_hash: &CommitHash, paths: &[&str]) -> String {
-        let base = match self.parents_hash(commit_hash).first() {
-            Some(parent) => parent.as_str().to_string(),
-            None => match empty_tree(&self.path) {
-                Ok(tree) => tree,
-                Err(_) => return String::new(),
-            },
-        };
-        self.diff_between(&base, commit_hash.as_str(), paths)
+        self.commit_base(commit_hash)
+            .map(|base| self.diff_between(&base, commit_hash.as_str(), paths))
+            .unwrap_or_default()
     }
 
     // The diff of `paths` (all files when empty) from one commit to another.
@@ -599,16 +599,10 @@ impl Repository {
             let mut args = vec!["merge-tree", "--write-tree", "--name-only", "--no-messages"];
             args.extend(base.as_deref());
             args.extend([tree.as_str(), commit.as_str()]);
-            let output = git_command()
-                .args(&args)
-                .current_dir(&self.path)
-                .stdin(Stdio::null())
-                .output()
-                .ok()?;
-            let out = String::from_utf8_lossy(&output.stdout);
+            let (status, out) = git_output_with_status(&self.path, &args)?;
             let mut lines = out.lines();
             let result = lines.next()?.to_string();
-            match output.status.code() {
+            match status {
                 Some(0) => tree = result,
                 Some(1) => {
                     let files = lines.take_while(|l| !l.is_empty()).map(String::from);
@@ -1021,31 +1015,30 @@ impl Repository {
     // The commit message git prepared for the operation in progress, without its comment lines.
     // With the files git lists as conflicted, which it comments out, under "Conflicts:".
     pub fn prepared_message(&self) -> Option<String> {
-        let message = self.message_file("MERGE_MSG")?;
-        let content = std::fs::read_to_string(self.git_path("MERGE_MSG")?).ok()?;
-        let conflicts: Vec<&str> = content
+        let content = self.git_file("MERGE_MSG")?;
+        let message = without_comments(&content)?;
+        let conflicts: Vec<String> = content
             .lines()
             .skip_while(|l| l.trim() != "# Conflicts:")
             .skip(1)
             .map_while(|l| l.strip_prefix('#').map(str::trim))
             .filter(|path| !path.is_empty())
+            .map(|path| format!("  {path}"))
             .collect();
         if conflicts.is_empty() {
             return Some(message);
         }
-        let files: Vec<String> = conflicts.iter().map(|path| format!("  {path}")).collect();
-        Some(format!("{message}\n\nConflicts:\n{}", files.join("\n")))
+        Some(format!("{message}\n\nConflicts:\n{}", conflicts.join("\n")))
     }
 
     // The message `git merge --squash` prepared, until the squash is committed.
     pub fn squash_message(&self) -> Option<String> {
-        self.message_file("SQUASH_MSG")
+        without_comments(&self.git_file("SQUASH_MSG")?)
     }
 
-    fn message_file(&self, name: &str) -> Option<String> {
-        let content = std::fs::read_to_string(self.git_path(name)?).ok()?;
-        let message: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
-        Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
+    // A file of the repository's git directory, like MERGE_MSG.
+    fn git_file(&self, name: &str) -> Option<String> {
+        std::fs::read_to_string(self.git_path(name)?).ok()
     }
 
     // The command continuing a rebase, or the remaining commits of a cherry-pick or revert of
@@ -1084,6 +1077,12 @@ impl Repository {
 
 // The .gitignore line matching only `path` from the top: the characters git reads as a pattern
 // escaped, and a directory ending with "/".
+// A message git prepared, without its comment lines; None when nothing is left.
+fn without_comments(content: &str) -> Option<String> {
+    let message: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
+    Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
+}
+
 fn gitignore_pattern(path: &str, dir: bool) -> String {
     let mut pattern = String::from("/");
     for c in path.chars() {
@@ -1158,7 +1157,6 @@ fn load_all_commits(
         SortCommit::Topological => "--topo-order",
     })
     .arg(format!("--pretty={}", load_commits_format(mailmap)))
-    .arg("--date=iso-strict")
     .arg("-z"); // use NUL as a delimiter
 
     if let Some(n) = max_count {
@@ -1201,27 +1199,9 @@ fn load_all_commits(
 
     for bytes in reader.split(b'\0') {
         let bytes = bytes.unwrap();
-        let s = String::from_utf8_lossy(&bytes);
-
-        let parts: Vec<&str> = s.split('\x1f').collect();
-        if parts.len() != 10 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), s);
-        }
-
-        let commit = Commit {
-            commit_hash: parts[0].into(),
-            author_name: parts[1].into(),
-            author_email: parts[2].into(),
-            author_date: parse_iso_date(parts[3]),
-            committer_name: parts[4].into(),
-            committer_email: parts[5].into(),
-            committer_date: parse_iso_date(parts[6]),
-            subject: parts[7].into(),
-            body: parts[8].into(),
-            parent_commit_hashes: parse_parent_commit_hashes(parts[9]),
-        };
-
-        commits.push(commit);
+        let record = String::from_utf8_lossy(&bytes);
+        let fields: Vec<&str> = record.split('\x1f').collect();
+        commits.push(parse_commit(&fields));
     }
 
     process.wait().unwrap();
@@ -1229,53 +1209,50 @@ fn load_all_commits(
     commits
 }
 
-fn load_all_stashes(path: &Path, mailmap: bool) -> Vec<Commit> {
-    let mut cmd = git_command()
-        .arg("stash")
-        .arg("list")
-        .arg(format!("--pretty={}", load_commits_format(mailmap)))
-        .arg("--date=iso-strict")
-        .arg("-z") // use NUL as a delimiter
-        .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
-
-    let reader = BufReader::new(stdout);
-
+// The stashes, as commits for the graph and as refs, from one `git stash list`.
+fn load_stashes(path: &Path, mailmap: bool) -> (Vec<Commit>, RefMap) {
+    // the fields of a commit, then the stash's name like "stash@{0}"
+    let format = format!("{}%x1f%gd", load_commits_format(mailmap));
+    // the dates are strict ISO in the format: a --date option would name the stashes by date
+    let args = ["stash", "list", &format!("--pretty={format}"), "-z"];
+    let out = git_output(path, &args).unwrap_or_default();
     let mut commits = Vec::new();
-
-    for bytes in reader.split(b'\0') {
-        let bytes = bytes.unwrap();
-        let s = String::from_utf8_lossy(&bytes);
-
-        let parts: Vec<&str> = s.split('\x1f').collect();
-        if parts.len() != 10 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), s);
-        }
-
-        let commit = Commit {
-            commit_hash: parts[0].into(),
-            author_name: parts[1].into(),
-            author_email: parts[2].into(),
-            author_date: parse_iso_date(parts[3]),
-            committer_name: parts[4].into(),
-            committer_email: parts[5].into(),
-            committer_date: parse_iso_date(parts[6]),
-            subject: parts[7].into(),
-            body: parts[8].into(),
-            parent_commit_hashes: parse_parent_commit_hashes(parts[9]),
+    let mut ref_map = RefMap::default();
+    for record in out.split('\0').filter(|r| !r.is_empty()) {
+        let fields: Vec<&str> = record.split('\x1f').collect();
+        let commit = parse_commit(&fields[..COMMIT_FIELDS]);
+        let r = Ref::Stash {
+            name: fields[COMMIT_FIELDS].into(),
+            message: commit.subject.clone(),
+            target: commit.commit_hash.clone(),
         };
-
+        ref_map
+            .entry(commit.commit_hash.clone())
+            .or_default()
+            .push(r);
         commits.push(commit);
     }
+    (commits, ref_map)
+}
 
-    cmd.wait().unwrap();
+// the fields of `load_commits_format`
+const COMMIT_FIELDS: usize = 10;
 
-    commits
+// A commit from the fields of `load_commits_format`.
+fn parse_commit(fields: &[&str]) -> Commit {
+    assert_eq!(fields.len(), COMMIT_FIELDS, "unexpected fields: {fields:?}");
+    Commit {
+        commit_hash: fields[0].into(),
+        author_name: fields[1].into(),
+        author_email: fields[2].into(),
+        author_date: parse_iso_date(fields[3]),
+        committer_name: fields[4].into(),
+        committer_email: fields[5].into(),
+        committer_date: parse_iso_date(fields[6]),
+        subject: fields[7].into(),
+        body: fields[8].into(),
+        parent_commit_hashes: parse_parent_commit_hashes(fields[9]),
+    }
 }
 
 fn load_commits_format(mailmap: bool) -> String {
@@ -1284,11 +1261,11 @@ fn load_commits_format(mailmap: bool) -> String {
     // use the raw values recorded in each commit.
     let format = if mailmap {
         [
-            "%H", "%aN", "%aE", "%ad", "%cN", "%cE", "%cd", "%s", "%b", "%P",
+            "%H", "%aN", "%aE", "%aI", "%cN", "%cE", "%cI", "%s", "%b", "%P",
         ]
     } else {
         [
-            "%H", "%an", "%ae", "%ad", "%cn", "%ce", "%cd", "%s", "%b", "%P",
+            "%H", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%s", "%b", "%P",
         ]
     };
     format.join("%x1f") // use Unit Separator as a delimiter
@@ -1356,27 +1333,14 @@ fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<C
 }
 
 fn load_refs(path: &Path) -> (RefMap, Head) {
-    let mut cmd = git_command()
-        .arg("show-ref")
-        .arg("--head")
-        .arg("--dereference")
-        .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
-
-    let reader = BufReader::new(stdout);
+    // none in a repository without commits
+    let out = git_output(path, &["show-ref", "--head", "--dereference"]).unwrap_or_default();
 
     let mut ref_map = RefMap::default();
     let mut tag_map: FxHashMap<String, Ref> = FxHashMap::default();
     let mut head: Head = Head::None;
 
-    for line in reader.lines() {
-        let line = line.unwrap();
-
+    for line in out.lines() {
         let parts: Vec<&str> = line.split(' ').collect();
         if parts.len() != 2 {
             panic!("unexpected number of parts: {} [{}]", parts.len(), line);
@@ -1408,53 +1372,7 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
     ref_map.values_mut().for_each(|refs| refs.sort());
 
-    cmd.wait().unwrap();
-
     (ref_map, head)
-}
-
-fn load_stashes_as_refs(path: &Path) -> RefMap {
-    let format = ["%gd", "%H", "%s"].join("%x1f"); // use Unit Separator as a delimiter
-    let mut cmd = git_command()
-        .arg("stash")
-        .arg("list")
-        .arg(format!("--format={format}"))
-        .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
-
-    let reader = BufReader::new(stdout);
-
-    let mut ref_map = RefMap::default();
-
-    for line in reader.lines() {
-        let line = line.unwrap();
-
-        let parts: Vec<&str> = line.split('\x1f').collect();
-        if parts.len() != 3 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), line);
-        }
-
-        let name = parts[0];
-        let hash = parts[1];
-        let subject = parts[2];
-
-        let r = Ref::Stash {
-            name: name.into(),
-            message: subject.into(),
-            target: hash.into(),
-        };
-
-        ref_map.entry(hash.into()).or_default().push(r);
-    }
-
-    cmd.wait().unwrap();
-
-    ref_map
 }
 
 fn merge_ref_maps(m1: &mut RefMap, m2: RefMap) {
@@ -1520,29 +1438,10 @@ fn load_remotes(path: &Path) -> Vec<String> {
     remotes
 }
 
+// None on a detached HEAD.
 fn get_current_branch(path: &Path) -> Option<String> {
-    let mut cmd = git_command()
-        .arg("branch")
-        .arg("--show-current")
-        .current_dir(path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
-
-    let reader = BufReader::new(stdout);
-
-    let branch = if let Some(line) = reader.lines().next() {
-        line.ok()
-    } else {
-        None
-    };
-
-    cmd.wait().unwrap();
-
-    branch
+    let out = git_output(path, &["branch", "--show-current"]).ok()?;
+    Some(out.trim().to_string()).filter(|branch| !branch.is_empty())
 }
 
 #[derive(Debug, Clone)]
@@ -1563,10 +1462,6 @@ impl FileChange {
             FileChange::Move { .. } => "R",
         }
     }
-}
-
-pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
-    diff_summary(path, &format!("{}^", commit_hash.0), &commit_hash.0)
 }
 
 // The remote and the branch on it of a remote branch like "origin/main"; remote names may contain
@@ -1598,21 +1493,6 @@ fn diff_summary(path: &Path, base: &str, target: &str) -> Vec<FileChange> {
             LocalChangeStatus::Untracked | LocalChangeStatus::Conflicted => None,
         })
         .collect()
-}
-
-pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
-    // -z leaves paths as they are, git would quote those with special characters
-    git_output_bytes(
-        path,
-        &["ls-tree", "-r", "-z", "--name-only", &commit_hash.0],
-    )
-    .unwrap_or_default()
-    .split(|b| *b == b'\0')
-    .filter(|p| !p.is_empty())
-    .map(|p| FileChange::Add {
-        path: String::from_utf8_lossy(p).into_owned(),
-    })
-    .collect()
 }
 
 // The two versions of a conflicted file: what was there (ours) and what is coming in (theirs).
@@ -1828,27 +1708,21 @@ fn load_local_change_diff(
     staged: bool,
     staged_base: Option<&str>,
 ) -> String {
-    let mut cmd = git_command();
-    cmd.args(PATCH_DIFF_ARGS);
+    let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
     if staged {
-        cmd.arg("--cached")
-            .args(staged_base)
-            .arg("--")
-            .args(pathspecs(targets));
+        args.push("--cached".into());
+        args.extend(staged_base.map(String::from));
+        args.push("--".into());
+        args.extend(pathspecs(targets));
     } else if untracked {
-        cmd.arg("--no-index")
-            .arg("--")
-            .arg("/dev/null")
-            .args(targets);
+        args.extend(["--no-index", "--", "/dev/null"].map(String::from));
+        args.extend(targets.iter().map(|t| t.to_string()));
     } else {
-        cmd.arg("--").args(pathspecs(targets));
+        args.push("--".into());
+        args.extend(pathspecs(targets));
     }
-    // `--no-index` exits with 1 when the files differ, so the exit status is not checked
-    cmd.current_dir(path)
-        .stderr(Stdio::null())
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default()
+    // `--no-index` exits with 1 when the files differ
+    git_output_with_status(path, &args).map_or_else(String::new, |(_, out)| out)
 }
 
 // `git diff --name-status -z` output: a status, then one path or two for renames and copies.
@@ -2047,22 +1921,19 @@ impl GitTask {
             let resumes = args
                 .iter()
                 .any(|a| matches!(a.as_str(), "--continue" | "--abort" | "--skip" | "--quit"));
-            let command = args.first().map(String::as_str);
             !resumes
-                && matches!(
-                    command,
-                    Some(
-                        "checkout"
-                            | "switch"
-                            | "rebase"
-                            | "merge"
-                            | "cherry-pick"
-                            | "revert"
-                            | "reset"
-                            | "pull"
-                    )
-                )
+                && args
+                    .first()
+                    .is_some_and(|command| moves_head_command(command))
         })
+    }
+
+    // Whether it makes a commit with a typed message, which the message box is then cleared of.
+    pub fn commits(&self) -> bool {
+        self.commands
+            .first()
+            .is_some_and(|args| args[0] == "commit")
+            && self.input.is_some()
     }
 
     pub fn new(args: &[&str], running: String, done: String) -> Self {
@@ -2122,6 +1993,14 @@ impl GitTask {
 
 // A sed expression turning the pick of the commit (a full hash) in a rebase todo list into
 // `action`, like "squash" or "drop".
+// Whether the git command moves or rewrites HEAD, see `GitTask::moves_head`.
+pub fn moves_head_command(command: &str) -> bool {
+    matches!(
+        command,
+        "checkout" | "switch" | "rebase" | "merge" | "cherry-pick" | "revert" | "reset" | "pull"
+    )
+}
+
 pub fn todo_action(hash: &str, action: &str) -> String {
     format!("s/^(pick|p) {hash} /{action} {hash} /")
 }
@@ -2179,13 +2058,6 @@ fn run_task_step(
     let mut cmd = git_command();
     cmd.args(args)
         .current_dir(path)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .envs(task.env.iter().map(|(k, v)| (k, v)));
@@ -2197,9 +2069,32 @@ fn run_task_step(
             cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         }
     }
+    run_logged(&mut cmd, args, input)
+}
+
+// Runs `cmd`, git with `args`, writing `input` to it, and logs it in the command log; the error
+// says what went wrong in git's words when it fails.
+fn run_logged(
+    cmd: &mut Command,
+    args: &[impl AsRef<str>],
+    input: Option<&str>,
+) -> std::result::Result<(), String> {
+    let name = args.first().map_or("", |a| a.as_ref());
+    let command_error = |e: std::io::Error| {
+        let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+        format!("failed to run git {}: {e}", args.join(" "))
+    };
     let started = Instant::now();
-    let command_error = |e: std::io::Error| format!("failed to run git {}: {e}", args.join(" "));
-    let mut child = cmd.spawn().map_err(command_error)?;
+    let mut child = cmd
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(command_error)?;
     if let Some(input) = input {
         use std::io::Write;
         // closed once written, so git can finish
@@ -2215,20 +2110,17 @@ fn run_task_step(
     );
     log_command(args, output.status.success(), &text, started);
     if output.status.success() {
-        Ok(())
-    } else {
-        // a rejected ref or a conflict says what went wrong best, then the error lines,
-        // and the hints after them how to fix it
-        let lines = || text.lines().map(str::trim);
-        let error = lines()
-            .find(|line| line.starts_with("! ") || line.starts_with("CONFLICT"))
-            .or_else(|| {
-                lines().find(|line| line.starts_with("error:") || line.starts_with("fatal:"))
-            })
-            .or_else(|| lines().rfind(|line| !line.is_empty()))
-            .unwrap_or_default();
-        Err(format!("git {} failed: {error}", args[0]))
+        return Ok(());
     }
+    // a rejected ref or a conflict says what went wrong best, then the error lines, and the
+    // hints after them how to fix it
+    let lines = || text.lines().map(str::trim);
+    let error = lines()
+        .find(|line| line.starts_with("! ") || line.starts_with("CONFLICT"))
+        .or_else(|| lines().find(|line| line.starts_with("error:") || line.starts_with("fatal:")))
+        .or_else(|| lines().rfind(|line| !line.is_empty()))
+        .unwrap_or_default();
+    Err(format!("git {name} failed: {error}"))
 }
 
 // The command stashing the changes of `paths` (all changes when empty), including untracked files.
@@ -2283,6 +2175,23 @@ fn pathspecs(paths: &[&str]) -> Vec<String> {
         .collect()
 }
 
+// The output of git whatever its exit status, with the status: some commands tell with it, like
+// `merge-tree` a conflict or `diff --no-index` files that differ. None when git didn't run.
+fn git_output_with_status(
+    path: &Path,
+    args: &[impl AsRef<OsStr>],
+) -> Option<(Option<i32>, String)> {
+    let output = git_command()
+        .args(args)
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    Some((output.status.code(), out))
+}
+
 fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
     git_output_bytes(path, args).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
@@ -2303,43 +2212,7 @@ fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, 
 }
 
 fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
-    let command_error = |e: std::io::Error| format!("failed to run git {}: {e}", args.join(" "));
-    let started = Instant::now();
-    let mut child = git_command()
-        .args(args)
-        .current_dir(path)
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(command_error)?;
-
-    if let Some(input) = stdin {
-        use std::io::Write;
-        // dropped at the end of this block, closing stdin so git can finish
-        let mut child_stdin = child.stdin.take().expect("failed to open stdin");
-        child_stdin
-            .write_all(input.as_bytes())
-            .map_err(command_error)?;
-    }
-
-    let output = child.wait_with_output().map_err(command_error)?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    log_command(args, output.status.success(), &text, started);
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("git {} failed: {}", args[0], stderr.trim()))
-    }
+    run_logged(git_command().args(args).current_dir(path), args, stdin)
 }
 
 // A git command the app ran that changes the repository, for the command log. Reads, like
@@ -2400,6 +2273,39 @@ fn hide_password(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_load_root_commit_and_stash() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("a.txt"), "a\n").unwrap();
+        repo.add(&["a.txt"]);
+        repo.commit("first", "2024-01-01");
+        repo.stash("2024-01-02");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+
+        // the root commit's files, against the empty tree like its diff
+        let root = repository.head_commit().unwrap();
+        let (_, changes) = repository.commit_detail(&root);
+        assert!(matches!(&changes[..], [FileChange::Add { path }] if path == "a.txt"));
+
+        // the stash from one `git stash list`: a commit of the graph and a ref
+        let stash = repository
+            .all_refs()
+            .into_iter()
+            .find(|r| matches!(r, Ref::Stash { .. }))
+            .expect("the stash ref")
+            .clone();
+        let Ref::Stash { name, target, .. } = &stash else {
+            unreachable!()
+        };
+        assert_eq!(name, "stash@{0}");
+        assert!(repository.commit(target).is_some());
+    }
 
     #[test]
     fn test_parse_name_status() {

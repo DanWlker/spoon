@@ -10,7 +10,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthChar;
 
 use crate::{color::ColorTheme, widget::style::key_hints};
 
@@ -71,7 +70,11 @@ pub fn render_notices(
         } else {
             (theme.status_warn_fg, " \u{f071} Warning ")
         };
-        let mut lines = wrap(&notice.message, text_width);
+        // broken at spaces where it can, else anywhere
+        let mut lines: Vec<String> = textwrap::wrap(&notice.message, text_width.max(1))
+            .into_iter()
+            .map(String::from)
+            .collect();
         if lines.len() > MAX_LINES {
             lines.truncate(MAX_LINES);
             lines[MAX_LINES - 1].push('…');
@@ -106,40 +109,6 @@ pub fn render_notices(
     }
 }
 
-// The lines of `text` in `width` columns, broken at spaces where it can, else anywhere.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    for paragraph in text.lines() {
-        let mut line = String::new();
-        let mut line_width = 0;
-        for word in paragraph.split(' ') {
-            let word_width: usize = word.chars().filter_map(|c| c.width()).sum();
-            let space = usize::from(!line.is_empty());
-            if line_width + space + word_width > width && !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
-                line_width = 0;
-            }
-            if !line.is_empty() {
-                line.push(' ');
-                line_width += 1;
-            }
-            // a word longer than the line goes on over the next ones
-            for c in word.chars() {
-                let w = c.width().unwrap_or(0);
-                if line_width + w > width {
-                    lines.push(std::mem::take(&mut line));
-                    line_width = 0;
-                }
-                line.push(c);
-                line_width += w;
-            }
-        }
-        lines.push(line);
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,13 +133,6 @@ mod tests {
         // the key to dismiss them, like the hints of the status bar
         let y = find_row(&buf, "x dismiss");
         assert_key_style(&buf, column_of(&buf, y, "x dismiss"), y, &theme);
-    }
-
-    #[test]
-    fn test_wrap() {
-        assert_eq!(wrap("a bb ccc", 4), ["a bb", "ccc"]);
-        assert_eq!(wrap("abcdefg", 3), ["abc", "def", "g"]);
-        assert_eq!(wrap("one\ntwo", 10), ["one", "two"]);
     }
 
     #[test]

@@ -75,10 +75,7 @@ pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
     } else {
         ("Commit SHA (short)", hash.as_short_hash())
     };
-    AppEvent::CopyToClipboard {
-        name: name.into(),
-        value: value.into(),
-    }
+    AppEvent::copy(name, value)
 }
 
 // The status line showing what is `typed`, with its cursor, and `metadata` on the right, like
@@ -96,10 +93,7 @@ pub fn status_input(typed: Option<(String, u16)>, metadata: String) -> AppEvent 
 
 // Copies the selected part of a diff or a file: a line, or else a hunk.
 pub fn copy_selection(text: String, line: bool) -> AppEvent {
-    AppEvent::CopyToClipboard {
-        name: if line { "Line" } else { "Hunk" }.into(),
-        value: text,
-    }
+    AppEvent::copy(if line { "Line" } else { "Hunk" }, text)
 }
 
 // Copies the path of a file in the repository: relative to its top, or absolute with `full`.
@@ -109,15 +103,9 @@ pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
     if full {
         let absolute = repository.path().join(relative);
         let absolute = absolute.to_string_lossy();
-        AppEvent::CopyToClipboard {
-            name: "Absolute Path".into(),
-            value: absolute.trim_end_matches("/.").to_string(),
-        }
+        AppEvent::copy("Absolute Path", absolute.trim_end_matches("/."))
     } else {
-        AppEvent::CopyToClipboard {
-            name: "Path".into(),
-            value: relative.to_string(),
-        }
+        AppEvent::copy("Path", relative)
     }
 }
 
