@@ -1,4 +1,9 @@
-use std::ops::Range;
+use std::{
+    ops::Range,
+    time::{Duration, Instant},
+};
+
+use similar::DiffTag;
 
 use ratatui::{
     buffer::Buffer,
@@ -434,7 +439,7 @@ pub struct DiffRow {
     pub new: Option<usize>,
     pub text: String,
     // the bytes of `text` that differ from the line it replaces, or that replaces it
-    pub emphasis: Option<Range<usize>>,
+    pub emphasis: Vec<Range<usize>>,
 }
 
 impl DiffRow {
@@ -448,7 +453,7 @@ impl DiffRow {
             old: None,
             new: None,
             text: text.to_string(),
-            emphasis: None,
+            emphasis: Vec::new(),
         }
     }
 }
@@ -520,7 +525,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: None,
                     new: Some(new - 1),
                     text,
-                    emphasis: None,
+                    emphasis: Vec::new(),
                 }
             }
             Some(b'-') => {
@@ -530,7 +535,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: Some(old - 1),
                     new: None,
                     text,
-                    emphasis: None,
+                    emphasis: Vec::new(),
                 }
             }
             Some(b'\\') => DiffRow::without_numbers(DiffRowKind::Meta, line),
@@ -542,7 +547,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: Some(old - 1),
                     new: Some(new - 1),
                     text,
-                    emphasis: None,
+                    emphasis: Vec::new(),
                 }
             }
         };
@@ -560,9 +565,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 }
 
 // Pairs the removed lines of a change with the added lines after them, in order, and marks in
-// each pair what differs between them.
-// shortcut: the differing part is what lies between a common start and end, like a single edit;
-// several edits in a line mark everything from the first to the last, use a word diff if it bothers.
+// each pair the words that differ between them.
 fn emphasize_changes(rows: &mut [DiffRow]) {
     // the rows of `kind` from `from` on, past "\ No newline" notes, and where they end
     let run = |rows: &[DiffRow], from: usize, kind: DiffRowKind| {
@@ -587,34 +590,91 @@ fn emphasize_changes(rows: &mut [DiffRow]) {
         }
         let (added, end) = run(rows, end, DiffRowKind::Added);
         for (&r, &a) in removed.iter().zip(&added) {
-            if let Some((old, new)) = changed_ranges(&rows[r].text, &rows[a].text) {
-                rows[r].emphasis = Some(old);
-                rows[a].emphasis = Some(new);
-            }
+            (rows[r].emphasis, rows[a].emphasis) = changed_ranges(&rows[r].text, &rows[a].text);
         }
         i = end;
     }
 }
 
-// The bytes of `old` and `new` between their common start and end; None when those are only
-// blanks, the lines being different altogether.
-fn changed_ranges(old: &str, new: &str) -> Option<(Range<usize>, Range<usize>)> {
-    let common = |a: &mut dyn Iterator<Item = char>, b: &mut dyn Iterator<Item = char>| -> usize {
-        a.zip(b)
-            .take_while(|(x, y)| x == y)
-            .map(|(c, _)| c.len_utf8())
-            .sum()
-    };
-    let start = common(&mut old.chars(), &mut new.chars());
-    let end = common(
-        &mut old[start..].chars().rev(),
-        &mut new[start..].chars().rev(),
+// The bytes of the words of `old` and `new` that differ, by a diff of their words; none when the
+// lines are mostly different, or alike only in blanks.
+fn changed_ranges(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let (old_words, new_words) = (words(old), words(new));
+    // a line too long to diff in time is marked coarser, not waited for
+    let deadline = Instant::now() + Duration::from_millis(10);
+    let ops = similar::capture_diff_slices_deadline(
+        similar::Algorithm::Myers,
+        &old_words,
+        &new_words,
+        Some(deadline),
     );
-    let kept = format!("{}{}", &old[..start], &old[old.len() - end..]);
-    if kept.trim().is_empty() {
-        return None;
+    // how alike the lines are, by their text past blanks: unmarked under two fifths
+    let text = |words: &[&str]| -> usize { words.iter().map(|w| w.trim().len()).sum() };
+    let kept: usize = ops
+        .iter()
+        .map(|op| op.as_tag_tuple())
+        .filter(|(tag, ..)| *tag == DiffTag::Equal)
+        .map(|(_, words, _)| text(&old_words[words]))
+        .sum();
+    if 5 * kept < text(&old_words) + text(&new_words) {
+        return (Vec::new(), Vec::new());
     }
-    Some((start..old.len() - end, start..new.len() - end))
+    // the byte where each word starts, and the end of the line
+    let starts = |words: &[&str]| -> Vec<usize> {
+        std::iter::once(0)
+            .chain(words.iter().scan(0, |at, w| {
+                *at += w.len();
+                Some(*at)
+            }))
+            .collect()
+    };
+    let (old_starts, new_starts) = (starts(&old_words), starts(&new_words));
+    let mut marks = (Vec::new(), Vec::new());
+    for op in &ops {
+        let (tag, o, n) = op.as_tag_tuple();
+        if tag != DiffTag::Equal {
+            push_range(&mut marks.0, old_starts[o.start]..old_starts[o.end]);
+            push_range(&mut marks.1, new_starts[n.start]..new_starts[n.end]);
+        }
+    }
+    marks
+}
+
+// Adds `range` to `ranges`, joined to the last when they touch.
+fn push_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
+    match ranges.last_mut() {
+        _ if range.is_empty() => {}
+        Some(last) if last.end == range.start => last.end = range.end,
+        _ => ranges.push(range),
+    }
+}
+
+// The words of `line`: runs of letters, digits and "_", runs of blanks, and each other character.
+fn words(line: &str) -> Vec<&str> {
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            0
+        } else if c.is_whitespace() {
+            1
+        } else {
+            2
+        }
+    };
+    let mut words = Vec::new();
+    let mut start = 0;
+    let mut prev = None;
+    for (i, c) in line.char_indices() {
+        let kind = class(c);
+        if i > 0 && (prev != Some(kind) || kind == 2) {
+            words.push(&line[start..i]);
+            start = i;
+        }
+        prev = Some(kind);
+    }
+    if !line.is_empty() {
+        words.push(&line[start..]);
+    }
+    words
 }
 
 // "@@ -12,3 +12,4 @@ fn foo()" -> (12, 3, 12): old start, old count and new start
@@ -702,8 +762,8 @@ pub fn diff_lines<'a>(
                 DiffRowKind::Removed => (theme.diff_delete_bg, theme.diff_delete_word_bg),
                 _ => return line,
             };
-            if let Some(range) = row.emphasis.clone() {
-                patch_range(&mut line, range, Style::default().bg(word_bg));
+            for range in &row.emphasis {
+                patch_range(&mut line, range.clone(), Style::default().bg(word_bg));
             }
             line.bg(bg)
         })
@@ -747,7 +807,7 @@ mod tests {
             old,
             new,
             text: text.into(),
-            emphasis: None,
+            emphasis: Vec::new(),
         };
         let expected_rows = vec![
             row(DiffRowKind::Hunk, None, None, "@@ -3,2 +3,2 @@ ctx"),
@@ -773,11 +833,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn test_emphasis_of_changed_lines() {
         let diff = parse_diff(concat!(
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n",
-            "-let x = 1;\n-  foo\n+let x = 42;\n+  bar\n",
-            " ctx\n-é1\n\\ No newline at end of file\n+é2\n",
+            "-call(a, 1, x);\n-  foo\n+call(b, 1, yz);\n+  bar\n",
+            " ctx\n-é = 1\n\\ No newline at end of file\n+é = 2\n",
+            "-one two three four\n+uno dos three cuatro\n",
         ));
         let emphasis: Vec<_> = diff
             .rows
@@ -787,16 +849,20 @@ mod tests {
         assert_eq!(
             emphasis[1..],
             [
-                ("let x = 1;", Some(8..9)),
+                // each edit apart
+                ("call(a, 1, x);", vec![5..6, 11..12]),
                 // nothing but the indentation in common
-                ("  foo", None),
-                ("let x = 42;", Some(8..10)),
-                ("  bar", None),
-                ("ctx", None),
-                // past the note, by characters
-                ("é1", Some(2..3)),
-                ("\\ No newline at end of file", None),
-                ("é2", Some(2..3)),
+                ("  foo", vec![]),
+                ("call(b, 1, yz);", vec![5..6, 11..13]),
+                ("  bar", vec![]),
+                ("ctx", vec![]),
+                // past the note, in bytes
+                ("é = 1", vec![5..6]),
+                ("\\ No newline at end of file", vec![]),
+                ("é = 2", vec![5..6]),
+                // mostly different
+                ("one two three four", vec![]),
+                ("uno dos three cuatro", vec![]),
             ]
         );
     }

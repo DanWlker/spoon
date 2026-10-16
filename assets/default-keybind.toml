@@ -114,6 +114,9 @@ create_ref = ["a"]
 delete_ref = ["d"]
 edit_ref = ["e"]
 apply_stash = ["space"]
+# go to the next/previous section of the refs sidebar (branches, remotes, tags, stashes), opening it
+next_section = ["]"]
+previous_section = ["["]
 
 # in the popups of the git commands: toggle the selected checkbox or go to the next option (dialog_toggle),
 # type into the selected text field (dialog_edit), or either, toggling when the field can be toggled (dialog_activate)

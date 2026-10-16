@@ -315,6 +315,7 @@ fn build_lines(
         (vec![UserEvent::GoToBottom], "Go to bottom".into()),
         (vec![UserEvent::NavigateRight], "Open node".into()),
         (vec![UserEvent::NavigateLeft], "Close node".into()),
+        (vec![UserEvent::NextSection, UserEvent::PreviousSection], "Go to the next/previous section, opening it".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
         (vec![UserEvent::CreateBranch], "New branch from the selected branch, remote branch or tag".into()),

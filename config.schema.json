@@ -922,6 +922,12 @@
         "apply_stash": {
           "$ref": "#/definitions/keybindArray"
         },
+        "next_section": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_section": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "apply_change": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1222,6 +1228,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "apply_stash": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "next_section": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_section": {
           "$ref": "#/definitions/keybindArray"
         },
         "apply_change": {

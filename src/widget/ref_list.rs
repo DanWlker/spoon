@@ -275,7 +275,36 @@ impl RefListState {
     }
 
     pub fn select_branches(&mut self) {
-        self.selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
+        self.open_section(TREE_BRANCH_ROOT_IDENT.into());
+    }
+
+    // Selects and opens the section after (or before) the selected one, round; from the local
+    // changes the first (or last).
+    pub fn select_section(&mut self, forward: bool) {
+        let sections: Vec<&String> = self
+            .roots
+            .iter()
+            .map(|root| &root.identifier)
+            .filter(|id| RefSection::of_root(id).is_some())
+            .collect();
+        let n = sections.len();
+        if n == 0 {
+            return;
+        }
+        let next = match (
+            sections.iter().position(|s| **s == self.selected[0]),
+            forward,
+        ) {
+            (Some(i), true) => (i + 1) % n,
+            (Some(i), false) => (i + n - 1) % n,
+            (None, true) => 0,
+            (None, false) => n - 1,
+        };
+        self.open_section(sections[next].clone());
+    }
+
+    fn open_section(&mut self, identifier: String) {
+        self.selected = vec![identifier];
         self.opened.insert(self.selected.clone());
         self.rebuild_visible_rows();
         self.scroll_to_selection = true;
@@ -919,5 +948,30 @@ mod tests {
             state.selection(),
             RefSelection::Folder(RefSection::Remotes, name) if name == "new"
         ));
+    }
+
+    #[test]
+    fn test_select_section() {
+        let mut state = RefListState::new(&[], &["origin".to_string()], 0);
+        let section = |state: &RefListState| match state.selection() {
+            RefSelection::Section(section) => Some(section),
+            _ => None,
+        };
+        // from the local changes, round both ways
+        state.select_section(false);
+        assert_eq!(section(&state), Some(RefSection::Stashes));
+        state.select_section(true);
+        assert_eq!(section(&state), Some(RefSection::Branches));
+        state.select_section(true);
+        assert_eq!(section(&state), Some(RefSection::Remotes));
+        // opened: the remote under it is the next row
+        state.select_next();
+        assert!(matches!(
+            state.selection(),
+            RefSelection::Folder(RefSection::Remotes, name) if name == "origin"
+        ));
+        // from a row in the section
+        state.select_section(false);
+        assert_eq!(section(&state), Some(RefSection::Branches));
     }
 }

@@ -366,6 +366,8 @@ pub enum UserEvent {
     DeleteRef,
     EditRef,
     ApplyStash,
+    NextSection,
+    PreviousSection,
     ApplyChange,
     SearchTargetToggle,
     IgnoreCaseToggle,
@@ -491,6 +493,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "edit_ref" => Ok(UserEvent::EditRef),
                         "apply_stash" => Ok(UserEvent::ApplyStash),
+                        "next_section" => Ok(UserEvent::NextSection),
+                        "previous_section" => Ok(UserEvent::PreviousSection),
                         "apply_change" => Ok(UserEvent::ApplyChange),
                         // renamed
                         "mark_toggle" => Ok(UserEvent::ToggleSelect),
@@ -547,7 +551,9 @@ impl UserEvent {
             UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
-            | UserEvent::ApplyStash => Scope::Sidebar,
+            | UserEvent::ApplyStash
+            | UserEvent::NextSection
+            | UserEvent::PreviousSection => Scope::Sidebar,
             UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ApplyChange => Scope::Details,
             UserEvent::ToggleStage
             | UserEvent::Stash

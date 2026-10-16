@@ -205,6 +205,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
+| <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
 | <kbd>a</kbd>                                       | New remote (on a remote; on the remotes header while there are none) | `create_ref` |

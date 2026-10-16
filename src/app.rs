@@ -1347,6 +1347,12 @@ impl App<'_> {
                 self.shell.sidebar.close_node();
                 self.show_sidebar_selection();
             }
+            UserEvent::NextSection | UserEvent::PreviousSection => {
+                self.shell
+                    .sidebar
+                    .select_section(event == UserEvent::NextSection);
+                self.show_sidebar_selection();
+            }
             UserEvent::Confirm => {
                 // a folder opens or closes, else back to the page showing what is selected
                 if !self.shell.sidebar.toggle_node() {
