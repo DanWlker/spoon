@@ -63,7 +63,7 @@ $ cd <your git repository>
 $ spoon
 ```
 
-It opens on the local changes page; <kbd>Tab</kbd> switches to the commit graph and back.
+It opens on the commit graph; <kbd>Tab</kbd> switches to the local changes page and back.
 
 ### Options
 

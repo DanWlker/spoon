@@ -407,8 +407,8 @@ impl<'a> App<'a> {
 
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
-            // start on the local changes page; the graph is one Tab away
-            None => app.show_local_changes_page(),
+            // start on the graph, as Tab from the local changes page shows it
+            None => app.shell.sidebar.select_branches(),
         }
         app.open_ref_compare();
 
