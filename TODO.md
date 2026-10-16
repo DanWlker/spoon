@@ -8,10 +8,10 @@ TODO:
    - How: git's log -- <path> with --parents, so git rewrites each commit's parents to the nearest commit that also touched the path, and the lines stay connected.
    - Risk: squash, drop, amend and rebase from the graph look up commit parents in the loaded graph, and in a filtered graph those parents are wrong. Running them there could rewrite the wrong commits. I'd turn them off while the filter is on, with a message.
    - Not planned: following renames (--follow). git only supports it for a single file, and it doesn't work well with a graph.
-1. Event changes like pushing pulling stuff should show notification on top right, can dismiss with `,`, styling similar to snacks notification
+1. Errors should show notification at top right, can dismiss with `,`, styling similar to snacks notification, red colored, only show for errors / warn stuff
 1. Git push should have `--no-verify` option
 1. `space` should able to checkout at side tab & commit graph
 1. selections should all start with that purple bar, styling should be same i mean
+1. `w` should toggle wrap on the file previews and changes also stuff
 1. example config file
    - need to check whether this is too complicated and whether can be simplified
-1. `w` should toggle wrap on the file previews and changes also stuff
