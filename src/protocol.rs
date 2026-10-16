@@ -740,13 +740,18 @@ mod tests {
         // the kitty image shows its first 6 cells, of the pixels in them
         let (buf, images) = covered(ImageProtocol::Kitty, true);
         let symbol = buf[(0, 0)].symbol();
-        assert!(symbol.contains(&kitty_display_control(6, 1, 24)), "{symbol}");
+        assert!(
+            symbol.contains(&kitty_display_control(6, 1, 24)),
+            "{symbol}"
+        );
         assert_eq!(buf[(6, 0)].symbol(), "│");
         assert_eq!(images, [(0, 0, 6)]);
 
         // uncovered, it stays whole
         let (buf, images) = covered(ImageProtocol::Kitty, false);
-        assert!(buf[(0, 0)].symbol().contains(&kitty_display_control(10, 1, 40)));
+        assert!(buf[(0, 0)]
+            .symbol()
+            .contains(&kitty_display_control(10, 1, 40)));
         assert_eq!(images, [(0, 0, 10)]);
 
         // an iTerm2 image can't be cut, it is left out
@@ -759,7 +764,10 @@ mod tests {
         assert_eq!(images, [(0, 0, 10)]);
 
         // what is written is read back, wide images too
-        let symbol = format!("\x1b_G{}m=0;AAAA\x1b\\", kitty_display_control(3, 1, 70_000));
+        let symbol = format!(
+            "\x1b_G{}m=0;AAAA\x1b\\",
+            kitty_display_control(3, 1, 70_000)
+        );
         assert_eq!(kitty_param(&symbol, "w"), Some(70_000));
         assert_eq!(image_width(&symbol), Some(3));
     }

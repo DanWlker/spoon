@@ -12,7 +12,10 @@ use ratatui::{
 use crate::{
     app::AppContext,
     git::{Commit, FileChange, Head, Ref},
-    widget::commit_list::{ref_color, ref_label_style},
+    widget::{
+        commit_list::{ref_color, ref_label_style},
+        style::change_color,
+    },
 };
 
 #[derive(Debug, Default)]
@@ -266,29 +269,15 @@ impl CommitDetail<'_> {
     fn changes_lines(&self) -> Vec<Line<'_>> {
         self.changes
             .iter()
-            .map(|c| match c {
-                FileChange::Add { path } => Line::from(vec![
-                    "A".fg(self.ctx.color_theme.detail_file_change_add_fg),
-                    " ".into(),
-                    path.into(),
-                ]),
-                FileChange::Modify { path } => Line::from(vec![
-                    "M".fg(self.ctx.color_theme.detail_file_change_modify_fg),
-                    " ".into(),
-                    path.into(),
-                ]),
-                FileChange::Delete { path } => Line::from(vec![
-                    "D".fg(self.ctx.color_theme.detail_file_change_delete_fg),
-                    " ".into(),
-                    path.into(),
-                ]),
-                FileChange::Move { from, to } => Line::from(vec![
-                    "R".fg(self.ctx.color_theme.detail_file_change_move_fg),
-                    " ".into(),
-                    from.into(),
-                    " -> ".into(),
-                    to.into(),
-                ]),
+            .map(|c| {
+                let (symbol, path) = match c {
+                    FileChange::Add { path } => ("A", path.into()),
+                    FileChange::Modify { path } => ("M", path.into()),
+                    FileChange::Delete { path } => ("D", path.into()),
+                    FileChange::Move { from, to } => ("R", format!("{from} -> {to}")),
+                };
+                let color = change_color(symbol, &self.ctx.color_theme);
+                Line::from(vec![symbol.fg(color), " ".into(), path.into()])
             })
             .collect()
     }

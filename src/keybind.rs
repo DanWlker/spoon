@@ -134,12 +134,11 @@ impl Scope {
     }
 }
 
-// Single keys, and sequences of keys pressed one after another (written separated by spaces, like
-// "] m"), of each scope.
+// The keys of each scope: single keys, and sequences of keys pressed one after another (written
+// separated by spaces, like "] m").
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeyBind {
-    keys: FxHashMap<(Scope, KeyEvent), UserEvent>,
-    sequences: FxHashMap<(Scope, Vec<KeyEvent>), UserEvent>,
+    bindings: FxHashMap<(Scope, Vec<KeyEvent>), UserEvent>,
 }
 
 // How the keys pressed so far match the bindings.
@@ -168,17 +167,17 @@ impl KeyBind {
     // key did in it and in the scopes inside it, sequences starting with it included; a sequence
     // replaces the key it starts with in its scope.
     fn merge(&mut self, patch: KeyBind) {
-        for (scope, key_event) in patch.keys.keys() {
-            self.keys
-                .retain(|(s, key), _| !(s.within(*scope) && key == key_event));
-            self.sequences
-                .retain(|(s, keys), _| !(s.within(*scope) && keys[0] == *key_event));
+        for (scope, keys) in patch.bindings.keys() {
+            match keys.as_slice() {
+                [key] => self
+                    .bindings
+                    .retain(|(s, bound), _| !(s.within(*scope) && bound[0] == *key)),
+                sequence => {
+                    self.bindings.remove(&(*scope, vec![sequence[0]]));
+                }
+            }
         }
-        for (scope, key_events) in patch.sequences.keys() {
-            self.keys.remove(&(*scope, key_events[0]));
-        }
-        self.keys.extend(patch.keys);
-        self.sequences.extend(patch.sequences);
+        self.bindings.extend(patch.bindings);
     }
 
     // What the keys pressed so far do in `scope`: from it outward, the first scope binding them (or
@@ -188,20 +187,18 @@ impl KeyBind {
         let mut passes: Vec<Scope> = vec![];
         let allowed = |event: &UserEvent, passes: &[Scope]| passes.iter().all(|s| s.passes(*event));
         for s in scope.chain() {
-            if let [key] = pressed {
-                if let Some(event) = self.keys.get(&(s, *key)).filter(|e| allowed(e, &passes)) {
-                    return SequenceMatch::Complete(*event);
-                }
-            }
             if let Some(event) = self
-                .sequences
+                .bindings
                 .get(&(s, pressed.to_vec()))
                 .filter(|e| allowed(e, &passes))
             {
                 return SequenceMatch::Complete(*event);
             }
-            if self.sequences.iter().any(|((seq_scope, keys), event)| {
-                *seq_scope == s && keys.starts_with(pressed) && allowed(event, &passes)
+            if self.bindings.iter().any(|((bound_scope, keys), event)| {
+                *bound_scope == s
+                    && keys.len() > pressed.len()
+                    && keys.starts_with(pressed)
+                    && allowed(event, &passes)
             }) {
                 return SequenceMatch::Partial;
             }
@@ -218,29 +215,18 @@ impl KeyBind {
         }
     }
 
-    // The keys bound to the event, in any scope.
+    // The keys bound to the event, in any scope: single keys first.
     pub fn keys_for_event(&self, user_event: UserEvent) -> Vec<String> {
-        let mut key_events: Vec<KeyEvent> = self
-            .keys
-            .iter()
-            .filter(|(_, ue)| **ue == user_event)
-            .map(|((_, ke), _)| *ke)
-            .collect();
-        key_events.sort_by(|a, b| a.partial_cmp(b).unwrap()); // At least when used for key bindings, it doesn't seem to be a problem...
-        key_events.dedup();
-        let mut sequences: Vec<&Vec<KeyEvent>> = self
-            .sequences
+        let mut keys: Vec<&Vec<KeyEvent>> = self
+            .bindings
             .iter()
             .filter(|(_, ue)| **ue == user_event)
             .map(|((_, keys), _)| keys)
             .collect();
-        sequences.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        sequences.dedup();
-        key_events
-            .into_iter()
-            .map(key_event_to_string)
-            .chain(sequences.into_iter().map(|keys| keys_to_string(keys)))
-            .collect()
+        // KeyEvent orders partially, but key bindings compare
+        keys.sort_by(|a, b| a.len().cmp(&b.len()).then(a.partial_cmp(b).unwrap()));
+        keys.dedup();
+        keys.into_iter().map(|keys| keys_to_string(keys)).collect()
     }
 
     // The keys of the events for a hint, like "j/k" or "space/e": the shortest of each, with names
@@ -265,7 +251,7 @@ impl KeyBind {
 
     pub fn user_command_event_numbers(&self) -> Vec<usize> {
         let mut numbers: Vec<usize> = self
-            .keys
+            .bindings
             .values()
             .filter_map(|ue| {
                 if let UserEvent::UserCommand(n) = ue {
@@ -292,17 +278,12 @@ impl KeyBind {
                 .split_whitespace()
                 .map(parse_key_event)
                 .collect();
-            let mut keys = match parsed {
+            let keys = match parsed {
                 Ok(keys) if !keys.is_empty() => keys,
                 Ok(_) => return Err(format!("{key_event_str:?} is not a valid key event: empty")),
                 Err(s) => return Err(format!("{key_event_str:?} is not a valid key event: {s:}")),
             };
-            let conflict = if keys.len() == 1 {
-                self.keys.insert((scope, keys.remove(0)), user_event)
-            } else {
-                self.sequences.insert((scope, keys), user_event)
-            };
-            if let Some(conflict_user_event) = conflict {
+            if let Some(conflict_user_event) = self.bindings.insert((scope, keys), user_event) {
                 return Err(format!(
                     "{key_event_str:?} map to multiple events in {}: {user_event:?}, {conflict_user_event:?}",
                     scope.name()
@@ -364,8 +345,12 @@ impl<'de> Deserialize<'de> for KeyBind {
 
         // a key starting a sequence cannot do something on its own in the same scope, the sequence
         // could not be typed; a scope inside it can bind the key, the sequence is typed elsewhere
-        for ((scope, keys), user_event) in &keybind.sequences {
-            if let Some(key_user_event) = keybind.keys.get(&(*scope, keys[0])) {
+        let sequences = keybind
+            .bindings
+            .iter()
+            .filter(|((_, keys), _)| keys.len() > 1);
+        for ((scope, keys), user_event) in sequences {
+            if let Some(key_user_event) = keybind.bindings.get(&(*scope, vec![keys[0]])) {
                 let msg = format!(
                     "{} starts the key sequence of {user_event:?}, so it cannot map to {key_user_event:?}",
                     key_event_to_string(keys[0])
@@ -551,7 +536,7 @@ mod tests {
         "#;
 
         let expected = KeyBind {
-            keys: [
+            bindings: [
                 (
                     (Scope::Global, KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty())),
                     UserEvent::NavigateUp,
@@ -602,8 +587,8 @@ mod tests {
                 ),
             ]
             .into_iter()
+            .map(|((scope, key), event)| ((scope, vec![key]), event))
             .collect(),
-            sequences: FxHashMap::default(),
         };
 
         let actual: KeyBind = toml::from_str(toml).unwrap();
@@ -620,7 +605,7 @@ mod tests {
             go_to_parent = ["p"]
         "#;
         let keybind: KeyBind = toml::from_str(toml).unwrap();
-        assert_eq!(keybind.keys.len(), 1);
+        assert_eq!(keybind.bindings.len(), 1);
         assert_eq!(
             keybind.event_in(Scope::CommitList, &key('m')),
             Some(UserEvent::ToggleSelect)

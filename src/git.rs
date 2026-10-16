@@ -510,17 +510,36 @@ impl Repository {
         out.trim().parse().map_err(|e| format!("{e}"))
     }
 
-    // Whether the local branch is merged into HEAD, or into its upstream.
-    pub fn is_merged(&self, branch: &str) -> bool {
-        let merged_into = |target: &str| {
-            let branch = format!("refs/heads/{branch}");
+    // The local branches of `names` merged neither into HEAD nor into their upstream.
+    pub fn unmerged_branches(&self, names: &[String]) -> Vec<String> {
+        // those merged into HEAD, in one call; the full names, a tag may have the same short one
+        let args = [
+            "for-each-ref",
+            "--merged=HEAD",
+            "--format=%(refname)",
+            "refs/heads",
+        ];
+        let merged = git_output(&self.path, &args).unwrap_or_default();
+        let merged: FxHashSet<&str> = merged
+            .lines()
+            .filter_map(|r| r.strip_prefix("refs/heads/"))
+            .collect();
+        let merged_into_upstream = |branch: &str| {
+            let (branch, upstream) = (
+                format!("refs/heads/{branch}"),
+                format!("{branch}@{{upstream}}"),
+            );
             git_output(
                 &self.path,
-                &["merge-base", "--is-ancestor", &branch, target],
+                &["merge-base", "--is-ancestor", &branch, &upstream],
             )
             .is_ok()
         };
-        merged_into("HEAD") || merged_into(&format!("{branch}@{{upstream}}"))
+        names
+            .iter()
+            .filter(|name| !merged.contains(name.as_str()) && !merged_into_upstream(name))
+            .cloned()
+            .collect()
     }
 
     // The commit a revision like "HEAD~2" names.
@@ -1024,18 +1043,24 @@ fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, Option<PathBuf>)> 
         "--is-inside-work-tree",
         "--is-bare-repository",
         "--absolute-git-dir",
+        "--show-toplevel",
     ];
-    let output = git_output(path, &args).map_err(|_| not_a_repository())?;
+    // out of a working tree, git fails on the last one but still answers the others
+    let output = git_command()
+        .args(args)
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| not_a_repository())?;
+    let output = String::from_utf8_lossy(&output.stdout);
     let mut lines = output.lines();
     let (inside_work_tree, bare) = (lines.next() == Some("true"), lines.next() == Some("true"));
     let git_dir = lines.next().map(PathBuf::from);
     if !inside_work_tree && !bare {
         return Err(not_a_repository());
     }
-    let toplevel = inside_work_tree
-        .then(|| git_output(path, &["rev-parse", "--show-toplevel"]).ok())
-        .flatten()
-        .map(|p| PathBuf::from(p.trim()));
+    let toplevel = lines.next().filter(|_| inside_work_tree).map(PathBuf::from);
     Ok((toplevel, git_dir))
 }
 
@@ -2333,6 +2358,46 @@ mod tests {
             Some(refs_snapshot(path).unwrap().as_str())
         );
         assert!(repository.branch_tracking().is_empty());
+    }
+
+    #[test]
+    fn test_unmerged_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = crate::test_support::git::GitRepository::new(path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        // behind HEAD, ahead of it, and ahead of it but pushed to its upstream (a local branch here)
+        git_output(path, &["branch", "behind"]).unwrap();
+        git.commit("second", "2024-01-02");
+        git.checkout_b("ahead");
+        git.commit("third", "2024-01-03");
+        git_output(path, &["branch", "pushed"]).unwrap();
+        git_output(path, &["branch", "--set-upstream-to=ahead", "pushed"]).unwrap();
+        git.checkout("master");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+
+        let names = ["behind", "ahead", "pushed"].map(String::from);
+        assert_eq!(repository.unmerged_branches(&names), ["ahead"]);
+    }
+
+    #[test]
+    fn test_locate_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap();
+        git_output(&path, &["init", "-q", "wt"]).unwrap();
+        git_output(&path, &["init", "-q", "--bare", "bare.git"]).unwrap();
+        std::fs::create_dir(path.join("wt/sub")).unwrap();
+
+        // from a subdirectory: the top of the working tree, and the git directory
+        let (toplevel, git_dir) = locate_repository(&path.join("wt/sub")).unwrap();
+        assert_eq!(toplevel, Some(path.join("wt")));
+        assert_eq!(git_dir, Some(path.join("wt/.git")));
+        // a bare repository has no working tree
+        let (toplevel, git_dir) = locate_repository(&path.join("bare.git")).unwrap();
+        assert_eq!(toplevel, None);
+        assert_eq!(git_dir, Some(path.join("bare.git")));
+        assert!(locate_repository(&path).is_err());
     }
 
     #[test]

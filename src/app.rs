@@ -207,6 +207,8 @@ pub struct AppShell {
     notices: Vec<Notice>,
     // HEAD while committing the message of the local changes page, see `finish_task`
     head_before_commit: Option<CommitHash>,
+    // a rebase, merge, cherry-pick or revert waits to be finished, as last loaded, for the key hints
+    operation_shown: bool,
 }
 
 // The history the graph shows, its commits only are loaded.
@@ -365,8 +367,10 @@ impl<'a> App<'a> {
                 help: None,
                 notices: Vec::new(),
                 head_before_commit: None,
+                operation_shown: false,
             },
         };
+        shell.operation_shown = repository.operation_in_progress().is_some();
         // a git command still running from before the reload
         let running = ctx
             .running_task
@@ -756,7 +760,7 @@ impl App<'_> {
     // The keys and what they do, without those waiting for the operation in progress (their
     // commands are refused, see `blocked_by_operation`) or bound to no key.
     fn shown_keys(&self, mut hints: Vec<KeyHint>) -> Vec<(String, String)> {
-        if self.repository.operation_in_progress().is_some() {
+        if self.shell.operation_shown {
             hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
         }
         hints
@@ -839,6 +843,8 @@ impl App<'_> {
         };
         if self.shell.command_log.is_some() {
             self.handle_command_log_event(Some(event));
+        } else if let Some(help) = self.shell.help.as_mut() {
+            help.handle_event(event);
         } else if self.shell.dialog.is_none() && !self.is_typing() {
             let code = if down { KeyCode::Down } else { KeyCode::Up };
             self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
@@ -1004,10 +1010,10 @@ impl App<'_> {
             .fg(theme.status_bar_fg)
             .bg(theme.status_bar_bg);
         let (page, color) = match &self.view {
+            _ if self.shell.help.is_some() => ("HELP", theme.highlight_fg),
             _ if self.shell.sidebar_focused => ("REFS", theme.status_warn_fg),
             View::LocalChanges(_) => ("CHANGES", theme.status_success_fg),
             View::UserCommand(_) => ("COMMAND", theme.highlight_fg),
-            _ if self.shell.help.is_some() => ("HELP", theme.highlight_fg),
             _ => ("GRAPH", theme.accent_fg),
         };
         // the first letter only on narrow terminals, like the mode
@@ -2154,6 +2160,7 @@ impl App<'_> {
     // Reloads the local changes, made outside the app too: the page showing them, else their
     // count in the sidebar.
     fn reload_files(&mut self, files: FilesSnapshot) {
+        self.shell.operation_shown = self.repository.operation_in_progress().is_some();
         match &mut self.view {
             View::LocalChanges(view) => view.reload_files(files),
             _ => {

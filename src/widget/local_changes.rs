@@ -29,7 +29,7 @@ use crate::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
         style::{
-            badge, mark_selected_row, panel_block, panel_title, popup_title,
+            badge, change_color, mark_selected_row, panel_block, panel_title, popup_title,
             render_panel_scrollbar, render_popup, tree_panel_width,
         },
         text_area::TextArea,
@@ -1061,8 +1061,7 @@ impl<'a> LocalChangesState<'a> {
             Focus::Commit { editing: false } | Focus::Conflict => self.focus = Focus::Files,
             Focus::Lines => {
                 self.focus = Focus::Hunks;
-                // the cursor may have moved into another hunk
-                self.cursor.select_hunk(&self.diff, self.cursor.hunk);
+                self.cursor.leave_lines(&self.diff);
             }
             Focus::Hunks => self.focus_files(),
             Focus::Files => return false,
@@ -1353,11 +1352,12 @@ impl<'a> LocalChangesState<'a> {
 
     // The selected line as in the file, or the selected hunk as a diff, to copy.
     pub fn selected_diff_text(&self) -> Option<String> {
-        match self.focus {
-            Focus::Lines => self.cursor.line_text(&self.diff),
-            Focus::Hunks => self.cursor.selected_hunk(&self.diff).map(DiffHunk::text),
-            _ => None,
-        }
+        matches!(self.focus, Focus::Hunks | Focus::Lines)
+            .then(|| {
+                self.cursor
+                    .selected_text(&self.diff, self.focus == Focus::Lines)
+            })
+            .flatten()
     }
 
     fn apply_query_change(&mut self, change: QueryChange) {
@@ -2077,29 +2077,13 @@ impl LocalChangesPanel<'_> {
     }
 
     fn status_color(&self, status: LocalChangeStatus) -> Color {
-        let theme = &self.ctx.color_theme;
-        match status {
-            LocalChangeStatus::Added | LocalChangeStatus::Untracked => {
-                theme.detail_file_change_add_fg
-            }
-            LocalChangeStatus::Modified | LocalChangeStatus::TypeChanged => {
-                theme.detail_file_change_modify_fg
-            }
-            LocalChangeStatus::Deleted | LocalChangeStatus::Conflicted => {
-                theme.detail_file_change_delete_fg
-            }
-            LocalChangeStatus::Renamed | LocalChangeStatus::Copied => {
-                theme.detail_file_change_move_fg
-            }
-        }
+        change_color(status_symbol(status), &self.ctx.color_theme)
     }
 }
 
-// The width of the text of a popup; longer lines are cut.
-// the text width of its popups
+// The width of the text of its popups; longer lines are cut.
 const POPUP_WIDTHS: (usize, usize) = (44, 80);
 
-// A popup in the middle of `area`, with a rounded border of `color` and its title in it.
 fn status_symbol(status: LocalChangeStatus) -> &'static str {
     match status {
         LocalChangeStatus::Added => "A",

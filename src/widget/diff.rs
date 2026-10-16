@@ -1,5 +1,6 @@
 use std::{
     ops::Range,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -30,11 +31,14 @@ pub const CONVERTED_DIFF: &str =
 
 #[derive(Debug, Default)]
 pub struct ParsedDiff {
-    pub raw: String,
+    // shared with the hunks, which are parts of it
+    pub raw: Rc<str>,
     pub rows: Vec<DiffRow>,
     pub hunks: Vec<DiffHunk>,
     // hunks were left out, of files diffed as text converted from them
     pub converted: bool,
+    // the width of the line numbers, of the biggest one
+    number_width: usize,
 }
 
 impl ParsedDiff {
@@ -56,21 +60,40 @@ impl ParsedDiff {
 pub struct DiffHunk {
     // rows of `ParsedDiff::rows` displaying this hunk, the header first and then one row per line
     pub rows: Range<usize>,
+    // the whole diff, the parts below are byte ranges of
+    diff: Rc<str>,
     // the "diff --git" line up to the "+++" line of the file this hunk belongs to
-    file_header: String,
+    file_header: Range<usize>,
     // the "@@ ... @@" line
-    header: String,
+    header: Range<usize>,
     old_start: usize,
     old_count: usize,
-    // with their original line endings, the patch has to match the file byte for byte
-    lines: Vec<String>,
+    // its lines, with their original line endings, the patch has to match the file byte for byte
+    body: Range<usize>,
 }
 
 impl DiffHunk {
+    fn file_header(&self) -> &str {
+        &self.diff[self.file_header.clone()]
+    }
+
+    fn header(&self) -> &str {
+        &self.diff[self.header.clone()]
+    }
+
+    fn body(&self) -> &str {
+        &self.diff[self.body.clone()]
+    }
+
+    // Its lines, with their line endings.
+    fn lines(&self) -> std::str::SplitInclusive<'_, char> {
+        self.body().split_inclusive('\n')
+    }
+
     // The path of its file, the old one of a deleted file.
     fn path(&self) -> &str {
         let path_of = |prefix: &str| {
-            self.file_header
+            self.file_header()
                 .lines()
                 .find_map(|l| l.strip_prefix(prefix))
         };
@@ -82,13 +105,13 @@ impl DiffHunk {
     // The file header and this hunk alone, ready for `git apply`.
     pub fn patch(&self) -> String {
         // no counts of 0 on the other side: the hunk creates or deletes the file as it is
-        let file_header = partial_file_header(&self.file_header, 0, 0);
-        format!("{file_header}{}{}", self.header, self.lines.concat())
+        let file_header = partial_file_header(self.file_header(), 0, 0);
+        format!("{file_header}{}{}", self.header(), self.body())
     }
 
     // The hunk as shown in a diff: its header and lines.
     pub fn text(&self) -> String {
-        format!("{}{}", self.header, self.lines.concat())
+        format!("{}{}", self.header(), self.body())
     }
 
     // A patch applying only the `selected` lines (indices into `lines`) of this hunk.
@@ -102,7 +125,7 @@ impl DiffHunk {
         // whether the previous line was kept, so its "\ No newline at end of file" marker is too
         let mut kept = true;
 
-        for (i, line) in self.lines.iter().enumerate() {
+        for (i, line) in self.lines().enumerate() {
             let as_context = || format!(" {}", &line[1..]);
             match line.as_bytes().first() {
                 Some(b'+') if selected.contains(&i) => {
@@ -161,7 +184,7 @@ impl DiffHunk {
             start(old_count),
             start(new_count)
         );
-        let file_header = partial_file_header(&self.file_header, old_count, new_count);
+        let file_header = partial_file_header(self.file_header(), old_count, new_count);
         format!("{file_header}{header}{body}")
     }
 }
@@ -410,9 +433,25 @@ impl DiffCursor {
     pub fn line_text(&self, diff: &ParsedDiff) -> Option<String> {
         let hunk = self.selected_hunk(diff)?;
         let line = hunk
-            .lines
-            .get(self.line.checked_sub(hunk.rows.start + 1)?)?;
+            .lines()
+            .nth(self.line.checked_sub(hunk.rows.start + 1)?)?;
         Some(line.get(1..)?.trim_end_matches(['\n', '\r']).to_string())
+    }
+
+    // The selected line as in the file while selecting `lines`, else the selected hunk as a diff,
+    // to copy.
+    pub fn selected_text(&self, diff: &ParsedDiff, lines: bool) -> Option<String> {
+        if lines {
+            self.line_text(diff)
+        } else {
+            self.selected_hunk(diff).map(DiffHunk::text)
+        }
+    }
+
+    // Back from selecting lines to selecting the hunk of the selected line, which may not be the
+    // one selected before.
+    pub fn leave_lines(&mut self, diff: &ParsedDiff) {
+        self.select_hunk(diff, self.hunk);
     }
 }
 
@@ -461,6 +500,7 @@ impl DiffRow {
 }
 
 pub fn parse_diff(diff: &str) -> ParsedDiff {
+    let shared: Rc<str> = Rc::from(diff);
     // file names are only shown when the diff spans multiple files (a directory)
     let multiple_files = diff
         .lines()
@@ -470,7 +510,8 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 
     let mut rows = Vec::new();
     let mut hunks = Vec::new();
-    let mut file_header = String::new();
+    // where the header of the current file starts, it goes on up to its first hunk
+    let mut file_start = 0;
     // the hunk being read, its `rows` end is set once it is finished
     let mut current: Option<DiffHunk> = None;
     let (mut old, mut new) = (0, 0);
@@ -484,12 +525,15 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         };
 
     // keep the original line endings, the patch has to match the file byte for byte
+    let mut end = 0;
     for raw in diff.split_inclusive('\n') {
+        let start = end;
+        end += raw.len();
         let line = raw.trim_end_matches(['\n', '\r']);
 
         if line.starts_with("diff --git ") {
             finish_hunk(&mut current, &mut hunks, rows.len());
-            file_header = raw.to_string();
+            file_start = start;
             if multiple_files {
                 let path = line.rsplit(" b/").next().unwrap_or(line);
                 rows.push(DiffRow::without_numbers(DiffRowKind::File, path));
@@ -500,23 +544,29 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
             if let Some((o, old_count, n)) = parse_hunk_header(line) {
                 finish_hunk(&mut current, &mut hunks, rows.len());
                 (old, new) = (o, n);
+                // a hunk after another ends its file's header where the first one starts
+                let file_end = hunks
+                    .last()
+                    .filter(|h: &&DiffHunk| h.file_header.start == file_start)
+                    .map_or(start, |h| h.file_header.end);
                 current = Some(DiffHunk {
                     rows: rows.len()..rows.len(),
-                    file_header: file_header.clone(),
-                    header: raw.to_string(),
+                    diff: shared.clone(),
+                    file_header: file_start..file_end,
+                    header: start..end,
                     old_start: o,
                     old_count,
-                    lines: Vec::new(),
+                    body: end..end,
                 });
                 rows.push(DiffRow::without_numbers(DiffRowKind::Hunk, line));
                 continue;
             }
         }
         let Some(hunk) = current.as_mut() else {
-            file_header.push_str(raw);
+            // part of the file header
             continue;
         };
-        hunk.lines.push(raw.to_string());
+        hunk.body.end = end;
 
         let text = line.get(1..).unwrap_or_default().replace('\t', "    ");
         let row = match line.as_bytes().first() {
@@ -557,12 +607,19 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
     }
     finish_hunk(&mut current, &mut hunks, rows.len());
     emphasize_changes(&mut rows);
+    let max_line = rows
+        .iter()
+        .flat_map(|r| [r.old, r.new])
+        .flatten()
+        .max()
+        .unwrap_or(0);
 
     ParsedDiff {
-        raw: diff.to_string(),
+        raw: shared,
         rows,
         hunks,
         converted: false,
+        number_width: max_line.to_string().len().max(3),
     }
 }
 
@@ -731,14 +788,7 @@ pub fn diff_lines<'a>(
             .collect();
     }
 
-    let max_line = diff
-        .rows
-        .iter()
-        .flat_map(|r| [r.old, r.new])
-        .flatten()
-        .max()
-        .unwrap_or(0);
-    let width = max_line.to_string().len().max(3);
+    let width = diff.number_width;
     let number = |n: Option<usize>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
 
     diff.rows
@@ -948,6 +998,20 @@ mod tests {
             (4..7, format!("{header}{hunk2}")),
         ];
         assert_eq!(hunks, expected_hunks);
+        // two files: each hunk with its own file's header
+        let other = "diff --git a/g b/g\n--- a/g\n+++ b/g\n";
+        let hunk3 = "@@ -1 +1 @@\n-x\n+y\n";
+        let diff = parse_diff(&format!("{header}{hunk1}{hunk2}{other}{hunk3}"));
+        let patches: Vec<String> = diff.hunks.iter().map(DiffHunk::patch).collect();
+        assert_eq!(
+            patches,
+            [
+                format!("{header}{hunk1}"),
+                format!("{header}{hunk2}"),
+                format!("{other}{hunk3}")
+            ]
+        );
+        assert_eq!(diff.hunks[2].text(), hunk3);
     }
 
     #[test]

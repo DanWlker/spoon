@@ -108,6 +108,17 @@ pub fn render_popup(
     inner
 }
 
+// The color of a file's change, by its letter like git's: "A" added, "?" untracked, "D" deleted,
+// "U" conflicted, "R" renamed, "C" copied, else modified.
+pub fn change_color(symbol: &str, theme: &ColorTheme) -> Color {
+    match symbol {
+        "A" | "?" => theme.detail_file_change_add_fg,
+        "D" | "U" => theme.detail_file_change_delete_fg,
+        "R" | "C" => theme.detail_file_change_move_fg,
+        _ => theme.detail_file_change_modify_fg,
+    }
+}
+
 // The width of the file tree beside a diff or a preview, in `width`.
 pub fn tree_panel_width(width: u16) -> u16 {
     (width / 3).clamp(20, 50).min(width)

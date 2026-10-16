@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, rc::Rc};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
 };
@@ -14,7 +14,8 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{fit_size, Panel},
     widget::style::{
-        focused_title, mark_selected_row, panel_title, render_scrollbar, tree_panel_width,
+        change_color, focused_title, mark_selected_row, panel_title, render_scrollbar,
+        tree_panel_width,
     },
     widget::{
         diff::{
@@ -314,9 +315,8 @@ impl<'a> CommitChangesState<'a> {
             ChangesFocus::Hunks => self.focus = ChangesFocus::Files,
             ChangesFocus::Lines => {
                 self.focus = ChangesFocus::Hunks;
-                // the cursor may have moved into another hunk
                 if let Some(diff) = &self.diff {
-                    self.cursor.select_hunk(diff, self.cursor.hunk);
+                    self.cursor.leave_lines(diff);
                 }
             }
         }
@@ -348,11 +348,12 @@ impl<'a> CommitChangesState<'a> {
     // The selected line as in the file, or the selected hunk as a diff, to copy.
     pub fn selected_text(&self) -> Option<String> {
         let diff = self.diff.as_ref()?;
-        match self.focus {
-            ChangesFocus::Files => None,
-            ChangesFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::text),
-            ChangesFocus::Lines => self.cursor.line_text(diff),
-        }
+        (self.focus != ChangesFocus::Files)
+            .then(|| {
+                self.cursor
+                    .selected_text(diff, self.focus == ChangesFocus::Lines)
+            })
+            .flatten()
     }
 
     // Selects a row of the diff matching `query`, see `DiffCursor::search`. Returns false when
@@ -699,7 +700,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
                     let symbol = state.files[i].symbol;
                     let mut spans = vec![
                         "  ".repeat(row.depth).into(),
-                        Span::raw(symbol).fg(symbol_color(symbol, theme)),
+                        Span::raw(symbol).fg(change_color(symbol, theme)),
                         " ".into(),
                     ];
                     spans.extend(highlighted_name(&row.name, self.search.as_deref(), theme));
@@ -892,15 +893,6 @@ fn render_rows_with_cursor<'a>(
 
     if let Ok(y) = u16::try_from(cursor - offset) {
         mark_selected_row(buf, area, area.y + y, focused, theme);
-    }
-}
-
-fn symbol_color(symbol: &str, theme: &ColorTheme) -> Color {
-    match symbol {
-        "A" => theme.detail_file_change_add_fg,
-        "D" => theme.detail_file_change_delete_fg,
-        "R" => theme.detail_file_change_move_fg,
-        _ => theme.detail_file_change_modify_fg,
     }
 }
 

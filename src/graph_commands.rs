@@ -30,7 +30,6 @@ pub fn graph_command(
     selected: CommitHash,
     picked: Vec<CommitHash>,
 ) -> Option<Result<GraphCommand, String>> {
-    let commands = GraphCommands { repository };
     let branch = repository.current_branch();
     let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
     let single = |name: &str| -> Result<(), String> {
@@ -49,22 +48,22 @@ pub fn graph_command(
         picked.clone()
     };
     let dialog = match event {
-        UserEvent::Diff => return Some(commands.compare(selected, picked)),
+        UserEvent::Diff => return Some(compare(repository, selected, picked)),
         UserEvent::Rebase => single("Rebase").and_then(|_| {
             let branch = branch.ok_or("Check out a branch to rebase it")?;
-            commands.not_head(&selected, "rebase onto")?;
-            let (target, label) = commands.name_of(&selected);
+            not_head(repository, &selected, "rebase onto")?;
+            let (target, label) = name_of(repository, &selected);
             Ok(GitDialog::rebase(
                 &branch,
                 target,
                 &label,
-                commands.rebase_auto_stash(),
+                rebase_auto_stash(repository),
             ))
         }),
         UserEvent::Merge => single("Merge").and_then(|_| {
-            commands.not_head(&selected, "merge")?;
+            not_head(repository, &selected, "merge")?;
             let merge_ff = repository.config("merge.ff");
-            let (target, label) = commands.name_of(&selected);
+            let (target, label) = name_of(repository, &selected);
             Ok(GitDialog::merge(
                 &branch_label,
                 target,
@@ -73,26 +72,32 @@ pub fn graph_command(
             ))
         }),
         UserEvent::Checkout => {
-            single("Checkout").map(|_| GitDialog::checkout(commands.checkout_targets(&selected)))
+            single("Checkout").map(|_| GitDialog::checkout(checkout_targets(repository, &selected)))
         }
         UserEvent::CherryPick => {
-            let mut commits = commands.sort_newest_first(targets);
+            let mut commits = sort_newest_first(repository, targets);
             commits.reverse();
-            let commits = commits.iter().map(|h| commands.dialog_commit(h)).collect();
+            let commits = commits
+                .iter()
+                .map(|h| dialog_commit(repository, h))
+                .collect();
             Ok(GitDialog::cherry_pick(&branch_label, commits))
         }
-        UserEvent::Squash => commands.squash(&branch_label, targets),
+        UserEvent::Squash => squash(repository, &branch_label, targets),
         UserEvent::Revert => {
-            let commits = commands.sort_newest_first(targets);
-            let commits = commits.iter().map(|h| commands.dialog_commit(h)).collect();
+            let commits = sort_newest_first(repository, targets);
+            let commits = commits
+                .iter()
+                .map(|h| dialog_commit(repository, h))
+                .collect();
             Ok(GitDialog::revert(&branch_label, commits))
         }
         UserEvent::AmendCommit => {
-            return Some(single("Amend").and_then(|_| commands.amend(&branch_label, &selected)))
+            return Some(single("Amend").and_then(|_| amend(repository, &branch_label, &selected)))
         }
         UserEvent::Reset => single("Reset")
-            .map(|_| GitDialog::reset(&branch_label, commands.dialog_commit(&selected))),
-        UserEvent::DropCommit => commands.drop(&branch_label, targets),
+            .map(|_| GitDialog::reset(&branch_label, dialog_commit(repository, &selected))),
+        UserEvent::DropCommit => drop_commits(repository, &branch_label, targets),
         UserEvent::CreateTag => {
             single("Tag").map(|_| GitDialog::create_tag(selected.as_short_hash()))
         }
@@ -112,7 +117,6 @@ pub fn ref_graph_command(
     name: &str,
     target: CommitHash,
 ) -> Option<Result<GraphCommand, String>> {
-    let commands = GraphCommands { repository };
     let branch = repository.current_branch();
     let checked_out = || -> Result<(), String> {
         if branch.as_deref() == Some(name) {
@@ -128,7 +132,7 @@ pub fn ref_graph_command(
                 &branch,
                 name.to_string(),
                 name,
-                commands.rebase_auto_stash(),
+                rebase_auto_stash(repository),
             ))
         }),
         UserEvent::Merge => checked_out().map(|_| {
@@ -137,7 +141,7 @@ pub fn ref_graph_command(
             GitDialog::merge(&branch_label, name.to_string(), name, merge_ff.as_deref())
         }),
         UserEvent::Checkout => checked_out().map(|_| {
-            let mut targets = commands.checkout_targets(&target);
+            let mut targets = checkout_targets(repository, &target);
             match targets
                 .iter()
                 .position(|t| t.args.last().map(String::as_str) == Some(name))
@@ -180,264 +184,261 @@ fn create_branch(repository: &Repository, from: &str) -> GitDialog {
     GitDialog::create_branch(from, branches)
 }
 
-struct GraphCommands<'a> {
-    repository: &'a Repository,
+// The commit as a line in a popup: its short hash and subject.
+fn dialog_commit(repository: &Repository, hash: &CommitHash) -> DialogCommit {
+    let subject = repository
+        .commit(hash)
+        .map(|c| c.subject.clone())
+        .unwrap_or_default();
+    DialogCommit {
+        hash: hash.as_str().to_string(),
+        line: format!("{} {subject}", hash.as_short_hash()),
+    }
 }
 
-impl GraphCommands<'_> {
-    // The commit as a line in a popup: its short hash and subject.
-    fn dialog_commit(&self, hash: &CommitHash) -> DialogCommit {
-        let subject = self
-            .repository
-            .commit(hash)
-            .map(|c| c.subject.clone())
-            .unwrap_or_default();
-        DialogCommit {
-            hash: hash.as_str().to_string(),
-            line: format!("{} {subject}", hash.as_short_hash()),
+// The commit to merge or rebase onto, and its label: by the name of the one local branch at
+// it, for "Merge branch 'x'" as the message, else by its hash; by the hash too when a tag has
+// that name, which git would take instead.
+fn name_of(repository: &Repository, hash: &CommitHash) -> (String, String) {
+    let mut branches = repository
+        .refs(hash)
+        .into_iter()
+        .filter(|r| matches!(r, Ref::Branch { .. }));
+    let tagged = |name: &str| {
+        repository
+            .all_refs()
+            .iter()
+            .any(|r| matches!(r, Ref::Tag { .. }) && r.name() == name)
+    };
+    match (branches.next(), branches.next()) {
+        (Some(branch), None) if !tagged(branch.name()) => {
+            (branch.name().to_string(), branch.name().to_string())
         }
+        _ => (hash.as_str().to_string(), hash.as_short_hash().to_string()),
     }
+}
 
-    // The commit to merge or rebase onto, and its label: by the name of the one local branch at
-    // it, for "Merge branch 'x'" as the message, else by its hash; by the hash too when a tag has
-    // that name, which git would take instead.
-    fn name_of(&self, hash: &CommitHash) -> (String, String) {
-        let mut branches = self
-            .repository
-            .refs(hash)
-            .into_iter()
-            .filter(|r| matches!(r, Ref::Branch { .. }));
-        let tagged = |name: &str| {
-            self.repository
-                .all_refs()
-                .iter()
-                .any(|r| matches!(r, Ref::Tag { .. }) && r.name() == name)
-        };
-        match (branches.next(), branches.next()) {
-            (Some(branch), None) if !tagged(branch.name()) => {
-                (branch.name().to_string(), branch.name().to_string())
+// An error when `hash` is the checked-out commit, which there is nothing to `what`.
+fn not_head(repository: &Repository, hash: &CommitHash, what: &str) -> Result<(), String> {
+    if repository.head_commit().as_ref() == Some(hash) {
+        return Err(format!(
+            "The selected commit is checked out, choose another one to {what}"
+        ));
+    }
+    Ok(())
+}
+
+// Commits ordered as in the graph, newest first.
+fn sort_newest_first(repository: &Repository, mut hashes: Vec<CommitHash>) -> Vec<CommitHash> {
+    repository.sort_newest_first(&mut hashes);
+    hashes
+}
+
+// Whether rebasing stashes local changes by default: rebase.autoStash, on when it is not set.
+fn rebase_auto_stash(repository: &Repository) -> bool {
+    repository.config_bool("rebase.autoStash").unwrap_or(true)
+}
+
+// The branches at the commit to check out, and the commit itself.
+fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutTarget> {
+    let current = repository.current_branch();
+    let all_refs = repository.all_refs();
+    let local_exists = |name: &str| {
+        all_refs
+            .iter()
+            .any(|r| matches!(r, Ref::Branch { .. }) && r.name() == name)
+    };
+    let mut targets = vec![];
+    for r in repository.refs(hash) {
+        match r {
+            Ref::Branch { name, .. } if Some(name) != current.as_ref() => {
+                targets.push(CheckoutTarget {
+                    label: name.clone(),
+                    args: vec![name.clone()],
+                });
             }
-            _ => (hash.as_str().to_string(), hash.as_short_hash().to_string()),
-        }
-    }
-
-    // An error when `hash` is the checked-out commit, which there is nothing to `what`.
-    fn not_head(&self, hash: &CommitHash, what: &str) -> Result<(), String> {
-        if self.repository.head_commit().as_ref() == Some(hash) {
-            return Err(format!(
-                "The selected commit is checked out, choose another one to {what}"
-            ));
-        }
-        Ok(())
-    }
-
-    // Commits ordered as in the graph, newest first.
-    fn sort_newest_first(&self, mut hashes: Vec<CommitHash>) -> Vec<CommitHash> {
-        self.repository.sort_newest_first(&mut hashes);
-        hashes
-    }
-
-    // Whether rebasing stashes local changes by default: rebase.autoStash, on when it is not set.
-    fn rebase_auto_stash(&self) -> bool {
-        self.repository
-            .config_bool("rebase.autoStash")
-            .unwrap_or(true)
-    }
-
-    // The branches at the commit to check out, and the commit itself.
-    fn checkout_targets(&self, hash: &CommitHash) -> Vec<CheckoutTarget> {
-        let current = self.repository.current_branch();
-        let all_refs = self.repository.all_refs();
-        let local_exists = |name: &str| {
-            all_refs
-                .iter()
-                .any(|r| matches!(r, Ref::Branch { .. }) && r.name() == name)
-        };
-        let mut targets = vec![];
-        for r in self.repository.refs(hash) {
-            match r {
-                Ref::Branch { name, .. } if Some(name) != current.as_ref() => {
+            Ref::RemoteBranch { name, .. } => {
+                // a new local branch tracking it, unless there is one by that name
+                let Some((_, local)) = split_remote_branch(repository.remotes(), name) else {
+                    continue;
+                };
+                if local != "HEAD" && !local_exists(local) {
                     targets.push(CheckoutTarget {
-                        label: name.clone(),
-                        args: vec![name.clone()],
+                        label: format!("{local} (new, tracking {name})"),
+                        args: vec!["--track".into(), name.clone()],
                     });
                 }
-                Ref::RemoteBranch { name, .. } => {
-                    // a new local branch tracking it, unless there is one by that name
-                    let Some((_, local)) = split_remote_branch(self.repository.remotes(), name)
-                    else {
-                        continue;
-                    };
-                    if local != "HEAD" && !local_exists(local) {
-                        targets.push(CheckoutTarget {
-                            label: format!("{local} (new, tracking {name})"),
-                            args: vec!["--track".into(), name.clone()],
-                        });
-                    }
-                }
-                _ => {}
             }
-        }
-        targets.push(CheckoutTarget {
-            label: format!("{} (detached HEAD)", hash.as_short_hash()),
-            args: vec!["--detach".into(), hash.as_str().into()],
-        });
-        targets
-    }
-
-    // The parents of a commit, asked of git when it is not loaded (with `--max-count`).
-    fn parents(&self, hash: &CommitHash) -> Result<Vec<CommitHash>, String> {
-        match self.repository.commit(hash) {
-            Some(_) => Ok(self
-                .repository
-                .parents_hash(hash)
-                .into_iter()
-                .cloned()
-                .collect()),
-            None => self.repository.parents_of(hash.as_str()),
+            _ => {}
         }
     }
+    targets.push(CheckoutTarget {
+        label: format!("{} (detached HEAD)", hash.as_short_hash()),
+        args: vec!["--detach".into(), hash.as_str().into()],
+    });
+    targets
+}
 
-    // The parent of a commit to rewrite, None for the first commit; `what` it can't be when it is
-    // a merge commit, like "squashed".
-    fn single_parent(&self, hash: &CommitHash, what: &str) -> Result<Option<CommitHash>, String> {
-        match &self.parents(hash)?[..] {
-            [] => Ok(None),
-            [parent] => Ok(Some(parent.clone())),
-            _ => Err(format!(
-                "{} is a merge commit, it can't be {what}",
-                hash.as_short_hash()
-            )),
+// The parents of a commit, asked of git when it is not loaded (with `--max-count`).
+fn parents(repository: &Repository, hash: &CommitHash) -> Result<Vec<CommitHash>, String> {
+    match repository.commit(hash) {
+        Some(_) => Ok(repository.parents_hash(hash).into_iter().cloned().collect()),
+        None => repository.parents_of(hash.as_str()),
+    }
+}
+
+// The parent of a commit to rewrite, None for the first commit; `what` it can't be when it is
+// a merge commit, like "squashed".
+fn single_parent(
+    repository: &Repository,
+    hash: &CommitHash,
+    what: &str,
+) -> Result<Option<CommitHash>, String> {
+    match &parents(repository, hash)?[..] {
+        [] => Ok(None),
+        [parent] => Ok(Some(parent.clone())),
+        _ => Err(format!(
+            "{} is a merge commit, it can't be {what}",
+            hash.as_short_hash()
+        )),
+    }
+}
+
+// The commits a rebase from after `base` (from the root when None) goes through, with their
+// parents, once checked that `commits` are on the current branch and none of them are merges,
+// which the rebase would flatten.
+fn rebased(
+    repository: &Repository,
+    branch: &str,
+    base: Option<&CommitHash>,
+    commits: &[CommitHash],
+) -> Result<FxHashMap<CommitHash, Vec<CommitHash>>, String> {
+    let rebased = repository.commits_after(base, "HEAD")?;
+    if let Some(missing) = commits.iter().find(|h| !rebased.contains_key(*h)) {
+        let short = missing.as_short_hash();
+        return Err(format!("{short} is not on {branch}, check it out first"));
+    }
+    if rebased.values().any(|parents| parents.len() > 1) {
+        return Err("There are merge commits after it, which the rebase would flatten".into());
+    }
+    Ok(rebased)
+}
+
+// Squashing rebases from the parent of the oldest commit's parent, so the history from there
+// must be a line on the current branch.
+fn squash(
+    repository: &Repository,
+    branch: &str,
+    commits: Vec<CommitHash>,
+) -> Result<GitDialog, String> {
+    let commits = sort_newest_first(repository, commits);
+    let oldest = commits.last().ok_or("No commit to squash")?;
+    let short = oldest.as_short_hash();
+    let parent = single_parent(repository, oldest, "squashed")?
+        .ok_or_else(|| format!("{short} is the first commit, it has no parent"))?;
+    // None when the parent is the first commit, to rebase from the root
+    let base = parents(repository, &parent)?.into_iter().next();
+    rebased(repository, branch, base.as_ref(), &commits)?;
+    let commits = commits
+        .iter()
+        .map(|h| dialog_commit(repository, h))
+        .collect();
+    let base = base.map(|h| h.as_str().to_string());
+    Ok(GitDialog::squash(
+        branch,
+        commits,
+        base,
+        rebase_auto_stash(repository),
+    ))
+}
+
+// Drops the commits, rebasing from the parent of the oldest one.
+fn drop_commits(
+    repository: &Repository,
+    branch: &str,
+    commits: Vec<CommitHash>,
+) -> Result<GitDialog, String> {
+    let commits = sort_newest_first(repository, commits);
+    let (Some(newest), Some(oldest)) = (commits.first(), commits.last()) else {
+        return Err("No commit to drop".into());
+    };
+    let base = single_parent(repository, oldest, "dropped")?;
+    rebased(repository, branch, base.as_ref(), &commits)?;
+    for hash in &commits {
+        single_parent(repository, hash, "dropped")?;
+    }
+    // the commit after the newest one takes its place, under a new hash
+    let after = repository.count_after(newest, "HEAD")?;
+    let select = Some(format!("HEAD~{}", after.saturating_sub(1)));
+    let commits = commits
+        .iter()
+        .map(|h| dialog_commit(repository, h))
+        .collect();
+    let base = base.map(|h| h.as_str().to_string());
+    let dialog = GitDialog::drop(branch, commits, base, rebase_auto_stash(repository));
+    Ok(dialog.selecting(select))
+}
+
+// Amends a commit on the local changes page, with its changes and message there: the last one
+// right away, an older one once a rebase stopped at it, so the commits after it must be a line
+// on the current branch.
+fn amend(
+    repository: &Repository,
+    branch: &str,
+    commit: &CommitHash,
+) -> Result<GraphCommand, String> {
+    let head = repository.head_commit().ok_or("Nothing is checked out")?;
+    if *commit == head {
+        return Ok(GraphCommand::AmendHead);
+    }
+    let base = single_parent(repository, commit, "amended")?;
+    rebased(
+        repository,
+        branch,
+        base.as_ref(),
+        std::slice::from_ref(commit),
+    )?;
+    let base = base.map(|h| h.as_str().to_string());
+    let dialog = GitDialog::edit(
+        branch,
+        dialog_commit(repository, commit),
+        base,
+        rebase_auto_stash(repository),
+    );
+    Ok(GraphCommand::Dialog(dialog))
+}
+
+// The changes between two commits: the checked out commit and the selected (or picked) one,
+// or the two picked ones; the older one is the base.
+fn compare(
+    repository: &Repository,
+    selected: CommitHash,
+    picked: Vec<CommitHash>,
+) -> Result<GraphCommand, String> {
+    let head = || repository.head_commit().ok_or("Nothing is checked out");
+    let (a, b) = match picked.as_slice() {
+        [] => (head()?, selected),
+        [one] => (head()?, one.clone()),
+        [one, two] => (one.clone(), two.clone()),
+        more => {
+            return Err(format!(
+                "Diff compares two commits, {} are picked",
+                more.len()
+            ))
         }
+    };
+    if a == b {
+        return Err("That commit is checked out, there is nothing to compare".into());
     }
-
-    // The commits a rebase from after `base` (from the root when None) goes through, with their
-    // parents, once checked that `commits` are on the current branch and none of them are merges,
-    // which the rebase would flatten.
-    fn rebased(
-        &self,
-        branch: &str,
-        base: Option<&CommitHash>,
-        commits: &[CommitHash],
-    ) -> Result<FxHashMap<CommitHash, Vec<CommitHash>>, String> {
-        let rebased = self.repository.commits_after(base, "HEAD")?;
-        if let Some(missing) = commits.iter().find(|h| !rebased.contains_key(*h)) {
-            let short = missing.as_short_hash();
-            return Err(format!("{short} is not on {branch}, check it out first"));
-        }
-        if rebased.values().any(|parents| parents.len() > 1) {
-            return Err("There are merge commits after it, which the rebase would flatten".into());
-        }
-        Ok(rebased)
-    }
-
-    // The commit `n` commits before HEAD, to select once the history is rewritten.
-    fn select_back(n: usize) -> Option<String> {
-        Some(format!("HEAD~{n}"))
-    }
-
-    // Squashing rebases from the parent of the oldest commit's parent, so the history from there
-    // must be a line on the current branch.
-    fn squash(&self, branch: &str, commits: Vec<CommitHash>) -> Result<GitDialog, String> {
-        let commits = self.sort_newest_first(commits);
-        let oldest = commits.last().ok_or("No commit to squash")?;
-        let short = oldest.as_short_hash();
-        let parent = self
-            .single_parent(oldest, "squashed")?
-            .ok_or_else(|| format!("{short} is the first commit, it has no parent"))?;
-        // None when the parent is the first commit, to rebase from the root
-        let base = self.parents(&parent)?.into_iter().next();
-        self.rebased(branch, base.as_ref(), &commits)?;
-        let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
-        let base = base.map(|h| h.as_str().to_string());
-        Ok(GitDialog::squash(
-            branch,
-            commits,
-            base,
-            self.rebase_auto_stash(),
-        ))
-    }
-
-    // Drops the commits, rebasing from the parent of the oldest one.
-    fn drop(&self, branch: &str, commits: Vec<CommitHash>) -> Result<GitDialog, String> {
-        let commits = self.sort_newest_first(commits);
-        let (Some(newest), Some(oldest)) = (commits.first(), commits.last()) else {
-            return Err("No commit to drop".into());
-        };
-        let base = self.single_parent(oldest, "dropped")?;
-        self.rebased(branch, base.as_ref(), &commits)?;
-        for hash in &commits {
-            self.single_parent(hash, "dropped")?;
-        }
-        // the commit after the newest one takes its place
-        let after = self.repository.count_after(newest, "HEAD")?;
-        let select = Self::select_back(after.saturating_sub(1));
-        let commits = commits.iter().map(|h| self.dialog_commit(h)).collect();
-        let base = base.map(|h| h.as_str().to_string());
-        let dialog = GitDialog::drop(branch, commits, base, self.rebase_auto_stash());
-        Ok(dialog.selecting(select))
-    }
-
-    // Amends a commit on the local changes page, with its changes and message there: the last one
-    // right away, an older one once a rebase stopped at it, so the commits after it must be a line
-    // on the current branch.
-    fn amend(&self, branch: &str, commit: &CommitHash) -> Result<GraphCommand, String> {
-        let head = self
-            .repository
-            .head_commit()
-            .ok_or("Nothing is checked out")?;
-        if *commit == head {
-            return Ok(GraphCommand::AmendHead);
-        }
-        let base = self.single_parent(commit, "amended")?;
-        self.rebased(branch, base.as_ref(), std::slice::from_ref(commit))?;
-        let base = base.map(|h| h.as_str().to_string());
-        let dialog = GitDialog::edit(
-            branch,
-            self.dialog_commit(commit),
-            base,
-            self.rebase_auto_stash(),
-        );
-        Ok(GraphCommand::Dialog(dialog))
-    }
-
-    // The changes between two commits: the checked out commit and the selected (or picked) one,
-    // or the two picked ones; the older one is the base.
-    fn compare(
-        &self,
-        selected: CommitHash,
-        picked: Vec<CommitHash>,
-    ) -> Result<GraphCommand, String> {
-        let head = || {
-            self.repository
-                .head_commit()
-                .ok_or("Nothing is checked out")
-        };
-        let (a, b) = match picked.as_slice() {
-            [] => (head()?, selected),
-            [one] => (head()?, one.clone()),
-            [one, two] => (one.clone(), two.clone()),
-            more => {
-                return Err(format!(
-                    "Diff compares two commits, {} are picked",
-                    more.len()
-                ))
-            }
-        };
-        if a == b {
-            return Err("That commit is checked out, there is nothing to compare".into());
-        }
-        let [target, base]: [CommitHash; 2] = self
-            .sort_newest_first(vec![a, b])
-            .try_into()
-            .expect("two commits");
-        let title = format!("Diff {} → {}", base.as_short_hash(), target.as_short_hash());
-        Ok(GraphCommand::Compare {
-            base,
-            target,
-            title,
-        })
-    }
+    let [target, base]: [CommitHash; 2] = sort_newest_first(repository, vec![a, b])
+        .try_into()
+        .expect("two commits");
+    let title = format!("Diff {} → {}", base.as_short_hash(), target.as_short_hash());
+    Ok(GraphCommand::Compare {
+        base,
+        target,
+        title,
+    })
 }
 
 #[cfg(test)]

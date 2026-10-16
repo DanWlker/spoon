@@ -158,11 +158,7 @@ fn delete_refs(
                     "{current} is checked out, check out another branch to delete it"
                 ));
             }
-            let unmerged = names
-                .iter()
-                .filter(|name| !repository.is_merged(name))
-                .cloned()
-                .collect();
+            let unmerged = repository.unmerged_branches(&names);
             // the upstreams still on their remotes
             let info = repository.remote_info();
             let mut upstreams: Vec<(String, String)> = names
