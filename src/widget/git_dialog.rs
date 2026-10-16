@@ -13,10 +13,10 @@ use crate::{
     color::ColorTheme,
     event::{AppEvent, KeyHint, UserEvent},
     git::{
-        parse_git_bool, todo_action, BranchStatus, Conflict, GitTask, RemoteInfo,
+        parse_git_bool, stash_args, todo_action, BranchStatus, Conflict, GitTask, RemoteInfo,
         MAX_CONFLICT_STEPS,
     },
-    widget::style::{focused_title, render_popup},
+    widget::style::{change_color, focused_title, render_popup},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +121,37 @@ enum DialogKind {
         links: Vec<(String, String)>,
         copy: bool,
     },
+    // a command made beforehand, like discarding changes, and what it loses
+    Prepared {
+        task: Box<GitTask>,
+        warning: &'static str,
+    },
+    Commit {
+        preview: Box<CommitPreview>,
+        task: Box<GitTask>,
+    },
+    // the changes of `paths` (all of them when empty) on the local changes page
+    Stash {
+        paths: Vec<String>,
+        target: String,
+    },
 }
+
+// The commit to make, shown in the popup confirming it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitPreview {
+    // "Commit to", "Amend the last commit on", "Commit the merge on"
+    pub action: String,
+    pub branch: String,
+    pub amend: bool,
+    pub subject: String,
+    pub body: Vec<String>,
+    // the staged files, as their status letter like "M" and their path
+    pub files: Vec<(String, String)>,
+}
+
+// The lines of the message, and the files, shown in the popup confirming a commit.
+const COMMIT_PREVIEW_LINES: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldId {
@@ -237,6 +267,81 @@ impl GitDialog {
         self
     }
 
+    // Discards changes on the local changes page, with `task` made from what is selected.
+    pub fn discard(prompt: String, task: GitTask) -> Self {
+        let kind = DialogKind::Prepared {
+            task: Box::new(task),
+            warning: "The changes are lost.",
+        };
+        Self::with(" Discard changes ", "discard", vec![prompt], kind)
+    }
+
+    // Aborts the rebase, merge, cherry-pick or revert in progress, named like "rebase".
+    pub fn abort(operation: &str) -> Self {
+        let task = GitTask {
+            commands: vec![vec![operation.to_string(), "--abort".into()]],
+            running: format!("Aborting the {operation}"),
+            done: format!("Aborted the {operation}"),
+            ..Default::default()
+        };
+        let intro = vec![format!(
+            "Abort the {operation} and go back to where it started"
+        )];
+        let kind = DialogKind::Prepared {
+            task: Box::new(task),
+            warning: "What was done since it started is lost.",
+        };
+        Self::with(" Abort ", "abort", intro, kind)
+    }
+
+    // Commits as `preview` shows; the commit key confirms it too.
+    pub fn commit(preview: CommitPreview, task: GitTask) -> Self {
+        let (title, verb) = if preview.amend {
+            (" Amend ", "amend")
+        } else {
+            (" Commit ", "commit")
+        };
+        let kind = DialogKind::Commit {
+            preview: Box::new(preview),
+            task: Box::new(task),
+        };
+        let mut dialog = Self::with(title, verb, vec![], kind);
+        dialog.trigger = Some(UserEvent::Commit);
+        dialog
+    }
+
+    // Stashes the changes of `paths`, all of them when empty, described as `target`.
+    pub fn stash(target: String, paths: Vec<String>) -> Self {
+        let intro = vec![format!("Stash {target}")];
+        let mut dialog = Self::with(
+            " Stash ",
+            "stash",
+            intro,
+            DialogKind::Stash { paths, target },
+        );
+        dialog.push_text(FieldId::Message, "Message", "", vec![]);
+        dialog.editing = true;
+        dialog
+    }
+
+    #[cfg(test)]
+    pub fn intro(&self) -> &[String] {
+        &self.intro
+    }
+
+    #[cfg(test)]
+    pub fn commit_preview(&self) -> Option<&CommitPreview> {
+        match &self.kind {
+            DialogKind::Commit { preview, .. } => Some(preview),
+            _ => None,
+        }
+    }
+
+    // The event its key confirms it with besides Enter, like the key that opened it.
+    pub fn trigger(&self) -> Option<UserEvent> {
+        self.trigger
+    }
+
     // Warns of the conflicts the command runs into, see `Repository::first_conflict`; `at` shows
     // the commit it stops at, for the commands applying several.
     pub fn conflicting(mut self, conflict: Option<Conflict>, at: bool) -> Self {
@@ -249,16 +354,7 @@ impl GitDialog {
                 )
                 }
             };
-            const MAX: usize = 3;
-            let mut names = files
-                .iter()
-                .take(MAX)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            if files.len() > MAX {
-                names.push_str(&format!(" and {} more", files.len() - MAX));
-            }
+            let names = capped(files, 3).join(", ");
             let at = if at {
                 format!(" at {}", shorten_hash(&commit))
             } else {
@@ -1259,6 +1355,15 @@ impl GitDialog {
                 }
                 Ok(task)
             }
+            DialogKind::Prepared { task, .. } | DialogKind::Commit { task, .. } => {
+                Ok(*task.clone())
+            }
+            DialogKind::Stash { paths, target } => Ok(GitTask {
+                commands: vec![stash_args(paths, self.value(FieldId::Message).trim())],
+                running: format!("Stashing {target}"),
+                done: format!("Stashed {target}"),
+                ..Default::default()
+            }),
             DialogKind::ApplyStash { name } => {
                 // popping drops it once applied, git keeps it when it stops on conflicts
                 let pop = self.checked(FieldId::Pop);
@@ -1469,6 +1574,10 @@ impl GitDialog {
                 return (!warnings.is_empty()).then(|| warnings.join("\n"));
             }
             DialogKind::DropStashes { .. } => Some("The stashed changes are lost."),
+            DialogKind::Prepared { warning, .. } => Some(*warning),
+            DialogKind::Commit { preview, .. } if preview.amend => {
+                Some("The last commit is rewritten.")
+            }
             _ => None,
         };
         warning.map(String::from)
@@ -1526,10 +1635,27 @@ fn names_intro(one: &str, many: &str, names: &[String]) -> Vec<String> {
         [name] => vec![format!("{one} {name}")],
         _ => {
             let mut lines = vec![format!("{many}:")];
-            lines.extend(names.iter().map(|name| format!("  {name}")));
+            lines.extend(
+                capped(names.to_vec(), MAX_LISTED)
+                    .iter()
+                    .map(|n| format!("  {n}")),
+            );
             lines
         }
     }
+}
+
+// the most items a popup lists, so it fits on the screen
+const MAX_LISTED: usize = 10;
+
+// The first `max` items, then a line saying how many more were left out.
+fn capped(mut items: Vec<String>, max: usize) -> Vec<String> {
+    if items.len() > max {
+        let rest = items.len() - max;
+        items.truncate(max);
+        items.push(format!("… and {rest} more"));
+    }
+    items
 }
 
 // "main", or "3 branches".
@@ -1574,11 +1700,67 @@ fn stash_index(name: &str) -> usize {
 }
 
 fn commits_intro(heading: &str, commits: &[DialogCommit]) -> Vec<String> {
-    const MAX: usize = 10;
+    let commits = commits.iter().map(|c| c.line.clone()).collect();
     let mut lines = vec![format!("{heading}:")];
-    lines.extend(commits.iter().take(MAX).map(|c| format!("  {}", c.line)));
-    if commits.len() > MAX {
-        lines.push(format!("  … and {} more", commits.len() - MAX));
+    lines.extend(capped(commits, MAX_LISTED).iter().map(|c| format!("  {c}")));
+    lines
+}
+
+// The commit to make: on which branch, the message beside a bar, and the staged files.
+fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme.status_input_transient_fg);
+    let color = if preview.amend {
+        theme.status_warn_fg
+    } else {
+        theme.accent_fg
+    };
+    let bar = || Span::raw("┃ ").fg(color);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw(format!("{} ", preview.action))
+                .fg(theme.fg)
+                .bold(),
+            Span::raw(preview.branch.clone())
+                .fg(theme.highlight_fg)
+                .bold(),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            bar(),
+            Span::raw(preview.subject.clone()).fg(theme.fg).bold(),
+        ]),
+    ];
+    if !preview.body.is_empty() {
+        lines.push(Line::from(bar()));
+    }
+    for line in capped(preview.body.clone(), COMMIT_PREVIEW_LINES) {
+        lines.push(Line::from(vec![bar(), Span::styled(line, dim)]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        match preview.files.len() {
+            0 => "No staged changes".to_string(),
+            1 => "1 staged file".to_string(),
+            n => format!("{n} staged files"),
+        },
+        dim,
+    ));
+    for (status, path) in preview.files.iter().take(COMMIT_PREVIEW_LINES) {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(status.clone())
+                .fg(change_color(status, theme))
+                .bold(),
+            Span::raw(format!(" {path}")).fg(theme.fg),
+        ]));
+    }
+    if let Some(more) = preview
+        .files
+        .len()
+        .checked_sub(COMMIT_PREVIEW_LINES)
+        .filter(|n| *n > 0)
+    {
+        lines.push(Line::styled(format!("  … and {more} more"), dim));
     }
     lines
 }
@@ -1619,7 +1801,10 @@ impl Widget for GitDialogWidget<'_> {
         // the keys are in the status bar
 
         let mut lines = vec![];
-        if !dialog.intro.is_empty() {
+        if let DialogKind::Commit { preview, .. } = &dialog.kind {
+            lines.push(Line::raw(""));
+            lines.extend(commit_preview_lines(preview, theme));
+        } else if !dialog.intro.is_empty() {
             lines.push(Line::raw(""));
             for (i, line) in dialog.intro.iter().enumerate() {
                 // the heading stands out from the commits under it

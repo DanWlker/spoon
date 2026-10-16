@@ -196,7 +196,7 @@ A file git diffs as text converted from it (a `textconv` diff driver in `.gitatt
 <kbd>i</kbd> adds the selected file or directory to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
 
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor, and <kbd>Enter</kbd> shows their combined diff to stage or unstage their hunks and lines.
-<kbd>s</kbd> asks for a stash message in the status line (it may be empty), and stashes including untracked files.
+<kbd>s</kbd> opens a popup asking for a stash message (it may be empty), and stashes including untracked files.
 
 #### Refs Sidebar
 

@@ -17,8 +17,8 @@ use crate::{
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::DetailTab,
-        commit_user_command::{CommitUserCommand, CommitUserCommandState},
-        style::panel_block,
+        commit_user_command::CommitUserCommand,
+        style::{panel_block, ScrollState},
     },
 };
 
@@ -28,7 +28,7 @@ type ExecCommandFn =
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
-    commit_user_command_state: CommitUserCommandState,
+    commit_user_command_state: ScrollState,
 
     user_command_number: usize,
     user_command_output_lines: Vec<Line<'a>>,
@@ -55,7 +55,7 @@ impl<'a> UserCommandView<'a> {
 
         UserCommandView {
             commit_list_state: Some(commit_list_state),
-            commit_user_command_state: CommitUserCommandState::default(),
+            commit_user_command_state: ScrollState::default(),
             user_command_number,
             user_command_output_lines,
             stale: false,
@@ -65,31 +65,10 @@ impl<'a> UserCommandView<'a> {
     }
 
     pub fn handle_event(&mut self, event: UserEvent, _: KeyEvent) {
+        if self.commit_user_command_state.handle_event(event) {
+            return;
+        }
         match event {
-            UserEvent::NavigateDown => {
-                self.commit_user_command_state.scroll_down();
-            }
-            UserEvent::NavigateUp => {
-                self.commit_user_command_state.scroll_up();
-            }
-            UserEvent::PageDown => {
-                self.commit_user_command_state.scroll_page_down();
-            }
-            UserEvent::PageUp => {
-                self.commit_user_command_state.scroll_page_up();
-            }
-            UserEvent::HalfPageDown => {
-                self.commit_user_command_state.scroll_half_page_down();
-            }
-            UserEvent::HalfPageUp => {
-                self.commit_user_command_state.scroll_half_page_up();
-            }
-            UserEvent::GoToTop => {
-                self.commit_user_command_state.select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.commit_user_command_state.select_last();
-            }
             UserEvent::SelectDown => {
                 self.tx.send(AppEvent::SelectOlderCommit);
             }
@@ -232,7 +211,7 @@ impl<'a> UserCommandView<'a> {
             vec![]
         });
 
-        self.commit_user_command_state.select_first();
+        self.commit_user_command_state.offset = 0;
     }
 
     pub fn refresh(&self) {

@@ -8,7 +8,7 @@ use crate::{
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
     search,
-    view::{graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
+    view::{copy_hash, graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::{
             commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
@@ -77,11 +77,10 @@ impl<'a> ListView<'a> {
             UserEvent::HalfPageUp => {
                 self.as_mut_list_state().scroll_up_half();
             }
-            UserEvent::ShortCopy => {
-                self.copy_commit_short_hash();
-            }
-            UserEvent::FullCopy => {
-                self.copy_commit_hash();
+            UserEvent::ShortCopy | UserEvent::FullCopy => {
+                let full = event == UserEvent::FullCopy;
+                self.tx
+                    .send(copy_hash(self.as_list_state().selected_commit_hash(), full));
             }
             UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                 let hash = self.as_list_state().selected_commit_hash().as_str().into();
@@ -177,20 +176,6 @@ impl<'a> ListView<'a> {
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
         self.as_list_state().graph_image_ids_sorted()
-    }
-
-    fn copy_commit_short_hash(&self) {
-        let selected = self.as_list_state().selected_commit_hash();
-        self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash().into());
-    }
-
-    fn copy_commit_hash(&self) {
-        let selected = self.as_list_state().selected_commit_hash();
-        self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
-    }
-
-    fn copy_to_clipboard(&self, name: String, value: String) {
-        self.tx.send(AppEvent::CopyToClipboard { name, value });
     }
 
     pub fn refresh(&self) {

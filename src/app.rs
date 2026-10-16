@@ -680,6 +680,7 @@ impl App<'_> {
             AppEvent::SelectNewerCommit => {
                 self.select_newer_commit();
             }
+            AppEvent::OpenDialog(dialog) => self.open_dialog(Ok(*dialog)),
             AppEvent::CopyToClipboard { name, value } => {
                 self.copy_to_clipboard(name, value);
             }
@@ -827,7 +828,6 @@ impl App<'_> {
         let Some(state) = self.shell.command_log.as_mut() else {
             return;
         };
-        let page = state.output_page();
         match event {
             Some(UserEvent::ForceQuit | UserEvent::Quit) => self.ec.send(AppEvent::Quit),
             Some(UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog) => {
@@ -837,12 +837,7 @@ impl App<'_> {
             Some(UserEvent::NavigateUp | UserEvent::SelectUp) => state.select_prev(),
             Some(UserEvent::GoToTop) => state.select_first(),
             Some(UserEvent::GoToBottom) => state.select_last(),
-            Some(UserEvent::ScrollDown) => state.scroll_output_down(1),
-            Some(UserEvent::ScrollUp) => state.scroll_output_up(1),
-            Some(UserEvent::PageDown) => state.scroll_output_down(page),
-            Some(UserEvent::PageUp) => state.scroll_output_up(page),
-            Some(UserEvent::HalfPageDown) => state.scroll_output_down(page / 2),
-            Some(UserEvent::HalfPageUp) => state.scroll_output_up(page / 2),
+            Some(event) if state.scroll_output(event) => {}
             Some(UserEvent::ShortCopy | UserEvent::FullCopy) => {
                 if let Some(text) = state.selected_text() {
                     self.ec.send(AppEvent::CopyToClipboard {
@@ -1002,10 +997,6 @@ impl App<'_> {
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
-        // popups go in the middle of the screen, over the sidebar too
-        if let View::LocalChanges(view) = &self.view {
-            view.render_popup(f, app_area);
-        }
         if let Some(help) = self.shell.help.as_mut() {
             f.render_widget(Clear, app_area);
             f.render_widget(base, app_area);
@@ -1777,7 +1768,15 @@ impl App<'_> {
         let Some(dialog) = self.shell.dialog.as_mut() else {
             return;
         };
-        let event = self.ctx.keybind.event_in(Scope::Dialog, &key);
+        // the key that opened the popup runs it, in the part of the app it belongs to
+        let event = match dialog.trigger() {
+            Some(trigger)
+                if self.ctx.keybind.event_in(trigger.home_scope(), &key) == Some(trigger) =>
+            {
+                Some(trigger)
+            }
+            _ => self.ctx.keybind.event_in(Scope::Dialog, &key),
+        };
         if event == Some(UserEvent::ForceQuit) {
             self.ec.send(AppEvent::Quit);
             return;

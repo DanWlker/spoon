@@ -20,7 +20,7 @@ use crate::{
     git::Repository,
     widget::{
         file_tree::SearchDirection,
-        style::mark_selected_bar,
+        style::{mark_selected_bar, ScrollState},
         tree_query::{find_around, match_range, patch_range},
     },
 };
@@ -259,9 +259,7 @@ pub struct DiffCursor {
     pub hunk: usize,
     // a row of `ParsedDiff::rows`, a change of the hunk
     pub line: usize,
-    pub offset: usize,
-    // of the last render, 0 before it
-    pub height: usize,
+    pub scroll: ScrollState,
     // the row the search last matched, where the next one starts from
     search_row: Option<usize>,
 }
@@ -269,10 +267,9 @@ pub struct DiffCursor {
 impl DiffCursor {
     // Back to the top of another diff.
     pub fn reset(&mut self) {
-        *self = DiffCursor {
-            height: self.height,
-            ..Default::default()
-        };
+        let height = self.scroll.height;
+        *self = DiffCursor::default();
+        self.scroll.height = height;
     }
 
     // Selects a hunk, the last one past the end, showing it; false when there is none.
@@ -380,32 +377,13 @@ impl DiffCursor {
     }
 
     pub fn scroll_to(&mut self, rows: Range<usize>) {
-        let height = self.height;
+        let ScrollState { offset, height } = &mut self.scroll;
         // before the first render the height is unknown
-        if height == 0 || rows.start < self.offset || rows.len() > height {
-            self.offset = rows.start;
-        } else if rows.end > self.offset + height {
-            self.offset = rows.end - height;
+        if *height == 0 || rows.start < *offset || rows.len() > *height {
+            *offset = rows.start;
+        } else if rows.end > *offset + *height {
+            *offset = rows.end - *height;
         }
-    }
-
-    pub fn scroll_down(&mut self, n: usize) {
-        self.offset = self.offset.saturating_add(n);
-    }
-
-    pub fn scroll_up(&mut self, n: usize) {
-        self.offset = self.offset.saturating_sub(n);
-    }
-
-    pub fn page_height(&self) -> usize {
-        self.height.max(1)
-    }
-
-    // Keeps the offset within the `count` lines shown in `height`; the rows to render.
-    pub fn fit(&mut self, count: usize, height: usize) -> Range<usize> {
-        self.height = height;
-        self.offset = self.offset.min(count.saturating_sub(height));
-        self.offset..self.offset + height
     }
 
     // The rows highlighted: the selected line, else the selected hunk.

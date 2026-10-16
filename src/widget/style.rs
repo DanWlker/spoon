@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::color::ColorTheme;
+use crate::{color::ColorTheme, event::UserEvent};
 
 // The title of a panel, like "[1] Unstaged (3)": a badge while it has the focus.
 // `extra`, like "· 2 picked", follows it.
@@ -56,18 +56,6 @@ pub fn focused_title<'a>(
     match theme.panel_title_focused_bg {
         Color::Reset => span,
         bg => span.bg(bg),
-    }
-}
-
-// The title of a popup in `color`, styled like the focused title: text alone, or a badge.
-pub fn popup_title<'a>(
-    text: impl Into<std::borrow::Cow<'a, str>>,
-    color: Color,
-    theme: &ColorTheme,
-) -> Span<'a> {
-    match theme.panel_title_focused_bg {
-        Color::Reset => Span::raw(text).fg(color).bold(),
-        _ => badge(text, color, theme),
     }
 }
 
@@ -186,6 +174,57 @@ pub fn render_scrollbar(
     let style = Style::default().fg(fg);
     for y in top..top + thumb {
         buf.set_string(column.x, column.y + y as u16, "█", style);
+    }
+}
+
+// The scroll of rows shown `height` at a time from `offset`: text, a diff or a file's preview.
+#[derive(Debug, Default, Clone)]
+pub struct ScrollState {
+    pub offset: usize,
+    // of the last render, 0 before it
+    pub height: usize,
+}
+
+impl ScrollState {
+    // Keeps the offset within the `count` rows shown in `height`, the last one at the bottom; the
+    // rows to render.
+    pub fn fit(&mut self, count: usize, height: usize) -> std::ops::Range<usize> {
+        self.height = height;
+        self.offset = self.offset.min(count.saturating_sub(height));
+        self.offset..self.offset + height
+    }
+
+    pub fn scroll(&mut self, rows: isize) {
+        self.offset = self.offset.saturating_add_signed(rows);
+    }
+
+    // Scrolls by the scroll keys: a line, a page of the rows shown, or half of one; returns
+    // whether `event` was one of them.
+    pub fn handle_scroll(&mut self, event: UserEvent) -> bool {
+        let page = self.height.max(1) as isize;
+        let rows = match event {
+            UserEvent::ScrollDown => 1,
+            UserEvent::ScrollUp => -1,
+            UserEvent::PageDown => page,
+            UserEvent::PageUp => -page,
+            UserEvent::HalfPageDown => page / 2,
+            UserEvent::HalfPageUp => -page / 2,
+            _ => return false,
+        };
+        self.scroll(rows);
+        true
+    }
+
+    // Scrolls text with nothing to select by the movement keys too, to the top and the bottom.
+    pub fn handle_event(&mut self, event: UserEvent) -> bool {
+        match event {
+            UserEvent::NavigateDown => self.scroll(1),
+            UserEvent::NavigateUp => self.scroll(-1),
+            UserEvent::GoToTop => self.offset = 0,
+            UserEvent::GoToBottom => self.offset = usize::MAX,
+            _ => return self.handle_scroll(event),
+        }
+        true
     }
 }
 

@@ -68,6 +68,19 @@ pub fn typing_hints(searching_commits: bool) -> Vec<KeyHint> {
     hints
 }
 
+// Copies a commit hash: short, or in full with `full`.
+pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
+    let (name, value) = if full {
+        ("Commit SHA", hash.as_str())
+    } else {
+        ("Commit SHA (short)", hash.as_short_hash())
+    };
+    AppEvent::CopyToClipboard {
+        name: name.into(),
+        value: value.into(),
+    }
+}
+
 // Copies the path of a file in the repository: relative to its top, or absolute with `full`.
 pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
     // the root row of the local changes stands for the whole repository

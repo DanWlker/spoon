@@ -8,8 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph, StatefulWidget, Widget},
 };
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent};
-use tui_input::{backend::crossterm::EventHandler, Input};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     app::AppContext,
@@ -28,9 +27,10 @@ use crate::{
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
         },
+        git_dialog::{CommitPreview, GitDialog},
         style::{
-            badge, change_color, mark_selected_row, panel_block, panel_title, popup_title,
-            render_panel_scrollbar, render_popup, tree_panel_width,
+            badge, change_color, mark_selected_row, panel_block, panel_title,
+            render_panel_scrollbar, tree_panel_width,
         },
         text_area::TextArea,
         tree_query::{
@@ -61,26 +61,6 @@ pub enum ExternalRequest {
     Editor(PathBuf),
     // a path relative to the top of the working tree
     MergeTool(String),
-}
-
-// An action waiting for the user to confirm it in a popup.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConfirmAction {
-    Discard,
-    Abort(Operation),
-    Commit(Box<CommitPreview>),
-}
-
-// The commit to make, shown in the popup confirming it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommitPreview {
-    // "Commit to", "Amend the last commit on", "Commit the merge on"
-    action: String,
-    branch: String,
-    amend: bool,
-    subject: String,
-    body: Vec<String>,
-    files: Vec<(LocalChangeStatus, String)>,
 }
 
 // The commit section's contents, kept across refreshes.
@@ -155,9 +135,6 @@ fn file_tree(files: &[LocalChangeFile]) -> FileTree {
     FileTree::new(files.iter().map(|f| f.path.as_str()))
 }
 
-// The lines of the message, and the files, shown in the popup confirming a commit.
-const COMMIT_PREVIEW_LINES: usize = 6;
-
 // What is kept of the page while it isn't shown, or across a refresh.
 #[derive(Debug, Clone)]
 pub struct LocalChangesSnapshot {
@@ -206,19 +183,14 @@ pub struct LocalChangesState<'a> {
     draft: CommitDraft,
     // a rebase stopped to edit a commit, which committing amends before going on
     editing_commit: bool,
-    // set once a stash is made, until the view picks it up to refresh the repository
-    needs_refresh: bool,
     // a git command for the app to run in the background, see `take_task`
     task: Option<GitTask>,
     // the cursor moved to another row, whose diff loads once used, see `move_cursor`
     diff_stale: bool,
     // the fingerprint of the files as loaded, see `reload_if_changed`
     files_stamp: u64,
-    // the message typed before stashing, see `start_stash`
-    stash_input: Option<Input>,
-
-    // the action and question shown in a popup while waiting for the user to confirm
-    confirm: Option<(ConfirmAction, String)>,
+    // a popup confirming a git command for the view to open, like a commit, see `take_dialog`
+    dialog: Option<GitDialog>,
     // the two sides of the conflicted file under the cursor, shown instead of its diff
     conflict: Option<ConflictView>,
     conflict_item: ConflictItem,
@@ -257,12 +229,10 @@ impl<'a> LocalChangesState<'a> {
             diff_query: TreeQuery::default(),
             draft: CommitDraft::default(),
             editing_commit: false,
-            needs_refresh: false,
             task: None,
             diff_stale: false,
             files_stamp,
-            stash_input: None,
-            confirm: None,
+            dialog: None,
             conflict: None,
             conflict_item: ConflictItem::Existing,
             external_request: None,
@@ -404,18 +374,17 @@ impl<'a> LocalChangesState<'a> {
             .changes
             .staged
             .iter()
-            .map(|f| (f.status, f.path.clone()))
+            .map(|f| (status_symbol(f.status).to_string(), f.path.clone()))
             .collect();
         let preview = CommitPreview {
-            action: action.clone(),
-            branch: branch.clone(),
+            action,
+            branch,
             amend,
             subject,
             body,
             files,
         };
-        let prompt = format!("{action} {branch}");
-        self.confirm = Some((ConfirmAction::Commit(Box::new(preview)), prompt));
+        self.dialog = Some(GitDialog::commit(preview, self.commit_task()?));
         Ok(())
     }
 
@@ -437,11 +406,7 @@ impl<'a> LocalChangesState<'a> {
         let Some(operation) = self.operation else {
             return Err("No rebase, merge, cherry-pick or revert in progress".into());
         };
-        let prompt = format!(
-            "Abort the {} and go back to where it started?",
-            operation.name()
-        );
-        self.confirm = Some((ConfirmAction::Abort(operation), prompt));
+        self.dialog = Some(GitDialog::abort(operation.name()));
         Ok(())
     }
 
@@ -480,9 +445,9 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked, then
-    // goes on with the rebase, cherry-pick or revert it concludes a stop of; the app runs it, see
-    // `take_task`, and clears the message once the commit is made.
-    pub fn commit(&mut self) -> Result<(), String> {
+    // goes on with the rebase, cherry-pick or revert it concludes a stop of; the app runs it and
+    // clears the message once the commit is made.
+    fn commit_task(&self) -> Result<GitTask, String> {
         self.check_commit()?;
         let amend = self.draft.amend_base.is_some();
         // the message is read from stdin so no editor is opened
@@ -498,19 +463,23 @@ impl<'a> LocalChangesState<'a> {
         } else {
             ("Committing", "Committed")
         };
-        self.task = Some(GitTask {
+        Ok(GitTask {
             commands: std::iter::once(commit).chain(continued).collect(),
             input: Some(self.draft.message.text()),
             running: running.into(),
             done: done.into(),
             ..Default::default()
-        });
-        Ok(())
+        })
     }
 
-    // The git command for the app to run in the background, like a commit.
+    // The git command for the app to run in the background, like continuing a rebase.
     pub fn take_task(&mut self) -> Option<GitTask> {
         self.task.take()
+    }
+
+    // The popup for the app to open, confirming a git command like a commit.
+    pub fn take_dialog(&mut self) -> Option<GitDialog> {
+        self.dialog.take()
     }
 
     // Runs the git command asked for as the app does, see `App::finish_task`, then reloads.
@@ -529,11 +498,6 @@ impl<'a> LocalChangesState<'a> {
     // Empties the message box and stops amending, once the commit is made.
     pub fn clear_draft(&mut self) {
         self.draft = CommitDraft::default();
-    }
-
-    // Returns true once after the repository may have changed, by a commit, stash, continue or abort.
-    pub fn take_needs_refresh(&mut self) -> bool {
-        std::mem::take(&mut self.needs_refresh)
     }
 
     // Picks or unpicks the row under the cursor, for actions on several files.
@@ -582,83 +546,35 @@ impl<'a> LocalChangesState<'a> {
             .collect()
     }
 
-    // Starts typing a stash message; Enter stashes the picked files, or else all changes.
+    // Asks for a message to stash the picked files, or else all changes, with.
     pub fn start_stash(&mut self) -> Result<(), String> {
         if self.count() == 0 {
             return Err("No local changes to stash".into());
         }
-        self.stash_input = Some(Input::default());
-        Ok(())
-    }
-
-    pub fn is_typing_stash(&self) -> bool {
-        self.stash_input.is_some()
-    }
-
-    // The stash prompt for the status line: (text, cursor position, hint).
-    pub fn stash_status_input(&self) -> Option<(String, u16, String)> {
-        let input = self.stash_input.as_ref()?;
-        let prefix = "Stash message: ";
-        let cursor = (prefix.len() + input.visual_cursor()) as u16;
-        let target = if self.picked().is_empty() {
-            "all changes".to_string()
-        } else {
-            picked_files_label(self.target_files().len())
-        };
-        let hint = format!("Enter: stash {target}  Esc: cancel");
-        Some((format!("{prefix}{}", input.value()), cursor, hint))
-    }
-
-    pub fn handle_stash_key(&mut self, key: KeyEvent) -> Result<(), String> {
-        let Some(input) = self.stash_input.as_mut() else {
-            return Ok(());
-        };
-        match key.code {
-            KeyCode::Esc => {
-                self.stash_input = None;
-                Ok(())
-            }
-            KeyCode::Enter => {
-                let message = input.value().trim().to_string();
-                self.stash_input = None;
-                let result = self.stash(&message);
-                self.reload();
-                result
-            }
-            _ => {
-                input.handle_event(&Event::Key(key));
-                Ok(())
-            }
-        }
-    }
-
-    fn stash(&mut self, message: &str) -> Result<(), String> {
-        let paths: Vec<&str> = if self.picked().is_empty() {
-            Vec::new()
+        let (target, paths) = if self.picked().is_empty() {
+            ("all changes".to_string(), vec![])
         } else {
             let targets = self.target_files();
             if targets.is_empty() {
-                return Ok(());
+                return Err("No local changes in the picked files".into());
             }
-            let mut paths = file_paths(&targets);
-            paths.extend(targets.iter().filter_map(|f| f.orig_path.as_deref()));
-            paths
+            let mut paths: Vec<String> = targets.iter().map(|f| f.path.clone()).collect();
+            paths.extend(targets.iter().filter_map(|f| f.orig_path.clone()));
+            (picked_files_label(targets.len()), paths)
         };
-        self.repository.stash_push(&paths, message)?;
-        self.clear_picks();
-        self.needs_refresh = true;
+        self.dialog = Some(GitDialog::stash(target, paths));
         Ok(())
     }
 
     // Asks for confirmation to discard the selected unstaged line, hunk, file or directory.
-    pub fn request_discard(&mut self) {
+    pub fn request_discard(&mut self) -> Result<(), String> {
         if matches!(self.focus, Focus::Commit { .. } | Focus::Conflict)
             || self.section != LocalChangesSection::Unstaged
         {
-            return;
+            return Ok(());
         }
         let Some(row) = self.selected_row() else {
-            return;
+            return Ok(());
         };
         let path = if !self.picked().is_empty() && !self.is_diff_focused() {
             picked_files_label(self.target_files().len())
@@ -672,68 +588,25 @@ impl<'a> LocalChangesState<'a> {
             Focus::Hunks => "this hunk of",
             _ => "all changes to",
         };
-        self.confirm = Some((ConfirmAction::Discard, format!("Discard {target} {path}?")));
-    }
-
-    pub fn is_confirming(&self) -> bool {
-        self.confirm.is_some()
-    }
-
-    #[cfg(test)]
-    fn confirm_prompt(&self) -> Option<&str> {
-        self.confirm.as_ref().map(|(_, prompt)| prompt.as_str())
-    }
-
-    // Enter confirms, Esc cancels; other keys are ignored.
-    pub fn handle_confirm_key(&mut self, key: KeyEvent) -> Result<(), String> {
-        match key.code {
-            KeyCode::Enter => self.confirm(),
-            KeyCode::Esc => {
-                self.confirm = None;
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    // Whether the popup asks to confirm a commit, which the commit key confirms too.
-    pub fn is_confirming_commit(&self) -> bool {
-        matches!(self.confirm, Some((ConfirmAction::Commit(_), _)))
-    }
-
-    // Runs the action waiting for confirmation.
-    pub fn confirm(&mut self) -> Result<(), String> {
-        let Some((action, _)) = self.confirm.take() else {
+        let Some(task) = self.discard_task()? else {
             return Ok(());
         };
-        let result = match action {
-            ConfirmAction::Discard => {
-                let picked_files = !self.is_diff_focused();
-                let result = self.discard();
-                if picked_files && result.is_ok() {
-                    self.clear_picks();
-                }
-                result
-            }
-            ConfirmAction::Abort(operation) => {
-                let name = operation.name();
-                self.task = Some(GitTask {
-                    commands: vec![vec![name.to_string(), "--abort".into()]],
-                    running: format!("Aborting the {name}"),
-                    done: format!("Aborted the {name}"),
-                    ..Default::default()
-                });
-                return Ok(());
-            }
-            // reloads itself
-            ConfirmAction::Commit(_) => return self.commit(),
-        };
-        self.reload();
-        result
+        self.dialog = Some(GitDialog::discard(format!("Discard {target} {path}"), task));
+        Ok(())
     }
 
-    // Unstaged changes are between the index and the working tree, so discarding reverts the working tree.
-    fn discard(&self) -> Result<(), String> {
+    // Unstaged changes are between the index and the working tree, so discarding reverts the
+    // working tree; None when there is nothing to discard.
+    fn discard_task(&self) -> Result<Option<GitTask>, String> {
+        let task = |commands, input| GitTask {
+            commands,
+            input,
+            running: "Discarding changes".into(),
+            done: "Discarded changes".into(),
+            // in the diff, the page stays on it
+            keeps_view: self.is_diff_focused(),
+            ..Default::default()
+        };
         if self.is_diff_focused() {
             // the other changed lines stay in the working tree, like when unstaging from the index
             let patch = if self.focus == Focus::Lines {
@@ -741,10 +614,8 @@ impl<'a> LocalChangesState<'a> {
             } else {
                 self.cursor.selected_hunk(&self.diff).map(DiffHunk::patch)
             };
-            return match patch {
-                Some(patch) => self.repository.apply_patch_to_worktree(&patch, true),
-                None => Ok(()),
-            };
+            let apply = ["apply", "--reverse", "-"].map(String::from).to_vec();
+            return Ok(patch.map(|patch| task(vec![apply], Some(patch))));
         }
 
         let files = self.target_files();
@@ -761,11 +632,12 @@ impl<'a> LocalChangesState<'a> {
                 .map(|f| f.path.as_str())
                 .collect()
         };
-        self.repository.discard_paths(
+        let commands = self.repository.discard_commands(
             &with_status(None),
             &with_status(Some(LocalChangeStatus::Untracked)),
             &with_status(Some(LocalChangeStatus::Conflicted)),
-        )
+        )?;
+        Ok((!commands.is_empty()).then(|| task(commands, None)))
     }
 
     // Turning amend on shows the changes of HEAD in the staged section, combined with what is staged,
@@ -858,21 +730,6 @@ impl<'a> LocalChangesState<'a> {
         use UserEvent::*;
         let h =
             |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
-        if let Some((action, _)) = &self.confirm {
-            return match action {
-                ConfirmAction::Commit(preview) => {
-                    let verb = if preview.amend { "amend" } else { "commit" };
-                    vec![h(&[Confirm, Commit], verb), h(&[Cancel], "cancel")]
-                }
-                ConfirmAction::Abort(_) => vec![h(&[Confirm], "abort"), h(&[Cancel], "cancel")],
-                ConfirmAction::Discard => {
-                    vec![h(&[Confirm], "discard"), h(&[Cancel], "cancel")]
-                }
-            };
-        }
-        if self.is_typing_stash() {
-            return vec![h(&[Confirm], "stash"), h(&[Cancel], "cancel")];
-        }
         if self.is_typing_query() {
             return crate::view::typing_hints(false);
         }
@@ -1131,16 +988,9 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    pub fn scroll_diff_down(&mut self, n: usize) {
-        self.cursor.scroll_down(n);
-    }
-
-    pub fn scroll_diff_up(&mut self, n: usize) {
-        self.cursor.scroll_up(n);
-    }
-
-    pub fn diff_page_height(&self) -> usize {
-        self.cursor.page_height()
+    // Scrolls the diff by the scroll keys; returns whether `event` was one.
+    pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
+        self.cursor.scroll.handle_scroll(event)
     }
 
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
@@ -1230,12 +1080,14 @@ impl<'a> LocalChangesState<'a> {
         self.operation = self.repository.operation_in_progress();
         self.prepare_message();
         self.sync_edit_stop();
-        self.sections[0]
-            .tree
-            .set_tree(file_tree(&self.changes.unstaged));
-        self.sections[1]
-            .tree
-            .set_tree(file_tree(&self.changes.staged));
+        let files = [&self.changes.unstaged, &self.changes.staged];
+        for (section, files) in self.sections.iter_mut().zip(files) {
+            section.tree.set_tree(file_tree(files));
+            // the picks with no changes left, discarded or stashed, go
+            section
+                .picked
+                .retain(|p| files.iter().any(|f| path_contains(p, &f.path)));
+        }
 
         let focus = self.focus;
         let selected = self.cursor.clone();
@@ -1640,18 +1492,6 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
     }
 }
 
-impl LocalChangesPanel<'_> {
-    // The popup asking to confirm a commit or a discard, in the middle of `area`.
-    pub fn render_popup(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
-        if let Some((action, prompt)) = &state.confirm {
-            match action {
-                ConfirmAction::Commit(preview) => self.render_commit_popup(preview, area, buf),
-                _ => self.render_confirm_popup(action, prompt, area, buf),
-            }
-        }
-    }
-}
-
 // the message with 3 lines and the borders
 const COMMIT_AREA_HEIGHT: u16 = 3 + 2;
 
@@ -1795,7 +1635,7 @@ impl LocalChangesPanel<'_> {
         } else {
             1
         };
-        let range = state.cursor.fit(count, inner.height as usize);
+        let range = state.cursor.scroll.fit(count, inner.height as usize);
         let offset = range.start;
         let theme = &self.ctx.color_theme;
         render_panel_scrollbar(buf, area, count, offset, diff_focused, theme);
@@ -1923,7 +1763,7 @@ impl LocalChangesPanel<'_> {
             block.render(side_area, buf);
             height = content_area.height as usize;
             let longest = conflict.ours.len().max(conflict.theirs.len());
-            let range = state.cursor.fit(longest, height);
+            let range = state.cursor.scroll.fit(longest, height);
             let lines: Vec<Line> = lines
                 .iter()
                 .skip(range.start)
@@ -1938,7 +1778,7 @@ impl LocalChangesPanel<'_> {
                 .collect();
             Paragraph::new(lines).render(content_area, buf);
         }
-        state.cursor.height = height;
+        state.cursor.scroll.height = height;
 
         let tool = match &self.ctx.core_config.git.merge_tool {
             Some(tool) => format!("  Edit in merge tool ({tool})  "),
@@ -1969,102 +1809,6 @@ impl LocalChangesPanel<'_> {
         }
     }
 
-    fn render_confirm_popup(
-        &self,
-        action: &ConfirmAction,
-        prompt: &str,
-        area: Rect,
-        buf: &mut Buffer,
-    ) {
-        let theme = &self.ctx.color_theme;
-        let title = match action {
-            ConfirmAction::Abort(_) => "Abort",
-            _ => "Discard changes",
-        };
-        let lines = vec![
-            Line::raw(""),
-            Line::raw(prompt.to_string()).fg(theme.fg).bold(),
-            Line::raw("This cannot be undone.").fg(theme.status_error_fg),
-            Line::raw(""),
-        ];
-        let title = popup_title(format!(" {title} "), theme.status_error_fg, theme);
-        render_popup(
-            title,
-            theme.status_error_fg,
-            lines,
-            POPUP_WIDTHS,
-            area,
-            buf,
-            theme,
-        );
-    }
-
-    // The commit to make: on which branch, the message, the files; like the popups of git commands.
-    fn render_commit_popup(&self, preview: &CommitPreview, area: Rect, buf: &mut Buffer) {
-        let theme = &self.ctx.color_theme;
-        let dim = Style::default().fg(theme.status_input_transient_fg);
-        let (title, color) = if preview.amend {
-            ("Amend", theme.status_warn_fg)
-        } else {
-            ("Commit", theme.accent_fg)
-        };
-
-        let mut lines = vec![
-            Line::raw(""),
-            Line::from(vec![
-                Span::raw(format!("{} ", preview.action))
-                    .fg(theme.fg)
-                    .bold(),
-                Span::raw(preview.branch.clone())
-                    .fg(theme.highlight_fg)
-                    .bold(),
-            ]),
-            Line::raw(""),
-        ];
-        // the message beside a bar, like the selected field of a popup
-        let bar = || Span::raw("┃ ").fg(color);
-        lines.push(Line::from(vec![
-            bar(),
-            Span::raw(preview.subject.clone()).fg(theme.fg).bold(),
-        ]));
-        if !preview.body.is_empty() {
-            lines.push(Line::from(bar()));
-        }
-        for line in preview.body.iter().take(COMMIT_PREVIEW_LINES) {
-            lines.push(Line::from(vec![bar(), Span::styled(line.clone(), dim)]));
-        }
-        if preview.body.len() > COMMIT_PREVIEW_LINES {
-            lines.push(Line::from(vec![bar(), Span::styled("…", dim)]));
-        }
-        lines.push(Line::raw(""));
-
-        let count = preview.files.len();
-        lines.push(Line::styled(
-            match count {
-                0 => "No staged changes".to_string(),
-                1 => "1 staged file".to_string(),
-                n => format!("{n} staged files"),
-            },
-            dim,
-        ));
-        for (status, path) in preview.files.iter().take(COMMIT_PREVIEW_LINES) {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::raw(status_symbol(*status))
-                    .fg(self.status_color(*status))
-                    .bold(),
-                Span::raw(format!(" {path}")).fg(theme.fg),
-            ]));
-        }
-        if count > COMMIT_PREVIEW_LINES {
-            let more = format!("  … {} more", count - COMMIT_PREVIEW_LINES);
-            lines.push(Line::styled(more, dim));
-        }
-        lines.push(Line::raw(""));
-        let title = popup_title(format!(" {title} "), color, theme);
-        render_popup(title, color, lines, POPUP_WIDTHS, area, buf, theme);
-    }
-
     fn render_message(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
             return;
@@ -2086,9 +1830,6 @@ impl LocalChangesPanel<'_> {
         change_color(status_symbol(status), &self.ctx.color_theme)
     }
 }
-
-// The width of the text of its popups; longer lines are cut.
-const POPUP_WIDTHS: (usize, usize) = (44, 80);
 
 fn status_symbol(status: LocalChangeStatus) -> &'static str {
     match status {
@@ -2116,6 +1857,29 @@ mod tests {
 
     fn numbered_lines(n: usize) -> String {
         (1..=n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    // The git command of the popup asked for, to run as confirming it does, see `run_task`.
+    fn confirm(state: &mut LocalChangesState) -> Result<(), String> {
+        let dialog = state.take_dialog().expect("a popup asking to confirm");
+        state.task = Some(dialog.command()?);
+        Ok(())
+    }
+
+    // Confirms the popup asked for and runs its git command.
+    fn confirm_and_run(state: &mut LocalChangesState) -> Result<(), String> {
+        confirm(state)?;
+        state.run_task()
+    }
+
+    fn commit(state: &mut LocalChangesState) -> Result<(), String> {
+        state.task = Some(state.commit_task()?);
+        Ok(())
+    }
+
+    // The question of the popup asked for.
+    fn prompt(state: &LocalChangesState) -> Option<String> {
+        state.dialog.as_ref()?.intro().first().cloned()
     }
 
     fn select_row(state: &mut LocalChangesState, path: &str) {
@@ -2510,12 +2274,12 @@ mod tests {
 
         // nothing staged, then no message
         state.draft.message = TextArea::new("first change");
-        assert!(state.commit().is_err());
+        assert!(commit(&mut state).is_err());
         fs::write(repo_path.join("a.txt"), "a\n")?;
         git.add(&["a.txt"]);
         state.reload();
         state.draft.message = TextArea::new("  \n");
-        assert!(state.commit().is_err());
+        assert!(commit(&mut state).is_err());
 
         // c with an empty message starts typing it instead
         state.draft.message = TextArea::default();
@@ -2534,27 +2298,29 @@ mod tests {
         state.back();
         state.draft.message = TextArea::new("typed");
         state.enter()?;
-        assert!(state.is_confirming_commit());
-        state.handle_confirm_key(KeyEvent::from(KeyCode::Esc))?;
-        assert!(!state.is_confirming());
+        assert!(state
+            .dialog
+            .as_ref()
+            .and_then(GitDialog::commit_preview)
+            .is_some());
+        state.take_dialog();
         assert!(state.is_commit_focused());
         state.back();
 
         // c with a message asks to confirm the commit, showing it
         state.draft.message = TextArea::new("first change\n\nbody");
         state.commit_or_continue()?;
-        assert!(state.is_confirming_commit());
-        assert_eq!(state.confirm_prompt(), Some("Commit to master"));
-        let Some((ConfirmAction::Commit(preview), _)) = &state.confirm else {
+        let Some(preview) = state.dialog.as_ref().and_then(GitDialog::commit_preview) else {
             panic!("no commit to confirm");
         };
+        assert_eq!(
+            (preview.action.as_str(), preview.branch.as_str()),
+            ("Commit to", "master")
+        );
         assert_eq!(preview.subject, "first change");
         assert_eq!(preview.body, vec!["body"]);
-        assert_eq!(
-            preview.files,
-            vec![(LocalChangeStatus::Added, "a.txt".to_string())]
-        );
-        state.confirm()?;
+        assert_eq!(preview.files, vec![("A".to_string(), "a.txt".to_string())]);
+        confirm(&mut state)?;
         state.run_task()?;
         assert_eq!(
             git_stdout(repo_path, &["log", "-1", "--format=%B"]),
@@ -2568,7 +2334,7 @@ mod tests {
         git.add(&["b.txt"]);
         state.reload();
         state.toggle_amend()?;
-        state.commit()?;
+        commit(&mut state)?;
         state.run_task()?;
         assert_eq!(git_stdout(repo_path, &["rev-list", "--count", "HEAD"]), "2");
         assert_eq!(
@@ -2607,15 +2373,13 @@ mod tests {
         // cancelling keeps the changes
         select_row(&mut state, "a.txt");
         state.enter()?;
-        state.request_discard();
-        assert!(state.is_confirming());
-        state.handle_confirm_key(key(KeyCode::Esc))?;
-        assert!(!state.is_confirming());
+        state.request_discard()?;
+        assert!(state.take_dialog().is_some());
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, modified);
 
         // discard the first hunk
-        state.request_discard();
-        state.handle_confirm_key(key(KeyCode::Enter))?;
+        state.request_discard()?;
+        confirm_and_run(&mut state)?;
         let content = fs::read_to_string(repo_path.join("a.txt"))?;
         assert!(content.contains("line 2\n") && content.contains("line twenty-eight\n"));
         assert_eq!(state.diff.hunks.len(), 1);
@@ -2623,8 +2387,8 @@ mod tests {
         // discard only the removal of "line 28", which brings it back next to the added line
         state.enter()?;
         state.enter()?;
-        state.request_discard();
-        state.handle_confirm_key(key(KeyCode::Enter))?;
+        state.request_discard()?;
+        confirm_and_run(&mut state)?;
         let content = fs::read_to_string(repo_path.join("a.txt"))?;
         assert!(content.contains("line 28\nline twenty-eight\n"));
 
@@ -2632,16 +2396,16 @@ mod tests {
         state.back();
         state.back();
         select_row(&mut state, "dir");
-        state.request_discard();
-        state.handle_confirm_key(key(KeyCode::Enter))?;
+        state.request_discard()?;
+        confirm_and_run(&mut state)?;
         assert!(!repo_path.join("dir/u.txt").exists());
 
         // nothing is discarded from the staged section
         git.add(&["a.txt"]);
         state.reload();
         state.focus_section(LocalChangesSection::Staged);
-        state.request_discard();
-        assert!(!state.is_confirming());
+        state.request_discard()?;
+        assert!(state.dialog.is_none());
 
         Ok(())
     }
@@ -2684,12 +2448,12 @@ mod tests {
         // discard all
         state.focus_section(LocalChangesSection::Unstaged);
         select_row(&mut state, ROOT_PATH);
-        state.request_discard();
+        state.request_discard()?;
         assert_eq!(
-            state.confirm_prompt(),
-            Some("Discard all changes to all files?")
+            prompt(&state),
+            Some("Discard all changes to all files".into())
         );
-        state.handle_confirm_key(key(KeyCode::Enter))?;
+        confirm_and_run(&mut state)?;
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "a\n");
         assert!(!repo_path.join("u.txt").exists());
@@ -2900,12 +2664,12 @@ mod tests {
         state.clear_picks();
         select_row(&mut state, "b.txt");
         state.toggle_pick();
-        state.request_discard();
+        state.request_discard()?;
         assert_eq!(
-            state.confirm_prompt(),
-            Some("Discard all changes to 1 picked file?")
+            prompt(&state),
+            Some("Discard all changes to 1 picked file".into())
         );
-        state.handle_confirm_key(key(KeyCode::Enter))?;
+        confirm_and_run(&mut state)?;
         assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
 
         // unstage picked files
@@ -2958,25 +2722,23 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.toggle_pick();
         state.start_stash()?;
-        let (_, _, hint) = state.stash_status_input().unwrap();
-        assert_eq!(hint, "Enter: stash 1 picked file  Esc: cancel");
+        assert_eq!(prompt(&state), Some("Stash 1 picked file".into()));
+        let dialog = state.dialog.as_mut().unwrap();
         for c in "only a".chars() {
-            state.handle_stash_key(key(KeyCode::Char(c)))?;
+            dialog.handle_key(None, key(KeyCode::Char(c)));
         }
-        state.handle_stash_key(key(KeyCode::Enter))?;
-        assert!(state.take_needs_refresh());
+        confirm_and_run(&mut state)?;
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "u.txt"]);
         assert!(git_stdout(repo_path, &["stash", "list"]).contains("only a"));
 
-        // esc cancels
+        // cancelling stashes nothing
         state.start_stash()?;
-        state.handle_stash_key(key(KeyCode::Esc))?;
-        assert!(!state.is_typing_stash());
+        state.take_dialog();
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "u.txt"]);
 
         // without picks, everything is stashed, including untracked files
         state.start_stash()?;
-        state.handle_stash_key(key(KeyCode::Enter))?;
+        confirm_and_run(&mut state)?;
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(git_stdout(repo_path, &["stash", "list"]).lines().count(), 2);
 
@@ -3060,16 +2822,15 @@ mod tests {
 
         state.request_abort()?;
         assert_eq!(
-            state.confirm_prompt(),
-            Some("Abort the rebase and go back to where it started?")
+            prompt(&state),
+            Some("Abort the rebase and go back to where it started".into())
         );
         // cancelling keeps rebasing
-        state.handle_confirm_key(key(KeyCode::Esc))?;
+        state.take_dialog();
         assert_eq!(state.operation, Some(Operation::Rebase));
 
         state.request_abort()?;
-        state.handle_confirm_key(key(KeyCode::Enter))?;
-        state.run_task()?;
+        confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(
@@ -3132,13 +2893,13 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "a.txt");
-        state.scroll_diff_down(3);
+        state.cursor.scroll.scroll(3);
         // as loaded in the background
         let files = || FilesSnapshot::load(repo_path, repository.git_dir());
 
         // nothing changed: the diff stays scrolled
         state.reload_if_changed(files());
-        assert_eq!(state.cursor.offset, 3);
+        assert_eq!(state.cursor.scroll.offset, 3);
 
         // the file changed, still modified: the diff is loaded again
         fs::write(
@@ -3146,7 +2907,7 @@ mod tests {
             numbered_lines(30).replace("line 3\n", "three\n"),
         )?;
         state.reload_if_changed(files());
-        assert_eq!(state.cursor.offset, 0);
+        assert_eq!(state.cursor.scroll.offset, 0);
         assert!(state.diff.raw.contains("+three"));
         Ok(())
     }
@@ -3165,12 +2926,12 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         // all files: the conflicted a.txt goes back to HEAD, the others are discarded too
-        state.request_discard();
+        state.request_discard()?;
         assert_eq!(
-            state.confirm_prompt(),
-            Some("Discard all changes to all files?")
+            prompt(&state),
+            Some("Discard all changes to all files".into())
         );
-        state.handle_confirm_key(key(KeyCode::Enter))?;
+        confirm_and_run(&mut state)?;
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "master\n");
         assert_eq!(fs::read_to_string(repo_path.join("c.txt"))?, "c\n");
         assert!(state.changes.unstaged.is_empty());
@@ -3202,8 +2963,7 @@ mod tests {
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
-        state.confirm()?;
-        state.run_task()?;
+        confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         // a merge commit, with both parents
         let parents = git_stdout(repo_path, &["log", "-1", "--format=%p"]);
@@ -3217,11 +2977,10 @@ mod tests {
         state.reload();
         state.request_abort()?;
         assert_eq!(
-            state.confirm_prompt(),
-            Some("Abort the merge and go back to where it started?")
+            prompt(&state),
+            Some("Abort the merge and go back to where it started".into())
         );
-        state.handle_confirm_key(key(KeyCode::Enter))?;
-        state.run_task()?;
+        confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         assert_eq!(git_stdout(repo_path, &["rev-parse", "HEAD"]), before);
         Ok(())
@@ -3242,8 +3001,7 @@ mod tests {
 
         resolve_and_stage(&mut state, repo_path);
         state.commit_or_continue()?;
-        state.confirm()?;
-        state.run_task()?;
+        confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         assert_eq!(
             git_stdout(repo_path, &["log", "--format=%s", "-3"]),
@@ -3274,8 +3032,7 @@ mod tests {
             .starts_with("Revert \"feature change\""));
 
         state.request_abort()?;
-        state.handle_confirm_key(key(KeyCode::Enter))?;
-        state.run_task()?;
+        confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         assert!(state.request_abort().is_err());
         Ok(())

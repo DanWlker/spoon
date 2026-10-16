@@ -14,11 +14,11 @@ use crate::{
     keybind::Scope,
     layout::{fit_size, Direction, Panel},
     view::{
-        copy_path, graph_hints, handle_search_event, typing_hints, ListRefreshViewContext,
-        RefreshViewContext,
+        copy_hash, copy_path, graph_hints, handle_search_event, typing_hints,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
-        commit_detail::{CommitDetail, CommitDetailState},
+        commit_detail::CommitDetail,
         commit_list::{
             commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
         },
@@ -28,7 +28,7 @@ use crate::{
         },
         diff::{Step, CONVERTED_DIFF},
         file_tree::{FileTreeState, SearchDirection},
-        style::panel_block,
+        style::{panel_block, ScrollState},
         tree_query::{QueryChange, QueryKind, TreeQuery},
     },
 };
@@ -50,7 +50,7 @@ pub enum DetailFocus {
 #[derive(Debug)]
 pub struct DetailView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
-    commit_detail_state: CommitDetailState,
+    commit_detail_state: ScrollState,
     tab: DetailTab,
     changes_state: CommitChangesState<'a>,
     files_state: CommitFilesState<'a>,
@@ -92,7 +92,7 @@ impl<'a> DetailView<'a> {
         let hash = commit.commit_hash.clone();
         DetailView {
             commit_list_state: Some(commit_list_state),
-            commit_detail_state: CommitDetailState::default(),
+            commit_detail_state: ScrollState::default(),
             tab: DetailTab::default(),
             changes_state: CommitChangesState::new(repository, hash.clone(), &changes),
             files_state: CommitFilesState::new(repository, &commit, &changes),
@@ -454,46 +454,20 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => self.handle_changes_event(event),
             DetailTab::Files => self.handle_files_event(event),
         };
-        if handled {
+        if handled || self.commit_detail_state.handle_event(event) {
             return;
         }
 
         match event {
-            UserEvent::NavigateDown => {
-                self.commit_detail_state.scroll_down();
-            }
-            UserEvent::NavigateUp => {
-                self.commit_detail_state.scroll_up();
-            }
-            UserEvent::PageDown => {
-                self.commit_detail_state.scroll_page_down();
-            }
-            UserEvent::PageUp => {
-                self.commit_detail_state.scroll_page_up();
-            }
-            UserEvent::HalfPageDown => {
-                self.commit_detail_state.scroll_half_page_down();
-            }
-            UserEvent::HalfPageUp => {
-                self.commit_detail_state.scroll_half_page_up();
-            }
-            UserEvent::GoToTop => {
-                self.commit_detail_state.select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.commit_detail_state.select_last();
-            }
             UserEvent::SelectDown => {
                 self.tx.send(AppEvent::SelectOlderCommit);
             }
             UserEvent::SelectUp => {
                 self.tx.send(AppEvent::SelectNewerCommit);
             }
-            UserEvent::ShortCopy => {
-                self.copy_commit_short_hash();
-            }
-            UserEvent::FullCopy => {
-                self.copy_commit_hash();
+            UserEvent::ShortCopy | UserEvent::FullCopy => {
+                let full = event == UserEvent::FullCopy;
+                self.tx.send(copy_hash(&self.commit.commit_hash, full));
             }
             UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                 self.tx.send(AppEvent::Link {
@@ -673,8 +647,7 @@ impl<'a> DetailView<'a> {
                         }
                     }
                     _ => {
-                        let page = self.changes_state.diff_page_height();
-                        self.scroll_changes_diff(event, page);
+                        self.changes_state.scroll_diff(event);
                     }
                 }
             }
@@ -704,7 +677,6 @@ impl<'a> DetailView<'a> {
 
     // Returns whether the event was handled by the files of the changes tab.
     fn handle_changes_event(&mut self, event: UserEvent) -> bool {
-        let page = self.changes_state.diff_page_height();
         // into the diff; a directory without one opens or closes
         if event == UserEvent::Confirm && self.changes_state.enter() {
             return true;
@@ -713,7 +685,7 @@ impl<'a> DetailView<'a> {
             self.tx.send(AppEvent::NotifyWarn(CONVERTED_DIFF.into()));
             return true;
         }
-        if event == UserEvent::ApplyChange || self.scroll_changes_diff(event, page) {
+        if event == UserEvent::ApplyChange || self.changes_state.scroll_diff(event) {
             return true;
         }
         let state = &mut self.changes_state;
@@ -743,22 +715,6 @@ impl<'a> DetailView<'a> {
             ..Default::default()
         };
         self.tx.send(AppEvent::StartTask(task));
-    }
-
-    // Scrolls the diff of the changes tab, from the files or the diff; returns whether the event
-    // was a scroll.
-    fn scroll_changes_diff(&mut self, event: UserEvent, page: usize) -> bool {
-        let state = &mut self.changes_state;
-        match event {
-            UserEvent::ScrollDown => state.scroll_diff_down(1),
-            UserEvent::ScrollUp => state.scroll_diff_up(1),
-            UserEvent::PageDown => state.scroll_diff_down(page),
-            UserEvent::PageUp => state.scroll_diff_up(page),
-            UserEvent::HalfPageDown => state.scroll_diff_down(page / 2),
-            UserEvent::HalfPageUp => state.scroll_diff_up(page / 2),
-            _ => return false,
-        }
-        true
     }
 
     // Moves in the commit list while it has the focus, showing the details of the selected commit;
@@ -811,17 +767,11 @@ impl<'a> DetailView<'a> {
     // or the preview, and the files.
     fn handle_files_event(&mut self, event: UserEvent) -> bool {
         let state = &mut self.files_state;
-        let page = state.preview_page_height();
         let preview_focused = state.is_preview_focused();
         match event {
             // into the preview of a file; a directory opens or closes
             UserEvent::Confirm if !preview_focused && state.enter() => {}
-            UserEvent::ScrollDown => state.scroll_preview_down(1),
-            UserEvent::ScrollUp => state.scroll_preview_up(1),
-            UserEvent::PageDown => state.scroll_preview_down(page),
-            UserEvent::PageUp => state.scroll_preview_up(page),
-            UserEvent::HalfPageDown => state.scroll_preview_down(page / 2),
-            UserEvent::HalfPageUp => state.scroll_preview_up(page / 2),
+            _ if state.scroll_preview(event) => {}
             _ if preview_focused => return false,
             _ => return handle_tree_event(event, |f| state.update_tree(f)),
         }
@@ -1029,18 +979,8 @@ impl<'a> DetailView<'a> {
         self.changes = changes;
         self.refs = refs;
 
-        self.commit_detail_state.select_first();
+        self.commit_detail_state.offset = 0;
         self.load_tab();
-    }
-
-    fn copy_commit_short_hash(&self) {
-        let selected = &self.commit.commit_hash;
-        self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash().into());
-    }
-
-    fn copy_commit_hash(&self) {
-        let selected = &self.commit.commit_hash;
-        self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {

@@ -8,47 +8,7 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph, StatefulWidget, Widget},
 };
 
-use crate::app::AppContext;
-
-#[derive(Debug, Default)]
-pub struct CommitUserCommandState {
-    height: usize,
-    offset: usize,
-}
-
-impl CommitUserCommandState {
-    pub fn scroll_down(&mut self) {
-        self.offset = self.offset.saturating_add(1);
-    }
-
-    pub fn scroll_up(&mut self) {
-        self.offset = self.offset.saturating_sub(1);
-    }
-
-    pub fn scroll_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height);
-    }
-
-    pub fn scroll_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height);
-    }
-
-    pub fn scroll_half_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height / 2);
-    }
-
-    pub fn scroll_half_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height / 2);
-    }
-
-    pub fn select_first(&mut self) {
-        self.offset = 0;
-    }
-
-    pub fn select_last(&mut self) {
-        self.offset = usize::MAX;
-    }
-}
+use crate::{app::AppContext, widget::style::ScrollState};
 
 pub struct CommitUserCommand<'a> {
     lines: &'a Vec<Line<'a>>,
@@ -62,23 +22,17 @@ impl<'a> CommitUserCommand<'a> {
 }
 
 impl StatefulWidget for CommitUserCommand<'_> {
-    type State = CommitUserCommandState;
+    type State = ScrollState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let content_area_height = area.height as usize;
-        self.update_state(state, self.lines.len(), content_area_height);
+        state.fit(self.lines.len(), area.height as usize);
 
         self.render_user_command_lines(area, buf, state);
     }
 }
 
 impl CommitUserCommand<'_> {
-    fn render_user_command_lines(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut CommitUserCommandState,
-    ) {
+    fn render_user_command_lines(&self, area: Rect, buf: &mut Buffer, state: &mut ScrollState) {
         let lines = self
             .lines
             .iter()
@@ -90,15 +44,5 @@ impl CommitUserCommand<'_> {
             .style(Style::default().fg(self.ctx.color_theme.fg))
             .block(Block::default().padding(Padding::horizontal(1)));
         paragraph.render(area, buf);
-    }
-
-    fn update_state(
-        &self,
-        state: &mut CommitUserCommandState,
-        line_count: usize,
-        area_height: usize,
-    ) {
-        state.height = area_height;
-        state.offset = state.offset.min(line_count.saturating_sub(area_height));
     }
 }

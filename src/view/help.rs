@@ -14,6 +14,7 @@ use crate::{
     config::CoreConfig,
     event::{AppEvent, Sender, UserEvent},
     keybind::KeyBind,
+    widget::style::ScrollState,
 };
 
 // The keys of the whole app, over the page, see `AppShell::help`.
@@ -23,8 +24,7 @@ pub struct HelpView {
     help_value_lines: Vec<Line<'static>>,
     help_key_line_max_width: u16,
 
-    offset: usize,
-    height: usize,
+    scroll: ScrollState,
 
     tx: Sender,
 }
@@ -42,8 +42,7 @@ impl HelpView {
             help_key_lines,
             help_value_lines,
             help_key_line_max_width,
-            offset: 0,
-            height: 0,
+            scroll: ScrollState::default(),
             tx,
         }
     }
@@ -56,31 +55,16 @@ impl HelpView {
             UserEvent::HelpToggle | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseHelp);
             }
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                self.scroll_down();
+            // the help has nothing to select, so these scroll too
+            UserEvent::SelectDown => {
+                self.scroll.scroll(1);
             }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                self.scroll_up();
+            UserEvent::SelectUp => {
+                self.scroll.scroll(-1);
             }
-            UserEvent::PageDown => {
-                self.scroll_page_down();
+            _ => {
+                self.scroll.handle_event(event);
             }
-            UserEvent::PageUp => {
-                self.scroll_page_up();
-            }
-            UserEvent::HalfPageDown => {
-                self.scroll_half_page_down();
-            }
-            UserEvent::HalfPageUp => {
-                self.scroll_half_page_up();
-            }
-            UserEvent::GoToTop => {
-                self.select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.select_last();
-            }
-            _ => {}
         }
     }
 
@@ -102,14 +86,14 @@ impl HelpView {
         let key_lines: Vec<Line> = self
             .help_key_lines
             .iter()
-            .skip(self.offset)
+            .skip(self.scroll.offset)
             .take(area.height as usize)
             .cloned()
             .collect();
         let value_lines: Vec<Line> = self
             .help_value_lines
             .iter()
-            .skip(self.offset)
+            .skip(self.scroll.offset)
             .take(area.height as usize)
             .cloned()
             .collect();
@@ -127,44 +111,9 @@ impl HelpView {
 }
 
 impl HelpView {
-    fn scroll_down(&mut self) {
-        self.offset = self.offset.saturating_add(1);
-    }
-
-    fn scroll_up(&mut self) {
-        self.offset = self.offset.saturating_sub(1);
-    }
-
-    fn scroll_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height);
-    }
-
-    fn scroll_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height);
-    }
-
-    fn scroll_half_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height / 2);
-    }
-
-    fn scroll_half_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height / 2);
-    }
-
-    fn select_first(&mut self) {
-        self.offset = 0;
-    }
-
-    fn select_last(&mut self) {
-        self.offset = usize::MAX;
-    }
-
     fn update_state(&mut self, area: Rect) {
-        self.height = area.height as usize;
-        // the last line stays at the bottom, not scrolled up to the top
-        self.offset = self
-            .offset
-            .min(self.help_key_lines.len().saturating_sub(self.height))
+        self.scroll
+            .fit(self.help_key_lines.len(), area.height as usize);
     }
 }
 

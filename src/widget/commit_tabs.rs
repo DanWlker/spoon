@@ -11,6 +11,7 @@ use ratatui::{
 use crate::{
     app::AppContext,
     color::ColorTheme,
+    event::UserEvent,
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{fit_size, Panel},
     widget::style::{
@@ -252,16 +253,9 @@ impl<'a> CommitChangesState<'a> {
         }
     }
 
-    pub fn scroll_diff_down(&mut self, n: usize) {
-        self.cursor.scroll_down(n);
-    }
-
-    pub fn scroll_diff_up(&mut self, n: usize) {
-        self.cursor.scroll_up(n);
-    }
-
-    pub fn diff_page_height(&self) -> usize {
-        self.cursor.page_height()
+    // Scrolls the diff by the scroll keys; returns whether `event` was one.
+    pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
+        self.cursor.scroll.handle_scroll(event)
     }
 
     // Whether hunks were left out of the diff of the selected file, see
@@ -500,16 +494,9 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    pub fn scroll_preview_down(&mut self, n: usize) {
-        self.cursor.scroll_down(n);
-    }
-
-    pub fn scroll_preview_up(&mut self, n: usize) {
-        self.cursor.scroll_up(n);
-    }
-
-    pub fn preview_page_height(&self) -> usize {
-        self.cursor.page_height()
+    // Scrolls the preview by the scroll keys; returns whether `event` was one.
+    pub fn scroll_preview(&mut self, event: UserEvent) -> bool {
+        self.cursor.scroll.handle_scroll(event)
     }
 
     pub fn is_preview_focused(&self) -> bool {
@@ -529,7 +516,7 @@ impl<'a> CommitFilesState<'a> {
             return self.preview_focused;
         }
         self.preview_focused = true;
-        self.cursor.line = self.cursor.offset;
+        self.cursor.line = self.cursor.scroll.offset;
         true
     }
 
@@ -713,7 +700,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
         }
 
         let count = state.diff.as_ref().map_or(0, diff_line_count);
-        let range = state.cursor.fit(count, diff_area.height as usize);
+        let range = state.cursor.scroll.fit(count, diff_area.height as usize);
         let Some(diff) = &state.diff else {
             return;
         };
@@ -800,7 +787,10 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
             Some(FilePreview::Text(lines)) => {
                 // only the visible lines are built, files can be long
                 let width = lines.len().to_string().len();
-                let range = state.cursor.fit(lines.len(), preview_area.height as usize);
+                let range = state
+                    .cursor
+                    .scroll
+                    .fit(lines.len(), preview_area.height as usize);
                 let border =
                     Rect::new(preview_area.right(), preview_area.y, 1, preview_area.height);
                 let focused = self.focused;

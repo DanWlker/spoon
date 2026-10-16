@@ -11,9 +11,10 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
+    event::UserEvent,
     git::{command_log, LoggedCommand},
     widget::style::{
-        mark_selected_row, panel_block, panel_title, render_panel_scrollbar, scroll_to,
+        mark_selected_row, panel_block, panel_title, render_panel_scrollbar, scroll_to, ScrollState,
     },
 };
 
@@ -23,8 +24,7 @@ pub struct CommandLogState {
     selected: usize,
     offset: usize,
     // the scroll of the output of the selected command
-    output_offset: usize,
-    output_height: usize,
+    output: ScrollState,
 }
 
 impl CommandLogState {
@@ -53,20 +53,12 @@ impl CommandLogState {
 
     fn select(&mut self, index: usize) {
         self.selected = index.min(self.entries.len().saturating_sub(1));
-        self.output_offset = 0;
+        self.output.offset = 0;
     }
 
-    pub fn scroll_output_down(&mut self, n: usize) {
-        let lines = self.selected_output().lines().count();
-        self.output_offset = (self.output_offset + n).min(lines.saturating_sub(self.output_height));
-    }
-
-    pub fn scroll_output_up(&mut self, n: usize) {
-        self.output_offset = self.output_offset.saturating_sub(n);
-    }
-
-    pub fn output_page(&self) -> usize {
-        self.output_height.max(1)
+    // Scrolls the output by the scroll keys; returns whether `event` was one.
+    pub fn scroll_output(&mut self, event: UserEvent) -> bool {
+        self.output.handle_scroll(event)
     }
 
     // The command and its output, to copy.
@@ -151,7 +143,6 @@ impl<'a> CommandLog<'a> {
             .padding(Padding::horizontal(1));
         let inner = block.inner(output_area);
         block.render(output_area, buf);
-        state.output_height = inner.height as usize;
         let output = state.selected_output();
         let lines: Vec<Line> = if output.is_empty() && !state.entries.is_empty() {
             vec![Line::raw("No output").fg(theme.status_input_transient_fg)]
@@ -161,8 +152,9 @@ impl<'a> CommandLog<'a> {
                 .map(|l| Line::raw(l.to_string()).fg(theme.fg))
                 .collect()
         };
+        let rows = state.output.fit(lines.len(), inner.height as usize);
         Paragraph::new(lines)
-            .scroll((state.output_offset as u16, 0))
+            .scroll((rows.start as u16, 0))
             .render(inner, buf);
     }
 }

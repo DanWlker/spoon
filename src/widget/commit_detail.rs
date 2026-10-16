@@ -14,49 +14,9 @@ use crate::{
     git::{Commit, FileChange, Head, Ref},
     widget::{
         commit_list::{ref_color, ref_label_style},
-        style::change_color,
+        style::{change_color, ScrollState},
     },
 };
-
-#[derive(Debug, Default)]
-pub struct CommitDetailState {
-    height: usize,
-    offset: usize,
-}
-
-impl CommitDetailState {
-    pub fn scroll_down(&mut self) {
-        self.offset = self.offset.saturating_add(1);
-    }
-
-    pub fn scroll_up(&mut self) {
-        self.offset = self.offset.saturating_sub(1);
-    }
-
-    pub fn scroll_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height);
-    }
-
-    pub fn scroll_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height);
-    }
-
-    pub fn scroll_half_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height / 2);
-    }
-
-    pub fn scroll_half_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height / 2);
-    }
-
-    pub fn select_first(&mut self) {
-        self.offset = 0;
-    }
-
-    pub fn select_last(&mut self) {
-        self.offset = usize::MAX;
-    }
-}
 
 pub struct CommitDetail<'a> {
     commit: &'a Commit,
@@ -85,7 +45,7 @@ impl<'a> CommitDetail<'a> {
 }
 
 impl StatefulWidget for CommitDetail<'_> {
-    type State = CommitDetailState;
+    type State = ScrollState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let [labels_area, value_area] =
@@ -93,8 +53,7 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let (mut label_lines, mut value_lines) = self.contents(area);
 
-        let content_area_height = area.height as usize;
-        self.update_state(state, value_lines.len(), content_area_height);
+        state.fit(value_lines.len(), area.height as usize);
 
         label_lines = label_lines.into_iter().skip(state.offset).collect();
         value_lines = value_lines.into_iter().skip(state.offset).collect();
@@ -288,11 +247,6 @@ impl CommitDetail<'_> {
 
     fn divider_line(&self, width: usize) -> Line<'_> {
         Line::from("─".repeat(width).fg(self.ctx.color_theme.divider_fg))
-    }
-
-    fn update_state(&self, state: &mut CommitDetailState, line_count: usize, area_height: usize) {
-        state.height = area_height;
-        state.offset = state.offset.min(line_count.saturating_sub(area_height));
     }
 }
 

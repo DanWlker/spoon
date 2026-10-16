@@ -25,6 +25,8 @@ use crate::{
 
 #[derive(Debug)]
 pub enum AppEvent {
+    // a popup confirming a git command, from a page, like a commit
+    OpenDialog(Box<crate::widget::git_dialog::GitDialog>),
     Key(KeyEvent),
     // pressing, dragging and releasing the left button, to drag the borders of the panels, and the
     // wheel, see `App::scroll_wheel`

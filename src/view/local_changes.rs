@@ -60,23 +60,18 @@ impl<'a> LocalChangesView<'a> {
         self.last_event = Some(event);
         self.handle_event_inner(event, key);
         self.run_external_request();
-        // a commit, continue or abort runs in the background, the app refreshing once it is done
+        // continuing a rebase runs in the background, the app refreshing once it is done
         if let Some(task) = self.local_changes_state.take_task() {
             self.tx.send(AppEvent::StartTask(task));
+        }
+        // a commit, discard, stash or abort asks first
+        if let Some(dialog) = self.local_changes_state.take_dialog() {
+            self.tx.send(AppEvent::OpenDialog(Box::new(dialog)));
         }
     }
 
     fn handle_event_inner(&mut self, event: UserEvent, key: KeyEvent) {
-        // while confirming or typing, keys arrive unmapped, see App::run
-        if self.local_changes_state.is_confirming() {
-            let result = if self.confirms_commit(key) {
-                self.local_changes_state.confirm()
-            } else {
-                self.local_changes_state.handle_confirm_key(key)
-            };
-            self.after_action(result);
-            return;
-        }
+        // while typing, keys arrive unmapped, see App::run
         if self.local_changes_state.is_editing() {
             self.local_changes_state.handle_text_key(key);
             return;
@@ -84,12 +79,6 @@ impl<'a> LocalChangesView<'a> {
         if self.local_changes_state.is_typing_query() {
             self.local_changes_state.handle_query_key(key);
             self.update_query_status();
-            return;
-        }
-        if self.local_changes_state.is_typing_stash() {
-            let result = self.local_changes_state.handle_stash_key(key);
-            self.update_stash_status();
-            self.after_action(result);
             return;
         }
 
@@ -179,10 +168,11 @@ impl<'a> LocalChangesView<'a> {
                     self.tx.send(AppEvent::NotifyError(err));
                 }
             }
-            UserEvent::Stash => match self.local_changes_state.start_stash() {
-                Ok(()) => self.update_stash_status(),
-                Err(err) => self.tx.send(AppEvent::NotifyError(err)),
-            },
+            UserEvent::Stash => {
+                if let Err(err) = self.local_changes_state.start_stash() {
+                    self.tx.send(AppEvent::NotifyError(err));
+                }
+            }
             UserEvent::Search => {
                 self.local_changes_state.start_query(QueryKind::Search);
                 self.update_query_status();
@@ -206,7 +196,9 @@ impl<'a> LocalChangesView<'a> {
                 self.after_action(result);
             }
             UserEvent::Discard => {
-                self.local_changes_state.request_discard();
+                if let Err(err) = self.local_changes_state.request_discard() {
+                    self.tx.send(AppEvent::NotifyError(err));
+                }
             }
             UserEvent::FocusPanel(1) => {
                 self.local_changes_state
@@ -237,28 +229,7 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::NavigateLeft => {
                 self.local_changes_state.collapse();
             }
-            UserEvent::ScrollDown => {
-                self.local_changes_state.scroll_diff_down(1);
-            }
-            UserEvent::ScrollUp => {
-                self.local_changes_state.scroll_diff_up(1);
-            }
-            UserEvent::PageDown => {
-                let n = self.local_changes_state.diff_page_height();
-                self.local_changes_state.scroll_diff_down(n);
-            }
-            UserEvent::PageUp => {
-                let n = self.local_changes_state.diff_page_height();
-                self.local_changes_state.scroll_diff_up(n);
-            }
-            UserEvent::HalfPageDown => {
-                let n = self.local_changes_state.diff_page_height() / 2;
-                self.local_changes_state.scroll_diff_down(n);
-            }
-            UserEvent::HalfPageUp => {
-                let n = self.local_changes_state.diff_page_height() / 2;
-                self.local_changes_state.scroll_diff_up(n);
-            }
+            _ if self.local_changes_state.scroll_diff(event) => {}
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
@@ -300,11 +271,6 @@ impl<'a> LocalChangesView<'a> {
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let panel = LocalChangesPanel::new(self.ctx.clone(), focused);
         f.render_stateful_widget(panel, area, &mut self.local_changes_state);
-    }
-
-    pub fn render_popup(&self, f: &mut Frame, area: Rect) {
-        let panel = LocalChangesPanel::new(self.ctx.clone(), true);
-        panel.render_popup(&self.local_changes_state, area, f.buffer_mut());
     }
 }
 
@@ -352,24 +318,7 @@ impl<'a> LocalChangesView<'a> {
 
     pub fn is_capturing_keys(&self) -> bool {
         let state = &self.local_changes_state;
-        state.is_editing()
-            || state.is_confirming()
-            || state.is_typing_query()
-            || state.is_typing_stash()
-    }
-
-    // Shows the stash message being typed in the status line.
-    fn update_stash_status(&self) {
-        match self.local_changes_state.stash_status_input() {
-            Some((message, cursor_position, metadata)) => {
-                self.tx.send(AppEvent::UpdateStatusInput {
-                    message,
-                    cursor_position,
-                    metadata,
-                })
-            }
-            None => self.tx.send(AppEvent::ClearStatusLine),
-        }
+        state.is_editing() || state.is_typing_query()
     }
 
     // Shows the search or filter being typed in the status line.
@@ -384,18 +333,7 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    fn confirms_commit(&self, key: KeyEvent) -> bool {
-        self.local_changes_state.is_confirming_commit()
-            && self.ctx.keybind.event_in(Scope::LocalChanges, &key) == Some(UserEvent::Commit)
-    }
-
-    // Like lazygit, reloads the repository after anything that may have changed it, whether it
-    // succeeded or not.
     fn after_action(&mut self, result: Result<(), String>) {
-        if self.local_changes_state.take_needs_refresh() {
-            self.refresh();
-        }
-
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
         }

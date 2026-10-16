@@ -697,22 +697,26 @@ impl Repository {
         self.run(&args, None)
     }
 
-    // Discards the unstaged changes of `tracked` files (restoring them from the index) and deletes `untracked` files.
-    // `conflicted` files, which git cannot restore from the index, go back to HEAD, or are deleted
-    // when HEAD does not have them, like lazygit does.
-    pub fn discard_paths(
+    // The commands discarding the unstaged changes of `tracked` files (restoring them from the
+    // index) and deleting `untracked` files. `conflicted` files, which git cannot restore from the
+    // index, go back to HEAD, or are deleted when HEAD does not have them, like lazygit does.
+    pub fn discard_commands(
         &self,
         tracked: &[&str],
         untracked: &[&str],
         conflicted: &[&str],
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<Vec<Vec<String>>, String> {
         let mut tracked = tracked.to_vec();
         let mut untracked = untracked.to_vec();
+        let command = |args: &[&str], paths: &[&str]| -> Vec<String> {
+            let mut command: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            command.push("--".into());
+            command.extend(pathspecs(paths));
+            command
+        };
+        let mut commands = vec![];
         if !conflicted.is_empty() {
-            let mut args = vec!["reset", "--quiet", "--"];
-            let specs = pathspecs(conflicted);
-            args.extend(specs.iter().map(String::as_str));
-            self.run(&args, None)?;
+            commands.push(command(&["reset", "--quiet"], conflicted));
             let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
             args.extend_from_slice(conflicted);
             let in_head = git_output(&self.path, &args)?;
@@ -726,18 +730,12 @@ impl Repository {
             }
         }
         if !tracked.is_empty() {
-            let mut args = vec!["checkout", "--quiet", "--"];
-            let specs = pathspecs(&tracked);
-            args.extend(specs.iter().map(String::as_str));
-            self.run(&args, None)?;
+            commands.push(command(&["checkout", "--quiet"], &tracked));
         }
         if !untracked.is_empty() {
-            let mut args = vec!["clean", "--force", "--quiet", "--"];
-            let specs = pathspecs(&untracked);
-            args.extend(specs.iter().map(String::as_str));
-            self.run(&args, None)?;
+            commands.push(command(&["clean", "--force", "--quiet"], &untracked));
         }
-        Ok(())
+        Ok(commands)
     }
 
     // Adds the file or directory (`dir`) at `path` to the .gitignore at the top of the working
@@ -773,6 +771,7 @@ impl Repository {
     }
 
     // Applies `patch` to the working tree, `reverse` to undo the changes in it.
+    #[cfg(test)]
     pub fn apply_patch_to_worktree(
         &self,
         patch: &str,
@@ -784,20 +783,6 @@ impl Repository {
         }
         args.push("-");
         self.run(&args, Some(patch))
-    }
-
-    // Stashes the changes of `paths` (all changes when empty), including untracked files.
-    pub fn stash_push(&self, paths: &[&str], message: &str) -> std::result::Result<(), String> {
-        let mut args = vec!["stash", "push", "--include-untracked", "--quiet"];
-        if !message.is_empty() {
-            args.extend(["--message", message]);
-        }
-        let specs = pathspecs(paths);
-        if !paths.is_empty() {
-            args.push("--");
-            args.extend(specs.iter().map(String::as_str));
-        }
-        self.run(&args, None)
     }
 
     // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
@@ -2206,6 +2191,22 @@ fn run_task_step(
     }
 }
 
+// The command stashing the changes of `paths` (all changes when empty), including untracked files.
+pub fn stash_args(paths: &[String], message: &str) -> Vec<String> {
+    let mut args: Vec<String> = ["stash", "push", "--include-untracked", "--quiet"]
+        .map(String::from)
+        .to_vec();
+    if !message.is_empty() {
+        args.extend(["--message".into(), message.into()]);
+    }
+    if !paths.is_empty() {
+        let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+        args.push("--".into());
+        args.extend(pathspecs(&paths));
+    }
+    args
+}
+
 pub const MAX_CONFLICT_STEPS: usize = 100;
 
 // What `Repository::first_conflict` found.
@@ -2689,9 +2690,14 @@ mod tests {
 
         // only the files named, not those their names match as patterns
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        repository
-            .discard_paths(&["foo[1].txt"], &["*.log"], &[])
+        let commands = repository
+            .discard_commands(&["foo[1].txt"], &["*.log"], &[])
             .unwrap();
+        let task = GitTask {
+            commands,
+            ..Default::default()
+        };
+        run_task(path, &task).unwrap();
         let read = |name: &str| std::fs::read_to_string(path.join(name)).ok();
         assert_eq!(read("foo[1].txt").as_deref(), Some("a\n"));
         assert_eq!(read("foo1.txt").as_deref(), Some("b\n"));
