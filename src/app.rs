@@ -1002,6 +1002,10 @@ impl App<'_> {
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view.render(f, view_area, !self.shell.sidebar_focused);
+        // popups go in the middle of the screen, over the sidebar too
+        if let View::LocalChanges(view) = &self.view {
+            view.render_popup(f, app_area);
+        }
         if let Some(help) = self.shell.help.as_mut() {
             f.render_widget(Clear, app_area);
             f.render_widget(base, app_area);
@@ -1012,7 +1016,7 @@ impl App<'_> {
             f.render_widget(popup, app_area);
         }
         if let Some(dialog) = self.visible_dialog() {
-            f.render_widget(GitDialogWidget::new(dialog, &self.ctx), view_area);
+            f.render_widget(GitDialogWidget::new(dialog, &self.ctx), app_area);
         }
         if let Some(state) = self.shell.command_log.as_mut() {
             CommandLog::new(&self.ctx.color_theme).render(app_area, f.buffer_mut(), state);

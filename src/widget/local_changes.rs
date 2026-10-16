@@ -1637,6 +1637,12 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
             self.render_diff(state, diff_area, buf);
         }
         self.render_commit(state, commit_area, buf);
+    }
+}
+
+impl LocalChangesPanel<'_> {
+    // The popup asking to confirm a commit or a discard, in the middle of `area`.
+    pub fn render_popup(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
         if let Some((action, prompt)) = &state.confirm {
             match action {
                 ConfirmAction::Commit(preview) => self.render_commit_popup(preview, area, buf),

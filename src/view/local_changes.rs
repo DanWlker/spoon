@@ -301,6 +301,11 @@ impl<'a> LocalChangesView<'a> {
         let panel = LocalChangesPanel::new(self.ctx.clone(), focused);
         f.render_stateful_widget(panel, area, &mut self.local_changes_state);
     }
+
+    pub fn render_popup(&self, f: &mut Frame, area: Rect) {
+        let panel = LocalChangesPanel::new(self.ctx.clone(), true);
+        panel.render_popup(&self.local_changes_state, area, f.buffer_mut());
+    }
 }
 
 impl<'a> LocalChangesView<'a> {
