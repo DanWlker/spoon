@@ -77,6 +77,11 @@ pub struct ColorTheme {
     pub diff_add_bg: RatatuiColor,
     #[default(RatatuiColor::Rgb(0x49, 0x34, 0x46))]
     pub diff_delete_bg: RatatuiColor,
+    // the part of a changed line that differs from the line it replaces, stronger
+    #[default(RatatuiColor::Rgb(0x4E, 0x63, 0x56))]
+    pub diff_add_word_bg: RatatuiColor,
+    #[default(RatatuiColor::Rgb(0x69, 0x44, 0x59))]
+    pub diff_delete_word_bg: RatatuiColor,
 
     #[default(TEXT)]
     pub ref_selected_fg: RatatuiColor,

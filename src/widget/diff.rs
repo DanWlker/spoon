@@ -3,7 +3,7 @@ use std::ops::Range;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -13,7 +13,7 @@ use crate::{
     git::Repository,
     widget::{
         file_tree::SearchDirection,
-        tree_query::{find_around, match_range},
+        tree_query::{find_around, match_range, patch_range},
     },
 };
 
@@ -433,6 +433,8 @@ pub struct DiffRow {
     pub old: Option<usize>,
     pub new: Option<usize>,
     pub text: String,
+    // the bytes of `text` that differ from the line it replaces, or that replaces it
+    pub emphasis: Option<Range<usize>>,
 }
 
 impl DiffRow {
@@ -446,6 +448,7 @@ impl DiffRow {
             old: None,
             new: None,
             text: text.to_string(),
+            emphasis: None,
         }
     }
 }
@@ -517,6 +520,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: None,
                     new: Some(new - 1),
                     text,
+                    emphasis: None,
                 }
             }
             Some(b'-') => {
@@ -526,6 +530,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: Some(old - 1),
                     new: None,
                     text,
+                    emphasis: None,
                 }
             }
             Some(b'\\') => DiffRow::without_numbers(DiffRowKind::Meta, line),
@@ -537,12 +542,14 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: Some(old - 1),
                     new: Some(new - 1),
                     text,
+                    emphasis: None,
                 }
             }
         };
         rows.push(row);
     }
     finish_hunk(&mut current, &mut hunks, rows.len());
+    emphasize_changes(&mut rows);
 
     ParsedDiff {
         raw: diff.to_string(),
@@ -550,6 +557,64 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         hunks,
         converted: false,
     }
+}
+
+// Pairs the removed lines of a change with the added lines after them, in order, and marks in
+// each pair what differs between them.
+// shortcut: the differing part is what lies between a common start and end, like a single edit;
+// several edits in a line mark everything from the first to the last, use a word diff if it bothers.
+fn emphasize_changes(rows: &mut [DiffRow]) {
+    // the rows of `kind` from `from` on, past "\ No newline" notes, and where they end
+    let run = |rows: &[DiffRow], from: usize, kind: DiffRowKind| {
+        let mut found = Vec::new();
+        let mut end = from;
+        while let Some(row) = rows.get(end) {
+            if row.kind == kind {
+                found.push(end);
+            } else if row.kind != DiffRowKind::Meta {
+                break;
+            }
+            end += 1;
+        }
+        (found, end)
+    };
+    let mut i = 0;
+    while i < rows.len() {
+        let (removed, end) = run(rows, i, DiffRowKind::Removed);
+        if removed.is_empty() {
+            i += 1;
+            continue;
+        }
+        let (added, end) = run(rows, end, DiffRowKind::Added);
+        for (&r, &a) in removed.iter().zip(&added) {
+            if let Some((old, new)) = changed_ranges(&rows[r].text, &rows[a].text) {
+                rows[r].emphasis = Some(old);
+                rows[a].emphasis = Some(new);
+            }
+        }
+        i = end;
+    }
+}
+
+// The bytes of `old` and `new` between their common start and end; None when those are only
+// blanks, the lines being different altogether.
+fn changed_ranges(old: &str, new: &str) -> Option<(Range<usize>, Range<usize>)> {
+    let common = |a: &mut dyn Iterator<Item = char>, b: &mut dyn Iterator<Item = char>| -> usize {
+        a.zip(b)
+            .take_while(|(x, y)| x == y)
+            .map(|(c, _)| c.len_utf8())
+            .sum()
+    };
+    let start = common(&mut old.chars(), &mut new.chars());
+    let end = common(
+        &mut old[start..].chars().rev(),
+        &mut new[start..].chars().rev(),
+    );
+    let kept = format!("{}{}", &old[..start], &old[old.len() - end..]);
+    if kept.trim().is_empty() {
+        return None;
+    }
+    Some((start..old.len() - end, start..new.len() - end))
 }
 
 // "@@ -12,3 +12,4 @@ fn foo()" -> (12, 3, 12): old start, old count and new start
@@ -626,18 +691,34 @@ pub fn diff_lines<'a>(
                 DiffRowKind::Meta => dim,
                 DiffRowKind::File => theme.detail_file_change_modify_fg,
             };
-            let line = Line::from(vec![
+            let mut line = Line::from(vec![
                 Span::raw(gutter).fg(dim),
                 Span::raw(row.text.as_str()).fg(text_color),
             ]);
-            // added and removed lines on a background across the panel
-            match row.kind {
-                DiffRowKind::Added => line.bg(theme.diff_add_bg),
-                DiffRowKind::Removed => line.bg(theme.diff_delete_bg),
-                _ => line,
+            // added and removed lines on a background across the panel, what changed in them
+            // on a stronger one
+            let (bg, word_bg) = match row.kind {
+                DiffRowKind::Added => (theme.diff_add_bg, theme.diff_add_word_bg),
+                DiffRowKind::Removed => (theme.diff_delete_bg, theme.diff_delete_word_bg),
+                _ => return line,
+            };
+            if let Some(range) = row.emphasis.clone() {
+                patch_range(&mut line, range, Style::default().bg(word_bg));
             }
+            line.bg(bg)
         })
         .collect()
+}
+
+// Marks a line of `diff_lines` selected on its line numbers, keeping the colors of the change.
+pub fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
+    if let Some(gutter) = line.spans.first_mut() {
+        gutter.style = gutter
+            .style
+            .fg(theme.list_selected_fg)
+            .bg(theme.list_selected_bg)
+            .add_modifier(Modifier::BOLD);
+    }
 }
 
 // Renders the lines of `diff_lines`, a line's background (added, removed, selected) across `area`.
@@ -666,6 +747,7 @@ mod tests {
             old,
             new,
             text: text.into(),
+            emphasis: None,
         };
         let expected_rows = vec![
             row(DiffRowKind::Hunk, None, None, "@@ -3,2 +3,2 @@ ctx"),
@@ -688,6 +770,35 @@ mod tests {
             (4..7, format!("{header}{hunk2}")),
         ];
         assert_eq!(hunks, expected_hunks);
+    }
+
+    #[test]
+    fn test_emphasis_of_changed_lines() {
+        let diff = parse_diff(concat!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n",
+            "-let x = 1;\n-  foo\n+let x = 42;\n+  bar\n",
+            " ctx\n-é1\n\\ No newline at end of file\n+é2\n",
+        ));
+        let emphasis: Vec<_> = diff
+            .rows
+            .iter()
+            .map(|r| (r.text.as_str(), r.emphasis.clone()))
+            .collect();
+        assert_eq!(
+            emphasis[1..],
+            [
+                ("let x = 1;", Some(8..9)),
+                // nothing but the indentation in common
+                ("  foo", None),
+                ("let x = 42;", Some(8..10)),
+                ("  bar", None),
+                ("ctx", None),
+                // past the note, by characters
+                ("é1", Some(2..3)),
+                ("\\ No newline at end of file", None),
+                ("é2", Some(2..3)),
+            ]
+        );
     }
 
     #[test]

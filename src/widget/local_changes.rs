@@ -21,8 +21,8 @@ use crate::{
     widget::{
         conflict::ConflictView,
         diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
-            ParsedDiff, Step, CONVERTED_DIFF,
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, select_diff_line,
+            DiffCursor, DiffHunk, ParsedDiff, Step, CONVERTED_DIFF,
         },
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
@@ -1781,11 +1781,10 @@ impl LocalChangesPanel<'_> {
                 .highlighted(&state.diff, state.focus == Focus::Lines),
             _ => 0..0,
         };
-        let highlight_style = Style::default().bg(self.ctx.color_theme.list_selected_bg);
         let search = state.diff_query.search().filter(|_| selected);
         for (row, line) in (offset..).zip(lines.iter_mut()) {
             if highlighted.contains(&row) {
-                line.style = line.style.patch(highlight_style);
+                select_diff_line(line, &self.ctx.color_theme);
             }
             if let Some(query) = search {
                 highlight_match(line, query, &self.ctx.color_theme);

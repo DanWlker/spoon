@@ -16,8 +16,8 @@ use crate::{
     widget::style::{focused_title, mark_selected_row, panel_title, tree_panel_width},
     widget::{
         diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
-            ParsedDiff, Step,
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, select_diff_line,
+            DiffCursor, DiffHunk, ParsedDiff, Step,
         },
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
         tree_query::{find_around, highlight_match, highlighted_name, match_range},
@@ -704,10 +704,9 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
             ChangesFocus::Files => 0..0,
             focus => state.cursor.highlighted(diff, focus == ChangesFocus::Lines),
         };
-        let highlight_style = Style::default().bg(theme.list_selected_bg);
         for (row, line) in range.zip(lines.iter_mut()) {
             if highlighted.contains(&row) {
-                line.style = line.style.patch(highlight_style);
+                select_diff_line(line, theme);
             }
             if let Some(query) = &self.diff_search {
                 highlight_match(line, query, theme);

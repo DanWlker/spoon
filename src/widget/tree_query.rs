@@ -1,6 +1,6 @@
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent},
-    style::Stylize,
+    style::{Style, Stylize},
     text::{Line, Span},
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
@@ -180,22 +180,45 @@ pub fn find_around(
 
 // Highlights the match of `query` in the last span of a line, its text after any line numbers.
 pub fn highlight_match(line: &mut Line<'_>, query: &str, theme: &ColorTheme) {
-    let Some(text) = line.spans.pop() else {
-        return;
-    };
-    let Some(matched) = match_range(&text.content, query) else {
-        line.spans.push(text);
-        return;
-    };
-    let style = text.style;
-    let content = text.content.to_string();
-    line.spans.extend([
-        Span::styled(content[..matched.start].to_string(), style),
-        Span::styled(content[matched.clone()].to_string(), style)
+    let text: String = line
+        .spans
+        .iter()
+        .skip(1)
+        .map(|s| s.content.as_ref())
+        .collect();
+    if let Some(matched) = match_range(&text, query) {
+        let style = Style::default()
             .fg(theme.list_match_fg)
-            .bg(theme.list_match_bg),
-        Span::styled(content[matched.end..].to_string(), style),
-    ]);
+            .bg(theme.list_match_bg);
+        patch_range(line, matched, style);
+    }
+}
+
+// Patches `style` onto the bytes `range` of the text after the first span, a line number.
+pub fn patch_range(line: &mut Line<'_>, range: std::ops::Range<usize>, style: Style) {
+    if line.spans.is_empty() {
+        return;
+    }
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for span in line.spans.drain(1..) {
+        let len = span.content.len();
+        let start = range.start.clamp(offset, offset + len) - offset;
+        let end = range.end.clamp(offset, offset + len) - offset;
+        for (part, patched) in [(0..start, false), (start..end, true), (end..len, false)] {
+            if part.is_empty() {
+                continue;
+            }
+            let part = Span::styled(span.content[part].to_string(), span.style);
+            spans.push(if patched {
+                part.patch_style(style)
+            } else {
+                part
+            });
+        }
+        offset += len;
+    }
+    line.spans.extend(spans);
 }
 
 // The spans of a file or directory name, with the match of `search` highlighted.
