@@ -81,6 +81,27 @@ pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
     }
 }
 
+// The status line showing what is `typed`, with its cursor, and `metadata` on the right, like
+// a search; cleared when nothing is typed.
+pub fn status_input(typed: Option<(String, u16)>, metadata: String) -> AppEvent {
+    match typed {
+        Some((message, cursor_position)) => AppEvent::UpdateStatusInput {
+            message,
+            cursor_position,
+            metadata,
+        },
+        None => AppEvent::ClearStatusLine,
+    }
+}
+
+// Copies the selected part of a diff or a file: a line, or else a hunk.
+pub fn copy_selection(text: String, line: bool) -> AppEvent {
+    AppEvent::CopyToClipboard {
+        name: if line { "Line" } else { "Hunk" }.into(),
+        value: text,
+    }
+}
+
 // Copies the path of a file in the repository: relative to its top, or absolute with `full`.
 pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
     // the root row of the local changes stands for the whole repository

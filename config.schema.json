@@ -628,9 +628,9 @@
           "description": "Foreground color for the virtual cursor.",
           "default": "#cdd6f4"
         },
-        "status_input_transient_fg": {
+        "muted_fg": {
           "type": "string",
-          "description": "Foreground color for transient messages in the status bar.",
+          "description": "Color of quieter text: hints, placeholders, line numbers and summaries.",
           "default": "#7f849c"
         },
         "status_info_fg": {

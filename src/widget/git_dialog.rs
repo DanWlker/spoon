@@ -16,7 +16,7 @@ use crate::{
         parse_git_bool, stash_args, todo_action, BranchStatus, Conflict, GitTask, RemoteInfo,
         MAX_CONFLICT_STEPS,
     },
-    widget::style::{change_color, focused_title, render_popup},
+    widget::style::{change_span, focused_title, render_popup},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1708,7 +1708,7 @@ fn commits_intro(heading: &str, commits: &[DialogCommit]) -> Vec<String> {
 
 // The commit to make: on which branch, the message beside a bar, and the staged files.
 fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme.status_input_transient_fg);
+    let dim = Style::default().fg(theme.muted_fg);
     let color = if preview.amend {
         theme.status_warn_fg
     } else {
@@ -1748,9 +1748,7 @@ fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line
     for (status, path) in preview.files.iter().take(COMMIT_PREVIEW_LINES) {
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::raw(status.clone())
-                .fg(change_color(status, theme))
-                .bold(),
+            change_span(status, theme),
             Span::raw(format!(" {path}")).fg(theme.fg),
         ]));
     }
@@ -1797,7 +1795,7 @@ const MAX_CONTENT_WIDTH: usize = 90;
 impl Widget for GitDialogWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (dialog, theme) = (self.dialog, self.theme);
-        let dim = Style::default().fg(theme.status_input_transient_fg);
+        let dim = Style::default().fg(theme.muted_fg);
         // the keys are in the status bar
 
         let mut lines = vec![];

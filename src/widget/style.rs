@@ -47,6 +47,23 @@ pub fn fold_marker(open: bool) -> &'static str {
     }
 }
 
+// Draws a panel in `area`, like every list: its border, `title` and a padding of one column each
+// side; returns where its content goes.
+pub fn render_panel(
+    buf: &mut Buffer,
+    area: Rect,
+    title: Line<'_>,
+    focused: bool,
+    theme: &ColorTheme,
+) -> Rect {
+    let block = panel_block(focused, theme)
+        .title(title)
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    block.render(area, buf);
+    inner
+}
+
 // The title of the focused panel: a badge, or colored text alone when its background is "reset".
 pub fn focused_title<'a>(
     text: impl Into<std::borrow::Cow<'a, str>>,
@@ -107,6 +124,21 @@ pub fn change_color(symbol: &str, theme: &ColorTheme) -> Color {
     }
 }
 
+// Muted text standing in for what isn't there, like "No changes".
+pub fn placeholder(text: impl Into<String>, theme: &ColorTheme) -> Line<'static> {
+    Line::raw(text.into()).fg(theme.muted_fg)
+}
+
+// A divider, `width` columns of "─".
+pub fn divider(width: usize, theme: &ColorTheme) -> Span<'static> {
+    Span::raw("─".repeat(width)).fg(theme.divider_fg)
+}
+
+// A file's change letter in its color, the same in every list of files.
+pub fn change_span(symbol: &str, theme: &ColorTheme) -> Span<'static> {
+    Span::raw(symbol.to_string()).fg(change_color(symbol, theme))
+}
+
 // The width of the file tree beside a diff or a preview, in `width`.
 pub fn tree_panel_width(width: u16) -> u16 {
     (width / 3).clamp(20, 50).min(width)
@@ -125,9 +157,21 @@ pub fn key_hints(hints: &[(&str, &str)], theme: &ColorTheme) -> Line<'static> {
             spans.push(Span::raw(" • ").fg(theme.divider_fg));
         }
         spans.push(key_span(*key, theme));
-        spans.push(Span::raw(format!(" {description}")).fg(theme.status_input_transient_fg));
+        spans.push(Span::raw(format!(" {description}")).fg(theme.muted_fg));
     }
     Line::from(spans)
+}
+
+// A picked row: its text recolored to stay readable on the picked background, in every list.
+pub fn picked_style(theme: &ColorTheme) -> Style {
+    Style::default()
+        .fg(theme.list_picked_fg)
+        .bg(theme.list_picked_bg)
+}
+
+// Highlights a picked `row` of a list, across it; see `picked_style`.
+pub fn mark_picked_row(buf: &mut Buffer, row: Rect, theme: &ColorTheme) {
+    buf.set_style(row, picked_style(theme));
 }
 
 // Highlights the selected row of a list in a panel with a horizontal padding of one: its
@@ -250,7 +294,7 @@ pub fn mark_selected_bar(buf: &mut Buffer, x: u16, y: u16, focused: bool, theme:
     let fg = if focused {
         theme.highlight_fg
     } else {
-        theme.status_input_transient_fg
+        theme.muted_fg
     };
     buf.set_string(x, y, "▌", Style::default().fg(fg));
 }
@@ -270,7 +314,11 @@ mod tests {
         assert_key_style(&buf, 0, 0, &theme);
         // "j/k move • q quit"
         assert_key_style(&buf, 11, 0, &theme);
-        assert_ne!(buf[(4, 0)].fg, theme.accent_fg, "the description isn't a key");
+        assert_ne!(
+            buf[(4, 0)].fg,
+            theme.accent_fg,
+            "the description isn't a key"
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use crate::{
     git::{Commit, FileChange, Head, Ref},
     widget::{
         commit_list::{ref_color, ref_label_style},
-        style::{change_color, ScrollState},
+        style::{change_span, divider, ScrollState},
     },
 };
 
@@ -229,14 +229,14 @@ impl CommitDetail<'_> {
         self.changes
             .iter()
             .map(|c| {
-                let (symbol, path) = match c {
-                    FileChange::Add { path } => ("A", path.into()),
-                    FileChange::Modify { path } => ("M", path.into()),
-                    FileChange::Delete { path } => ("D", path.into()),
-                    FileChange::Move { from, to } => ("R", format!("{from} -> {to}")),
+                let path = match c {
+                    FileChange::Add { path }
+                    | FileChange::Modify { path }
+                    | FileChange::Delete { path } => path.clone(),
+                    FileChange::Move { from, to } => format!("{from} -> {to}"),
                 };
-                let color = change_color(symbol, &self.ctx.color_theme);
-                Line::from(vec![symbol.fg(color), " ".into(), path.into()])
+                let symbol = change_span(c.symbol(), &self.ctx.color_theme);
+                Line::from(vec![symbol, " ".into(), path.into()])
             })
             .collect()
     }
@@ -246,7 +246,7 @@ impl CommitDetail<'_> {
     }
 
     fn divider_line(&self, width: usize) -> Line<'_> {
-        Line::from("─".repeat(width).fg(self.ctx.color_theme.divider_fg))
+        Line::from(divider(width, &self.ctx.color_theme))
     }
 }
 

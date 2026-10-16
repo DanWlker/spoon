@@ -404,7 +404,6 @@ fn join_line_groups_with_empty(line_groups: Vec<Vec<Line<'static>>>) -> Vec<Line
     result
 }
 
-
 #[cfg(test)]
 mod tests {
     use ratatui::style::Modifier;

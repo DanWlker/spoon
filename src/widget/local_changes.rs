@@ -3,9 +3,9 @@ use std::{collections::BTreeSet, path::PathBuf, rc::Rc};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, BorderType, Borders, Paragraph, StatefulWidget, Widget},
 };
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -29,14 +29,11 @@ use crate::{
         },
         git_dialog::{CommitPreview, GitDialog},
         style::{
-            badge, change_color, mark_selected_bar, mark_selected_row, panel_block, panel_title,
+            badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
             render_panel_scrollbar, tree_panel_width,
         },
         text_area::TextArea,
-        tree_query::{
-            dir_line, guide_span, highlight_match, highlighted_name, unhighlight_guides,
-            QueryChange, QueryKind, TreeQuery,
-        },
+        tree_query::{highlight_match, render_tree, QueryChange, QueryKind, TreeQuery},
     },
 };
 
@@ -432,7 +429,7 @@ impl<'a> LocalChangesState<'a> {
             .changes
             .staged
             .iter()
-            .map(|f| (status_symbol(f.status).to_string(), f.path.clone()))
+            .map(|f| (f.status.symbol().to_string(), f.path.clone()))
             .collect();
         let preview = CommitPreview {
             action,
@@ -1596,7 +1593,6 @@ impl LocalChangesPanel<'_> {
         buf: &mut Buffer,
     ) {
         let Section { tree, picked, .. } = state.section_state(section);
-        let (rows, cursor) = (tree.rows(), tree.cursor());
         let (number, name, files) = match section {
             LocalChangesSection::Unstaged => (1, "Unstaged", &state.changes.unstaged),
             LocalChangesSection::Staged => (2, "Staged", &state.changes.staged),
@@ -1612,92 +1608,35 @@ impl LocalChangesPanel<'_> {
         }
         extras.extend(state.query_indicator(section));
         let label = format!("[{number}] {name} ({})", files.len());
-        let block = panel_block(focused, &self.ctx.color_theme)
-            .title(panel_title(
-                &label,
-                &extras.join(" · "),
-                focused,
-                &self.ctx.color_theme,
-            ))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        if rows.is_empty() {
-            let message = if files.is_empty() {
-                "No changes"
-            } else {
-                "No matches"
-            };
-            Paragraph::new(Line::raw(message).fg(self.ctx.color_theme.status_input_transient_fg))
-                .render(inner, buf);
-            return;
-        }
-
-        // no room for a row, like in a very short terminal
-        if inner.height == 0 {
-            return;
-        }
-        // keep the cursor visible when the tree is taller than the section
-        let height = inner.height as usize;
-        let offset = (cursor + 1).saturating_sub(height);
-        render_panel_scrollbar(
+        let inner = render_panel(
             buf,
             area,
-            rows.len(),
-            offset,
+            panel_title(&label, &extras.join(" · "), focused, &self.ctx.color_theme),
             focused,
             &self.ctx.color_theme,
         );
 
-        // the search is highlighted in the section it applies to
-        let search = state.query_of(section).search();
-        let theme = &self.ctx.color_theme;
-        let lines: Vec<Line> = rows
-            .iter()
-            .enumerate()
-            .skip(offset)
-            .take(height)
-            .map(|(index, row)| {
-                let guide = tree.guide(index);
-                match row.file_index {
-                    // everything is expanded while filtering
-                    None => dir_line(row, guide, tree.is_open(&row.path), search, theme),
-                    Some(i) => {
-                        let status = files[i].status;
-                        let mut spans = vec![
-                            guide_span(guide, theme),
-                            Span::raw(status_symbol(status)).fg(self.status_color(status)),
-                            Span::raw(" "),
-                        ];
-                        spans.extend(highlighted_name(&row.name, search, &self.ctx.color_theme));
-                        Line::from(spans)
-                    }
-                }
-            })
-            .collect();
-        Paragraph::new(lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .render(inner, buf);
-
-        // picked rows, like picked commits in the commit list
-        let picked_style = Style::default()
-            .bg(self.ctx.color_theme.list_picked_bg)
-            .fg(self.ctx.color_theme.list_picked_fg);
-        for (i, row) in rows.iter().enumerate().skip(offset).take(height) {
-            if picked.contains(&row.path) {
-                let y = inner.y + (i - offset) as u16;
-                buf.set_style(Rect::new(inner.x, y, inner.width, 1), picked_style);
-            }
-        }
-
-        // only the section whose diff is displayed shows its cursor
-        if active {
-            let y = inner.y + (cursor - offset) as u16;
-            // quieter while another panel, like the refs sidebar, has the focus
-            mark_selected_row(buf, inner, y, self.focused, &self.ctx.color_theme);
-        }
-        unhighlight_guides(buf, inner, tree, offset, &self.ctx.color_theme);
+        let empty = if files.is_empty() {
+            "No changes"
+        } else {
+            "No matches"
+        };
+        // only the section whose diff is displayed shows its cursor, quieter while another panel,
+        // like the refs sidebar, has the focus
+        let offset = render_tree(
+            buf,
+            inner,
+            tree,
+            |i| Some(files[i].status.symbol()),
+            // the search is highlighted in the section it applies to
+            state.query_of(section).search(),
+            |path| picked.contains(path),
+            active.then_some(self.focused),
+            empty,
+            &self.ctx.color_theme,
+        );
+        let total = tree.rows().len();
+        render_panel_scrollbar(buf, area, total, offset, focused, &self.ctx.color_theme);
     }
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -1713,16 +1652,13 @@ impl LocalChangesPanel<'_> {
             _ => "",
         };
         let diff_focused = self.focused && state.is_diff_focused();
-        let block = panel_block(diff_focused, &self.ctx.color_theme)
-            .title(panel_title(
-                &title,
-                mode,
-                diff_focused,
-                &self.ctx.color_theme,
-            ))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = render_panel(
+            buf,
+            area,
+            panel_title(&title, mode, diff_focused, &self.ctx.color_theme),
+            diff_focused,
+            &self.ctx.color_theme,
+        );
 
         let selected = state.selected_row().is_some();
         let count = if selected {
@@ -1743,7 +1679,7 @@ impl LocalChangesPanel<'_> {
             } else {
                 "No file selected"
             };
-            vec![Line::raw(message).fg(self.ctx.color_theme.status_input_transient_fg)]
+            vec![placeholder(message, &self.ctx.color_theme)]
         };
 
         // the selected line or hunk, by its row in the diff
@@ -1781,11 +1717,7 @@ impl LocalChangesPanel<'_> {
             };
             title.push(Span::raw(format!(" · {doing} ")).fg(theme.status_warn_fg));
         }
-        let block = panel_block(focused, theme)
-            .title(Line::from(title))
-            .padding(Padding::horizontal(1));
-        let text_area = block.inner(area);
-        block.render(area, buf);
+        let text_area = render_panel(buf, area, Line::from(title), focused, theme);
         self.render_message(state, text_area, buf);
     }
 
@@ -1795,14 +1727,16 @@ impl LocalChangesPanel<'_> {
         };
         let theme = &self.ctx.color_theme;
         let path = state.selected_path().unwrap_or_default();
-        let block = panel_block(self.focused && state.is_conflict_focused(), theme)
-            .title(Line::from(vec![
+        let inner = render_panel(
+            buf,
+            area,
+            Line::from(vec![
                 Span::raw(format!(" {path} ")).fg(theme.fg),
                 badge(" conflicted ", theme.status_error_fg, theme),
-            ]))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        block.render(area, buf);
+            ]),
+            self.focused && state.is_conflict_focused(),
+            theme,
+        );
 
         // the sides to pick from, side by side over half the height, then the tools with a line
         // between each, all centered vertically
@@ -1865,7 +1799,7 @@ impl LocalChangesPanel<'_> {
                 .take(height)
                 .map(|line| {
                     if line.starts_with("── conflict") {
-                        Line::raw(line.clone()).fg(theme.status_input_transient_fg)
+                        Line::raw(line.clone()).fg(theme.muted_fg)
                     } else {
                         Line::raw(line.clone()).fg(theme.fg)
                     }
@@ -1932,12 +1866,10 @@ impl LocalChangesPanel<'_> {
                 description_area,
             ),
         ];
-        for (field, text, placeholder, box_area) in boxes {
+        for (field, text, empty, box_area) in boxes {
             let typing = editing && state.commit_field == field;
             if text.is_empty() && !typing {
-                Line::raw(placeholder)
-                    .fg(theme.status_input_transient_fg)
-                    .render(box_area, buf);
+                placeholder(empty, theme).render(box_area, buf);
             } else {
                 // the one-line summary scrolls sideways, the description wraps
                 let wrap = field == CommitField::Description;
@@ -1948,26 +1880,7 @@ impl LocalChangesPanel<'_> {
                 mark_selected_bar(buf, area.x - 1, box_area.y, true, theme);
             }
         }
-        Line::raw("─".repeat(divider_area.width as usize))
-            .fg(theme.divider_fg)
-            .render(divider_area, buf);
-    }
-
-    fn status_color(&self, status: LocalChangeStatus) -> Color {
-        change_color(status_symbol(status), &self.ctx.color_theme)
-    }
-}
-
-fn status_symbol(status: LocalChangeStatus) -> &'static str {
-    match status {
-        LocalChangeStatus::Added => "A",
-        LocalChangeStatus::Modified => "M",
-        LocalChangeStatus::Deleted => "D",
-        LocalChangeStatus::Renamed => "R",
-        LocalChangeStatus::Copied => "C",
-        LocalChangeStatus::TypeChanged => "T",
-        LocalChangeStatus::Untracked => "?",
-        LocalChangeStatus::Conflicted => "U",
+        divider(divider_area.width as usize, theme).render(divider_area, buf);
     }
 }
 

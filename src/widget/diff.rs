@@ -20,7 +20,7 @@ use crate::{
     git::Repository,
     widget::{
         file_tree::SearchDirection,
-        style::{mark_selected_bar, ScrollState},
+        style::{divider, mark_selected_bar, placeholder, ScrollState},
         tree_query::{find_around, match_range, patch_range},
     },
 };
@@ -755,10 +755,10 @@ pub fn diff_lines<'a>(
     range: Range<usize>,
     panel_width: u16,
 ) -> Vec<Line<'a>> {
-    let dim = theme.status_input_transient_fg;
+    let dim = theme.muted_fg;
     if diff.raw.is_empty() {
         // e.g. a directory of untracked files, which `git diff` does not show
-        return vec![Line::raw("No diff to show").fg(dim)];
+        return vec![placeholder("No diff to show", theme)];
     }
     if diff.rows.is_empty() {
         return hunkless_lines(diff)
@@ -783,7 +783,7 @@ pub fn diff_lines<'a>(
                 return Line::from(vec![
                     Span::raw("── ").fg(theme.divider_fg),
                     Span::raw(path).fg(theme.detail_file_change_modify_fg),
-                    Span::raw("─".repeat(fill)).fg(theme.divider_fg),
+                    divider(fill, theme),
                 ]);
             }
             let gutter = format!("{} {} ", number(row.old), number(row.new));

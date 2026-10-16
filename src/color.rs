@@ -88,8 +88,9 @@ pub struct ColorTheme {
 
     #[default(TEXT)]
     pub virtual_cursor_fg: RatatuiColor,
+    // quieter text: hints, placeholders, line numbers, summaries
     #[default(OVERLAY1)]
-    pub status_input_transient_fg: RatatuiColor,
+    pub muted_fg: RatatuiColor,
     #[default(BLUE)]
     pub status_info_fg: RatatuiColor,
     #[default(GREEN)]

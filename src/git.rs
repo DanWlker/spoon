@@ -1553,6 +1553,18 @@ pub enum FileChange {
     Move { from: String, to: String },
 }
 
+impl FileChange {
+    // Its letter, like git's: "A" added, "M" modified, "D" deleted, "R" renamed.
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            FileChange::Add { .. } => "A",
+            FileChange::Modify { .. } => "M",
+            FileChange::Delete { .. } => "D",
+            FileChange::Move { .. } => "R",
+        }
+    }
+}
+
 pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
     diff_summary(path, &format!("{}^", commit_hash.0), &commit_hash.0)
 }
@@ -1666,6 +1678,20 @@ pub enum LocalChangeStatus {
 }
 
 impl LocalChangeStatus {
+    // Its letter, like `git status --short`.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            LocalChangeStatus::Added => "A",
+            LocalChangeStatus::Modified => "M",
+            LocalChangeStatus::Deleted => "D",
+            LocalChangeStatus::Renamed => "R",
+            LocalChangeStatus::Copied => "C",
+            LocalChangeStatus::TypeChanged => "T",
+            LocalChangeStatus::Untracked => "?",
+            LocalChangeStatus::Conflicted => "U",
+        }
+    }
+
     fn from_status_char(c: u8) -> Option<Self> {
         match c {
             b'A' => Some(LocalChangeStatus::Added),

@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Clear, Padding, Paragraph, Widget},
+    widgets::{Block, Clear, Paragraph, Widget},
 };
 
 use crate::{
@@ -14,7 +14,8 @@ use crate::{
     event::UserEvent,
     git::{command_log, LoggedCommand},
     widget::style::{
-        mark_selected_row, panel_block, panel_title, render_panel_scrollbar, scroll_to, ScrollState,
+        mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
+        scroll_to, ScrollState,
     },
 };
 
@@ -92,16 +93,15 @@ impl<'a> CommandLog<'a> {
             Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
 
         let count = state.entries.len().to_string();
-        let block = panel_block(true, theme)
-            .title(panel_title("Command log", &count, true, theme))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(list_area);
-        block.render(list_area, buf);
+        let inner = render_panel(
+            buf,
+            list_area,
+            panel_title("Command log", &count, true, theme),
+            true,
+            theme,
+        );
         if state.entries.is_empty() {
-            let text = "No git command has changed the repository yet";
-            Line::raw(text)
-                .fg(theme.status_input_transient_fg)
-                .render(inner, buf);
+            placeholder("No git command has changed the repository yet", theme).render(inner, buf);
         }
         let height = inner.height as usize;
         state.offset = scroll_to(state.offset, state.selected, height);
@@ -139,14 +139,16 @@ impl<'a> CommandLog<'a> {
             }
         }
 
-        let block = panel_block(false, theme)
-            .title(panel_title("Output", "", false, theme))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(output_area);
-        block.render(output_area, buf);
+        let inner = render_panel(
+            buf,
+            output_area,
+            panel_title("Output", "", false, theme),
+            false,
+            theme,
+        );
         let output = state.selected_output();
         let lines: Vec<Line> = if output.is_empty() && !state.entries.is_empty() {
-            vec![Line::raw("No output").fg(theme.status_input_transient_fg)]
+            vec![placeholder("No output", theme)]
         } else {
             output
                 .lines()
@@ -171,8 +173,7 @@ fn format_duration(duration: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use crate::test_support::ui::{
-        assert_fills_bg, assert_only_bg_changed, assert_row_bg, find_row, panel_row,
-        theme_with_bg,
+        assert_fills_bg, assert_only_bg_changed, assert_row_bg, find_row, panel_row, theme_with_bg,
     };
 
     #[test]

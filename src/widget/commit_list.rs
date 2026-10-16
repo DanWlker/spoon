@@ -19,13 +19,16 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
+    event::UserEvent,
     git::{Commit, CommitHash, Head, Ref},
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{case_insensitive, SearchOptions, SearchTarget},
     widget::{
         file_tree::SearchDirection,
-        style::{mark_selected_bar, panel_block, panel_title, render_panel_scrollbar},
+        style::{
+            mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
+        },
         tree_query::find_around,
     },
 };
@@ -637,6 +640,25 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    // Moves by the keys moving in a list: the selection, by pages, or only the view; returns
+    // whether `event` was one of them.
+    pub fn handle_navigation(&mut self, event: UserEvent) -> bool {
+        match event {
+            UserEvent::NavigateDown | UserEvent::SelectDown => self.select_next(),
+            UserEvent::NavigateUp | UserEvent::SelectUp => self.select_prev(),
+            UserEvent::GoToTop => self.select_first(),
+            UserEvent::GoToBottom => self.select_last(),
+            UserEvent::ScrollDown => self.scroll_down(),
+            UserEvent::ScrollUp => self.scroll_up(),
+            UserEvent::PageDown => self.scroll_down_page(),
+            UserEvent::PageUp => self.scroll_up_page(),
+            UserEvent::HalfPageDown => self.scroll_down_half(),
+            UserEvent::HalfPageUp => self.scroll_up_half(),
+            _ => return false,
+        }
+        true
+    }
+
     pub fn toggle_smart_case(&mut self) {
         self.search_options.smart_case = !self.search_options.smart_case;
         self.update_search_after_options_change();
@@ -1101,10 +1123,14 @@ impl CommitList<'_> {
         if i == state.selected {
             line = line.bg(self.ctx.color_theme.list_selected_bg);
         } else if state.is_picked(&state.commits[state.offset + i].commit.commit_hash) {
-            // spans keep their own colors over the line's, so recolor each one to stay readable
-            let fg = self.ctx.color_theme.list_picked_fg;
-            line.spans = line.spans.into_iter().map(|span| span.fg(fg)).collect();
-            line = line.bg(self.ctx.color_theme.list_picked_bg);
+            // spans keep their own colors over the line's, so each one takes the picked style
+            let picked = picked_style(&self.ctx.color_theme);
+            line.spans = line
+                .spans
+                .into_iter()
+                .map(|span| span.patch_style(picked))
+                .collect();
+            line = line.patch_style(picked);
         }
         ListItem::new(line)
     }

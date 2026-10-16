@@ -1,6 +1,12 @@
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, HashSet},
+};
 
-use crate::widget::tree_query::{find_around, path_matches};
+use crate::widget::{
+    style::scroll_to,
+    tree_query::{find_around, path_matches},
+};
 
 // A row of a file tree as displayed: directories first, then files, each sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +102,8 @@ pub struct FileTreeState {
     // the indent markers of the rows, see `tree_guides`
     guides: Vec<String>,
     cursor: usize,
+    // the first row shown, moved as little as can be to show the cursor as the tree is drawn
+    offset: Cell<usize>,
 }
 
 impl FileTreeState {
@@ -118,6 +126,7 @@ impl FileTreeState {
             rows: Vec::new(),
             guides: Vec::new(),
             cursor: 0,
+            offset: Cell::new(0),
         };
         state.rebuild_rows();
         state
@@ -134,6 +143,7 @@ impl FileTreeState {
             rows: Vec::new(),
             guides: Vec::new(),
             cursor: 0,
+            offset: self.offset.clone(),
         };
         state.rebuild_rows();
         if let Some(path) = self.selected().map(|r| r.path.as_str()) {
@@ -151,6 +161,15 @@ impl FileTreeState {
 
     pub fn rows(&self) -> &[FileTreeRow] {
         &self.rows
+    }
+
+    // The first row shown in `height` rows, showing the cursor and as many rows as fit, moved as
+    // little as can be since the last time, like the other lists.
+    pub fn scroll(&self, height: usize) -> usize {
+        let offset = scroll_to(self.offset.get(), self.cursor, height)
+            .min(self.rows.len().saturating_sub(height));
+        self.offset.set(offset);
+        offset
     }
 
     // The indent markers before the row at `index`, see `tree_guides`.

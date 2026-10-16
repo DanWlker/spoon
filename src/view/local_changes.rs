@@ -9,7 +9,7 @@ use crate::{
     git::FilesSnapshot,
     keybind::Scope,
     layout::{Direction, Panel},
-    view::{copy_path, ListRefreshViewContext, RefreshViewContext},
+    view::{copy_path, copy_selection, status_input, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::CommitListState,
         local_changes::{
@@ -86,15 +86,8 @@ impl<'a> LocalChangesView<'a> {
         // `Scope::LocalChangesDiff`
         if self.local_changes_state.is_diff_focused() && event == UserEvent::ShortCopy {
             if let Some(text) = self.local_changes_state.selected_diff_text() {
-                let name = if self.local_changes_state.is_selecting_lines() {
-                    "Line"
-                } else {
-                    "Hunk"
-                };
-                self.tx.send(AppEvent::CopyToClipboard {
-                    name: name.into(),
-                    value: text,
-                });
+                let line = self.local_changes_state.is_selecting_lines();
+                self.tx.send(copy_selection(text, line));
             }
             return;
         }
@@ -336,14 +329,8 @@ impl<'a> LocalChangesView<'a> {
 
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
-        match self.local_changes_state.query_status_input() {
-            Some((message, cursor_position)) => self.tx.send(AppEvent::UpdateStatusInput {
-                message,
-                cursor_position,
-                metadata: String::new(),
-            }),
-            None => self.tx.send(AppEvent::ClearStatusLine),
-        }
+        let typed = self.local_changes_state.query_status_input();
+        self.tx.send(status_input(typed, String::new()));
     }
 
     fn after_action(&mut self, result: Result<(), String>) {

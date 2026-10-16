@@ -1080,10 +1080,10 @@ impl App<'_> {
                 message, metadata, ..
             } => {
                 left.push(Span::raw(message.clone()).fg(theme.status_bar_fg));
-                right.push(Span::raw(format!("{metadata} ")).fg(theme.status_input_transient_fg));
+                right.push(Span::raw(format!("{metadata} ")).fg(theme.muted_fg));
             }
             StatusLine::Transient(msg) => {
-                right.push(Span::raw(format!("{msg} ")).fg(theme.status_input_transient_fg));
+                right.push(Span::raw(format!("{msg} ")).fg(theme.muted_fg));
             }
             StatusLine::SearchResult {
                 message,
@@ -1096,7 +1096,7 @@ impl App<'_> {
                 } else {
                     span.fg(theme.status_warn_fg).bold()
                 });
-                right.push(Span::raw(format!("{options} ")).fg(theme.status_input_transient_fg));
+                right.push(Span::raw(format!("{options} ")).fg(theme.muted_fg));
             }
             StatusLine::NotificationInfo(msg) => {
                 left.push(Span::raw(msg.clone()).fg(theme.status_info_fg));
@@ -1121,7 +1121,7 @@ impl App<'_> {
             let (selected, total) = state.position();
             right.push(
                 Span::raw(format!("[{selected}/{total}] "))
-                    .fg(theme.status_input_transient_fg)
+                    .fg(theme.muted_fg)
                     .italic(),
             );
         }

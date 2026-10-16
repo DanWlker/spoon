@@ -189,7 +189,11 @@ pub fn popup_rect(buf: &Buffer) -> Rect {
         .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
         .find(|&(x, y)| buf[(x, y)].symbol() == "╭")
         .expect("a popup");
-    let right = (x..area.right()).find(|&r| buf[(r, y)].symbol() == "╮").unwrap();
-    let bottom = (y..area.bottom()).find(|&b| buf[(x, b)].symbol() == "╰").unwrap();
+    let right = (x..area.right())
+        .find(|&r| buf[(r, y)].symbol() == "╮")
+        .unwrap();
+    let bottom = (y..area.bottom())
+        .find(|&b| buf[(x, b)].symbol() == "╰")
+        .unwrap();
     Rect::new(x, y, right - x + 1, bottom - y + 1)
 }

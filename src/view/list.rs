@@ -8,7 +8,10 @@ use crate::{
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
     search,
-    view::{copy_hash, graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
+    view::{
+        copy_hash, graph_hints, status_input, typing_hints, ListRefreshViewContext,
+        RefreshViewContext,
+    },
     widget::{
         commit_list::{
             commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
@@ -47,36 +50,7 @@ impl<'a> ListView<'a> {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
             }
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                self.as_mut_list_state().select_next();
-            }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                self.as_mut_list_state().select_prev();
-            }
-            UserEvent::GoToTop => {
-                self.as_mut_list_state().select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.as_mut_list_state().select_last();
-            }
-            UserEvent::ScrollDown => {
-                self.as_mut_list_state().scroll_down();
-            }
-            UserEvent::ScrollUp => {
-                self.as_mut_list_state().scroll_up();
-            }
-            UserEvent::PageDown => {
-                self.as_mut_list_state().scroll_down_page();
-            }
-            UserEvent::PageUp => {
-                self.as_mut_list_state().scroll_up_page();
-            }
-            UserEvent::HalfPageDown => {
-                self.as_mut_list_state().scroll_down_half();
-            }
-            UserEvent::HalfPageUp => {
-                self.as_mut_list_state().scroll_up_half();
-            }
+            _ if self.as_mut_list_state().handle_navigation(event) => {}
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 let full = event == UserEvent::FullCopy;
                 self.tx
@@ -288,13 +262,9 @@ pub fn handle_search_event(
 
 fn update_search_status(state: &CommitListState, tx: &Sender) {
     if let SearchState::Searching { .. } = state.search_state() {
-        if let Some(query) = state.search_query_string() {
-            tx.send(AppEvent::UpdateStatusInput {
-                message: query,
-                cursor_position: state.search_query_cursor_position(),
-                metadata: state.search_options().status_string(),
-            });
-        }
+        let cursor = state.search_query_cursor_position();
+        let typed = state.search_query_string().map(|query| (query, cursor));
+        tx.send(status_input(typed, state.search_options().status_string()));
     }
 }
 

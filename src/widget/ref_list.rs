@@ -4,7 +4,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
-    widgets::{Padding, StatefulWidget},
+    widgets::StatefulWidget,
 };
 use rustc_hash::FxHashMap;
 use semver::Version;
@@ -16,8 +16,8 @@ use crate::{
     widget::{
         file_tree::tree_guides,
         style::{
-            fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
-            scroll_to,
+            divider, fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
+            render_panel_scrollbar, scroll_to,
         },
         tree_query::keep_guide_color,
     },
@@ -517,11 +517,13 @@ impl StatefulWidget for RefList {
             n if self.collapsed => n.to_string(),
             n => format!("{n} picked"),
         };
-        let block = panel_block(self.focused, theme)
-            .title(panel_title(label, &picked, self.focused, theme))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        ratatui::widgets::Widget::render(block, area, buf);
+        let inner = render_panel(
+            buf,
+            area,
+            panel_title(label, &picked, self.focused, theme),
+            self.focused,
+            theme,
+        );
         if self.collapsed || inner.width == 0 || inner.height == 0 {
             return;
         }
@@ -559,9 +561,8 @@ impl StatefulWidget for RefList {
         {
             let y = inner.y + line as u16;
             if row.separator {
-                let divider_style = Style::default().fg(self.ctx.color_theme.divider_fg);
-                let line = "─".repeat(inner.width as usize);
-                buf.set_stringn(inner.x, y, line, inner.width as usize, divider_style);
+                let width = inner.width as usize;
+                buf.set_span(inner.x, y, &divider(width, theme), inner.width);
                 continue;
             }
             // the checked-out branch, like `git branch`
@@ -585,7 +586,7 @@ impl StatefulWidget for RefList {
             let symbol_style = if head {
                 Style::default().fg(theme.list_ref_head_fg)
             } else {
-                Style::default().fg(theme.status_input_transient_fg)
+                Style::default().fg(theme.muted_fg)
             };
             let room = inner.right().saturating_sub(guide_x) as usize;
             let (text_x, _) = buf.set_stringn(guide_x, y, symbol, room, symbol_style);
@@ -597,11 +598,7 @@ impl StatefulWidget for RefList {
                         .picked
                         .contains(section, &row.identifier[row.identifier.len() - 1])
                 });
-            let style = if picked {
-                Style::default()
-                    .fg(theme.list_picked_fg)
-                    .bg(theme.list_picked_bg)
-            } else if row.depth == 0 {
+            let style = if row.depth == 0 {
                 root_style
             } else if head {
                 root_style.fg(theme.list_ref_head_fg)
@@ -647,12 +644,8 @@ impl StatefulWidget for RefList {
                 let width = inner.right().saturating_sub(x + 1) as usize;
                 (x, _) = buf.set_stringn(x + 1, y, count, width, Style::default().fg(fg));
             }
-            // picked across the row, like picked commits and files
             if picked {
-                let picked_style = Style::default()
-                    .fg(theme.list_picked_fg)
-                    .bg(theme.list_picked_bg);
-                buf.set_style(Rect::new(inner.x, y, inner.width, 1), picked_style);
+                mark_picked_row(buf, Rect::new(inner.x, y, inner.width, 1), theme);
             }
             if row.identifier == state.selected {
                 mark_selected_row(buf, inner, y, self.focused, theme);

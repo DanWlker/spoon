@@ -14,20 +14,14 @@ use crate::{
     event::UserEvent,
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{fit_size, Panel},
-    widget::style::{
-        change_color, focused_title, mark_selected_row, panel_title, render_scrollbar,
-        tree_panel_width,
-    },
+    widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
         diff::{
             diff_line_count, diff_lines, parse_diff, render_diff_lines, render_visual_rows,
             visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
-        file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
-        tree_query::{
-            dir_line, find_around, guide_span, highlight_match, highlighted_name, match_range,
-            unhighlight_guides,
-        },
+        file_tree::{keeps, FileTree, FileTreeState, SearchDirection},
+        tree_query::{find_around, highlight_match, match_range, render_tree},
     },
 };
 
@@ -89,7 +83,7 @@ pub fn render_tab_titles(
             } else if *tab == current {
                 Span::raw(title).fg(theme.fg).bold()
             } else {
-                Span::raw(title).fg(theme.status_input_transient_fg)
+                Span::raw(title).fg(theme.muted_fg)
             }
         })
         .collect();
@@ -174,16 +168,16 @@ impl<'a> CommitChangesState<'a> {
         let files: Vec<ChangedFile> = changes
             .iter()
             .map(|change| {
-                let (path, from, symbol) = match change {
-                    FileChange::Add { path } => (path, None, "A"),
-                    FileChange::Modify { path } => (path, None, "M"),
-                    FileChange::Delete { path } => (path, None, "D"),
-                    FileChange::Move { from, to } => (to, Some(from.clone()), "R"),
+                let (path, from) = match change {
+                    FileChange::Add { path }
+                    | FileChange::Modify { path }
+                    | FileChange::Delete { path } => (path, None),
+                    FileChange::Move { from, to } => (to, Some(from.clone())),
                 };
                 ChangedFile {
                     path: path.clone(),
                     from,
-                    symbol,
+                    symbol: change.symbol(),
                 }
             })
             .collect();
@@ -670,37 +664,24 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
         let theme = &self.ctx.color_theme;
         let [tree_area, diff_area] = split_tree_and_side(&self.ctx, area, buf);
 
-        if state.tree.rows().is_empty() {
-            let message = if state.files.is_empty() {
-                "No changes"
-            } else {
-                "No matches"
-            };
-            Paragraph::new(Line::raw(message).fg(theme.status_input_transient_fg))
-                .render(tree_area, buf);
+        let empty = if state.files.is_empty() {
+            "No changes"
         } else {
-            let line = |index: usize, row: &FileTreeRow| match row.file_index {
-                None => dir_line(
-                    row,
-                    state.tree.guide(index),
-                    state.tree.is_open(&row.path),
-                    self.search.as_deref(),
-                    theme,
-                ),
-                Some(i) => {
-                    let symbol = state.files[i].symbol;
-                    let mut spans = vec![
-                        guide_span(state.tree.guide(index), theme),
-                        Span::raw(symbol).fg(change_color(symbol, theme)),
-                        " ".into(),
-                    ];
-                    spans.extend(highlighted_name(&row.name, self.search.as_deref(), theme));
-                    Line::from(spans)
-                }
-            };
-            let tree_focused = !state.is_diff_focused();
-            render_rows_with_cursor(&state.tree, line, tree_focused, theme, tree_area, buf);
-        }
+            "No matches"
+        };
+        let tree_focused = !state.is_diff_focused();
+        let offset = render_tree(
+            buf,
+            tree_area,
+            &state.tree,
+            |i| Some(state.files[i].symbol),
+            self.search.as_deref(),
+            |_| false,
+            Some(tree_focused),
+            empty,
+            theme,
+        );
+        render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
 
         let count = state.diff.as_ref().map_or(0, diff_line_count);
         let range = state.cursor.scroll.fit(count, diff_area.height as usize);
@@ -760,30 +741,23 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
         let [tree_area, preview_area] = split_tree_and_side(&self.ctx, area, buf);
 
         if let Some(tree) = &state.tree {
-            if tree.rows().is_empty() && tree.filter().is_some() {
-                Paragraph::new(Line::raw("No matches").fg(theme.status_input_transient_fg))
-                    .render(tree_area, buf);
-            }
-            let search = self.search.as_deref();
-            let line = |index: usize, row: &FileTreeRow| match row.file_index {
-                None => dir_line(
-                    row,
-                    tree.guide(index),
-                    tree.is_open(&row.path),
-                    search,
-                    theme,
-                ),
-                Some(_) => {
-                    let mut spans = vec![guide_span(tree.guide(index), theme)];
-                    spans.extend(highlighted_name(&row.name, search, theme));
-                    Line::from(spans)
-                }
-            };
+            // a commit always has files, they can only be filtered out
             let focused = !state.preview_focused;
-            render_rows_with_cursor(tree, line, focused, theme, tree_area, buf);
+            let offset = render_tree(
+                buf,
+                tree_area,
+                tree,
+                |_| None,
+                self.search.as_deref(),
+                |_| false,
+                Some(focused),
+                "No matches",
+                theme,
+            );
+            render_tree_scrollbar(buf, tree_area, tree, offset, focused, theme);
         }
 
-        let dim = |text: String| vec![Line::raw(text).fg(theme.status_input_transient_fg)];
+        let dim = |text: String| vec![placeholder(text, theme)];
         let lines = match &state.preview {
             Some(FilePreview::Text(lines)) => {
                 // only the visible lines are built, files can be long
@@ -808,8 +782,7 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                         .zip(range)
                         .map(|(line, i)| {
                             let mut line = Line::from(vec![
-                                Span::raw(format!("{:>width$} ", i + 1))
-                                    .fg(theme.status_input_transient_fg),
+                                Span::raw(format!("{:>width$} ", i + 1)).fg(theme.muted_fg),
                                 Span::raw(line.replace('\t', "    ")),
                             ]);
                             if let Some(query) = &self.preview_search {
@@ -859,39 +832,18 @@ fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect
     [tree_inner, side_area]
 }
 
-// Renders the `rows` on screen as `line` makes them, scrolled so the cursor is visible,
-// highlighting the cursor line.
-fn render_rows_with_cursor<'a>(
-    tree: &'a FileTreeState,
-    line: impl Fn(usize, &'a FileTreeRow) -> Line<'a>,
+// The scrollbar of a tree beside a diff or a preview, on the divider past its padding.
+fn render_tree_scrollbar(
+    buf: &mut Buffer,
+    area: Rect,
+    tree: &FileTreeState,
+    offset: usize,
     focused: bool,
     theme: &ColorTheme,
-    area: Rect,
-    buf: &mut Buffer,
 ) {
-    let (rows, cursor) = (tree.rows(), tree.cursor());
-    if rows.is_empty() {
-        return;
-    }
-    let height = area.height as usize;
-    let offset = (cursor + 1).saturating_sub(height);
-    // on the divider beside the tree, past its padding
     let divider = Rect::new(area.right() + 1, area.y, 1, area.height);
     // the accent's while the tree has the focus, like the other panels' scrollbars
-    render_scrollbar(buf, divider, rows.len(), offset, focused, theme);
-    let lines: Vec<Line> = rows
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(height)
-        .map(|(index, row)| line(index, row))
-        .collect();
-    Paragraph::new(lines).fg(theme.fg).render(area, buf);
-
-    if let Ok(y) = u16::try_from(cursor - offset) {
-        mark_selected_row(buf, area, area.y + y, focused, theme);
-    }
-    unhighlight_guides(buf, area, tree, offset, theme);
+    render_scrollbar(buf, divider, tree.rows().len(), offset, focused, theme);
 }
 
 #[cfg(test)]
@@ -907,40 +859,6 @@ mod tests {
 
     fn selected(tree: &FileTreeState) -> &str {
         &tree.selected().unwrap().path
-    }
-
-    #[test]
-    fn test_tree_rows_look_like_the_other_lists() {
-        use crate::{
-            test_support::ui::{assert_guides_keep_color, assert_only_bg_changed, assert_row_bg},
-            widget::file_tree::FileTree,
-        };
-
-        let theme = ColorTheme::default();
-        let mut tree = FileTreeState::new(FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]), true);
-        let draw = |tree: &FileTreeState, focused: bool| {
-            let area = Rect::new(1, 0, 20, 5);
-            let mut buf = Buffer::empty(Rect::new(0, 0, 23, 5));
-            let line = |index: usize, row: &FileTreeRow| match row.file_index {
-                None => dir_line(row, tree.guide(index), true, None, &theme),
-                Some(_) => Line::from(vec![
-                    guide_span(tree.guide(index), &theme),
-                    row.name.clone().into(),
-                ]),
-            };
-            render_rows_with_cursor(tree, line, focused, &theme, area, &mut buf);
-            buf
-        };
-        for focused in [true, false] {
-            tree.select_path("z.rs");
-            let plain = draw(&tree, focused);
-            tree.select_path("a/x.rs");
-            let selected = draw(&tree, focused);
-            let row = Rect::new(1, 1, 20, 1);
-            assert_row_bg(&selected, row, theme.list_selected_bg);
-            assert_only_bg_changed(&plain, &selected, row);
-            assert_guides_keep_color(&selected, row, &theme);
-        }
     }
 
     #[test]

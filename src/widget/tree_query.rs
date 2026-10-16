@@ -6,6 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
+    widgets::{Paragraph, Widget},
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
 
@@ -14,7 +15,7 @@ use crate::{
     search::{case_insensitive, shared_fuzzy, shared_smart_case},
     widget::{
         file_tree::{keeps, FileTreeRow, FileTreeState, SearchDirection},
-        style::fold_marker,
+        style::{change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder},
     },
 };
 
@@ -277,6 +278,67 @@ pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
     Span::raw(guide.to_string()).fg(theme.divider_fg)
 }
 
+// Draws the rows of `tree` in `area`, like every file tree: the directories open or closed, the
+// files with their change letter from `symbol` (by their index) when they have one, the match of
+// `search` highlighted; the `picked` rows and, with `cursor` (whether the tree has the focus), the
+// selected one highlighted across the row, the lines of the tree keeping their color; `empty`
+// when there is no row. Returns the first row shown, for the scrollbar.
+#[allow(clippy::too_many_arguments)]
+pub fn render_tree(
+    buf: &mut Buffer,
+    area: Rect,
+    tree: &FileTreeState,
+    symbol: impl Fn(usize) -> Option<&'static str>,
+    search: Option<&str>,
+    picked: impl Fn(&str) -> bool,
+    cursor: Option<bool>,
+    empty: &str,
+    theme: &ColorTheme,
+) -> usize {
+    let rows = tree.rows();
+    if rows.is_empty() {
+        Paragraph::new(placeholder(empty, theme)).render(area, buf);
+        return 0;
+    }
+    let height = area.height as usize;
+    // no room for a row, like in a very short terminal
+    if height == 0 {
+        return 0;
+    }
+    let offset = tree.scroll(height);
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(height)
+        .map(|(index, row)| {
+            let guide = tree.guide(index);
+            let Some(file) = row.file_index else {
+                return dir_line(row, guide, tree.is_open(&row.path), search, theme);
+            };
+            let mut spans = vec![guide_span(guide, theme)];
+            if let Some(symbol) = symbol(file) {
+                spans.extend([change_span(symbol, theme), Span::raw(" ")]);
+            }
+            spans.extend(highlighted_name(&row.name, search, theme));
+            Line::from(spans)
+        })
+        .collect();
+    Paragraph::new(lines).fg(theme.fg).render(area, buf);
+
+    for (y, row) in (area.top()..area.bottom()).zip(rows.iter().skip(offset)) {
+        if picked(&row.path) {
+            mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);
+        }
+    }
+    if let Some(focused) = cursor {
+        let y = area.y + (tree.cursor() - offset) as u16;
+        mark_selected_row(buf, area, y, focused, theme);
+    }
+    unhighlight_guides(buf, area, tree, offset, theme);
+    offset
+}
+
 // Gives the indent markers at the start of the rows `area` shows from `offset` their own color
 // back, over the highlight of the selected and picked rows.
 pub fn unhighlight_guides(
@@ -352,6 +414,72 @@ fn name_match_ranges(name: &str, query: &str, fuzzy: bool) -> Vec<std::ops::Rang
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        test_support::ui::{
+            assert_guides_keep_color, assert_only_bg_changed, assert_row_bg, row_text,
+        },
+        widget::file_tree::FileTree,
+    };
+
+    // Draws `tree` in 20 columns and `height` rows, from column 1, the change letter "M" on each
+    // file and `picked` highlighted.
+    fn draw_tree(tree: &FileTreeState, height: u16, focused: bool, picked: &str) -> Buffer {
+        let theme = ColorTheme::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 23, height));
+        let area = Rect::new(1, 0, 20, height);
+        let symbol = |_| Some("M");
+        let is_picked = |path: &str| path == picked;
+        render_tree(
+            &mut buf,
+            area,
+            tree,
+            symbol,
+            None,
+            is_picked,
+            Some(focused),
+            "",
+            &theme,
+        );
+        buf
+    }
+
+    #[test]
+    fn test_tree_rows_look_like_the_other_lists() {
+        let theme = ColorTheme::default();
+        let mut tree = FileTreeState::new(FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]), true);
+        for focused in [true, false] {
+            tree.select_path("z.rs");
+            let plain = draw_tree(&tree, 5, focused, "");
+            tree.select_path("a/x.rs");
+            let selected = draw_tree(&tree, 5, focused, "");
+            // the change letter and the lines keep their colors
+            let row = Rect::new(1, 1, 20, 1);
+            assert_row_bg(&selected, row, theme.list_selected_bg);
+            assert_only_bg_changed(&plain, &selected, row);
+            assert_guides_keep_color(&selected, row, &theme);
+        }
+        // a picked row: across it too
+        let buf = draw_tree(&tree, 5, true, "a/y.rs");
+        let row = Rect::new(1, 2, 20, 1);
+        assert_row_bg(&buf, row, theme.list_picked_bg);
+        assert_guides_keep_color(&buf, row, &theme);
+    }
+
+    #[test]
+    fn test_tree_scrolls_like_the_other_lists() {
+        let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
+        let mut tree = FileTreeState::new(FileTree::new(paths.iter().map(String::as_str)), true);
+        let top = |tree: &FileTreeState| row_text(&draw_tree(tree, 4, true, ""), 0);
+        // down past the bottom: the view follows the cursor
+        tree.select_index(5);
+        assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));
+        // up within the view: the view stays
+        tree.select_index(3);
+        assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));
+        // up past the top: it follows again
+        tree.select_index(0);
+        assert!(top(&tree).contains("f0.rs"), "{}", top(&tree));
+    }
 
     fn type_str(query: &mut TreeQuery, text: &str) {
         for c in text.chars() {

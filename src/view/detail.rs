@@ -14,8 +14,8 @@ use crate::{
     keybind::Scope,
     layout::{fit_size, Direction, Panel},
     view::{
-        copy_hash, copy_path, graph_hints, handle_search_event, typing_hints,
-        ListRefreshViewContext, RefreshViewContext,
+        copy_hash, copy_path, copy_selection, graph_hints, handle_search_event, status_input,
+        typing_hints, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -637,13 +637,9 @@ impl<'a> DetailView<'a> {
                     }
                     UserEvent::ApplyChange => self.apply_change(),
                     UserEvent::ShortCopy => {
-                        let name = if state.is_selecting_lines() {
-                            "Line"
-                        } else {
-                            "Hunk"
-                        };
                         if let Some(text) = state.selected_text() {
-                            self.copy_to_clipboard(name.into(), text);
+                            let line = state.is_selecting_lines();
+                            self.tx.send(copy_selection(text, line));
                         }
                     }
                     _ => {
@@ -663,7 +659,7 @@ impl<'a> DetailView<'a> {
                     }
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
-                            self.copy_to_clipboard("Line".into(), text);
+                            self.tx.send(copy_selection(text, true));
                         }
                     }
                     _ => {
@@ -725,16 +721,7 @@ impl<'a> DetailView<'a> {
         let state = self.as_mut_list_state();
         let before = state.selected_commit_hash().clone();
         match event {
-            UserEvent::NavigateDown | UserEvent::SelectDown => CommitListState::select_next(state),
-            UserEvent::NavigateUp | UserEvent::SelectUp => CommitListState::select_prev(state),
-            UserEvent::GoToTop => state.select_first(),
-            UserEvent::GoToBottom => state.select_last(),
-            UserEvent::PageDown => CommitListState::scroll_down_page(state),
-            UserEvent::PageUp => CommitListState::scroll_up_page(state),
-            UserEvent::HalfPageDown => CommitListState::scroll_down_half(state),
-            UserEvent::HalfPageUp => CommitListState::scroll_up_half(state),
-            UserEvent::ScrollDown => CommitListState::scroll_down(state),
-            UserEvent::ScrollUp => CommitListState::scroll_up(state),
+            _ if state.handle_navigation(event) => {}
             UserEvent::ToggleSelect if comparing => {
                 let msg = "Close the diff first (esc) to pick other commits".to_string();
                 tx.send(AppEvent::NotifyWarn(msg));
@@ -897,14 +884,8 @@ impl<'a> DetailView<'a> {
 
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
-        match self.query().and_then(TreeQuery::status_input) {
-            Some((message, cursor_position)) => self.tx.send(AppEvent::UpdateStatusInput {
-                message,
-                cursor_position,
-                metadata: String::new(),
-            }),
-            None => self.tx.send(AppEvent::ClearStatusLine),
-        }
+        let typed = self.query().and_then(TreeQuery::status_input);
+        self.tx.send(status_input(typed, String::new()));
     }
 
     pub fn take_list_state(&mut self) -> CommitListState<'a> {
@@ -981,10 +962,6 @@ impl<'a> DetailView<'a> {
 
         self.commit_detail_state.offset = 0;
         self.load_tab();
-    }
-
-    fn copy_to_clipboard(&self, name: String, value: String) {
-        self.tx.send(AppEvent::CopyToClipboard { name, value });
     }
 
     pub fn refresh(&self) {
