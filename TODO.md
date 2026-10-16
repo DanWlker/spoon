@@ -9,3 +9,4 @@ TODO:
    - Risk: squash, drop, amend and rebase from the graph look up commit parents in the loaded graph, and in a filtered graph those parents are wrong. Running them there could rewrite the wrong commits. I'd turn them off while the filter is on, with a message.
    - Not planned: following renames (--follow). git only supports it for a single file, and it doesn't work well with a graph.
 1. Interactive rebase, Shift R? need to find another keybind for refresh
+1. if N is pressed in a diff pane, it should go to the next search result and display that diff, while still keeping focus on diff pane, same with ]f
