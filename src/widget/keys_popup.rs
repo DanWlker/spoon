@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     color::ColorTheme,
-    widget::style::{panel_block, panel_title},
+    widget::style::{key_span, panel_block, panel_title},
 };
 
 pub struct KeysPopup<'a> {
@@ -77,9 +77,7 @@ impl Widget for KeysPopup<'_> {
             .iter()
             .map(|(key, description)| {
                 Line::from(vec![
-                    Span::raw(format!(" {key:>key_width$}"))
-                        .fg(theme.accent_fg)
-                        .bold(),
+                    key_span(format!(" {key:>key_width$}"), theme),
                     Span::raw(SEPARATOR).fg(theme.divider_fg),
                     Span::raw(description.clone()).fg(theme.fg),
                 ])
@@ -97,6 +95,24 @@ impl Widget for KeysPopup<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ui::{
+        assert_fills_bg, assert_key_style, assert_popup_frame, column_of, find_row, popup_rect,
+        theme_with_bg,
+    };
+
+    #[test]
+    fn test_looks_like_the_other_popups() {
+        let theme = theme_with_bg();
+        let keys = vec![("j/k".to_string(), "move".to_string())];
+        let area = Rect::new(0, 0, 50, 10);
+        let mut buf = Buffer::empty(area);
+        KeysPopup::new(&keys, &theme).render(area, &mut buf);
+        let rect = popup_rect(&buf);
+        assert_popup_frame(&buf, rect, theme.accent_fg);
+        assert_fills_bg(&buf, rect, &theme, &[]);
+        let y = find_row(&buf, "j/k");
+        assert_key_style(&buf, column_of(&buf, y, "j/k"), y, &theme);
+    }
 
     #[test]
     fn test_keys_popup_area() {

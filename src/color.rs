@@ -69,6 +69,9 @@ pub struct ColorTheme {
     // the names of the directories in the file trees
     #[default(BLUE)]
     pub file_tree_dir_fg: RatatuiColor,
+    // the "@@ -1 +1 @@" headers of the hunks of a diff
+    #[default(BLUE)]
+    pub diff_hunk_fg: RatatuiColor,
     // the lines added and removed in a diff, Mocha's green and red over its base
     #[default(RatatuiColor::Rgb(0x39, 0x45, 0x45))]
     pub diff_add_bg: RatatuiColor,
@@ -82,8 +85,6 @@ pub struct ColorTheme {
 
     #[default(MAUVE)]
     pub help_block_title_fg: RatatuiColor,
-    #[default(BLUE)]
-    pub help_key_fg: RatatuiColor,
 
     #[default(TEXT)]
     pub virtual_cursor_fg: RatatuiColor,

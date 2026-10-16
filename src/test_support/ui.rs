@@ -4,7 +4,11 @@
 
 use std::rc::Rc;
 
-use ratatui::{buffer::Buffer, layout::Rect, style::Color};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Modifier},
+};
 
 use crate::{
     app::AppContext,
@@ -15,11 +19,15 @@ use crate::{
 };
 
 pub fn test_ctx() -> Rc<AppContext> {
+    test_ctx_with(ColorTheme::default())
+}
+
+pub fn test_ctx_with(color_theme: ColorTheme) -> Rc<AppContext> {
     Rc::new(AppContext {
         keybind: KeyBind::new(None),
         core_config: CoreConfig::default(),
         ui_config: UiConfig::default(),
-        color_theme: ColorTheme::default(),
+        color_theme,
         image_protocol: ImageProtocol::Kitty,
         running_task: Default::default(),
         key_names: Default::default(),
@@ -118,4 +126,70 @@ pub fn dump(buf: &Buffer) -> String {
         .map(|y| row_text(buf, y))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// A theme with its own background, to see which cells a popup leaves on the terminal's.
+pub fn theme_with_bg() -> ColorTheme {
+    ColorTheme {
+        bg: Color::Rgb(1, 2, 3),
+        ..ColorTheme::default()
+    }
+}
+
+// A key name, like "j/k", looks the same everywhere: see `style::key_span`.
+pub fn assert_key_style(buf: &Buffer, x: u16, y: u16, theme: &ColorTheme) {
+    let cell = &buf[(x, y)];
+    assert_eq!(
+        (cell.fg, cell.modifier.contains(Modifier::BOLD)),
+        (theme.accent_fg, true),
+        "the key at {x} of {} isn't styled as a key",
+        row_text(buf, y)
+    );
+}
+
+// A popup: rounded corners at `rect`, its border in `color`.
+pub fn assert_popup_frame(buf: &Buffer, rect: Rect, color: Color) {
+    let corners = [
+        (rect.left(), rect.top(), "╭"),
+        (rect.right() - 1, rect.top(), "╮"),
+        (rect.left(), rect.bottom() - 1, "╰"),
+        (rect.right() - 1, rect.bottom() - 1, "╯"),
+    ];
+    for (x, y, symbol) in corners {
+        let cell = &buf[(x, y)];
+        assert_eq!(
+            (cell.symbol(), cell.fg),
+            (symbol, color),
+            "corner {x},{y} of the popup:\n{}",
+            dump(buf)
+        );
+    }
+}
+
+// The cells of `rect` on the theme's background, but those on one of the `highlights`, like a
+// selected row: none shows the terminal's through.
+pub fn assert_fills_bg(buf: &Buffer, rect: Rect, theme: &ColorTheme, highlights: &[Color]) {
+    for y in rect.top()..rect.bottom() {
+        for x in rect.left()..rect.right() {
+            let bg = buf[(x, y)].bg;
+            assert!(
+                bg == theme.bg || highlights.contains(&bg),
+                "cell {x},{y} is on {bg:?}, not the theme's background: {}",
+                row_text(buf, y)
+            );
+        }
+    }
+}
+
+// The rectangle of the popup whose top left corner is the first "╭" from the top left, to its
+// "╯".
+pub fn popup_rect(buf: &Buffer) -> Rect {
+    let area = buf.area;
+    let (x, y) = (area.top()..area.bottom())
+        .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+        .find(|&(x, y)| buf[(x, y)].symbol() == "╭")
+        .expect("a popup");
+    let right = (x..area.right()).find(|&r| buf[(r, y)].symbol() == "╮").unwrap();
+    let bottom = (y..area.bottom()).find(|&b| buf[(x, b)].symbol() == "╰").unwrap();
+    Rect::new(x, y, right - x + 1, bottom - y + 1)
 }

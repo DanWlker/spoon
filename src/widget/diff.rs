@@ -788,7 +788,7 @@ pub fn diff_lines<'a>(
             }
             let gutter = format!("{} {} ", number(row.old), number(row.new));
             let text_color = match row.kind {
-                DiffRowKind::Hunk => theme.status_info_fg,
+                DiffRowKind::Hunk => theme.diff_hunk_fg,
                 DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Context => theme.fg,
                 DiffRowKind::Meta | DiffRowKind::File => dim,
             };

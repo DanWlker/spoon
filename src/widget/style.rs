@@ -113,13 +113,18 @@ pub fn tree_panel_width(width: u16) -> u16 {
 }
 
 // Keys and what they do, like "j/k move • enter push • esc cancel".
+// A key name, like "j/k", the same in the status bar, the keys popup, the help and the notices.
+pub fn key_span(key: impl Into<String>, theme: &ColorTheme) -> Span<'static> {
+    Span::raw(key.into()).fg(theme.accent_fg).bold()
+}
+
 pub fn key_hints(hints: &[(&str, &str)], theme: &ColorTheme) -> Line<'static> {
     let mut spans = vec![];
     for (i, (key, description)) in hints.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" • ").fg(theme.divider_fg));
         }
-        spans.push(Span::raw(key.to_string()).fg(theme.fg));
+        spans.push(key_span(*key, theme));
         spans.push(Span::raw(format!(" {description}")).fg(theme.status_input_transient_fg));
     }
     Line::from(spans)
@@ -253,6 +258,20 @@ pub fn mark_selected_bar(buf: &mut Buffer, x: u16, y: u16, focused: bool, theme:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ui::{assert_key_style, theme_with_bg};
+
+    #[test]
+    fn test_key_hints_name_keys_like_everywhere() {
+        let theme = theme_with_bg();
+        let line = key_hints(&[("j/k", "move"), ("q", "quit")], &theme);
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        line.render(area, &mut buf);
+        assert_key_style(&buf, 0, 0, &theme);
+        // "j/k move • q quit"
+        assert_key_style(&buf, 11, 0, &theme);
+        assert_ne!(buf[(4, 0)].fg, theme.accent_fg, "the description isn't a key");
+    }
 
     #[test]
     fn test_scroll_to() {

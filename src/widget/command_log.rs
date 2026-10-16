@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Stylize,
     text::{Line, Span},
-    widgets::{Clear, Padding, Paragraph, Widget},
+    widgets::{Block, Clear, Padding, Paragraph, Widget},
 };
 
 use crate::{
@@ -86,6 +86,7 @@ impl<'a> CommandLog<'a> {
     pub fn render(self, area: Rect, buf: &mut Buffer, state: &mut CommandLogState) {
         let theme = self.theme;
         Clear.render(area, buf);
+        Block::default().bg(theme.bg).render(area, buf);
         // the commands over two fifths, the output of the selected one under them
         let [list_area, output_area] =
             Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
@@ -163,5 +164,46 @@ fn format_duration(duration: std::time::Duration) -> String {
     match duration.as_millis() {
         ms if ms < 1000 => format!("{ms}ms"),
         ms => format!("{:.1}s", ms as f64 / 1000.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::ui::{
+        assert_fills_bg, assert_only_bg_changed, assert_row_bg, find_row, panel_row,
+        theme_with_bg,
+    };
+
+    #[test]
+    fn test_looks_like_the_other_popups() {
+        let theme = theme_with_bg();
+        let entry = |command: &str| LoggedCommand {
+            at: chrono::Local::now(),
+            command: command.into(),
+            ok: true,
+            output: "done".into(),
+            duration: std::time::Duration::from_millis(5),
+        };
+        let mut state = CommandLogState {
+            entries: vec![entry("git push"), entry("git pull")],
+            ..Default::default()
+        };
+        let area = Rect::new(0, 0, 60, 12);
+        let draw = |state: &mut CommandLogState| {
+            let mut buf = Buffer::empty(area);
+            CommandLog::new(&theme).render(area, &mut buf, state);
+            buf
+        };
+        state.select_next();
+        let plain = draw(&mut state);
+        state.select_prev();
+        let buf = draw(&mut state);
+        // on the theme's background, but the selected row, a row like the other lists'
+        assert_fills_bg(&buf, area, &theme, &[theme.list_selected_bg]);
+        let y = find_row(&buf, "git push");
+        let row = panel_row(&buf, "Command log", y, 1);
+        assert_row_bg(&buf, row, theme.list_selected_bg);
+        assert_only_bg_changed(&plain, &buf, row);
     }
 }

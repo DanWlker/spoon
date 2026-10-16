@@ -3,7 +3,7 @@ use std::rc::Rc;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Stylize},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Padding, Paragraph},
     Frame,
 };
@@ -14,7 +14,7 @@ use crate::{
     config::CoreConfig,
     event::{AppEvent, Sender, UserEvent},
     keybind::KeyBind,
-    widget::style::ScrollState,
+    widget::style::{key_span, ScrollState},
 };
 
 // The keys of the whole app, over the page, see `AppShell::help`.
@@ -376,17 +376,8 @@ fn build_block_lines(
         .add_modifier(Modifier::BOLD)];
     let value_title_lines = vec![Line::from("")];
     let key_binding_lines: Vec<Line> = helps
-        .clone()
-        .into_iter()
-        .map(|(events, _)| {
-            join_span_groups_with_space(
-                events
-                    .iter()
-                    .flat_map(|event| keybind.keys_for_event(*event))
-                    .map(|key| vec!["<".into(), key.fg(color_theme.help_key_fg), ">".into()])
-                    .collect(),
-            )
-        })
+        .iter()
+        .map(|(events, _)| Line::from(key_span(keybind.all_keys(events), color_theme)))
         .collect();
     let value_binding_lines: Vec<Line> = helps
         .into_iter()
@@ -413,14 +404,32 @@ fn join_line_groups_with_empty(line_groups: Vec<Vec<Line<'static>>>) -> Vec<Line
     result
 }
 
-fn join_span_groups_with_space(span_groups: Vec<Vec<Span<'static>>>) -> Line<'static> {
-    let mut spans: Vec<Span> = Vec::new();
-    let n = span_groups.len();
-    for (i, ss) in span_groups.into_iter().enumerate() {
-        spans.extend(ss);
-        if i < n - 1 {
-            spans.push(Span::raw(" "));
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::Modifier;
+
+    use super::*;
+
+    #[test]
+    fn test_keys_look_like_everywhere() {
+        // like the status bar's hints and the keys popup: "k/up", in the key style
+        let theme = ColorTheme::default();
+        let keybind = KeyBind::new(None);
+        let (keys, values) = build_lines(&theme, &keybind, &CoreConfig::default());
+        let mut checked = 0;
+        for (key, value) in keys.iter().zip(&values) {
+            // the rows of keys, not the titles of the blocks
+            if value.width() == 0 || key.width() == 0 {
+                continue;
+            }
+            for span in &key.spans {
+                assert_eq!(span.style.fg, Some(theme.accent_fg), "{key}");
+                assert!(span.style.add_modifier.contains(Modifier::BOLD), "{key}");
+                assert!(!span.content.contains('<'), "{key}");
+            }
+            checked += 1;
         }
+        assert!(checked > 20);
     }
-    Line::from(spans)
 }

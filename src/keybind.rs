@@ -238,13 +238,17 @@ impl KeyBind {
                 let keys = self.keys_for_event(*event);
                 keys.into_iter().min_by_key(|key| key.chars().count())
             })
-            .map(|key| {
-                if key.chars().count() > 1 {
-                    key.to_lowercase()
-                } else {
-                    key
-                }
-            })
+            .map(key_name)
+            .collect();
+        keys.join("/")
+    }
+
+    // All the keys of the events, named like `short_keys`, for the help: "k/up".
+    pub fn all_keys(&self, events: &[UserEvent]) -> String {
+        let keys: Vec<String> = events
+            .iter()
+            .flat_map(|event| self.keys_for_event(*event))
+            .map(key_name)
             .collect();
         keys.join("/")
     }
@@ -516,6 +520,15 @@ fn key_event_to_string(key_event: KeyEvent) -> String {
     key.push_str(key_code);
 
     key
+}
+
+// A key as hints show it: names like Enter in lower case, letters as they are ("A" is shift-a).
+fn key_name(key: String) -> String {
+    if key.chars().count() > 1 {
+        key.to_lowercase()
+    } else {
+        key
+    }
 }
 
 #[cfg(test)]

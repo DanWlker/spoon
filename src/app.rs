@@ -1092,14 +1092,14 @@ impl App<'_> {
             } => {
                 let span = Span::raw(message.clone());
                 left.push(if *matched {
-                    span.fg(theme.accent_fg)
+                    span.fg(theme.status_info_fg)
                 } else {
                     span.fg(theme.status_warn_fg).bold()
                 });
                 right.push(Span::raw(format!("{options} ")).fg(theme.status_input_transient_fg));
             }
             StatusLine::NotificationInfo(msg) => {
-                left.push(Span::raw(msg.clone()).fg(theme.accent_fg));
+                left.push(Span::raw(msg.clone()).fg(theme.status_info_fg));
             }
             StatusLine::NotificationSuccess(msg) => {
                 left.push(

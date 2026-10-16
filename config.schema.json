@@ -593,6 +593,11 @@
           "description": "Color for directory names in the file trees.",
           "default": "#89b4fa"
         },
+        "diff_hunk_fg": {
+          "type": "string",
+          "description": "Color for the @@ headers of the hunks of a diff.",
+          "default": "#89b4fa"
+        },
         "diff_add_bg": {
           "type": "string",
           "description": "Background color of the lines added in a diff.",
@@ -617,11 +622,6 @@
           "type": "string",
           "description": "Color for block titles in the help view.",
           "default": "#cba6f7"
-        },
-        "help_key_fg": {
-          "type": "string",
-          "description": "Color for key bindings in the help view.",
-          "default": "#89b4fa"
         },
         "virtual_cursor_fg": {
           "type": "string",

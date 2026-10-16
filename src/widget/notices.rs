@@ -7,12 +7,12 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::Stylize,
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget},
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::color::ColorTheme;
+use crate::{color::ColorTheme, widget::style::key_hints};
 
 // shown at most, the oldest drop off
 const MAX_NOTICES: usize = 5;
@@ -88,11 +88,10 @@ pub fn render_notices(
             .title(Line::raw(title).fg(color).bold());
         // the key on the newest one
         if i == 0 {
-            block = block.title_bottom(
-                Line::raw(format!(" {dismiss} dismiss "))
-                    .fg(theme.status_input_transient_fg)
-                    .right_aligned(),
-            );
+            let mut hint = key_hints(&[(dismiss, "dismiss")], theme);
+            hint.spans.insert(0, Span::raw(" "));
+            hint.spans.push(Span::raw(" "));
+            block = block.title_bottom(hint.right_aligned());
         }
         Clear.render(rect, buf);
         let text: Vec<Line> = lines
@@ -144,6 +143,28 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{buffer::Buffer, layout::Rect};
+
+    use crate::test_support::ui::{
+        assert_fills_bg, assert_key_style, assert_popup_frame, column_of, find_row, popup_rect,
+        theme_with_bg,
+    };
+
+    #[test]
+    fn test_looks_like_the_other_popups() {
+        let theme = theme_with_bg();
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        let notices = [Notice::new(true, "it failed".into())];
+        render_notices(&notices, "x", area, &mut buf, &theme);
+        let rect = popup_rect(&buf);
+        // the border in the color of an error
+        assert_popup_frame(&buf, rect, theme.status_error_fg);
+        assert_fills_bg(&buf, rect, &theme, &[]);
+        // the key to dismiss them, like the hints of the status bar
+        let y = find_row(&buf, "x dismiss");
+        assert_key_style(&buf, column_of(&buf, y, "x dismiss"), y, &theme);
+    }
 
     #[test]
     fn test_wrap() {

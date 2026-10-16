@@ -1938,6 +1938,54 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn test_popups_look_alike() {
+        use crate::{
+            test_support::ui::{
+                assert_fills_bg, assert_popup_frame, popup_rect, test_ctx_with, theme_with_bg,
+            },
+            widget::style::mark_selected_bar,
+        };
+
+        let theme = theme_with_bg();
+        let ctx = test_ctx_with(theme.clone());
+        // the bar beside the selected row of a list, which the selected field matches
+        let mut list_bar = Buffer::empty(Rect::new(0, 0, 1, 1));
+        mark_selected_bar(&mut list_bar, 0, 0, true, &theme);
+
+        let preview = CommitPreview {
+            action: "Commit to".into(),
+            branch: "main".into(),
+            amend: false,
+            subject: "subject".into(),
+            body: vec!["body".into()],
+            files: vec![("M".into(), "a.rs".into())],
+        };
+        let dialogs = [
+            GitDialog::abort("rebase"),
+            GitDialog::stash("all changes".into(), vec![]),
+            GitDialog::merge("main", "feature".into(), "feature", None),
+            GitDialog::delete_branches(vec!["a".into(), "b".into()], vec!["a".into()], vec![]),
+            GitDialog::commit(preview, GitTask::default()),
+            GitDialog::remote(RemoteAction::Push, info()).unwrap(),
+        ];
+        for dialog in &dialogs {
+            let area = Rect::new(0, 0, 100, 30);
+            let mut buf = Buffer::empty(area);
+            GitDialogWidget::new(dialog, &ctx).render(area, &mut buf);
+            let rect = popup_rect(&buf);
+            assert_popup_frame(&buf, rect, theme.accent_fg);
+            assert_fills_bg(&buf, rect, &theme, &[]);
+            for y in rect.top()..rect.bottom() {
+                for x in rect.left()..rect.right() {
+                    if buf[(x, y)].symbol() == "▌" {
+                        assert_eq!(buf[(x, y)].fg, list_bar[(0, 0)].fg, "{}", dialog.title);
+                    }
+                }
+            }
+        }
+    }
+
     fn info() -> RemoteInfo {
         let mut remote_branches = FxHashMap::default();
         remote_branches.insert("origin".into(), vec!["main".into(), "dev".into()]);
