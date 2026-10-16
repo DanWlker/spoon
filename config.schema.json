@@ -671,7 +671,7 @@
         "accent_fg": {
           "type": "string",
           "description": "Color of the focused panel's border, and of its title unless panel_title_focused_* say otherwise.",
-          "default": "#89b4fa"
+          "default": "#b4befe"
         },
         "accent_text_fg": {
           "type": "string",
@@ -681,7 +681,7 @@
         "panel_title_focused_fg": {
           "type": "string",
           "description": "Text color of the focused panel's title.",
-          "default": "#89b4fa"
+          "default": "#b4befe"
         },
         "panel_title_focused_bg": {
           "type": "string",

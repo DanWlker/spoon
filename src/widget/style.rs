@@ -282,6 +282,7 @@ mod tests {
         let config: crate::color::OptionalColorTheme =
             toml::from_str("panel_title_focused_bg = \"#89b4fa\"").unwrap();
         let theme: ColorTheme = config.into();
-        assert_eq!(focused_title("t", &theme).style.bg, Some(theme.accent_fg));
+        let blue = Some(Color::Rgb(0x89, 0xb4, 0xfa));
+        assert_eq!(focused_title("t", &theme).style.bg, blue);
     }
 }

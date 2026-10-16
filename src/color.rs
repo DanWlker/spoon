@@ -107,13 +107,13 @@ pub struct ColorTheme {
     pub divider_fg: RatatuiColor,
 
     // the focused panel: its border, and its title unless panel_title_focused_* say otherwise
-    #[default(BLUE)]
+    #[default(LAVENDER)]
     pub accent_fg: RatatuiColor,
     // text on the accent color
     #[default(CRUST)]
     pub accent_text_fg: RatatuiColor,
     // the title of the focused panel: colored text, like lazygit; with a background, a badge
-    #[default(BLUE)]
+    #[default(LAVENDER)]
     pub panel_title_focused_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub panel_title_focused_bg: RatatuiColor,
@@ -134,6 +134,7 @@ const OVERLAY0: RatatuiColor = RatatuiColor::Rgb(0x6C, 0x70, 0x86);
 const SURFACE1: RatatuiColor = RatatuiColor::Rgb(0x45, 0x47, 0x5A);
 const SURFACE0: RatatuiColor = RatatuiColor::Rgb(0x31, 0x32, 0x44);
 const CRUST: RatatuiColor = RatatuiColor::Rgb(0x11, 0x11, 0x1B);
+const LAVENDER: RatatuiColor = RatatuiColor::Rgb(0xB4, 0xBE, 0xFE);
 const BLUE: RatatuiColor = RatatuiColor::Rgb(0x89, 0xB4, 0xFA);
 const MAUVE: RatatuiColor = RatatuiColor::Rgb(0xCB, 0xA6, 0xF7);
 const GREEN: RatatuiColor = RatatuiColor::Rgb(0xA6, 0xE3, 0xA1);

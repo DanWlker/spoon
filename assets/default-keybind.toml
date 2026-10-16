@@ -38,10 +38,10 @@ resize_right = ["ctrl-right", "ctrl-l"]
 resize_up = ["ctrl-up", "ctrl-k"]
 resize_down = ["ctrl-down", "ctrl-j"]
 # move the focus to the panel beside, above or under the focused one
-focus_left = ["alt-left"]
-focus_right = ["alt-right"]
-focus_up = ["alt-up"]
-focus_down = ["alt-down"]
+focus_left = ["alt-left", "alt-h"]
+focus_right = ["alt-right", "alt-l"]
+focus_up = ["alt-up", "alt-k"]
+focus_down = ["alt-down", "alt-j"]
 # show the keys of the focused panel in a popup
 keys_toggle = ["shift-h"]
 

@@ -112,9 +112,9 @@ status_success_fg = "#a6e3a1"
 status_warn_fg = "#f9e2af"
 status_error_fg = "#f38ba8"
 divider_fg = "#45475a"
-accent_fg = "#89b4fa"
+accent_fg = "#b4befe"
 accent_text_fg = "#11111b"
-panel_title_focused_fg = "#89b4fa"
+panel_title_focused_fg = "#b4befe"
 panel_title_focused_bg = "reset"
 highlight_fg = "#cba6f7"
 status_bar_fg = "#a6adc8"
@@ -483,7 +483,7 @@ Note: Graph colors are specified with `[graph.color]`.
 
 The default colors are [Catppuccin Mocha](https://catppuccin.com/palette): blue for the focused panel, mauve for the mark beside the selected row and for picked commits, and overlay grays for hints and dividers. Any of them can be overridden here. They are 24-bit colors; set them to ANSI color names (like the defaults of serie) for a terminal without true color.
 
-The title of the focused panel is colored text, `panel_title_focused_fg`, like lazygit. Give it a background with `panel_title_focused_bg` to show it as a badge instead, like `panel_title_focused_fg = "#11111b"` on `panel_title_focused_bg = "#89b4fa"`. The titles of the popups follow it, keeping their own colors: yellow for amending, red for a confirmation.
+The title of the focused panel is colored text, `panel_title_focused_fg`, like lazygit. Give it a background with `panel_title_focused_bg` to show it as a badge instead, like `panel_title_focused_fg = "#11111b"` on `panel_title_focused_bg = "#b4befe"`. The titles of the popups follow it.
 
 Colors should be specified in one of the following formats:
 

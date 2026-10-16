@@ -34,8 +34,8 @@ use crate::{
         },
         text_area::TextArea,
         tree_query::{
-            dir_line, guide_span, highlight_match, highlighted_name, QueryChange, QueryKind,
-            TreeQuery,
+            dir_line, guide_span, highlight_match, highlighted_name, unhighlight_guides,
+            QueryChange, QueryKind, TreeQuery,
         },
     },
 };
@@ -1697,6 +1697,7 @@ impl LocalChangesPanel<'_> {
             // quieter while another panel, like the refs sidebar, has the focus
             mark_selected_row(buf, inner, y, self.focused, &self.ctx.color_theme);
         }
+        unhighlight_guides(buf, inner, tree, offset, &self.ctx.color_theme);
     }
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {

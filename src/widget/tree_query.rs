@@ -1,8 +1,10 @@
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use once_cell::sync::Lazy;
 use ratatui::{
+    buffer::Buffer,
     crossterm::event::{Event, KeyCode, KeyEvent},
-    style::{Style, Stylize},
+    layout::Rect,
+    style::{Modifier, Style, Stylize},
     text::{Line, Span},
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
@@ -11,7 +13,7 @@ use crate::{
     color::ColorTheme,
     search::{case_insensitive, shared_fuzzy, shared_smart_case},
     widget::{
-        file_tree::{keeps, FileTreeRow, SearchDirection},
+        file_tree::{keeps, FileTreeRow, FileTreeState, SearchDirection},
         style::fold_marker,
     },
 };
@@ -273,6 +275,26 @@ pub fn dir_line(
 // The indent markers of a row, in the color of the dividers.
 pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
     Span::raw(guide.to_string()).fg(theme.divider_fg)
+}
+
+// Gives the indent markers at the start of the rows `area` shows from `offset` their own color
+// back, over the highlight of the selected and picked rows.
+pub fn unhighlight_guides(
+    buf: &mut Buffer,
+    area: Rect,
+    tree: &FileTreeState,
+    offset: usize,
+    theme: &ColorTheme,
+) {
+    // the background of the highlight stays, the whole row shows selected
+    let style = Style::new()
+        .fg(theme.divider_fg)
+        .remove_modifier(Modifier::BOLD);
+    for (y, index) in (area.top()..area.bottom()).zip(offset..tree.rows().len()) {
+        // the markers are one column each
+        let width = (tree.guide(index).chars().count() as u16).min(area.width);
+        buf.set_style(Rect::new(area.x, y, width, 1), style);
+    }
 }
 
 // The spans of a file or directory name, with the match of `search` highlighted.

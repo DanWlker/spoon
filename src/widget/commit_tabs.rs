@@ -26,6 +26,7 @@ use crate::{
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
         tree_query::{
             dir_line, find_around, guide_span, highlight_match, highlighted_name, match_range,
+            unhighlight_guides,
         },
     },
 };
@@ -697,9 +698,8 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
                     Line::from(spans)
                 }
             };
-            let (rows, cursor) = (state.tree.rows(), state.tree.cursor());
             let tree_focused = !state.is_diff_focused();
-            render_rows_with_cursor(rows, line, cursor, tree_focused, theme, tree_area, buf);
+            render_rows_with_cursor(&state.tree, line, tree_focused, theme, tree_area, buf);
         }
 
         let count = state.diff.as_ref().map_or(0, diff_line_count);
@@ -780,15 +780,7 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                 }
             };
             let focused = !state.preview_focused;
-            render_rows_with_cursor(
-                tree.rows(),
-                line,
-                tree.cursor(),
-                focused,
-                theme,
-                tree_area,
-                buf,
-            );
+            render_rows_with_cursor(tree, line, focused, theme, tree_area, buf);
         }
 
         let dim = |text: String| vec![Line::raw(text).fg(theme.status_input_transient_fg)];
@@ -870,14 +862,14 @@ fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect
 // Renders the `rows` on screen as `line` makes them, scrolled so the cursor is visible,
 // highlighting the cursor line.
 fn render_rows_with_cursor<'a>(
-    rows: &'a [FileTreeRow],
+    tree: &'a FileTreeState,
     line: impl Fn(usize, &'a FileTreeRow) -> Line<'a>,
-    cursor: usize,
     focused: bool,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) {
+    let (rows, cursor) = (tree.rows(), tree.cursor());
     if rows.is_empty() {
         return;
     }
@@ -899,6 +891,7 @@ fn render_rows_with_cursor<'a>(
     if let Ok(y) = u16::try_from(cursor - offset) {
         mark_selected_row(buf, area, area.y + y, focused, theme);
     }
+    unhighlight_guides(buf, area, tree, offset, theme);
 }
 
 #[cfg(test)]

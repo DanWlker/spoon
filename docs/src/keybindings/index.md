@@ -18,7 +18,7 @@ The default key bindings can be overridden.
 | <kbd>0</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_0` |
 | <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> | Move the border beside the focused panel: the sidebar's, or the one between the files and the diff | `resize_left` `resize_right` |
 | <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
-| <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
+| <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> <kbd>Alt-h</kbd> <kbd>Alt-l</kbd> <kbd>Alt-k</kbd> <kbd>Alt-j</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
 | <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
 | <kbd>@</kbd>                   | Show the command log (see below) | `command_log` |
 | <kbd>,</kbd>                   | Dismiss the errors and warnings at the top right (they also go after 10 and 5 seconds) | `dismiss_notifications` |
@@ -280,7 +280,7 @@ While a merge, cherry-pick or revert is stopped on conflicts, the message box is
 Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
 The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
 The message has a one-line summary and a description under it. Focusing the commit section (<kbd>3</kbd>, or moving down from the diff) starts typing when the message is empty; in the commit section, <kbd>j</kbd>/<kbd>k</kbd> pick the summary or the description and <kbd>Space</kbd> or <kbd>e</kbd> start typing in it. While typing, <kbd>Enter</kbd> in the summary goes on to the description, <kbd>Tab</kbd> switches between them and <kbd>Esc</kbd> stops. The keys of the file list, like search, filter, picking and discarding, do nothing in the commit section.
-While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line) until <kbd>Esc</kbd>, with Emacs-like editing keys: <kbd>Ctrl-u</kbd> undoes and <kbd>Ctrl-r</kbd> redoes, <kbd>Alt-b</kbd>/<kbd>Alt-f</kbd> or <kbd>Ctrl-Left</kbd>/<kbd>Ctrl-Right</kbd> move by word, <kbd>Ctrl-w</kbd> deletes the word before the cursor, <kbd>Ctrl-k</kbd> the rest of the line. Long lines wrap at words on screen; the message keeps them as typed.
+While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line in the description) until <kbd>Esc</kbd>, with Emacs-like editing keys: <kbd>Ctrl-u</kbd> undoes and <kbd>Ctrl-r</kbd> redoes, <kbd>Alt-b</kbd>/<kbd>Alt-f</kbd> or <kbd>Ctrl-Left</kbd>/<kbd>Ctrl-Right</kbd> move by word, <kbd>Ctrl-w</kbd> deletes the word before the cursor, <kbd>Ctrl-k</kbd> the rest of the line. Long lines wrap at words on screen; the message keeps them as typed.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
 Unstaging while amending removes changes from the commit being amended. Turning it off restores the previous message.
