@@ -1044,7 +1044,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::single_range_in_vec_init)]
+    #[expect(
+        clippy::single_range_in_vec_init,
+        reason = "the emphasis of each line is a list of ranges, here of one"
+    )]
     fn test_emphasis_of_changed_lines() {
         let diff = parse_diff(concat!(
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n",

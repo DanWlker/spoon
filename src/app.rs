@@ -209,6 +209,8 @@ pub struct AppShell {
     head_before_commit: Option<CommitHash>,
     // a rebase, merge, cherry-pick or revert waits to be finished, as last loaded, for the key hints
     operation_shown: bool,
+    // quit was asked while a git command ran, the app quits once it finishes
+    quit_after_task: bool,
 }
 
 // The history the graph shows, its commits only are loaded.
@@ -344,14 +346,22 @@ impl<'a> App<'a> {
         let loaded_refs = repository.refs_snapshot().map(String::from);
         let mut shell = match shell {
             Some(mut shell) => {
-                shell
-                    .sidebar
-                    .set_refs(&refs, repository.remotes(), local_change_count);
+                shell.sidebar.set_refs(
+                    &refs,
+                    repository.remotes(),
+                    local_change_count,
+                    repository.head(),
+                );
                 shell.refs_snapshot = loaded_refs;
                 shell
             }
             None => AppShell {
-                sidebar: RefListState::new(&refs, repository.remotes(), local_change_count),
+                sidebar: {
+                    let mut sidebar =
+                        RefListState::new(&refs, repository.remotes(), local_change_count);
+                    sidebar.set_head(repository.head());
+                    sidebar
+                },
                 sidebar_focused: false,
                 sidebar_collapsed: false,
                 parked_local_changes: None,
@@ -368,6 +378,7 @@ impl<'a> App<'a> {
                 notices: Vec::new(),
                 head_before_commit: None,
                 operation_shown: false,
+                quit_after_task: false,
             },
         };
         shell.operation_shown = repository.operation_in_progress().is_some();
@@ -381,7 +392,6 @@ impl<'a> App<'a> {
         shell
             .sidebar
             .set_tracking(repository.branch_tracking().clone());
-        shell.sidebar.set_head(repository.head());
 
         let mut app = Self {
             repository,
@@ -603,6 +613,24 @@ impl App<'_> {
             AppEvent::Resize(w, h) => {
                 let _ = (w, h);
             }
+            // quitting would kill the git command half done (a stash never popped), so it waits;
+            // asking again quits right away
+            AppEvent::Quit
+                if !self.shell.quit_after_task && self.ctx.running_task.borrow().is_some() =>
+            {
+                self.shell.quit_after_task = true;
+                let running = self
+                    .ctx
+                    .running_task
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .running
+                    .clone();
+                self.ec.send(AppEvent::NotifyWarn(format!(
+                    "Quitting once {running} finishes, quit again to quit now"
+                )));
+            }
             AppEvent::Quit => {
                 self.cleanup_graph_images()?;
                 return Ok(Some(Ret::Quit));
@@ -625,6 +653,9 @@ impl App<'_> {
             AppEvent::StartTask(task) => self.start_task(task),
             AppEvent::TaskFinished { task, result } => {
                 self.finish_task(task, result);
+                if self.shell.quit_after_task {
+                    self.ec.send(AppEvent::Quit);
+                }
             }
             // what changed meanwhile, without reloading everything when nothing did, loaded in the
             // background
@@ -1948,33 +1979,28 @@ impl App<'_> {
             }
             return;
         }
-        // a branch, remote branch or tag, see `ref_command_applies`
-        let RefSelection::Ref(_, name) = self.shell.sidebar.selection() else {
+        // a branch, remote branch or tag, see `ref_command_applies`, of the row's section, as a
+        // tag may have a branch's name
+        let RefSelection::Ref(section, name) = self.shell.sidebar.selection() else {
             return;
         };
-        let target = self
-            .repository
-            .all_refs()
-            .into_iter()
-            .find_map(|r| match r {
-                Ref::Branch { name: n, target }
-                | Ref::RemoteBranch { name: n, target }
-                | Ref::Tag { name: n, target }
-                    if *n == name =>
-                {
-                    Some(target.clone())
-                }
-                _ => None,
-            })
-            .or_else(|| match self.repository.head() {
-                // the row of a detached HEAD
-                Head::Detached { target } if name == DETACHED_HEAD => Some(target.clone()),
-                _ => None,
-            });
-        let Some(target) = target else {
-            return;
+        let selected = self.repository.all_refs().into_iter().find(|r| {
+            r.name() == name
+                && matches!(
+                    (r, section),
+                    (Ref::Branch { .. }, RefSection::Branches)
+                        | (Ref::RemoteBranch { .. }, RefSection::Remotes)
+                        | (Ref::Tag { .. }, RefSection::Tags)
+                )
+        });
+        let command = match (selected, self.repository.head()) {
+            (Some(selected), _) => ref_graph_command(self.repository, event, selected),
+            // the row of a detached HEAD, its commit
+            (None, Head::Detached { target }) if name == DETACHED_HEAD => {
+                graph_command(self.repository, event, target.clone(), vec![])
+            }
+            _ => return,
         };
-        let command = ref_graph_command(self.repository, event, &name, target);
         self.run_graph_command(event, command);
     }
 

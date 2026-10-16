@@ -30,7 +30,7 @@ pub enum LinkTarget {
 // ("github:github.com", for an ssh alias), or its own link patterns.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
-pub enum Service {
+pub enum Forge {
     Kind(String),
     Links(Links),
 }
@@ -129,7 +129,7 @@ enum Page {
 // request from it, else the one link.
 pub fn links(
     repository: &Repository,
-    services: &FxHashMap<String, Service>,
+    services: &FxHashMap<String, Forge>,
     target: &LinkTarget,
 ) -> Result<Vec<(String, String)>, String> {
     let link = |target: &LinkTarget| link(repository, services, target);
@@ -148,7 +148,7 @@ pub fn links(
 // The link of `target`, on the web host of the remote it belongs to.
 fn link(
     repository: &Repository,
-    services: &FxHashMap<String, Service>,
+    services: &FxHashMap<String, Forge>,
     target: &LinkTarget,
 ) -> Result<String, String> {
     let info = repository.remote_info();
@@ -201,11 +201,7 @@ fn link(
     web_link(&url, services, &page)
 }
 
-fn web_link(
-    url: &str,
-    services: &FxHashMap<String, Service>,
-    page: &Page,
-) -> Result<String, String> {
+fn web_link(url: &str, services: &FxHashMap<String, Forge>, page: &Page) -> Result<String, String> {
     let (scheme, host, path) =
         parse_remote_url(url).ok_or_else(|| format!("{url} is not on a web host"))?;
     // the host without its port, "git.company.com"
@@ -214,13 +210,13 @@ fn web_link(
         .get(&host)
         .or_else(|| services.get(&domain))
         .cloned()
-        .or_else(|| guess_kind(&domain).map(|kind| Service::Kind(kind.into())))
+        .or_else(|| guess_kind(&domain).map(|kind| Forge::Kind(kind.into())))
         .ok_or_else(|| {
             format!("{domain} is no known host: name its kind in [core.browser.services]")
         })?;
     let (links, web_host) = match service {
-        Service::Links(links) => (links, host),
-        Service::Kind(kind) => {
+        Forge::Links(links) => (links, host),
+        Forge::Kind(kind) => {
             let (kind, web_host) = match kind.split_once(':') {
                 Some((kind, web_host)) => (kind.to_string(), web_host.to_string()),
                 None => (kind, host),
@@ -409,14 +405,14 @@ mod tests {
         let url = "git@git.company.com:o/r.git";
         assert!(link(url, &none, Page::Repo).is_err());
         let services = FxHashMap::from_iter([
-            ("git.company.com".into(), Service::Kind("gitea".into())),
+            ("git.company.com".into(), Forge::Kind("gitea".into())),
             (
                 "github.com-work".into(),
-                Service::Kind("github:github.com".into()),
+                Forge::Kind("github:github.com".into()),
             ),
             (
                 "code.example.org".into(),
-                Service::Links(Links {
+                Forge::Links(Links {
                     commit: Some("{base}/c/{hash}".into()),
                     branch: None,
                     pull_request: None,

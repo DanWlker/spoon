@@ -172,6 +172,13 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+// How often the branches and HEAD are checked for changes made outside the app: each check runs
+// 3-4 git processes, so shorter costs CPU, longer leaves another terminal's checkout unseen.
+const REFS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+// How often the local changes are checked: git status walks the whole working tree, which is
+// slow in big repositories; focusing the terminal checks right away, see `refresh_now`.
+const FILES_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
@@ -258,8 +265,8 @@ fn main() -> Result<()> {
             ec.start_refresher(
                 repository.path().to_path_buf(),
                 repository.git_dir().map(Path::to_path_buf),
-                std::time::Duration::from_secs(2),
-                std::time::Duration::from_secs(10),
+                REFS_INTERVAL,
+                FILES_INTERVAL,
             );
         }
 

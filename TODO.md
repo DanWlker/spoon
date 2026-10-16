@@ -8,7 +8,5 @@ TODO:
    - How: git's log -- <path> with --parents, so git rewrites each commit's parents to the nearest commit that also touched the path, and the lines stay connected.
    - Risk: squash, drop, amend and rebase from the graph look up commit parents in the loaded graph, and in a filtered graph those parents are wrong. Running them there could rewrite the wrong commits. I'd turn them off while the filter is on, with a message.
    - Not planned: following renames (--follow). git only supports it for a single file, and it doesn't work well with a graph.
-1. Simplify
-1. Code Review - I want you to read ~/.claude/microsoft-rust-guidelines.txt and review based on that as well
 1. Github workflow to prepare for release
 1. See if the profile pics can be rendered alongside the name in commit graph

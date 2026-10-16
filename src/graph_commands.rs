@@ -110,13 +110,25 @@ pub fn graph_command(
 }
 
 // The command of `event` on a branch, remote branch or tag selected in the refs sidebar: rebase
-// and merge name the ref, checkout offers it first; the others work on the commit it points at.
+// and merge name the ref (in full when another has its name, which git could take instead),
+// checkout offers it first; the others work on the commit it points at.
 pub fn ref_graph_command(
     repository: &Repository,
     event: UserEvent,
-    name: &str,
-    target: CommitHash,
+    selected: &Ref,
 ) -> Option<Result<GraphCommand, String>> {
+    let (name, target) = (selected.name(), selected.target().clone());
+    let shared = repository
+        .all_refs()
+        .iter()
+        .filter(|r| r.name() == name)
+        .count()
+        > 1;
+    let onto = if shared {
+        selected.full_name()
+    } else {
+        name.to_string()
+    };
     let branch = repository.current_branch();
     let checked_out = || -> Result<(), String> {
         if branch.as_deref() == Some(name) {
@@ -130,7 +142,7 @@ pub fn ref_graph_command(
             let branch = branch.clone().ok_or("Check out a branch to rebase it")?;
             Ok(GitDialog::rebase(
                 &branch,
-                name.to_string(),
+                onto,
                 name,
                 rebase_auto_stash(repository),
             ))
@@ -138,7 +150,7 @@ pub fn ref_graph_command(
         UserEvent::Merge => checked_out().map(|_| {
             let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
             let merge_ff = repository.config("merge.ff");
-            GitDialog::merge(&branch_label, name.to_string(), name, merge_ff.as_deref())
+            GitDialog::merge(&branch_label, onto, name, merge_ff.as_deref())
         }),
         UserEvent::Checkout => checked_out().map(|_| {
             let mut targets = checkout_targets(repository, &target);
@@ -491,9 +503,12 @@ mod tests {
 
         // squashing c3 into c2 rebases after c1; c2 into c1 rebases from the root
         let squash = args(command(&repository, UserEvent::Squash, c3, &[]));
-        assert_eq!(squash, format!("rebase -i --autostash {}", c1.as_str()));
+        assert_eq!(
+            squash,
+            format!("rebase -i --no-autosquash --autostash {}", c1.as_str())
+        );
         let squash = args(command(&repository, UserEvent::Squash, c2, &[]));
-        assert_eq!(squash, "rebase -i --autostash --root");
+        assert_eq!(squash, "rebase -i --no-autosquash --autostash --root");
         let squash = args(command(&repository, UserEvent::Squash, c1, &[]));
         assert!(squash.contains("first commit"), "{squash}");
 
@@ -701,36 +716,40 @@ mod tests {
         git(&["branch", "topic", "HEAD~1"]);
         git(&["tag", "v1", "HEAD~2"]);
         let (repository, hashes) = load(path);
-        let on = |event, name: &str, target: &CommitHash| {
-            args(ref_graph_command(&repository, event, name, target.clone()).unwrap())
+        let branch = |name: &str, target: &CommitHash| Ref::Branch {
+            name: name.into(),
+            target: target.clone(),
         };
+        let on =
+            |event, selected: &Ref| args(ref_graph_command(&repository, event, selected).unwrap());
 
-        // rebase and merge name the branch
-        assert_eq!(
-            on(UserEvent::Rebase, "topic", &hashes[1]),
-            "rebase --autostash topic"
-        );
-        assert!(on(UserEvent::Merge, "topic", &hashes[1]).ends_with(" topic"));
-        assert!(on(UserEvent::Merge, "master", &hashes[0]).contains("is checked out"));
+        // rebase and merge name the branch, in full when a tag has its name
+        let topic = branch("topic", &hashes[1]);
+        assert_eq!(on(UserEvent::Rebase, &topic), "rebase --autostash topic");
+        assert!(on(UserEvent::Merge, &topic).ends_with(" topic"));
+        git(&["tag", "topic", "HEAD~2"]);
+        let (repository, _) = load(path);
+        let on =
+            |event, selected: &Ref| args(ref_graph_command(&repository, event, selected).unwrap());
+        assert!(on(UserEvent::Merge, &topic).ends_with(" refs/heads/topic"));
+        git(&["tag", "-d", "topic"]);
+        let (repository, _) = load(path);
+        let on =
+            |event, selected: &Ref| args(ref_graph_command(&repository, event, selected).unwrap());
+        let master = branch("master", &hashes[0]);
+        assert!(on(UserEvent::Merge, &master).contains("is checked out"));
         // checkout offers the branch first, a tag detached
-        assert_eq!(
-            on(UserEvent::Checkout, "topic", &hashes[1]),
-            "checkout topic"
-        );
-        assert_eq!(
-            on(UserEvent::Checkout, "v1", &hashes[2]),
-            "checkout --detach v1"
-        );
+        assert_eq!(on(UserEvent::Checkout, &topic), "checkout topic");
+        let v1 = Ref::Tag {
+            name: "v1".into(),
+            target: hashes[2].clone(),
+        };
+        assert_eq!(on(UserEvent::Checkout, &v1), "checkout --detach v1");
         // a tag at a commit of the graph, and at a ref of the sidebar
         let tag = command(&repository, UserEvent::CreateTag, &hashes[1], &[]);
         run(path, tag, "t1");
         assert_eq!(git(&["tag", "--points-at", "topic"]), "t1\n");
-        let tag = ref_graph_command(
-            &repository,
-            UserEvent::CreateTag,
-            "topic",
-            hashes[1].clone(),
-        );
+        let tag = ref_graph_command(&repository, UserEvent::CreateTag, &topic);
         assert_eq!(
             run(path, tag.unwrap(), "t2").commands,
             [["tag", "t2", "topic"]]

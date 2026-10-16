@@ -12,7 +12,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     event::{AppEvent, KeyHint, UserEvent},
-    git::{todo_action, BranchStatus, GitTask, RemoteInfo},
+    git::{parse_git_bool, todo_action, BranchStatus, GitTask, RemoteInfo},
     widget::style::{focused_title, render_popup},
 };
 
@@ -322,8 +322,8 @@ impl GitDialog {
         let mut dialog = Self::with(" Merge ", "merge", intro, kind);
         let types = MERGE_TYPES.map(String::from).to_vec();
         let default = match merge_ff {
-            Some("false" | "no" | "off" | "0") => MERGE_TYPES[1],
             Some("only") => MERGE_TYPES[2],
+            Some(value) if parse_git_bool(value) == Some(false) => MERGE_TYPES[1],
             _ => MERGE_TYPES[0],
         };
         dialog.push_choice(FieldId::MergeType, "Type", types, default);
@@ -1051,13 +1051,14 @@ impl GitDialog {
                     return Err("A branch name can't start with -".into());
                 }
                 let from = if from.is_empty() { "HEAD".into() } else { from };
-                let args = if self.checked(FieldId::Checkout) {
-                    ["checkout", "-b", &name, &from]
+                // tracking `from` when it is a remote branch, either way
+                let args: &[&str] = if self.checked(FieldId::Checkout) {
+                    &["checkout", "-b", &name, &from]
                 } else {
-                    ["branch", "--no-track", &name, &from]
+                    &["branch", &name, &from]
                 };
                 Ok(GitTask::new(
-                    &args,
+                    args,
                     format!("Creating {name}"),
                     format!("Created {name} from {from}"),
                 ))
@@ -1099,6 +1100,10 @@ impl GitDialog {
                 let new_upstream = self.value(FieldId::Upstream);
                 if new_name.is_empty() {
                     return Err("Type a name for the branch".into());
+                }
+                // git would read it as an option, `-f` overwriting the branch with the current one
+                if new_name.starts_with('-') {
+                    return Err("A branch name can't start with -".into());
                 }
                 let mut commands: Vec<Vec<String>> = vec![];
                 if new_name != *name {
@@ -1784,10 +1789,19 @@ mod tests {
 
     #[test]
     fn test_names_starting_with_dash_are_refused() {
-        // `git branch --no-track -D feature` would delete feature
+        // `git branch -D feature` would delete feature
         let mut dialog = GitDialog::create_branch("feature", vec!["feature".into()]);
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('D')));
+        assert!(dialog.command().is_err());
+        // `git branch -m topic -f` would overwrite topic with the current branch
+        let mut dialog = GitDialog::edit_branch("topic", None, vec![]);
+        dialog.handle_key(None, key(KeyCode::End));
+        for _ in 0..5 {
+            dialog.handle_key(None, key(KeyCode::Backspace));
+        }
+        dialog.handle_key(None, key(KeyCode::Char('-')));
+        dialog.handle_key(None, key(KeyCode::Char('f')));
         assert!(dialog.command().is_err());
         let mut dialog = GitDialog::create_tag("v1");
         dialog.handle_key(None, key(KeyCode::Char('-')));
@@ -1847,7 +1861,7 @@ mod tests {
 
     #[test]
     fn test_merge_type_follows_config() {
-        let dialog = GitDialog::merge("main", "feature".into(), "feature", Some("false"));
+        let dialog = GitDialog::merge("main", "feature".into(), "feature", Some("False"));
         assert_eq!(args(&dialog), "merge --no-ff --no-edit feature");
         let dialog = GitDialog::merge("main", "feature".into(), "feature", Some("only"));
         assert_eq!(args(&dialog), "merge --ff-only feature");
@@ -2040,9 +2054,12 @@ mod tests {
 
         let dialog = GitDialog::squash("main", vec![commit('b')], None, true);
         let task = dialog.command().unwrap();
-        assert_eq!(args(&dialog), "rebase -i --autostash --root");
+        assert_eq!(
+            args(&dialog),
+            "rebase -i --no-autosquash --autostash --root"
+        );
         assert!(task.env.iter().any(|(k, v)| k == "GIT_SEQUENCE_EDITOR"
-            && v == &format!("sed -i.bak -E -e 's/^(pick|p) {b} /squash {b} /'")));
+            && v.contains(&format!("sed -i.bak -E -e 's/^(pick|p) {b} /squash {b} /'"))));
     }
 
     // Runs git in the repository, returning what it printed.

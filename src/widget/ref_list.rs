@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{spinner, AppContext},
-    git::{split_remote_branch, Head, Ref},
+    git::{split_remote_branch, CommitHash, Head, Ref},
     widget::style::{
         fold_marker, mark_selected_row, panel_block, panel_title, render_panel_scrollbar, scroll_to,
     },
@@ -118,6 +118,8 @@ pub struct RefListState {
     tracking: FxHashMap<String, (usize, usize)>,
     // the checked-out branch, or "HEAD" when detached, marked
     head_branch: Option<String>,
+    // the commits of the stashes by name, their names change as stashes come and go
+    stash_targets: FxHashMap<String, CommitHash>,
 }
 
 impl RefListState {
@@ -135,6 +137,11 @@ impl RefListState {
             picked: RefPicks::default(),
             tracking: FxHashMap::default(),
             head_branch: None,
+            stash_targets: refs
+                .iter()
+                .filter(|r| matches!(r, Ref::Stash { .. }))
+                .map(|r| (r.name().to_string(), r.target().clone()))
+                .collect(),
         };
         state.rebuild_visible_rows();
         state
@@ -353,11 +360,32 @@ impl RefListState {
 
     // Shows the refs of the reloaded repository, keeping the selection, the opened nodes and the
     // picked refs still there.
-    pub fn set_refs(&mut self, refs: &[&Ref], remotes: &[String], local_change_count: usize) {
+    pub fn set_refs(
+        &mut self,
+        refs: &[&Ref],
+        remotes: &[String],
+        local_change_count: usize,
+        head: &Head,
+    ) {
         let (selected, opened) = self.current_tree_status();
         let offset = self.offset;
         let mut picked = std::mem::take(&mut self.picked);
+        // a picked stash by its commit, as stash@{0} names another once one is stashed
+        if picked.section == RefSection::Stashes {
+            let targets: Vec<_> = picked
+                .names
+                .iter()
+                .filter_map(|name| self.stash_targets.get(name).cloned())
+                .collect();
+            picked.names = refs
+                .iter()
+                .filter(|r| matches!(r, Ref::Stash { .. }) && targets.contains(r.target()))
+                .map(|r| r.name().to_string())
+                .collect();
+        }
         *self = Self::new(refs, remotes, local_change_count);
+        // the row of a detached HEAD, before the selection looks for it
+        self.set_head(head);
         self.reset_tree_status(selected, opened);
         self.offset = offset;
         picked.names.retain(|name| {
@@ -826,7 +854,6 @@ fn parse_semantic_version_tag(tag: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::CommitHash;
 
     #[test]
     fn test_picks_of_one_section() {
@@ -854,7 +881,7 @@ mod tests {
         );
         assert!(state.toggle_pick().unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
-        state.set_refs(&[&a, &tag], &[], 0);
+        state.set_refs(&[&a, &tag], &[], 0, &Head::None);
         assert_eq!(state.picked().names, ["a"]);
         state.clear_picks();
         state.toggle_pick().unwrap();
@@ -877,14 +904,34 @@ mod tests {
         };
         assert!(!names(&state).iter().any(|n| n.starts_with("HEAD")));
         // only while detached, first in the branches, selecting the commit as a ref
-        state.set_head(&Head::Detached { target });
+        let head = Head::Detached { target };
+        state.set_head(&head);
         assert!(names(&state).contains(&"HEAD (detached at aaaaaaa)".to_string()));
         state.select_branches();
         state.select_next();
-        assert_eq!(
-            state.selection(),
-            RefSelection::Ref(RefSection::Branches, DETACHED_HEAD.into())
+        let selection = RefSelection::Ref(RefSection::Branches, DETACHED_HEAD.into());
+        assert_eq!(state.selection(), selection);
+        // and stays selected through a reload
+        state.set_refs(&[&branch], &[], 0, &head);
+        assert_eq!(state.selection(), selection);
+    }
+
+    #[test]
+    fn test_stash_picks_follow_their_stash() {
+        let stash = |n: usize, c: char| Ref::Stash {
+            name: format!("stash@{{{n}}}"),
+            message: String::new(),
+            target: c.to_string().repeat(40).as_str().into(),
+        };
+        let mut state = RefListState::new(&[&stash(0, 'a')], &[], 0);
+        state.reset_tree_status(
+            vec![TREE_STASH_ROOT_IDENT.into(), "stash@{0}".into()],
+            vec![vec![TREE_STASH_ROOT_IDENT.into()]],
         );
+        state.toggle_pick().unwrap();
+        // a new stash takes stash@{0}, the picked one is stash@{1} now
+        state.set_refs(&[&stash(0, 'b'), &stash(1, 'a')], &[], 0, &Head::None);
+        assert_eq!(state.picked().names, ["stash@{1}"]);
     }
 
     #[test]

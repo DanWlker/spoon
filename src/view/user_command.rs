@@ -96,6 +96,11 @@ impl<'a> UserCommandView<'a> {
             UserEvent::SelectUp => {
                 self.tx.send(AppEvent::SelectNewerCommit);
             }
+            // the picks fill `{{picked_hashes}}`, so the command runs again
+            UserEvent::ToggleSelect => {
+                self.as_mut_list_state().toggle_pick();
+                self.stale = true;
+            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }

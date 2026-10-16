@@ -10,7 +10,7 @@ use smart_default::SmartDefault;
 use umbra::optional;
 
 use crate::{
-    browse::Service,
+    browse::Forge,
     color::{ColorTheme, OptionalColorTheme},
     graph::GraphImageWidthMode,
     keybind::KeyBind,
@@ -132,7 +132,7 @@ pub struct CoreConfig {
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreBrowserConfig {
     // the kind of host of a domain the name doesn't tell: "git.company.com" = "gitlab"
-    pub services: FxHashMap<String, Service>,
+    pub services: FxHashMap<String, Forge>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -673,10 +673,10 @@ mod tests {
                 },
                 browser: CoreBrowserConfig {
                     services: FxHashMap::from_iter([
-                        ("git.company.com".into(), Service::Kind("gitlab".into())),
+                        ("git.company.com".into(), Forge::Kind("gitlab".into())),
                         (
                             "code.example.org".into(),
-                            Service::Links(Links {
+                            Forge::Links(Links {
                                 commit: Some("{base}/c/{hash}".into()),
                                 branch: None,
                                 pull_request: None,

@@ -312,7 +312,8 @@ fn spawn_refresher(
     files_interval: Duration,
 ) -> mpsc::Sender<()> {
     let (poke, poked) = mpsc::channel();
-    let files_every = (files_interval.as_millis() / refs_interval.as_millis()).max(1);
+    // the files load every few ticks of the refs, at least every one
+    let files_every = (files_interval.as_millis() / refs_interval.as_millis().max(1)).max(1);
     thread::spawn(move || {
         // stops once the app quits and the events are no longer received
         let mut tick = 0u128;

@@ -85,6 +85,16 @@ impl Ref {
             Ref::Stash { target, .. } => target,
         }
     }
+
+    // The name git can't take for another ref, as a branch and a tag may share a name.
+    pub fn full_name(&self) -> String {
+        match self {
+            Ref::Tag { name, .. } => format!("refs/tags/{name}"),
+            Ref::Branch { name, .. } => format!("refs/heads/{name}"),
+            Ref::RemoteBranch { name, .. } => format!("refs/remotes/{name}"),
+            Ref::Stash { name, .. } => name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +417,8 @@ impl Repository {
     // The diffs of untracked files, which git diffs only one at a time (against /dev/null), so a few
     // run side by side.
     pub fn untracked_diff(&self, paths: &[&str]) -> String {
+        // each worker is a git process; more than 8 at once only crowd the disk and the cores
+        // the app draws with, 4 when the core count is unknown
         let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
         let chunk = paths.len().div_ceil(workers).max(1);
         let work_tree = self.path.as_path();
@@ -861,10 +873,16 @@ impl Repository {
 
     // Runs a git command changing the repository, unless one runs in the background, see `set_busy`.
     fn run(&self, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
-        if let Some(running) = self.busy.borrow().as_ref() {
-            return Err(format!("{running}, wait for it to finish"));
-        }
+        self.check_idle()?;
         run_git(&self.path, args, stdin)
+    }
+
+    // An error while a git command runs in the background, see `set_busy`.
+    fn check_idle(&self) -> std::result::Result<(), String> {
+        match self.busy.borrow().as_ref() {
+            Some(running) => Err(format!("{running}, wait for it to finish")),
+            None => Ok(()),
+        }
     }
 
     // The top directory of the working tree, which file paths of local changes are relative to.
@@ -891,6 +909,8 @@ impl Repository {
         path: &str,
         side: ConflictSide,
     ) -> std::result::Result<(), String> {
+        // before the file is written, which `git add` would then be refused
+        self.check_idle()?;
         let ours = self.stage_blob(path, ConflictSide::Ours.stage());
         let theirs = self.stage_blob(path, ConflictSide::Theirs.stage());
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
@@ -1026,7 +1046,7 @@ fn gitignore_pattern(path: &str, dir: bool) -> String {
 }
 
 // A boolean as git reads it in its config, None when it isn't one.
-fn parse_git_bool(value: &str) -> Option<bool> {
+pub fn parse_git_bool(value: &str) -> Option<bool> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => Some(true),
         "false" | "no" | "off" | "0" | "" => Some(false),
@@ -1979,21 +1999,35 @@ impl GitTask {
         } else {
             "--no-autostash"
         };
-        let editor = std::iter::once("sed -i.bak -E".to_string())
+        // each expression changes its line, else the rebase stops before starting, as git's
+        // config could have changed the todo list
+        let sed = std::iter::once("sed -i.bak -E".to_string())
             .chain(expressions.iter().map(|e| format!("-e '{e}'")))
             .collect::<Vec<_>>()
             .join(" ");
+        let editor = format!(
+            "todo() {{ {sed} \"$1\" && test \"$(diff \"$1.bak\" \"$1\" | grep -c '^>')\" = {} \
+             || {{ echo 'spoon: a commit is missing from the todo list of the rebase' >&2; exit 1; }}; }}; todo",
+            expressions.len()
+        );
         let env = [
             ("GIT_SEQUENCE_EDITOR", editor.as_str()),
-            // the todo list names the commits with full hashes
+            // the todo list names the commits with full hashes, of SHA-1 and SHA-256 alike
             ("GIT_CONFIG_COUNT", "1"),
             ("GIT_CONFIG_KEY_0", "core.abbrev"),
-            ("GIT_CONFIG_VALUE_0", "40"),
+            ("GIT_CONFIG_VALUE_0", "no"),
         ];
         GitTask {
-            commands: vec![["rebase", "-i", stash, base.unwrap_or("--root")]
-                .map(String::from)
-                .to_vec()],
+            // autosquash would move and squash `fixup!` commits nobody picked
+            commands: vec![[
+                "rebase",
+                "-i",
+                "--no-autosquash",
+                stash,
+                base.unwrap_or("--root"),
+            ]
+            .map(String::from)
+            .to_vec()],
             env: env
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -2470,6 +2504,44 @@ mod tests {
     }
 
     #[test]
+    fn test_rebase_todo() {
+        use crate::test_support::git::git;
+        // SHA-256 hashes are longer than the 40 characters of SHA-1
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(
+            path,
+            &["init", "-q", "-b", "master", "--object-format=sha256"],
+        );
+        for (key, value) in [
+            ("user.name", "T"),
+            ("user.email", "t@e"),
+            ("commit.gpgsign", "false"),
+            ("rebase.autoSquash", "true"),
+        ] {
+            git(path, &["config", key, value]);
+        }
+        for subject in ["c1", "c2", "fixup! c1", "c3"] {
+            git(path, &["commit", "-q", "--allow-empty", "-m", subject]);
+        }
+        let log = || git(path, &["log", "--format=%s"]);
+        let hash = |rev: &str| git(path, &["rev-parse", rev]).trim().to_string();
+        let base = hash("HEAD~3");
+
+        // dropping the fixup drops it, nothing is squashed though autoSquash is set
+        let todo = [todo_action(&hash("HEAD~1"), "drop")];
+        run_task(path, &GitTask::rebase_todo(Some(&base), false, &todo)).unwrap();
+        assert_eq!(log(), "c3\nc2\nc1\n");
+
+        // a commit not in the todo list stops the rebase before it changes anything
+        let todo = [todo_action(&"0".repeat(64), "drop")];
+        let err = run_task(path, &GitTask::rebase_todo(Some(&base), false, &todo)).unwrap_err();
+        assert!(err.contains("missing from the todo list"), "{err}");
+        assert_eq!(log(), "c3\nc2\nc1\n");
+        assert!(!path.join(".git/rebase-merge").exists());
+    }
+
+    #[test]
     fn test_task_input() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
@@ -2507,7 +2579,7 @@ mod tests {
         let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
         assert!(task(&["checkout", "-b", "topic", "HEAD"]).moves_head());
         assert!(task(&["pull", "origin", "main"]).moves_head());
-        assert!(!task(&["branch", "--no-track", "topic", "HEAD"]).moves_head());
+        assert!(!task(&["branch", "topic", "HEAD"]).moves_head());
         // going on with the operation, or aborting it
         assert!(!task(&["rebase", "--continue"]).moves_head());
         assert!(!task(&["merge", "--abort"]).moves_head());
@@ -2760,6 +2832,14 @@ mod tests {
         assert!(git_output(path, &["merge", "incoming"]).is_err());
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        // refused while a git command runs, the conflict markers kept
+        let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
+        repository.set_busy(Some("Pushing master".into()));
+        assert!(repository
+            .resolve_conflict("f", ConflictSide::Ours)
+            .is_err());
+        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
+        repository.set_busy(None);
         repository
             .resolve_conflict("f", ConflictSide::Ours)
             .unwrap();
