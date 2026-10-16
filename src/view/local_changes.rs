@@ -149,6 +149,11 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::PreviousPicked => {
                 self.local_changes_state.select_next_pick(false);
             }
+            UserEvent::NextFile | UserEvent::PreviousFile => {
+                let forward = event == UserEvent::NextFile;
+                let result = self.local_changes_state.select_next_file(forward);
+                self.after_action(result);
+            }
             UserEvent::Edit => {
                 if let Err(err) = self.local_changes_state.request_edit() {
                     self.tx.send(AppEvent::NotifyError(err));
@@ -209,7 +214,7 @@ impl<'a> LocalChangesView<'a> {
                     .focus_section(LocalChangesSection::Staged);
             }
             UserEvent::FocusPanel(3) => {
-                self.local_changes_state.edit_message();
+                self.local_changes_state.focus_commit();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 self.local_changes_state.select_next();

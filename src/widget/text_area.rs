@@ -45,13 +45,19 @@ impl TextArea {
         self.0.input(key);
     }
 
-    // Draws the text in `style`, with the cursor while `editing`.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, style: Style, editing: bool) {
+    // Draws the text in `style`: while `editing` with the cursor, scrolled to it, else from the
+    // start. Without `wrap` a long line scrolls sideways, like a one-line input.
+    pub fn render(&self, area: Rect, buf: &mut Buffer, style: Style, editing: bool, wrap: bool) {
         // a copy to style, the text is short
         let mut inner = self.0.clone();
         inner.set_style(style);
+        if !wrap {
+            inner.set_wrap_mode(WrapMode::None);
+        }
         if !editing {
             inner.set_cursor_style(style);
+            inner.move_cursor(CursorMove::Top);
+            inner.move_cursor(CursorMove::Head);
         }
         inner.render(area, buf);
     }

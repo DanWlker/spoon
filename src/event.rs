@@ -393,6 +393,8 @@ pub enum UserEvent {
     ToggleSelect,
     NextPicked,
     PreviousPicked,
+    NextFile,
+    PreviousFile,
     NextTab,
     PreviousTab,
     Stash,
@@ -523,6 +525,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "toggle_stage" => Ok(UserEvent::ToggleStage),
                         "toggle_select" => Ok(UserEvent::ToggleSelect),
                         "next_picked" => Ok(UserEvent::NextPicked),
+                        "next_file" => Ok(UserEvent::NextFile),
+                        "previous_file" => Ok(UserEvent::PreviousFile),
                         "next_tab" => Ok(UserEvent::NextTab),
                         "previous_tab" => Ok(UserEvent::PreviousTab),
                         "previous_picked" => Ok(UserEvent::PreviousPicked),
@@ -619,6 +623,8 @@ impl UserEvent {
             UserEvent::ToggleStage
             | UserEvent::Stash
             | UserEvent::Commit
+            | UserEvent::NextFile
+            | UserEvent::PreviousFile
             | UserEvent::Abort
             | UserEvent::ToggleAmend
             | UserEvent::Edit

@@ -1019,8 +1019,22 @@ impl Repository {
     }
 
     // The commit message git prepared for the operation in progress, without its comment lines.
+    // With the files git lists as conflicted, which it comments out, under "Conflicts:".
     pub fn prepared_message(&self) -> Option<String> {
-        self.message_file("MERGE_MSG")
+        let message = self.message_file("MERGE_MSG")?;
+        let content = std::fs::read_to_string(self.git_path("MERGE_MSG")?).ok()?;
+        let conflicts: Vec<&str> = content
+            .lines()
+            .skip_while(|l| l.trim() != "# Conflicts:")
+            .skip(1)
+            .map_while(|l| l.strip_prefix('#').map(str::trim))
+            .filter(|path| !path.is_empty())
+            .collect();
+        if conflicts.is_empty() {
+            return Some(message);
+        }
+        let files: Vec<String> = conflicts.iter().map(|path| format!("  {path}")).collect();
+        Some(format!("{message}\n\nConflicts:\n{}", files.join("\n")))
     }
 
     // The message `git merge --squash` prepared, until the squash is committed.

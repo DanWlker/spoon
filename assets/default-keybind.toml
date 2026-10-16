@@ -79,6 +79,9 @@ toggle_amend = ["shift-a"]
 edit = ["e"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]
+# go to the next/previous file in local changes, from the files or the diff, staying in the diff
+next_file = ["] f"]
+previous_file = ["[ f"]
 
 # the commit graph; these keys may also be used on the local changes page, for something else there
 # diff the selected commit with HEAD, or the two picked commits, in the details
