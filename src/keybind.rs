@@ -596,22 +596,6 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    #[test]
-    fn test_deserialize_old_keybind_names() {
-        // renamed and removed events still load
-        let toml = r#"
-            mark_toggle = ["m"]
-            select_top = ["shift-h"]
-            go_to_parent = ["p"]
-        "#;
-        let keybind: KeyBind = toml::from_str(toml).unwrap();
-        assert_eq!(keybind.bindings.len(), 1);
-        assert_eq!(
-            keybind.event_in(Scope::CommitList, &key('m')),
-            Some(UserEvent::ToggleSelect)
-        );
-    }
-
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty())
     }

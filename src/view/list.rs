@@ -7,6 +7,7 @@ use crate::{
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
+    search,
     view::{graph_hints, typing_hints, ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::{
@@ -215,6 +216,7 @@ impl<'a> ListView<'a> {
         let list_state = self.as_mut_list_state();
         list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
         list_state.restore_search_options(*search_options);
+        search::share(*search_options);
         list_state.reset_height(*height);
         if *scroll_to_top {
             list_state.select_first();
@@ -249,12 +251,14 @@ pub fn handle_search_event(
             state.toggle_search_target();
             update_search_status(state, tx);
         }
-        (SearchState::Searching { .. }, UserEvent::IgnoreCaseToggle) => {
-            state.toggle_ignore_case();
+        (SearchState::Searching { .. }, UserEvent::SmartCaseToggle) => {
+            state.toggle_smart_case();
+            search::share(state.search_options());
             update_search_status(state, tx);
         }
         (SearchState::Searching { .. }, UserEvent::FuzzyToggle) => {
             state.toggle_fuzzy();
+            search::share(state.search_options());
             update_search_status(state, tx);
         }
         (SearchState::Searching { .. }, _) => {
@@ -269,12 +273,14 @@ pub fn handle_search_event(
             state.toggle_search_target();
             update_search_options_message(state, tx);
         }
-        (_, UserEvent::IgnoreCaseToggle) => {
-            state.toggle_ignore_case();
+        (_, UserEvent::SmartCaseToggle) => {
+            state.toggle_smart_case();
+            search::share(state.search_options());
             update_search_options_message(state, tx);
         }
         (_, UserEvent::FuzzyToggle) => {
             state.toggle_fuzzy();
+            search::share(state.search_options());
             update_search_options_message(state, tx);
         }
         (SearchState::Applied { .. }, UserEvent::GoToNext) => {

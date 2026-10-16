@@ -39,7 +39,7 @@ use crate::{
     layout::{fit_size, Direction, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
-    search::SearchOptions,
+    search::{self, SearchOptions},
     view::{
         user_command_height, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View,
         ViewKind,
@@ -54,7 +54,6 @@ use crate::{
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, DETACHED_HEAD},
         style::key_hints,
-        tree_query,
     },
 };
 
@@ -312,17 +311,18 @@ impl<'a> App<'a> {
             })
             .collect();
         let graph_cell_width = graph_image_manager.graph_cell_width();
-        tree_query::set_fuzzy_paths(ctx.core_config.search.fuzzy);
+        let search_options = SearchOptions {
+            target: ctx.core_config.search.target,
+            smart_case: ctx.core_config.search.smart_case,
+            fuzzy: ctx.core_config.search.fuzzy,
+        };
+        search::share(search_options);
         let mut commit_list_state = CommitListState::new(
             commits,
             graph_image_manager,
             graph_cell_width,
             ref_name_to_commit_index_map,
-            SearchOptions {
-                target: ctx.core_config.search.target,
-                ignore_case: ctx.core_config.search.ignore_case,
-                fuzzy: ctx.core_config.search.fuzzy,
-            },
+            search_options,
             ctx.ui_config.list.scrolloff as usize,
         );
         // the checked-out branch, or the detached HEAD, marked in the graph and the sidebar

@@ -29,7 +29,7 @@ search = ["/"]
 # filter file trees
 filter = ["?"]
 search_target_toggle = ["ctrl-t"]
-ignore_case_toggle = ["ctrl-g"]
+smart_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
 refresh = ["shift-r"]
 # move the border beside or above the focused panel, resizing it (borders can be dragged too)

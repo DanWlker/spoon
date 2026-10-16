@@ -582,6 +582,64 @@ impl Repository {
             .collect())
     }
 
+    // The first of `steps` that conflicts, applied one after another on `start` in memory with
+    // `git merge-tree`, like a rebase or a cherry-pick does: each is (base, commit), the changes
+    // from base to commit, or a merge of commit when base is None. None when all apply, or git
+    // can't tell (git before 2.38).
+    pub fn first_conflict(
+        &self,
+        start: &str,
+        steps: &[(Option<String>, String)],
+    ) -> Option<Conflict> {
+        let mut tree = start.to_string();
+        // shortcut: checks the first 100 steps only, so a popup opens quickly; move it to a
+        // background thread if long rebases are common
+        for (base, commit) in steps.iter().take(MAX_CONFLICT_STEPS) {
+            let base = base.as_ref().map(|b| format!("--merge-base={b}"));
+            let mut args = vec!["merge-tree", "--write-tree", "--name-only", "--no-messages"];
+            args.extend(base.as_deref());
+            args.extend([tree.as_str(), commit.as_str()]);
+            let output = git_command()
+                .args(&args)
+                .current_dir(&self.path)
+                .stdin(Stdio::null())
+                .output()
+                .ok()?;
+            let out = String::from_utf8_lossy(&output.stdout);
+            let mut lines = out.lines();
+            let result = lines.next()?.to_string();
+            match output.status.code() {
+                Some(0) => tree = result,
+                Some(1) => {
+                    let files = lines.take_while(|l| !l.is_empty()).map(String::from);
+                    return Some(Conflict::At(commit.clone(), files.collect()));
+                }
+                _ => return None,
+            }
+        }
+        let unchecked = steps.len().saturating_sub(MAX_CONFLICT_STEPS);
+        (unchecked > 0).then_some(Conflict::Unchecked(unchecked))
+    }
+
+    // The first conflict replaying the commits of `range` (rev-list arguments) on `onto`, like a
+    // rebase, without the merges and the commits in `skip`, see `first_conflict`.
+    pub fn replay_conflict(
+        &self,
+        onto: &str,
+        range: &[&str],
+        skip: &[CommitHash],
+    ) -> Option<Conflict> {
+        let mut args = vec!["rev-list", "--reverse", "--no-merges"];
+        args.extend(range);
+        let out = git_output(&self.path, &args).ok()?;
+        let steps: Vec<_> = out
+            .lines()
+            .filter(|c| !skip.iter().any(|s| s.as_str() == *c))
+            .map(|c| (Some(format!("{c}^")), c.to_string()))
+            .collect();
+        self.first_conflict(onto, &steps)
+    }
+
     // The contents of a file at a commit.
     pub fn commit_file_content(
         &self,
@@ -2146,6 +2204,17 @@ fn run_task_step(
             .unwrap_or_default();
         Err(format!("git {} failed: {error}", args[0]))
     }
+}
+
+pub const MAX_CONFLICT_STEPS: usize = 100;
+
+// What `Repository::first_conflict` found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Conflict {
+    // the commit stopped at, and the files conflicting
+    At(String, Vec<String>),
+    // none in the steps checked, with this many after them not checked
+    Unchecked(usize),
 }
 
 // The empty tree, as the base of a root commit.

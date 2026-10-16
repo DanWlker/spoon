@@ -12,7 +12,10 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     event::{AppEvent, KeyHint, UserEvent},
-    git::{parse_git_bool, todo_action, BranchStatus, GitTask, RemoteInfo},
+    git::{
+        parse_git_bool, todo_action, BranchStatus, Conflict, GitTask, RemoteInfo,
+        MAX_CONFLICT_STEPS,
+    },
     widget::style::{focused_title, render_popup},
 };
 
@@ -207,6 +210,8 @@ pub struct GitDialog {
     auto_stash_changed: bool,
     // the commit to select once the command is done, see `GitTask::select`
     select: Option<String>,
+    // the conflicts git would stop at, shown in the warning color
+    conflicts: Option<String>,
 }
 
 impl GitDialog {
@@ -222,12 +227,45 @@ impl GitDialog {
             auto_stash_changed: false,
             trigger: None,
             select: None,
+            conflicts: None,
         }
     }
 
     // Selects the revision once the command rewrote the history, see `GitTask::select`.
     pub fn selecting(mut self, revision: Option<String>) -> Self {
         self.select = revision;
+        self
+    }
+
+    // Warns of the conflicts the command runs into, see `Repository::first_conflict`; `at` shows
+    // the commit it stops at, for the commands applying several.
+    pub fn conflicting(mut self, conflict: Option<Conflict>, at: bool) -> Self {
+        self.conflicts = conflict.map(|conflict| {
+            let (commit, files) = match conflict {
+                Conflict::At(commit, files) => (commit, files),
+                Conflict::Unchecked(n) => {
+                    return format!(
+                    "No conflicts in the first {MAX_CONFLICT_STEPS} commits, {n} more not checked."
+                )
+                }
+            };
+            const MAX: usize = 3;
+            let mut names = files
+                .iter()
+                .take(MAX)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if files.len() > MAX {
+                names.push_str(&format!(" and {} more", files.len() - MAX));
+            }
+            let at = if at {
+                format!(" at {}", shorten_hash(&commit))
+            } else {
+                String::new()
+            };
+            format!("Conflicts{at} in {names}.")
+        });
         self
     }
 
@@ -1673,7 +1711,13 @@ impl Widget for GitDialogWidget<'_> {
         }
         lines.push(Line::raw(""));
         // a line for each
-        for warning in dialog.warning().iter().flat_map(|w| w.lines()) {
+        let warning = dialog.warning();
+        for warning in dialog
+            .conflicts
+            .iter()
+            .chain(&warning)
+            .flat_map(|w| w.lines())
+        {
             lines.push(
                 Line::raw(format!("! {warning}"))
                     .fg(theme.status_warn_fg)

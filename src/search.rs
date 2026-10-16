@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Deserialize;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -36,20 +38,44 @@ impl SearchTarget {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOptions {
     pub target: SearchTarget,
-    pub ignore_case: bool,
+    pub smart_case: bool,
     pub fuzzy: bool,
 }
 
 impl SearchOptions {
     pub fn status_string(&self) -> String {
-        let case = if self.ignore_case {
-            "ignore-case"
+        let case = if self.smart_case {
+            "smart-case"
         } else {
             "case-sensitive"
         };
         let matcher = if self.fuzzy { "fuzzy" } else { "substring" };
         format!("[{}] [{case}] [{matcher}]", self.target.as_str())
     }
+}
+
+// Whether a search for `query` is case-insensitive: smart case is, unless the query has an
+// uppercase letter, case-sensitive never is.
+pub fn case_insensitive(smart_case: bool, query: &str) -> bool {
+    smart_case && !query.chars().any(char::is_uppercase)
+}
+
+// The commit list's options, which the file trees, diffs and commit details search with too.
+// shortcut: global, keep them in `TreeQuery` if the trees get toggles of their own.
+static SHARED_SMART_CASE: AtomicBool = AtomicBool::new(true);
+static SHARED_FUZZY: AtomicBool = AtomicBool::new(false);
+
+pub fn share(options: SearchOptions) {
+    SHARED_SMART_CASE.store(options.smart_case, Ordering::Relaxed);
+    SHARED_FUZZY.store(options.fuzzy, Ordering::Relaxed);
+}
+
+pub fn shared_smart_case() -> bool {
+    SHARED_SMART_CASE.load(Ordering::Relaxed)
+}
+
+pub fn shared_fuzzy() -> bool {
+    SHARED_FUZZY.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -77,10 +103,10 @@ mod tests {
     fn test_search_options_status_string() {
         let options = SearchOptions {
             target: SearchTarget::Author,
-            ignore_case: true,
+            smart_case: true,
             fuzzy: true,
         };
 
-        assert_eq!(options.status_string(), "[author] [ignore-case] [fuzzy]");
+        assert_eq!(options.status_string(), "[author] [smart-case] [fuzzy]");
     }
 }

@@ -161,7 +161,7 @@ pub struct CoreSearchConfig {
     #[default(SearchTarget::All)]
     pub target: SearchTarget,
     #[default = true]
-    pub ignore_case: bool,
+    pub smart_case: bool,
     #[default = false]
     pub fuzzy: bool,
 }
@@ -314,24 +314,18 @@ pub struct UiCommonConfig {
     pub cursor_type: CursorType,
 }
 
-// Config values are lowercase; PascalCase aliases are kept for backward compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CursorType {
-    #[serde(alias = "Native")]
     Native,
-    #[serde(alias = "Virtual")]
     Virtual(String),
 }
 
-// Config values are lowercase; PascalCase aliases are kept for backward compatibility.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Validate)]
 #[serde(rename_all = "lowercase")]
 pub enum ClipboardConfig {
     #[default]
-    #[serde(alias = "Auto")]
     Auto,
-    #[serde(alias = "Custom")]
     Custom {
         #[garde(length(min = 1), inner(length(min = 1)))]
         commands: Vec<String>,
@@ -476,7 +470,7 @@ mod tests {
                 },
                 search: CoreSearchConfig {
                     target: SearchTarget::All,
-                    ignore_case: true,
+                    smart_case: true,
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
@@ -566,7 +560,7 @@ mod tests {
             mailmap = true
             [core.search]
             target = "author"
-            ignore_case = true
+            smart_case = true
             fuzzy = true
             [core.user_command]
             commands_1 = { name = "git diff no color", commands = ["git", "diff", "{{first_parent_hash}}", "{{target_hash}}"] }
@@ -619,7 +613,7 @@ mod tests {
                 },
                 search: CoreSearchConfig {
                     target: SearchTarget::Author,
-                    ignore_case: true,
+                    smart_case: true,
                     fuzzy: true,
                 },
                 user_command: CoreUserCommandConfig {
@@ -754,7 +748,7 @@ mod tests {
                 },
                 search: CoreSearchConfig {
                     target: SearchTarget::All,
-                    ignore_case: true,
+                    smart_case: true,
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
@@ -859,7 +853,7 @@ mod tests {
     fn test_config_clipboard_custom_command_with_args() {
         let toml = r#"
             [core.external]
-            clipboard = { Custom = { commands = ["xclip", "-selection", "clipboard"] } }
+            clipboard = { custom = { commands = ["xclip", "-selection", "clipboard"] } }
         "#;
         let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
         assert_eq!(

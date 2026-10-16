@@ -57,7 +57,7 @@ pub fn typing_hints(searching_commits: bool) -> Vec<KeyHint> {
     if searching_commits {
         hints.extend([
             hint(UserEvent::SearchTargetToggle, "target"),
-            hint(UserEvent::IgnoreCaseToggle, "ignore case"),
+            hint(UserEvent::SmartCaseToggle, "smart case"),
             hint(UserEvent::FuzzyToggle, "fuzzy"),
         ]);
     }

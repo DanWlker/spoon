@@ -101,9 +101,9 @@
               ],
               "default": "all"
             },
-            "ignore_case": {
+            "smart_case": {
               "type": "boolean",
-              "description": "Whether to enable ignore case by default.",
+              "description": "Whether to search with smart case by default: ignoring case unless the query has an uppercase letter. Off searches case-sensitively.",
               "default": true
             },
             "fuzzy": {
@@ -780,7 +780,7 @@
         "search_target_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
-        "ignore_case_toggle": {
+        "smart_case_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
         "fuzzy_toggle": {
@@ -1100,7 +1100,7 @@
         "search_target_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
-        "ignore_case_toggle": {
+        "smart_case_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
         "fuzzy_toggle": {

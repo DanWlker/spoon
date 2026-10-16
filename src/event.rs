@@ -431,7 +431,7 @@ pub enum UserEvent {
     PreviousSection,
     ApplyChange,
     SearchTargetToggle,
-    IgnoreCaseToggle,
+    SmartCaseToggle,
     FuzzyToggle,
     Refresh,
     ShortCopy,
@@ -498,11 +498,11 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "go_to_next" => Ok(UserEvent::GoToNext),
                         "go_to_previous" => Ok(UserEvent::GoToPrevious),
                         "confirm" => Ok(UserEvent::Confirm),
-                        "ref_list" | "ref_list_toggle" => Ok(UserEvent::RefList),
+                        "ref_list" => Ok(UserEvent::RefList),
                         "search" => Ok(UserEvent::Search),
                         "filter" => Ok(UserEvent::Filter),
                         "search_target_toggle" => Ok(UserEvent::SearchTargetToggle),
-                        "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
+                        "smart_case_toggle" => Ok(UserEvent::SmartCaseToggle),
                         "fuzzy_toggle" => Ok(UserEvent::FuzzyToggle),
                         "refresh" => Ok(UserEvent::Refresh),
                         "resize_left" => Ok(UserEvent::ResizeLeft),
@@ -561,12 +561,6 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "next_section" => Ok(UserEvent::NextSection),
                         "previous_section" => Ok(UserEvent::PreviousSection),
                         "apply_change" => Ok(UserEvent::ApplyChange),
-                        // renamed
-                        "mark_toggle" => Ok(UserEvent::ToggleSelect),
-                        // removed, ignored so configs naming them still load
-                        "go_to_parent" | "select_top" | "select_middle" | "select_bottom" => {
-                            Ok(UserEvent::Unknown)
-                        }
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

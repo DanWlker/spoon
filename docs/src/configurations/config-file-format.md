@@ -17,7 +17,7 @@ mailmap = false
 
 [core.search]
 target = "all"
-ignore_case = true
+smart_case = true
 fuzzy = false
 
 [core.user_command]
@@ -240,16 +240,16 @@ The field to search when the application starts. The target can be toggled while
   - `ref`: Search branch, remote branch, and tag names
   - `hash`: Search short commit hashes
 
-### `core.search.ignore_case`
+### `core.search.smart_case`
 
-Whether to enable ignore case when the application starts. The option can be toggled while the commit list is displayed.
+Whether to search with smart case when the application starts: ignoring case unless the query has an uppercase letter. Off searches case-sensitively. The option can be toggled while the commit list is displayed. The file trees, diffs and commit details search with the same setting.
 
 - type: `boolean`
 - default: `true`
 
 ### `core.search.fuzzy`
 
-Whether to enable fuzzy matching when the application starts. The option can be toggled while the commit list is displayed. The search (<kbd>/</kbd>) and filter (<kbd>?</kbd>) of the file trees match paths fuzzily too when it is on, without a toggle; searching a diff or a file stays a plain match.
+Whether to enable fuzzy matching when the application starts. The option can be toggled while the commit list is displayed. The search (<kbd>/</kbd>) and filter (<kbd>?</kbd>) of the file trees follow it, toggled with the commit list's; searching a diff or a file stays a plain match.
 
 - type: `boolean`
 - default: `false`

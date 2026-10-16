@@ -5,11 +5,11 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     color::ColorTheme,
+    search::{case_insensitive, shared_fuzzy, shared_smart_case},
     widget::{
         file_tree::{keeps, FileTreeRow, SearchDirection},
         style::fold_marker,
@@ -143,36 +143,37 @@ fn prefix(kind: QueryKind) -> &'static str {
     }
 }
 
-// Whether paths are searched and filtered fuzzily, like the commit list with core.search.fuzzy.
-// shortcut: set once from the config at startup, the commit list's fuzzy toggle doesn't change it;
-// keep it in `TreeQuery` if the trees get a toggle of their own.
-static FUZZY_PATHS: AtomicBool = AtomicBool::new(false);
+static SMART_CASE_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(SkimMatcherV2::default);
+static CASE_SENSITIVE_MATCHER: Lazy<SkimMatcherV2> =
+    Lazy::new(|| SkimMatcherV2::default().respect_case());
 
-// smart case: ignoring it unless the query has an uppercase letter
-static PATH_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(SkimMatcherV2::default);
-
-pub fn set_fuzzy_paths(fuzzy: bool) {
-    FUZZY_PATHS.store(fuzzy, Ordering::Relaxed);
-}
-
-// Whether `path` matches `query`: fuzzily, or as a substring; smart case either way.
-pub fn path_matches(path: &str, query: &str) -> bool {
-    path_matches_with(path, query, FUZZY_PATHS.load(Ordering::Relaxed))
-}
-
-fn path_matches_with(path: &str, query: &str, fuzzy: bool) -> bool {
-    if fuzzy {
-        PATH_MATCHER.fuzzy_match(path, query).is_some()
-    } else if query.chars().any(char::is_uppercase) {
-        path.contains(query)
+fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
+    if smart_case {
+        &SMART_CASE_MATCHER
     } else {
+        &CASE_SENSITIVE_MATCHER
+    }
+}
+
+// Whether `path` matches `query`, searching as the commit list does: fuzzily or as a substring,
+// smart case or case-sensitive.
+pub fn path_matches(path: &str, query: &str) -> bool {
+    path_matches_with(path, query, shared_fuzzy(), shared_smart_case())
+}
+
+fn path_matches_with(path: &str, query: &str, fuzzy: bool, smart_case: bool) -> bool {
+    if fuzzy {
+        path_matcher(smart_case).fuzzy_match(path, query).is_some()
+    } else if case_insensitive(smart_case, query) {
         path.to_lowercase().contains(&query.to_lowercase())
+    } else {
+        path.contains(query)
     }
 }
 
 // The byte range of the first match of `query` in `text`, to highlight it.
 pub fn match_range(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
-    let start = if query.chars().any(char::is_uppercase) {
+    let start = if !case_insensitive(shared_smart_case(), query) {
         text.find(query)?
     } else {
         // lowercasing can change byte lengths, so only use the result when it does not
@@ -266,8 +267,9 @@ pub fn highlighted_name(
     search: Option<&str>,
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
-    let fuzzy = FUZZY_PATHS.load(Ordering::Relaxed);
-    let ranges = search.map_or(vec![], |query| name_match_ranges(name, query, fuzzy));
+    let ranges = search.map_or(vec![], |query| {
+        name_match_ranges(name, query, shared_fuzzy())
+    });
     let mut spans = Vec::new();
     let mut at = 0;
     for range in ranges {
@@ -289,7 +291,8 @@ fn name_match_ranges(name: &str, query: &str, fuzzy: bool) -> Vec<std::ops::Rang
     if !fuzzy {
         return match_range(name, query).into_iter().collect();
     }
-    let Some((_, indices)) = PATH_MATCHER.fuzzy_indices(name, query) else {
+    let matcher = path_matcher(shared_smart_case());
+    let Some((_, indices)) = matcher.fuzzy_indices(name, query) else {
         return vec![];
     };
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -358,10 +361,15 @@ mod tests {
 
     #[test]
     fn test_fuzzy_paths() {
-        assert!(path_matches_with("src/widget/diff.rs", "swd", true));
-        assert!(!path_matches_with("src/widget/diff.rs", "swd", false));
-        assert!(!path_matches_with("src/main.rs", "Main", true));
-        assert!(!path_matches_with("src/main.rs", "xyz", true));
+        assert!(path_matches_with("src/widget/diff.rs", "swd", true, true));
+        assert!(!path_matches_with("src/widget/diff.rs", "swd", false, true));
+        assert!(!path_matches_with("src/main.rs", "Main", true, true));
+        assert!(!path_matches_with("src/main.rs", "xyz", true, true));
+        // case-sensitive: a lowercase query no longer matches an uppercase path
+        assert!(path_matches_with("src/Main.rs", "main", false, true));
+        assert!(!path_matches_with("src/Main.rs", "main", false, false));
+        assert!(!path_matches_with("src/Main.rs", "mn", true, false));
+        assert!(path_matches_with("src/Main.rs", "Mn", true, false));
         // the picked letters of the name, joined where they follow each other; by bytes
         assert_eq!(name_match_ranges("dïff.rs", "dïrs", true), [0..3, 6..8]);
         // only the rest of the path matched

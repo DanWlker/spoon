@@ -255,7 +255,7 @@ fn build_lines(
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::SearchTargetToggle], "Toggle search target".into()),
-        (vec![UserEvent::IgnoreCaseToggle], "Toggle ignore case".into()),
+        (vec![UserEvent::SmartCaseToggle], "Toggle smart case or case-sensitive".into()),
         (vec![UserEvent::FuzzyToggle], "Toggle fuzzy match".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),

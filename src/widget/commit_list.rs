@@ -22,7 +22,7 @@ use crate::{
     git::{Commit, CommitHash, Head, Ref},
     graph::GraphImageManager,
     protocol::PreparedImage,
-    search::{SearchOptions, SearchTarget},
+    search::{case_insensitive, SearchOptions, SearchTarget},
     widget::{
         file_tree::SearchDirection,
         style::{mark_selected_bar, panel_block, panel_title, render_panel_scrollbar},
@@ -149,27 +149,29 @@ impl SearchMatchPosition {
 
 struct SearchMatcher {
     query: String,
-    ignore_case: bool,
+    // smart case with a lowercase query: both sides lowercased
+    lowercase: bool,
     fuzzy: bool,
 }
 
 impl SearchMatcher {
-    fn new(query: &str, ignore_case: bool, fuzzy: bool) -> Self {
-        let query = if ignore_case {
+    fn new(query: &str, smart_case: bool, fuzzy: bool) -> Self {
+        let lowercase = case_insensitive(smart_case, query);
+        let query = if lowercase {
             query.to_lowercase()
         } else {
             query.into()
         };
         Self {
             query,
-            ignore_case,
+            lowercase,
             fuzzy,
         }
     }
 
     fn matched_position(&self, s: &str) -> Option<SearchMatchPosition> {
         if self.fuzzy {
-            let result = if self.ignore_case {
+            let result = if self.lowercase {
                 FUZZY_MATCHER.fuzzy_indices(&s.to_lowercase(), &self.query)
             } else {
                 FUZZY_MATCHER.fuzzy_indices(s, &self.query)
@@ -185,7 +187,7 @@ impl SearchMatcher {
                 })
                 .map(SearchMatchPosition::new)
         } else {
-            let result = if self.ignore_case {
+            let result = if self.lowercase {
                 s.to_lowercase().find(&self.query)
             } else {
                 s.find(&self.query)
@@ -635,8 +637,8 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn toggle_ignore_case(&mut self) {
-        self.search_options.ignore_case = !self.search_options.ignore_case;
+    pub fn toggle_smart_case(&mut self) {
+        self.search_options.smart_case = !self.search_options.smart_case;
         self.update_search_after_options_change();
     }
 
@@ -691,7 +693,7 @@ impl<'a> CommitListState<'a> {
         }
         let matcher = SearchMatcher::new(
             self.search_input.value(),
-            self.search_options.ignore_case,
+            self.search_options.smart_case,
             self.search_options.fuzzy,
         );
         let mut match_index = 1;
@@ -1677,7 +1679,7 @@ mod tests {
     fn test_restore_search_recalculates_matches_with_applied_options() {
         let (context, options) = with_commit_list_state(&["Fix parser", "other"], |state| {
             input_search_query(state, "fx");
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             state.toggle_fuzzy();
             state.apply_search();
 
@@ -1692,7 +1694,7 @@ mod tests {
             options,
             SearchOptions {
                 target: SearchTarget::All,
-                ignore_case: true,
+                smart_case: true,
                 fuzzy: true,
             }
         );
@@ -1732,7 +1734,7 @@ mod tests {
     #[test]
     fn test_restore_search_options_without_applied_search() {
         let options = with_commit_list_state(&["FIX"], |state| {
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             state.search_options()
         });
 
@@ -1776,7 +1778,7 @@ mod tests {
     fn test_search_options_are_reused_for_next_search() {
         with_commit_list_state(&["FIX"], |state| {
             input_search_query(state, "fix");
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             state.apply_search();
             state.cancel_search();
 
@@ -1794,7 +1796,7 @@ mod tests {
     fn test_resume_search_preserves_query_options_matches_and_view_position() {
         with_commit_list_state(&["other", "Fix parser", "FIX graph", "last"], |state| {
             state.reset_height(2);
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             state.toggle_fuzzy();
             state.toggle_search_target();
             input_search_query(state, "fx");
@@ -1967,7 +1969,7 @@ mod tests {
     #[test]
     fn test_search_options_can_be_changed_before_search() {
         with_commit_list_state(&["FIX"], |state| {
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             input_search_query(state, "fix");
             state.apply_search();
 
@@ -1981,12 +1983,12 @@ mod tests {
     #[test]
     fn test_search_option_string_after_toggles() {
         with_commit_list_state(&["fix"], |state| {
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             assert_eq!(
                 state.search_options().status_string(),
-                "[all] [ignore-case] [substring]"
+                "[all] [smart-case] [substring]"
             );
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             assert_eq!(
                 state.search_options().status_string(),
                 "[all] [case-sensitive] [substring]"
@@ -2077,6 +2079,20 @@ mod tests {
     }
 
     #[test]
+    fn test_smart_case() {
+        // ignoring case unless the query has an uppercase letter; case-sensitive never
+        let found = |query, smart_case, text| {
+            SearchMatcher::new(query, smart_case, false)
+                .matched_position(text)
+                .is_some()
+        };
+        assert!(found("fix", true, "Fix bug"));
+        assert!(!found("Fix", true, "fix bug"));
+        assert!(found("Fix", true, "Fix bug"));
+        assert!(!found("fix", false, "Fix bug"));
+    }
+
+    #[test]
     fn test_search_target_change_clears_previous_field_matches() {
         let commit = Commit {
             commit_hash: CommitHash::from("abcdef0123456789abcdef0123456789abcdef01"),
@@ -2130,7 +2146,7 @@ mod tests {
         with_commit_list_state(&["FIX", "fix"], |state| {
             input_search_query(state, "fix");
             state.apply_search();
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
 
             assert_eq!(
                 state.commits[state.current_selected_index()].commit.subject,
@@ -2146,10 +2162,10 @@ mod tests {
     #[test]
     fn test_applied_search_options_select_next_match() {
         with_commit_list_state(&["FIX", "fix"], |state| {
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
             input_search_query(state, "fix");
             state.apply_search();
-            state.toggle_ignore_case();
+            state.toggle_smart_case();
 
             assert_eq!(
                 state.commits[state.current_selected_index()].commit.subject,
