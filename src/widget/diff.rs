@@ -1,8 +1,11 @@
 use std::ops::Range;
 
 use ratatui::{
-    style::Stylize,
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style, Stylize},
     text::{Line, Span},
+    widgets::{Paragraph, Widget},
 };
 
 use crate::{
@@ -619,18 +622,32 @@ pub fn diff_lines<'a>(
             let gutter = format!("{} {} ", number(row.old), number(row.new));
             let text_color = match row.kind {
                 DiffRowKind::Hunk => theme.status_info_fg,
-                DiffRowKind::Added => theme.detail_file_change_add_fg,
-                DiffRowKind::Removed => theme.detail_file_change_delete_fg,
-                DiffRowKind::Context => theme.fg,
+                DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Context => theme.fg,
                 DiffRowKind::Meta => dim,
                 DiffRowKind::File => theme.detail_file_change_modify_fg,
             };
-            Line::from(vec![
+            let line = Line::from(vec![
                 Span::raw(gutter).fg(dim),
                 Span::raw(row.text.as_str()).fg(text_color),
-            ])
+            ]);
+            // added and removed lines on a background across the panel
+            match row.kind {
+                DiffRowKind::Added => line.bg(theme.diff_add_bg),
+                DiffRowKind::Removed => line.bg(theme.diff_delete_bg),
+                _ => line,
+            }
         })
         .collect()
+}
+
+// Renders the lines of `diff_lines`, a line's background (added, removed, selected) across `area`.
+pub fn render_diff_lines(lines: Vec<Line>, fg: Color, area: Rect, buf: &mut Buffer) {
+    for (y, line) in (area.y..area.bottom()).zip(&lines) {
+        if let Some(bg) = line.style.bg {
+            buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(bg));
+        }
+    }
+    Paragraph::new(lines).fg(fg).render(area, buf);
 }
 
 #[cfg(test)]

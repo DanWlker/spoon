@@ -571,6 +571,16 @@
           "description": "Color for moved file status in the commit detail view.",
           "default": "#cba6f7"
         },
+        "diff_add_bg": {
+          "type": "string",
+          "description": "Background color of the lines added in a diff.",
+          "default": "#394545"
+        },
+        "diff_delete_bg": {
+          "type": "string",
+          "description": "Background color of the lines removed in a diff.",
+          "default": "#493446"
+        },
         "ref_selected_fg": {
           "type": "string",
           "description": "Foreground color for a selected item in the refs list.",

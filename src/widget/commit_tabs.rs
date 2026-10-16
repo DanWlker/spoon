@@ -15,7 +15,10 @@ use crate::{
     layout::{Border, Panel},
     widget::style::{focused_title, mark_selected_row, panel_title, tree_panel_width},
     widget::{
-        diff::{diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step},
+        diff::{
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
+            ParsedDiff, Step,
+        },
         file_tree::{keeps, FileTree, FileTreeRow, FileTreeState, SearchDirection},
         tree_query::{find_around, highlight_match, highlighted_name, match_range},
     },
@@ -710,7 +713,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
                 highlight_match(line, query, theme);
             }
         }
-        Paragraph::new(lines).fg(theme.fg).render(diff_area, buf);
+        render_diff_lines(lines, theme.fg, diff_area, buf);
     }
 }
 

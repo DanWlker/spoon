@@ -21,8 +21,8 @@ use crate::{
     widget::{
         conflict::ConflictView,
         diff::{
-            diff_line_count, diff_lines, parse_diff, DiffCursor, DiffHunk, ParsedDiff, Step,
-            CONVERTED_DIFF,
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
+            ParsedDiff, Step, CONVERTED_DIFF,
         },
         file_tree::{
             find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
@@ -1792,9 +1792,7 @@ impl LocalChangesPanel<'_> {
             }
         }
 
-        Paragraph::new(lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .render(inner, buf);
+        render_diff_lines(lines, self.ctx.color_theme.fg, inner, buf);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {

@@ -72,6 +72,11 @@ pub struct ColorTheme {
     pub detail_file_change_delete_fg: RatatuiColor,
     #[default(MAUVE)]
     pub detail_file_change_move_fg: RatatuiColor,
+    // the lines added and removed in a diff, Mocha's green and red over its base
+    #[default(RatatuiColor::Rgb(0x39, 0x45, 0x45))]
+    pub diff_add_bg: RatatuiColor,
+    #[default(RatatuiColor::Rgb(0x49, 0x34, 0x46))]
+    pub diff_delete_bg: RatatuiColor,
 
     #[default(TEXT)]
     pub ref_selected_fg: RatatuiColor,
