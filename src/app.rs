@@ -231,13 +231,13 @@ struct Popup {
 enum GraphFilter {
     #[default]
     All,
-    // the current branch's, see `UserEvent::BranchOnly`
-    BranchOnly,
+    // a branch's, the current one for None, see `UserEvent::BranchOnly`
+    BranchOnly(Option<String>),
     // that of two refs diffed from the sidebar while their comparison is shown, going back to
-    // `branch_only` once it isn't, see `end_stale_ref_compare`
+    // `before` once it isn't, see `end_stale_ref_compare`
     Compare {
         refs: RefCompare,
-        branch_only: bool,
+        before: Box<GraphFilter>,
     },
 }
 
@@ -261,7 +261,9 @@ impl AppShell {
     pub fn graph_revisions(&self) -> Option<Vec<String>> {
         match &self.graph_filter {
             GraphFilter::All => None,
-            GraphFilter::BranchOnly => Some(vec!["HEAD".into()]),
+            GraphFilter::BranchOnly(None) => Some(vec!["HEAD".into()]),
+            // not a tag of the same name
+            GraphFilter::BranchOnly(Some(branch)) => Some(vec![format!("refs/heads/{branch}")]),
             GraphFilter::Compare { refs, .. } => Some(vec![refs.base.clone(), refs.target.clone()]),
         }
     }
@@ -270,9 +272,12 @@ impl AppShell {
     fn graph_filter_note(&self, repository: &Repository) -> Option<String> {
         match &self.graph_filter {
             GraphFilter::All => None,
-            GraphFilter::BranchOnly => Some(format!(
+            GraphFilter::BranchOnly(branch) => Some(format!(
                 "{} only",
-                repository.current_branch().unwrap_or_else(|| "HEAD".into())
+                branch
+                    .clone()
+                    .or_else(|| repository.current_branch())
+                    .unwrap_or_else(|| "HEAD".into())
             )),
             GraphFilter::Compare { refs, .. } => Some(format!("{} ↔ {}", refs.base, refs.target)),
         }
@@ -333,7 +338,7 @@ impl<'a> App<'a> {
                 }
                 // comparing two refs, both are shown alike
                 let on_head = comparing_refs || head_history.contains(&commit.commit_hash);
-                CommitInfo::new(commit, refs, on_head)
+                CommitInfo::new(commit, refs, repository.branch_tracking(), on_head)
             })
             .collect();
         let graph_cell_width = graph_image_manager.graph_cell_width();
@@ -454,14 +459,9 @@ impl<'a> App<'a> {
     // shown), the graph shows the history it showed before.
     fn end_stale_ref_compare(&mut self) {
         let comparing = matches!(&self.view, View::Detail(view) if view.is_comparing());
-        if let (GraphFilter::Compare { branch_only, .. }, false) =
-            (&self.shell.graph_filter, comparing)
+        if let (GraphFilter::Compare { before, .. }, false) = (&self.shell.graph_filter, comparing)
         {
-            self.shell.graph_filter = if *branch_only {
-                GraphFilter::BranchOnly
-            } else {
-                GraphFilter::All
-            };
+            self.shell.graph_filter = (**before).clone();
             self.view.refresh();
         }
     }
@@ -738,7 +738,8 @@ impl App<'_> {
     // Lays the page out in the screen's `area` before handling the next events and drawing.
     fn prepare_render(&mut self, area: Rect) {
         let [_, view_area, _] = split_app_areas(area);
-        let [_, view_area] = self.split_sidebar(view_area);
+        let [sidebar_area, view_area] = self.split_sidebar(view_area);
+        self.shell.sidebar.set_height(sidebar_area);
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
@@ -1390,6 +1391,10 @@ impl App<'_> {
                 self.shell.sidebar.select_last();
                 self.show_sidebar_selection();
             }
+            UserEvent::HalfPageDown | UserEvent::HalfPageUp => {
+                self.shell.sidebar.jump_half_page(event);
+                self.show_sidebar_selection();
+            }
             UserEvent::NavigateRight => {
                 self.shell.sidebar.open_node();
                 self.show_sidebar_selection();
@@ -1886,8 +1891,8 @@ impl App<'_> {
         if event == UserEvent::BranchOnly {
             // the commits are loaded again, of the current branch or of all
             self.shell.graph_filter = match self.shell.graph_filter {
-                GraphFilter::BranchOnly => GraphFilter::All,
-                _ => GraphFilter::BranchOnly,
+                GraphFilter::BranchOnly(_) => GraphFilter::All,
+                _ => GraphFilter::BranchOnly(None),
             };
             self.view.refresh();
             return;
@@ -1902,11 +1907,22 @@ impl App<'_> {
     // The commands of the commit graph on the branch, remote branch or tag selected in the
     // sidebar, see `ref_graph_command`.
     fn handle_sidebar_graph_event(&mut self, event: UserEvent) {
-        if event == UserEvent::BranchOnly {
-            self.handle_graph_event(event);
+        if self.refused_while_diffing(event) {
             return;
         }
-        if self.refused_while_diffing(event) {
+        if event == UserEvent::BranchOnly {
+            // the selected branch's history, or the current one's off a branch
+            let branch = match self.shell.sidebar.selection() {
+                RefSelection::Ref(RefSection::Branches, name) if name != DETACHED_HEAD => {
+                    Some(name)
+                }
+                _ => None,
+            };
+            self.shell.graph_filter = match &self.shell.graph_filter {
+                GraphFilter::BranchOnly(shown) if *shown == branch => GraphFilter::All,
+                _ => GraphFilter::BranchOnly(branch),
+            };
+            self.view.refresh();
             return;
         }
         if event == UserEvent::Diff {
@@ -2055,7 +2071,11 @@ impl App<'_> {
         if let View::LocalChanges(view) = &self.view {
             self.shell.parked_local_changes = Some(view.context());
         }
-        let branch_only = matches!(self.shell.graph_filter, GraphFilter::BranchOnly);
+        // the history shown before, going back to it once the comparison closes
+        let before = match std::mem::take(&mut self.shell.graph_filter) {
+            GraphFilter::Compare { before, .. } => before,
+            filter => Box::new(filter),
+        };
         // reloaded for the history of both, opening their comparison like after any reload
         let shown = Compare {
             base: compare.base.clone(),
@@ -2064,7 +2084,7 @@ impl App<'_> {
         };
         self.shell.graph_filter = GraphFilter::Compare {
             refs: compare,
-            branch_only,
+            before,
         };
         self.shell.sidebar.clear_picks();
         self.set_sidebar_focused(false);

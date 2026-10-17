@@ -139,6 +139,26 @@ mod tests {
     }
 
     #[test]
+    fn test_several_show_newest_on_top() {
+        let theme = theme_with_bg();
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        let notices = [
+            Notice::error("first".into()),
+            Notice::warning("second".into()),
+            Notice::error("third".into()),
+        ];
+        render_notices(&notices, "x", area, &mut buf, &theme);
+        let rows: Vec<u16> = ["third", "second", "first"]
+            .iter()
+            .map(|m| find_row(&buf, m))
+            .collect();
+        assert!(rows.is_sorted() && rows[0] < rows[1], "{rows:?}");
+        // the key on the newest only
+        assert!(find_row(&buf, "x dismiss") < rows[1]);
+    }
+
+    #[test]
     fn test_push_notice() {
         let notice = |m: &str| Notice::error(m.into());
         let mut notices = vec![];

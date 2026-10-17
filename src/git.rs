@@ -130,8 +130,8 @@ pub struct Repository {
     busy: std::cell::RefCell<Option<String>>,
     // the fingerprint of the refs when loaded, see `refs_snapshot`
     refs_snapshot: Option<String>,
-    // how far each local branch is ahead and behind its upstream when loaded, see `branch_tracking`
-    tracking: FxHashMap<String, (usize, usize)>,
+    // the upstream of each local branch having one when loaded, see `branch_tracking`
+    tracking: FxHashMap<String, Tracking>,
     commit_map: CommitMap,
 
     parents_map: CommitsMap,
@@ -514,22 +514,23 @@ impl Repository {
         out.trim().parse().map_err(|e| format!("{e}"))
     }
 
-    // A remote branch having the commit, like "origin/main", to warn before rewriting it; of any
-    // remote, as where the branch is pushed to may be none of its upstream.
-    pub fn remote_branch_containing(&self, commit: &str) -> Option<String> {
+    // The upstream of the current branch, like "origin/main", when it has the commit: rewriting
+    // the commit then needs a force push.
+    pub fn upstream_containing(&self, commit: &str) -> Option<String> {
+        let upstream = git_output(
+            &self.path,
+            &["rev-parse", "--symbolic-full-name", "@{upstream}"],
+        )
+        .ok()?;
         let contains = format!("--contains={commit}");
         let args = [
             "for-each-ref",
             &contains,
-            "--format=%(refname)",
-            "refs/remotes",
+            "--format=%(refname:short)",
+            upstream.trim(),
         ];
-        let refs = git_output(&self.path, &args).ok()?;
-        // "origin/HEAD" only points at another one
-        refs.lines()
-            .filter(|r| !r.ends_with("/HEAD"))
-            .find_map(|r| r.strip_prefix("refs/remotes/"))
-            .map(String::from)
+        let found = git_output(&self.path, &args).ok()?;
+        Some(found.trim().to_string()).filter(|b| !b.is_empty())
     }
 
     // The local branches of `names` whose last commit is neither in HEAD nor on another branch,
@@ -798,7 +799,7 @@ impl Repository {
 
     // The commits each local branch with an upstream has that it lacks (ahead, to push) and the
     // other way round (behind, to pull), by branch name.
-    pub fn branch_tracking(&self) -> &FxHashMap<String, (usize, usize)> {
+    pub fn branch_tracking(&self) -> &FxHashMap<String, Tracking> {
         &self.tracking
     }
 
@@ -1854,14 +1855,16 @@ pub fn files_stamp(work_tree: &Path, git_dir: Option<&Path>, changes: &LocalChan
 }
 
 // How far each local branch is ahead and behind its upstream, those in sync left out.
-fn load_branch_tracking(path: &Path) -> FxHashMap<String, (usize, usize)> {
+fn load_branch_tracking(path: &Path) -> FxHashMap<String, Tracking> {
     // the full name: the short one is "heads/v2" when a tag is named v2 too
-    let format = "--format=%(refname)%00%(upstream:track,nobracket)";
+    let format = "--format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)";
     let refs = git_output(path, &["for-each-ref", format, "refs/heads"]).unwrap_or_default();
     refs.lines()
         .filter_map(|line| {
-            let (name, track) = line.split_once('\0')?;
-            let name = name.strip_prefix("refs/heads/")?;
+            let mut parts = line.split('\0');
+            let name = parts.next()?.strip_prefix("refs/heads/")?;
+            let upstream = parts.next().filter(|u| !u.is_empty())?;
+            let track = parts.next().unwrap_or_default();
             // like "ahead 2, behind 1", empty when in sync or without an upstream
             let count = |what: &str| {
                 track
@@ -1869,10 +1872,23 @@ fn load_branch_tracking(path: &Path) -> FxHashMap<String, (usize, usize)> {
                     .find_map(|part| part.strip_prefix(what)?.trim().parse().ok())
                     .unwrap_or(0)
             };
-            let counts = (count("ahead "), count("behind "));
-            (counts != (0, 0)).then(|| (name.to_string(), counts))
+            let tracking = Tracking {
+                upstream: upstream.to_string(),
+                ahead: count("ahead "),
+                behind: count("behind "),
+            };
+            Some((name.to_string(), tracking))
         })
         .collect()
+}
+
+// A local branch's upstream, like "origin/main", and how many commits the branch is ahead of it
+// and behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tracking {
+    pub upstream: String,
+    pub ahead: usize,
+    pub behind: usize,
 }
 
 // A fingerprint of the branches, remote branches, tags, HEAD and the stashes, which changes when
@@ -2931,17 +2947,21 @@ mod tests {
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
 
         // in sync, then two commits to push and, once they are pushed and one undone, one to pull
-        let tracking = || load_branch_tracking(&work);
-        assert!(tracking().is_empty());
+        let tracking = || {
+            let tracking = &load_branch_tracking(&work)["master"];
+            assert_eq!(tracking.upstream, "origin/main");
+            (tracking.ahead, tracking.behind)
+        };
+        assert_eq!(tracking(), (0, 0));
         repo.commit("second", "2024-01-02");
         repo.commit("third", "2024-01-03");
-        assert_eq!(tracking()["master"], (2, 0));
+        assert_eq!(tracking(), (2, 0));
         run("push origin master:main").unwrap();
         git_output(&work, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
-        assert_eq!(tracking()["master"], (0, 1));
+        assert_eq!(tracking(), (0, 1));
         // also with a tag of the same name
         git_output(&work, &["tag", "master"]).unwrap();
-        assert_eq!(tracking()["master"], (0, 1));
+        assert_eq!(tracking(), (0, 1));
     }
 
     #[test]

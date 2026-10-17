@@ -12,7 +12,7 @@ use ratatui::{
     layout::Rect,
 };
 
-use super::{App, AppContext, AppEvent, InitialSelection, Launch, Ret, StatusLine};
+use super::{App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, Ret, StatusLine};
 use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
@@ -23,6 +23,7 @@ use crate::{
     protocol::ImageProtocol,
     test_support::{git::git, ui::test_ctx},
     view::View,
+    widget::ref_list::{RefSection, RefSelection},
     Loader, Refresh,
 };
 
@@ -322,6 +323,22 @@ fn test_launch_on_local_changes() {
     harness.run(vec![check(|app| {
         assert!(matches!(app.view, View::LocalChanges(_)));
     })]);
+}
+
+#[test]
+fn test_several_notices_show_until_dismissed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let event = |e: AppEvent| vec![Step::Event(Box::new(e))];
+    harness.run(vec![
+        event(AppEvent::NotifyWarn("first".into())),
+        event(AppEvent::NotifyError("second".into())),
+        event(AppEvent::NotifyWarn("third".into())),
+        check(|app| assert_eq!(notices(app), ["first", "second", "third"])),
+        keys(","),
+        check(|app| assert!(notices(app).is_empty())),
+    ]);
 }
 
 #[test]
@@ -649,6 +666,72 @@ fn test_compare_gives_the_branch_only_graph_back() {
         compare_feat(),
         keys("esc"),
         check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
+    ]);
+}
+
+#[test]
+fn test_branch_only_of_the_sidebar_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // feat, under master
+        keys("0 j shift-l"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
+        // another branch shows its commits instead, the same one all of them again
+        keys("k shift-l"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
+        keys("shift-l"),
+        check(|app| assert_eq!(graph_note(app), None)),
+        // a stash or the headers, the current branch's
+        keys("g shift-l"),
+        check(|app| {
+            assert!(matches!(
+                app.shell.graph_filter,
+                GraphFilter::BranchOnly(None)
+            ));
+            assert_eq!(graph_note(app).as_deref(), Some("master only"));
+        }),
+        keys("j shift-l"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
+        // its commits only are loaded
+        check(|app| {
+            let subjects: Vec<&str> = app
+                .repository
+                .all_commits()
+                .iter()
+                .map(|c| c.subject.as_str())
+                .collect();
+            assert_eq!(subjects, ["feat1", "c1"]);
+        }),
+    ]);
+}
+
+#[test]
+fn test_half_page_jump_in_the_sidebar() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..60 {
+        git(&path, &["branch", &format!("b{i:02}")]);
+    }
+    let mut harness = Harness::new(&path, launch());
+    let selected = |name: &'static str| {
+        check(move |app| {
+            let selection = app.shell.sidebar.selection();
+            assert_eq!(
+                selection,
+                RefSelection::Ref(RefSection::Branches, name.into())
+            );
+        })
+    };
+    harness.run(vec![
+        keys("0 g j"),
+        selected("b00"),
+        // half of the 36 rows shown
+        keys("ctrl-d"),
+        selected("b18"),
+        keys("ctrl-d ctrl-u"),
+        selected("b18"),
     ]);
 }
 

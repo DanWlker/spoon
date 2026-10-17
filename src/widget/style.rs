@@ -282,6 +282,23 @@ impl ScrollState {
     }
 }
 
+// The row ctrl-d or ctrl-u selects in a list of `total` rows shown `height` at a time: half a
+// page from `selected`, the list then scrolling only as moving there one row at a time would
+// (see `scroll_to`); None for other events.
+pub fn half_page_jump(
+    event: UserEvent,
+    selected: usize,
+    height: usize,
+    total: usize,
+) -> Option<usize> {
+    let half = (height / 2).max(1);
+    match event {
+        UserEvent::HalfPageDown => Some((selected + half).min(total.saturating_sub(1))),
+        UserEvent::HalfPageUp => Some(selected.saturating_sub(half)),
+        _ => None,
+    }
+}
+
 // The first row shown of a list of `total` rows, `height` high, moved as little as can be from
 // `offset` to show the `selected` row with `scrolloff` rows above and below it where there are,
 // like vim's; at most half the height, and never past the last row.

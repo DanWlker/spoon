@@ -17,10 +17,11 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
+    event::UserEvent,
     git::Repository,
     search::SearchOptions,
     widget::{
-        style::{divider, mark_selected_bar, placeholder, ScrollState},
+        style::{divider, half_page_jump, mark_selected_bar, placeholder, ScrollState},
         tree_query::{find_around, match_range, patch_range, SearchDirection},
     },
 };
@@ -363,6 +364,31 @@ impl DiffCursor {
         if let Some(row) = row {
             self.select_line(diff, row);
         }
+    }
+
+    // Selects the changed line half a page from the selected one, see `half_page_jump`: the next
+    // one from there going down, else the last; the previous one going up, else the first. False
+    // for other events.
+    pub fn jump_half_page(&mut self, diff: &ParsedDiff, event: UserEvent) -> bool {
+        let Some(row) = half_page_jump(event, self.line, self.scroll.height, diff.rows.len())
+        else {
+            return false;
+        };
+        let mut changed = changed_rows(diff);
+        let changed = if event == UserEvent::HalfPageDown {
+            changed
+                .find(|&r| r >= row)
+                .or_else(|| changed_rows(diff).last())
+        } else {
+            changed
+                .rfind(|&r| r <= row)
+                .or_else(|| changed_rows(diff).next())
+        };
+        if let Some(row) = changed {
+            self.search_row = None;
+            self.select_line(diff, row);
+        }
+        true
     }
 
     // Selects the changed line at or after `row`, else the last one; for a diff reloaded after
@@ -1092,6 +1118,33 @@ mod tests {
                 ("uno dos three cuatro", vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn test_half_page_jumps_between_changed_lines() {
+        let context = " x\n".repeat(10);
+        let hunk = format!("@@ -1,23 +1,23 @@\n-a\n+A\n{context}-b\n{context}+c\n");
+        let diff = parse_diff(&format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{hunk}"));
+        let changed: Vec<usize> = changed_rows(&diff).collect();
+        let [a, big_a, b, c] = changed[..] else {
+            panic!("{changed:?}")
+        };
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 8;
+        cursor.select_line(&diff, a);
+        let mut jump = |event| {
+            assert!(cursor.jump_half_page(&diff, event));
+            cursor.line
+        };
+        // 4 rows down is context, the next change after it
+        assert_eq!(jump(UserEvent::HalfPageDown), b);
+        assert_eq!(jump(UserEvent::HalfPageDown), c);
+        // the last one stays
+        assert_eq!(jump(UserEvent::HalfPageDown), c);
+        assert_eq!(jump(UserEvent::HalfPageUp), b);
+        assert_eq!(jump(UserEvent::HalfPageUp), big_a);
+        assert_eq!(jump(UserEvent::HalfPageUp), a);
+        assert!(!cursor.jump_half_page(&diff, UserEvent::PageDown));
     }
 
     #[test]

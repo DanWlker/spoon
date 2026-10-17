@@ -56,7 +56,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Move down/up                                       | `select_down` `select_up`                    |
 | <kbd>g/G</kbd>                       | Go to top/bottom                                   | `go_to_top` `go_to_bottom`                   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up                                | `page_down` `page_up`                        |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up                           | `half_page_down` `half_page_up`              |
+| <kbd>Ctrl-d/u</kbd>                  | Jump half page down/up, scrolling as needed       | `half_page_down` `half_page_up`              |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show commit details on the info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
@@ -109,7 +109,7 @@ The other commands ask first, in a popup showing what they do and the git comman
 - <kbd>t</kbd> tag: a new tag at the selected commit, annotated when it has a message.
 
 <kbd>L</kbd> shows only the history of `HEAD` (the commits of the current branch, and of the branches merged into it), and again all commits; the title of the commit list says so ("main only").
-The commits that are not on the current branch are dimmed, and the branches and tags at a commit are shown as labels before its subject, the checked-out branch standing out.
+The commits that are not on the current branch are dimmed, and the branches and tags at a commit are shown as labels before its subject, the checked-out branch standing out. A branch whose upstream is at the same commit shows one label, with a cloud (󰅠) before its name.
 
 Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
@@ -125,7 +125,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `close` `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up             | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up        | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up; jump half page while selecting lines or in a preview | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
@@ -208,6 +208,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
+| <kbd>Ctrl-d/u</kbd>                                | Jump half page down/up, scrolling as needed | `half_page_down` `half_page_up` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
@@ -221,6 +222,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `apply_stash` |
 | <kbd>v</kbd>                                       | Pick/Unpick the ref (only refs of one kind together) | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
+| <kbd>L</kbd>                                       | Show only the commits of the selected local branch (else the current one), or all | `branch_only` |
 
 The commands on the refs ask first, in a popup:
 
@@ -232,6 +234,7 @@ The commands on the refs ask first, in a popup:
 - <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream; a checkbox deletes its upstream on the remote too, when it is still there), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from a remote too, `origin` or else the first one, named in the popup); and drops a stash. On a remote (like `origin`, under the remotes) it removes the remote, with its remote branches here; nothing changes on the remote itself.
 - <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
 - the commands of the commit graph work on the selected branch, remote branch or tag: <kbd>m</kbd> merges it into the current branch and <kbd>r</kbd> rebases the current branch onto it (by its name), <kbd>c</kbd> checks it out (a tag detached); <kbd>b</kbd> and <kbd>t</kbd> make a branch or tag from it; the others, like <kbd>D</kbd> diff, work on the commit it points at. The keys of the sidebar come first (<kbd>d</kbd> deletes the ref, it doesn't drop the commit).
+- <kbd>L</kbd> on a local branch shows only its commits in the graph, and on it again all of them; on other rows, only those of the current branch, like on the graph.
 - <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
 
 The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page shows what is selected:
@@ -270,7 +273,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up                                     | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up                                | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up; jump half page while selecting lines | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 

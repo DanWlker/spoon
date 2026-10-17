@@ -21,13 +21,5 @@ TODO:
      - o open the thing at that commit (we probably should consider a commit object, file object stuff at this point to unify these functionalities & behaviours)
 1. `T` timeline, it should show all the commits related to this file reopened in a new window, at the right is the changes at each commit
    same actions apply, y copy, space checkout, enter view the commit on the graph, ] [ to navigate between the commits, o open the thing at that commit
-1. `L` should work on the sidebar branch section also, to focus on the branch only
 1. see if can 'fold' merge commits in the commit graph, may need to rerender graph, merge commits should also use a different design, see if possible
    - left right to fold on the commit graph
-1. on the commit graph, if several branches (local and remote) are on the same row, only render the branch name with the cloud icon at the prefix
-   󰅠 master  
-    master
-    master
-1. all ctrl u ctrl d shouldn't scroll half page, it should "jump" half page if that makes sense. aka jump first, then scroll (with scrolloff)
-1. remember the warning, the one that's complicated about remotes and stuff, only apply it to the tracking reference (double confirm this with me again)
-1. Multiple notifications should work, check that it works

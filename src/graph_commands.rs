@@ -379,7 +379,7 @@ fn squash(
         .collect();
     let base = base.map(|h| h.as_str().to_string());
     // the parent is squashed into too, so it is rewritten as well
-    let pushed = repository.remote_branch_containing(parent.as_str());
+    let pushed = repository.upstream_containing(parent.as_str());
     Ok(GitDialog::squash(branch, commits, base, rebase_auto_stash(repository)).pushed(pushed))
 }
 
@@ -412,7 +412,7 @@ fn drop_commits(
         let range = format!("{base}..HEAD");
         repository.replay_conflict(base, &[&range], &dropped)
     });
-    let pushed = repository.remote_branch_containing(oldest.as_str());
+    let pushed = repository.upstream_containing(oldest.as_str());
     let dialog = GitDialog::drop(branch, commits, base, rebase_auto_stash(repository));
     Ok(dialog
         .selecting(select)
@@ -446,7 +446,7 @@ fn amend(
         base,
         rebase_auto_stash(repository),
     );
-    let pushed = repository.remote_branch_containing(commit.as_str());
+    let pushed = repository.upstream_containing(commit.as_str());
     Ok(GraphCommand::Dialog(dialog.pushed(pushed)))
 }
 
@@ -801,13 +801,23 @@ mod tests {
         let path = dir.path();
         // c1 and c2 pushed, c3 not
         git(&["update-ref", "refs/remotes/origin/master", "HEAD~1"]);
+        // on another remote branch only, it isn't where the branch is pushed to
+        git(&["update-ref", "refs/remotes/origin/other", "HEAD"]);
         let (repository, hashes) = load(path);
         let warning = |event, hash: &CommitHash| match command(&repository, event, hash, &[]) {
-            Ok(GraphCommand::Dialog(dialog)) => format!("{dialog:?}").contains(
-                "Some(\"Already on origin/master, pushing the rewrite needs a force push.\")",
-            ),
+            Ok(GraphCommand::Dialog(dialog)) => {
+                let dialog = format!("{dialog:?}");
+                assert!(!dialog.contains("origin/other"), "{dialog}");
+                dialog.contains(
+                    "Some(\"Already on origin/master, pushing the rewrite needs a force push.\")",
+                )
+            }
             _ => panic!("no popup"),
         };
+        // no upstream, nothing is warned of
+        assert!(!warning(UserEvent::DropCommit, &hashes[1]));
+        git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        git(&["branch", "--set-upstream-to=origin/master"]);
         assert!(!warning(UserEvent::DropCommit, &hashes[0]));
         assert!(warning(UserEvent::DropCommit, &hashes[1]));
         assert!(warning(UserEvent::AmendCommit, &hashes[1]));

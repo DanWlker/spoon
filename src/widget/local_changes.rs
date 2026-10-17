@@ -456,7 +456,7 @@ impl<'a> LocalChangesState<'a> {
         };
         // amending a commit a rebase stopped at was warned about when it started
         let pushed = (amend && !self.editing_commit)
-            .then(|| self.repository.remote_branch_containing("HEAD"))
+            .then(|| self.repository.upstream_containing("HEAD"))
             .flatten();
         let dialog = GitDialog::commit(preview, self.commit_task()?).pushed(pushed);
         self.request = Some(Request::Dialog(dialog));
@@ -1110,9 +1110,11 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Scrolls the diff by the scroll keys; returns whether `event` was one.
+    // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
+    // whether `event` was one.
     pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
-        self.cursor.scroll.handle_scroll(event)
+        (self.focus == Focus::Lines && self.cursor.jump_half_page(&self.diff, event))
+            || self.cursor.scroll.handle_scroll(event)
     }
 
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.

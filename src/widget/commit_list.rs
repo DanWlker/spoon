@@ -20,14 +20,14 @@ use crate::{
     color::ColorTheme,
     config::UserListColumnType,
     event::UserEvent,
-    git::{Commit, CommitHash, Head, Ref},
+    git::{Commit, CommitHash, Head, Ref, Tracking},
     graph::GraphImageManager,
     protocol::PreparedImage,
     search::{case_insensitive, SearchOptions, SearchTarget},
     widget::{
         style::{
-            mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
-            scroll_to,
+            half_page_jump, mark_selected_bar, panel_block, panel_title, picked_style,
+            render_panel_scrollbar, scroll_to,
         },
         tree_query::{find_around, SearchDirection},
     },
@@ -37,20 +37,52 @@ static FUZZY_MATCHER: LazyLock<SkimMatcherV2> =
     LazyLock::new(|| SkimMatcherV2::default().respect_case());
 
 const ELLIPSIS: &str = "...";
+// before a branch whose upstream is on the same commit, a cloud
+const UPSTREAM_ICON: &str = "\u{f0160}";
 
 #[derive(Debug)]
 pub struct CommitInfo<'a> {
     commit: &'a Commit,
     refs: Vec<&'a Ref>,
+    // the local branches whose upstream is at the commit too, shown in their label, see `new`
+    with_upstream: Vec<&'a str>,
     // on the history of HEAD; the other commits are dimmed
     on_head: bool,
 }
 
 impl<'a> CommitInfo<'a> {
-    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, on_head: bool) -> Self {
+    // A branch and its upstream at the commit show as one label, the branch's, marked by
+    // `UPSTREAM_ICON`; other remote branches keep their own.
+    pub fn new(
+        commit: &'a Commit,
+        mut refs: Vec<&'a Ref>,
+        tracking: &'a FxHashMap<String, Tracking>,
+        on_head: bool,
+    ) -> Self {
+        let upstream_of = |r: &Ref| match r {
+            Ref::Branch { name, .. } => tracking.get(name).map(|t| t.upstream.as_str()),
+            _ => None,
+        };
+        let upstreams: Vec<&str> = refs
+            .iter()
+            .filter_map(|r| upstream_of(r))
+            .filter(|u| {
+                refs.iter()
+                    .any(|r| matches!(r, Ref::RemoteBranch { name, .. } if name == u))
+            })
+            .collect();
+        let with_upstream = refs
+            .iter()
+            .filter(|r| upstream_of(r).is_some_and(|u| upstreams.contains(&u)))
+            .map(|r| r.name())
+            .collect();
+        refs.retain(
+            |r| !matches!(r, Ref::RemoteBranch { name, .. } if upstreams.contains(&name.as_str())),
+        );
         Self {
             commit,
             refs,
+            with_upstream,
             on_head,
         }
     }
@@ -390,12 +422,12 @@ impl<'a> CommitListState<'a> {
         self.scroll_up_height(self.height);
     }
 
-    pub fn scroll_down_half(&mut self) {
-        self.scroll_down_height(self.height / 2);
-    }
-
-    pub fn scroll_up_half(&mut self) {
-        self.scroll_up_height(self.height / 2);
+    // Moves the selection half a page by `event`, see `half_page_jump`.
+    fn jump_half_page(&mut self, event: UserEvent) {
+        let selected = self.current_selected_index();
+        if let Some(index) = half_page_jump(event, selected, self.height, self.total) {
+            self.select_visible_index(index);
+        }
     }
 
     fn scroll_down_height(&mut self, scroll_height: usize) {
@@ -646,8 +678,7 @@ impl<'a> CommitListState<'a> {
             UserEvent::ScrollUp => self.scroll_up(),
             UserEvent::PageDown => self.scroll_down_page(),
             UserEvent::PageUp => self.scroll_up_page(),
-            UserEvent::HalfPageDown => self.scroll_down_half(),
-            UserEvent::HalfPageUp => self.scroll_up_half(),
+            UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.jump_half_page(event),
             _ => return false,
         }
         true
@@ -1151,12 +1182,22 @@ fn refs_spans<'a>(
         let style = ref_label_style(ref_color(r, head_branch, color_theme));
         let fg = style.fg.unwrap_or_default();
         let bg = style.bg.unwrap_or_default();
-        let label = format!(" {name} ");
+        let prefix = if matches!(r, Ref::Branch { .. }) && commit_info.with_upstream.contains(&name)
+        {
+            format!(" {UPSTREAM_ICON} ")
+        } else {
+            " ".into()
+        };
+        let label = format!("{prefix}{name} ");
         let label_spans = match refs_matches.get(name) {
-            // the match positions are of the name, the label has a space before it
+            // the match positions are of the name, the label has the prefix before it
             Some(pos) => {
                 let mut pos = pos.clone();
-                pos.matched_indices = pos.matched_indices.iter().map(|i| i + 1).collect();
+                pos.matched_indices = pos
+                    .matched_indices
+                    .iter()
+                    .map(|i| i + prefix.len())
+                    .collect();
                 highlighted_spans(label.into(), pos, fg, Modifier::BOLD, color_theme, false)
                     .into_iter()
                     .map(|span| {
@@ -1394,7 +1435,10 @@ mod tests {
         let commit_infos = graph
             .commits
             .iter()
-            .map(|commit| CommitInfo::new(commit, repository.refs(&commit.commit_hash), true))
+            .map(|commit| {
+                let refs = repository.refs(&commit.commit_hash);
+                CommitInfo::new(commit, refs, repository.branch_tracking(), true)
+            })
             .collect();
         let mut state = CommitListState::new(
             commit_infos,
@@ -1413,6 +1457,49 @@ mod tests {
         for c in query.chars() {
             state.handle_search_input(KeyEvent::from(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn test_branch_and_its_upstream_show_as_one_label() {
+        let commit = Commit::default();
+        let target = commit.commit_hash.clone();
+        let branch = |name: &str| Ref::Branch {
+            name: name.into(),
+            target: target.clone(),
+        };
+        let remote = |name: &str| Ref::RemoteBranch {
+            name: name.into(),
+            target: target.clone(),
+        };
+        let refs = [
+            branch("master"),
+            remote("origin/master"),
+            remote("fork/master"),
+            branch("feat"),
+        ];
+        let tracking = |upstream: &str| Tracking {
+            upstream: upstream.into(),
+            ahead: 0,
+            behind: 0,
+        };
+        let tracking: FxHashMap<String, Tracking> = [
+            ("master".to_string(), tracking("origin/master")),
+            // elsewhere
+            ("feat".to_string(), tracking("origin/feat")),
+        ]
+        .into_iter()
+        .collect();
+        let info = CommitInfo::new(&commit, refs.iter().collect(), &tracking, true);
+        let theme = ColorTheme::default();
+        let label: String = refs_spans(&info, &FxHashMap::default(), &Head::None, &theme)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        // another remote's branch isn't its upstream
+        assert_eq!(
+            label,
+            format!(" {UPSTREAM_ICON} master   fork/master   feat  ")
+        );
     }
 
     #[test]
@@ -1679,18 +1766,24 @@ mod tests {
     }
 
     #[test]
-    fn test_half_page_scroll_reaches_last_commit_after_final_page() {
+    fn test_half_page_jumps_then_scrolls() {
         with_commit_list_state(&["commit"; 26], |state| {
             state.reset_height(10);
             state.scrolloff = 2;
             state.select_index(12);
+            assert_eq!(state.current_list_status(), (2, 10, 10));
 
-            state.scroll_down_half();
-            assert_eq!(state.current_list_status(), (2, 15, 10));
-            state.scroll_down_half();
-            assert_eq!(state.current_list_status(), (6, 16, 10));
-            state.scroll_down_half();
+            // the selection moves down the page, the list stays
+            state.jump_half_page(UserEvent::HalfPageDown);
+            assert_eq!(state.current_list_status(), (7, 10, 10));
+            // then scrolls, keeping 2 rows under it
+            state.jump_half_page(UserEvent::HalfPageDown);
+            assert_eq!(state.current_list_status(), (7, 15, 10));
+            // to the last commit
+            state.jump_half_page(UserEvent::HalfPageDown);
             assert_eq!(state.current_list_status(), (9, 16, 10));
+            state.jump_half_page(UserEvent::HalfPageUp);
+            assert_eq!(state.current_list_status(), (4, 16, 10));
         });
     }
 

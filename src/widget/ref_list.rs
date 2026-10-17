@@ -12,12 +12,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::AppContext,
-    git::{split_remote_branch, CommitHash, Head, Ref},
+    event::UserEvent,
+    git::{split_remote_branch, CommitHash, Head, Ref, Tracking},
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
-            fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
-            render_panel_scrollbar, scroll_to, spinner,
+            fold_marker, half_page_jump, mark_picked_row, mark_selected_row, panel_title,
+            render_panel, render_panel_scrollbar, scroll_to, spinner,
         },
     },
 };
@@ -114,10 +115,12 @@ pub struct RefListState {
     selected: Vec<String>,
     opened: HashSet<Vec<String>>,
     offset: usize,
+    // the rows shown, see `set_height`
+    height: usize,
     scroll_to_selection: bool,
     picked: RefPicks,
     // the commits to push and to pull of the local branches with an upstream, by name
-    tracking: FxHashMap<String, (usize, usize)>,
+    tracking: FxHashMap<String, Tracking>,
     // the checked-out branch, or "HEAD" when detached, marked
     head_branch: Option<String>,
     // the commits of the stashes by name, their names change as stashes come and go
@@ -135,6 +138,7 @@ impl RefListState {
             selected,
             opened,
             offset: 0,
+            height: 0,
             scroll_to_selection: true,
             picked: RefPicks::default(),
             tracking: FxHashMap::default(),
@@ -150,7 +154,7 @@ impl RefListState {
     }
 
     // The commits ahead of and behind the upstream of each local branch, shown beside them.
-    pub fn set_tracking(&mut self, tracking: FxHashMap<String, (usize, usize)>) {
+    pub fn set_tracking(&mut self, tracking: FxHashMap<String, Tracking>) {
         self.tracking = tracking;
     }
 
@@ -227,6 +231,22 @@ impl RefListState {
 
     pub fn select_first(&mut self) {
         self.select_visible_index(0);
+    }
+
+    // The rows shown inside the borders of `area`, the sidebar, as laid out before it is drawn.
+    pub fn set_height(&mut self, area: Rect) {
+        self.height = area.height.saturating_sub(2) as usize;
+    }
+
+    // See `half_page_jump`.
+    pub fn jump_half_page(&mut self, event: UserEvent) {
+        let total = self.visible_rows.len();
+        if let Some(index) = self
+            .selected_index()
+            .and_then(|selected| half_page_jump(event, selected, self.height, total))
+        {
+            self.select_visible_index(index);
+        }
     }
 
     pub fn select_last(&mut self) {
@@ -566,7 +586,7 @@ impl StatefulWidget for RefList {
                 .filter(|_| running.is_none())
                 .and_then(|branch| state.tracking.get(branch));
             let mut counts = vec![];
-            if let Some(&(ahead, behind)) = tracking {
+            if let Some(&Tracking { ahead, behind, .. }) = tracking {
                 if ahead > 0 {
                     counts.push((format!("↑{ahead}"), theme.status_success_fg));
                 }

@@ -15,7 +15,9 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{fit_size, Edge, Panel},
     search::SearchOptions,
-    widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
+    widget::style::{
+        focused_title, half_page_jump, panel_title, placeholder, render_scrollbar, tree_panel_width,
+    },
     widget::{
         diff::{
             diff_line_count, diff_lines, parse_diff, render_diff_lines, render_visual_rows,
@@ -256,9 +258,16 @@ impl<'a> CommitChangesState<'a> {
         }
     }
 
-    // Scrolls the diff by the scroll keys; returns whether `event` was one.
+    // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
+    // whether `event` was one.
     pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
-        self.cursor.scroll.handle_scroll(event)
+        let jumped = match &self.diff {
+            Some(diff) if self.focus == ChangesFocus::Lines => {
+                self.cursor.jump_half_page(diff, event)
+            }
+            _ => false,
+        };
+        jumped || self.cursor.scroll.handle_scroll(event)
     }
 
     // Whether hunks were left out of the diff of the selected file, see
@@ -500,9 +509,19 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    // Scrolls the preview by the scroll keys; returns whether `event` was one.
+    // Scrolls the preview by the scroll keys, or moves the selected line half a page; returns
+    // whether `event` was one.
     pub fn scroll_preview(&mut self, event: UserEvent) -> bool {
-        self.cursor.scroll.handle_scroll(event)
+        let lines = self.text_lines().filter(|_| self.is_preview_focused());
+        let height = self.cursor.scroll.height;
+        match lines.and_then(|l| half_page_jump(event, self.cursor.line, height, l.len())) {
+            Some(line) => {
+                self.select_line(line);
+                self.search_row = None;
+                true
+            }
+            None => self.cursor.scroll.handle_scroll(event),
+        }
     }
 
     pub fn is_preview_focused(&self) -> bool {
