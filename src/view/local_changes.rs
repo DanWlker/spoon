@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
@@ -153,14 +154,14 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.toggle_pick();
             }
             UserEvent::NextPicked => {
-                self.local_changes_state.select_next_pick(true);
+                self.local_changes_state.select_next_pick(Toward::Next);
             }
             UserEvent::PreviousPicked => {
-                self.local_changes_state.select_next_pick(false);
+                self.local_changes_state.select_next_pick(Toward::Previous);
             }
             UserEvent::NextFile | UserEvent::PreviousFile => {
-                let forward = event == UserEvent::NextFile;
-                let result = self.local_changes_state.select_next_file(forward);
+                let toward = Toward::of(event, UserEvent::NextFile);
+                let result = self.local_changes_state.select_next_file(toward);
                 self.after_action(result);
             }
             // as of the last commit, the local changes aren't blamed
@@ -189,9 +190,7 @@ impl<'a> LocalChangesView<'a> {
                 self.after_action(result);
             }
             UserEvent::Abort => {
-                if let Err(err) = self.local_changes_state.request_abort() {
-                    self.tx.send(AppEvent::NotifyError(err));
-                }
+                self.local_changes_state.request_abort();
             }
             UserEvent::ToggleAmend => {
                 if let Err(err) = self.local_changes_state.toggle_amend() {
@@ -212,10 +211,11 @@ impl<'a> LocalChangesView<'a> {
                 self.update_query_status();
             }
             UserEvent::GoToNext => {
-                self.local_changes_state.search_next(true, options);
+                self.local_changes_state.search_next(Toward::Next, options);
             }
             UserEvent::GoToPrevious => {
-                self.local_changes_state.search_next(false, options);
+                self.local_changes_state
+                    .search_next(Toward::Previous, options);
             }
             UserEvent::Confirm => {
                 let result = self.local_changes_state.enter();

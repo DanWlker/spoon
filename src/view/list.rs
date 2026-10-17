@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
@@ -70,10 +71,10 @@ impl<'a> ListView<'a> {
                 self.as_mut_list_state().toggle_pick();
             }
             UserEvent::NextPicked => {
-                self.as_mut_list_state().select_next_pick(true);
+                self.as_mut_list_state().select_next_pick(Toward::Next);
             }
             UserEvent::PreviousPicked => {
-                self.as_mut_list_state().select_next_pick(false);
+                self.as_mut_list_state().select_next_pick(Toward::Previous);
             }
             UserEvent::Confirm => {
                 self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
@@ -231,7 +232,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
         &[NextPicked, PreviousPicked],
         "Go to the next/previous picked commit",
     );
-    register_graph_commands(k, applies);
+    register_graph_commands(k, applies, move |v| facts(v).picked > 0);
     k.add(
         &[OpenInBrowser],
         "open in browser",

@@ -10,12 +10,13 @@ use ratatui::{
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::UserEvent,
     git::{
         AfterTask, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
-        LocalChangeStatus, LocalChanges, Operation, Repository,
+        LocalChangeStatus, LocalChanges, Operation, PatchAction, Repository,
     },
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
@@ -26,7 +27,9 @@ use crate::{
             diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
             ParsedDiff, Step, CONVERTED_DIFF,
         },
-        file_tree::{find_next, path_contains, render_tree, FileTree, FileTreeRow, FileTreeState},
+        file_tree::{
+            find_next, path_contains, render_tree, FileTree, FileTreeRow, FileTreeState, TreeShape,
+        },
         git_dialog::{CommitPreview, GitDialog},
         style::{
             badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
@@ -90,18 +93,25 @@ struct Amend {
     base: String,
     // the message typed before amending, restored when amending is turned off
     message_before: (TextArea, TextArea),
-    // the commit a rebase stopped at to edit, turned off when the rebase goes on
-    for_edit: bool,
+    of: AmendOf,
+}
+
+// What is amended: the last commit, or the one a rebase stopped at to edit, amending turned off
+// when the rebase goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AmendOf {
+    LastCommit,
+    EditStop,
 }
 
 impl CommitDraft {
     // Amends the commit after `base`, its `message` in place of the typed one.
-    fn start_amend(&mut self, base: String, message: &str, for_edit: bool) {
+    fn start_amend(&mut self, base: String, message: &str, of: AmendOf) {
         let message_before = (self.summary.clone(), self.description.clone());
         self.amend = Some(Amend {
             base,
             message_before,
-            for_edit,
+            of,
         });
         self.set_message(message);
     }
@@ -187,7 +197,7 @@ struct Section {
 impl Section {
     fn new(files: &[LocalChangeFile]) -> Self {
         Self {
-            tree: FileTreeState::rooted(file_tree(files)),
+            tree: FileTreeState::new(file_tree(files), TreeShape::Rooted),
             query: TreeQuery::default(),
             picked: BTreeSet::new(),
         }
@@ -470,11 +480,8 @@ impl<'a> LocalChangesState<'a> {
         Ok(())
     }
 
-    // Whether there is something to commit, with a message.
+    // Whether there is something to commit; the message isn't empty, see `commit_or_continue`.
     fn check_commit(&self) -> Result<(), String> {
-        if self.draft.summary.text().trim().is_empty() {
-            return Err("The commit summary is empty".into());
-        }
         let amend = self.draft.amend.is_some();
         // a merge can be committed without changes, when its resolution keeps one side
         if !amend && self.changes.staged.is_empty() && self.operation.is_none() {
@@ -483,13 +490,11 @@ impl<'a> LocalChangesState<'a> {
         Ok(())
     }
 
-    // Asks for confirmation to abort the operation in progress.
-    pub fn request_abort(&mut self) -> Result<(), String> {
-        let Some(operation) = self.operation else {
-            return Err("No rebase, merge, cherry-pick or revert in progress".into());
-        };
-        self.request = Some(Request::Dialog(GitDialog::abort(operation.name())));
-        Ok(())
+    // Asks for confirmation to abort the operation in progress; its key works only then.
+    pub fn request_abort(&mut self) {
+        if let Some(operation) = self.operation {
+            self.request = Some(Request::Dialog(GitDialog::abort(operation.name())));
+        }
     }
 
     // Fills the empty message box with git's message for the merge, cherry-pick or revert in progress,
@@ -774,7 +779,7 @@ impl<'a> LocalChangesState<'a> {
         } else {
             let base = self.repository.amend_base()?;
             let message = self.repository.head_commit_message()?;
-            self.draft.start_amend(base, &message, false);
+            self.draft.start_amend(base, &message, AmendOf::LastCommit);
         }
         self.reload();
         Ok(())
@@ -807,12 +812,18 @@ impl<'a> LocalChangesState<'a> {
                 self.repository.head_commit_message(),
             ) {
                 (Ok(base), Ok(message)) => {
-                    self.draft.start_amend(base, &message, true);
+                    self.draft.start_amend(base, &message, AmendOf::EditStop);
                     true
                 }
                 _ => false,
             }
-        } else if !self.editing_commit && self.draft.amend.as_ref().is_some_and(|a| a.for_edit) {
+        } else if !self.editing_commit
+            && self
+                .draft
+                .amend
+                .as_ref()
+                .is_some_and(|a| a.of == AmendOf::EditStop)
+        {
             self.draft.stop_amend();
             true
         } else {
@@ -854,6 +865,13 @@ impl<'a> LocalChangesState<'a> {
         let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
         let empty = |v: &Self| v.files().is_empty();
         let picks = |v: &Self| !v.picked().is_empty();
+        // a row of the files, or a file, selected
+        let row = |v: &Self| v.focus == Focus::Files && v.selected_row().is_some();
+        let file = |v: &Self| v.focus == Focus::Files && v.selected_file().is_some();
+        // something to commit: staged changes, amending, or an operation to conclude
+        let committable = |v: &Self| {
+            !v.changes.staged.is_empty() || v.draft.amend.is_some() || v.operation.is_some()
+        };
         let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
         let what = |v: &Self| {
             if v.focus == Focus::Hunks {
@@ -885,7 +903,7 @@ impl<'a> LocalChangesState<'a> {
             "stage",
             "Stage/unstage the file, directory, hunk or line, or the picked files",
         )
-        .when(files)
+        .when(row)
         .short(|v| stage(v).into());
         k.add(
             &[ToggleStage],
@@ -923,31 +941,32 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(conflict);
         k.add(&[ToggleSelect], "pick", "Pick/unpick the file or directory")
-            .when(files);
+            .when(row);
         k.add(
             &[Discard],
             "discard",
             "Discard the unstaged file, directory, hunk or line",
         )
-        .when(|v| (files(v) || diff(v)) && unstaged(v));
+        .when(|v| (row(v) || diff(v)) && unstaged(v));
         k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
             .when(diff)
             .short(|v| format!("copy {}", what(v)));
-        // on the empty unstaged files enter commits too, see `enter`
-        k.add(
-            &[Confirm],
-            "commit",
-            "Commit, in the commit section or on the empty unstaged files",
-        )
-        .when(|v| commit(v) || (files(v) && empty(v) && unstaged(v)))
-        .short(commit_word);
-        k.add(
-            &[Commit],
-            "commit",
-            "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase",
-        )
-        .when(|v| !matches!(v.focus, Focus::Commit { editing: true }))
-        .short(commit_word);
+        // on the empty unstaged files enter commits too, see `enter`; with nothing to commit they
+        // say so, unlisted
+        let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));
+        const COMMIT: &str =
+            "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase";
+        k.add(&[Confirm], "commit", COMMIT)
+            .when(move |v| commits(v) && committable(v))
+            .short(commit_word);
+        k.quiet(&[Confirm], COMMIT)
+            .when(move |v| commits(v) && !committable(v));
+        let not_typing = |v: &Self| !matches!(v.focus, Focus::Commit { editing: true });
+        k.add(&[Commit], "commit", COMMIT)
+            .when(move |v| not_typing(v) && committable(v))
+            .short(commit_word);
+        k.quiet(&[Commit], COMMIT)
+            .when(move |v| not_typing(v) && !committable(v));
         k.add(
             &[Abort],
             "abort",
@@ -976,40 +995,41 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(commit);
         k.add(&[Stash], "stash", "Stash all changes, or the picked files")
-            .when(files);
+            .when(|v| files(v) && v.count() > 0);
         k.add(&[Edit], "edit", "Open the file in $VISUAL or $EDITOR")
-            .when(files);
+            .when(file);
         k.add(
             &[Blame],
             "blame",
             "Blame the selected file as of the last commit",
         )
-        .when(files);
+        .when(file);
         k.add(
             &[Timeline],
             "timeline",
             "Show the commits changing the selected file",
         )
-        .when(files);
+        .when(file);
         k.add(
             &[Search],
             "search",
             "Search the files, or the diff while it has the focus",
         )
-        .when(|v| files(v) || diff(v));
-        k.add(&[Filter], "filter", "Filter the files").when(files);
+        .when(|v| (files(v) && !empty(v)) || diff(v));
+        k.add(&[Filter], "filter", "Filter the files")
+            .when(|v| files(v) && !empty(v));
         k.add(
             &[ShortCopy, FullCopy],
             "copy path",
             "Copy the relative/absolute path of the file",
         )
-        .when(files);
+        .when(row);
         k.add(
             &[Ignore],
             "ignore",
             "Add the file or directory to .gitignore",
         )
-        .when(files);
+        .when(row);
         k.add(
             &[Cancel],
             "back",
@@ -1293,6 +1313,14 @@ impl<'a> LocalChangesState<'a> {
             || self.cursor.scroll.handle_scroll(event)
     }
 
+    // Staging the unstaged changes, unstaging the staged ones.
+    fn patch_action(&self) -> PatchAction {
+        match self.section {
+            LocalChangesSection::Unstaged => PatchAction::Stage,
+            LocalChangesSection::Staged => PatchAction::Unstage,
+        }
+    }
+
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
     pub fn toggle_stage(&mut self) -> Result<(), String> {
         let result = match self.focus {
@@ -1304,15 +1332,14 @@ impl<'a> LocalChangesState<'a> {
             Focus::Lines => {
                 let reverse = self.section == LocalChangesSection::Staged;
                 match self.cursor.line_patch(&self.diff, reverse) {
-                    Some(patch) => self.repository.apply_patch(&patch, reverse, true),
+                    Some(patch) => self.repository.apply_patch(&patch, self.patch_action()),
                     None => Ok(()),
                 }
             }
             Focus::Hunks => match self.cursor.selected_hunk(&self.diff) {
-                Some(hunk) => {
-                    let reverse = self.section == LocalChangesSection::Staged;
-                    self.repository.apply_patch(&hunk.patch(), reverse, true)
-                }
+                Some(hunk) => self
+                    .repository
+                    .apply_patch(&hunk.patch(), self.patch_action()),
                 None => Ok(()),
             },
             Focus::Files => {
@@ -1489,12 +1516,8 @@ impl<'a> LocalChangesState<'a> {
         self.is_diff_focused() && self.diff_query.clear() != QueryChange::None
     }
 
-    pub fn search_next(&mut self, forward: bool, options: SearchOptions) {
-        let direction = if forward {
-            SearchDirection::Next
-        } else {
-            SearchDirection::Previous
-        };
+    pub fn search_next(&mut self, toward: Toward, options: SearchOptions) {
+        let direction = SearchDirection::from(toward);
         if self.is_diff_focused() {
             self.search_diff(direction, options);
         } else {
@@ -1547,15 +1570,11 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Moves the cursor to the next (or previous) picked row, wrapping around.
-    pub fn select_next_pick(&mut self, forward: bool) {
+    pub fn select_next_pick(&mut self, toward: Toward) {
         if self.focus != Focus::Files {
             return;
         }
-        let direction = if forward {
-            SearchDirection::Next
-        } else {
-            SearchDirection::Previous
-        };
+        let direction = SearchDirection::from(toward);
         let tree = self.tree();
         let current = self.selected_path();
         let picked = self.picked();
@@ -1567,16 +1586,12 @@ impl<'a> LocalChangesState<'a> {
 
     // Goes to the next file of the section, skipping directories; from its diff, on in the diff of
     // the next file. The diff of the picked files has no next one.
-    pub fn select_next_file(&mut self, forward: bool) -> Result<(), String> {
+    pub fn select_next_file(&mut self, toward: Toward) -> Result<(), String> {
         let in_diff = self.is_diff_focused();
         if !(in_diff || self.focus == Focus::Files) || self.diff_of_picked {
             return Ok(());
         }
-        let direction = if forward {
-            SearchDirection::Next
-        } else {
-            SearchDirection::Previous
-        };
+        let direction = SearchDirection::from(toward);
         let current = self.selected_path();
         let path = find_next(
             &self.tree().all_rows(),
@@ -2311,17 +2326,17 @@ mod tests {
 
         // from the files, skipping the directories, back to the first after the last
         select_row(&mut state, &files[0]);
-        state.select_next_file(true)?;
+        state.select_next_file(Toward::Next)?;
         assert_eq!(state.selected_path().as_ref(), Some(&files[1]));
-        state.select_next_file(false)?;
-        state.select_next_file(false)?;
+        state.select_next_file(Toward::Previous)?;
+        state.select_next_file(Toward::Previous)?;
         assert_eq!(state.selected_path().as_ref(), Some(&files[2]));
         assert!(!state.is_diff_focused());
 
         // from the diff, on in the diff of the next file
         state.enter()?;
         assert!(state.is_diff_focused());
-        state.select_next_file(true)?;
+        state.select_next_file(Toward::Next)?;
         assert_eq!(state.selected_path().as_ref(), Some(&files[0]));
         assert!(state.is_diff_focused());
         Ok(())
@@ -2499,9 +2514,9 @@ mod tests {
         assert!(state.is_selecting_lines());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
         assert_eq!(state.query().search(), None);
-        state.search_next(true, SearchOptions::default());
+        state.search_next(Toward::Next, SearchOptions::default());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new B"));
-        state.search_next(true, SearchOptions::default());
+        state.search_next(Toward::Next, SearchOptions::default());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
 
         // a filter can't start from the diff, esc clears the search before going back
@@ -2728,6 +2743,52 @@ mod tests {
     }
 
     #[test]
+    fn test_keys_where_they_work() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let shown = |state: &LocalChangesState| -> Vec<String> {
+            state.keys().hints().into_iter().map(|(_, s)| s).collect()
+        };
+
+        // nothing unstaged: no row to stage, pick, edit or filter; stashing and committing work
+        state.focus_section(LocalChangesSection::Unstaged);
+        let keys = state.keys();
+        for event in [
+            UserEvent::ToggleStage,
+            UserEvent::ToggleSelect,
+            UserEvent::Edit,
+            UserEvent::Filter,
+            UserEvent::Ignore,
+        ] {
+            assert!(!keys.takes(event), "{event:?}");
+        }
+        assert!(keys.takes(UserEvent::Stash));
+        assert!(shown(&state).contains(&"commit".to_string()));
+
+        // on the staged root, staging works but not editing; on the file, both
+        state.focus_section(LocalChangesSection::Staged);
+        assert!(state.keys().takes(UserEvent::ToggleStage));
+        assert!(!state.keys().takes(UserEvent::Edit));
+        select_row(&mut state, "a.txt");
+        assert!(state.keys().takes(UserEvent::Edit));
+
+        // nothing staged: c says so, unlisted
+        git_stdout(repo_path, &["reset", "-q"]);
+        state.reload();
+        state.focus_section(LocalChangesSection::Staged);
+        assert!(state.keys().takes(UserEvent::Commit));
+        assert!(!shown(&state).contains(&"commit".to_string()));
+        Ok(())
+    }
+
+    #[test]
     fn test_commit() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -2753,8 +2814,6 @@ mod tests {
         fs::write(repo_path.join("a.txt"), "a\n")?;
         git.add(&["a.txt"]);
         state.reload();
-        state.draft.set_message("  \n");
-        assert!(commit(&mut state).is_err());
 
         // c with an empty message starts typing it instead
         state.draft.set_message("");
@@ -3091,9 +3150,9 @@ mod tests {
         // n and N step through matches, wrapping around
         type_query(&mut state, QueryKind::Search, "list");
         assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
-        state.search_next(true, SearchOptions::default());
+        state.search_next(Toward::Next, SearchOptions::default());
         assert_eq!(state.selected_path().as_deref(), Some("src/view/list.rs"));
-        state.search_next(true, SearchOptions::default());
+        state.search_next(Toward::Next, SearchOptions::default());
         assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
 
         // esc clears the search of the staged section, the filter is the unstaged one's
@@ -3301,8 +3360,8 @@ mod tests {
             "feature change\nmaster change"
         );
 
-        // abort only exists while rebasing
-        assert!(state.request_abort().is_err());
+        // abort only works while rebasing
+        assert!(!state.keys().takes(UserEvent::Abort));
         Ok(())
     }
 
@@ -3316,7 +3375,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
 
-        state.request_abort()?;
+        state.request_abort();
         assert_eq!(
             prompt(&state),
             Some("Abort the rebase and go back to where it started".into())
@@ -3325,7 +3384,7 @@ mod tests {
         state.take_dialog();
         assert_eq!(state.operation, Some(Operation::Rebase));
 
-        state.request_abort()?;
+        state.request_abort();
         confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         assert!(state.changes.unstaged.is_empty());
@@ -3473,7 +3532,7 @@ mod tests {
         git_stdout(repo_path, &["merge", "feature"]);
         let before = git_stdout(repo_path, &["rev-parse", "HEAD"]);
         state.reload();
-        state.request_abort()?;
+        state.request_abort();
         assert_eq!(
             prompt(&state),
             Some("Abort the merge and go back to where it started".into())
@@ -3541,10 +3600,10 @@ mod tests {
             .message()
             .starts_with("Revert \"feature change\""));
 
-        state.request_abort()?;
+        state.request_abort();
         confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
-        assert!(state.request_abort().is_err());
+        assert!(!state.keys().takes(UserEvent::Abort));
         Ok(())
     }
 
@@ -3658,13 +3717,13 @@ mod tests {
         select_row(&mut state, "dir");
         state.collapse();
         select_row(&mut state, ROOT_PATH);
-        state.select_next_pick(true);
+        state.select_next_pick(Toward::Next);
         assert_eq!(state.selected_path().as_deref(), Some("dir/c.txt"));
-        state.select_next_pick(true);
+        state.select_next_pick(Toward::Next);
         assert_eq!(state.selected_path().as_deref(), Some("b.txt"));
-        state.select_next_pick(true);
+        state.select_next_pick(Toward::Next);
         assert_eq!(state.selected_path().as_deref(), Some("dir/c.txt"));
-        state.select_next_pick(false);
+        state.select_next_pick(Toward::Previous);
         assert_eq!(state.selected_path().as_deref(), Some("b.txt"));
         Ok(())
     }

@@ -30,7 +30,7 @@ pub fn ref_command_applies(
         // on the whole graph, wherever
         UserEvent::BranchOnly => true,
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
-        UserEvent::ToggleSelect => matches!(selection, RefSelection::Ref(..)) || !picked.is_empty(),
+        UserEvent::ToggleSelect => matches!(selection, RefSelection::Ref(..)),
         UserEvent::DeleteRef => match selection {
             RefSelection::Ref(..) => true,
             // a remote, removed

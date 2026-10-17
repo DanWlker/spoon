@@ -21,8 +21,9 @@ use ratatui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use unicode_width::UnicodeWidthStr;
 
+use crate::widget::tree_query::Toward;
 use crate::{
-    browse::{self, LinkTarget},
+    browse::{self, LinkAction, LinkTarget},
     color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig},
     event::{AppEvent, EventController, KeyHint, UserEvent},
@@ -799,8 +800,8 @@ impl App<'_> {
             AppEvent::CopyToClipboard { name, value } => {
                 self.copy_to_clipboard(name, value);
             }
-            AppEvent::Link { target, copy } => self.open_link(&target, copy),
-            AppEvent::OpenUrl { url, copy } => self.open_url(url, copy),
+            AppEvent::Link { target, action } => self.open_link(&target, action),
+            AppEvent::OpenUrl { url, action } => self.open_url(url, action),
             AppEvent::Refresh(context) => {
                 self.cleanup_graph_images()?;
                 // the graph is drawn again from scratch
@@ -1465,12 +1466,23 @@ impl App<'_> {
             "Show/hide the keys of the focused panel",
         )
         .when(|app| !matches!(app.shell.overlay, Some(Overlay::Help(_))));
-        k.add(&[Push], "push", "Push a branch to a remote")
-            .when(page);
-        k.add(&[Pull], "pull", "Pull a branch of a remote")
-            .when(page);
-        k.add(&[Fetch], "fetch", "Fetch from a remote").when(page);
-        k.quiet(&[FetchAll], "Fetch all remotes").when(page);
+        // with no remote, or pulling on a detached HEAD, unlisted but saying so when pressed
+        let remote_keys = [
+            (Push, "push", "Push a branch to a remote"),
+            (Pull, "pull", "Pull a branch of a remote"),
+            (Fetch, "fetch", "Fetch from a remote"),
+            (FetchAll, "", "Fetch all remotes"),
+        ];
+        for (event, short, long) in remote_keys {
+            let works = move |app: &Self| {
+                !app.repository.remotes().is_empty()
+                    && (event != Pull || app.repository.current_branch().is_some())
+            };
+            k.add(&[event], short, long)
+                .when(move |app| page(app) && works(app));
+            k.quiet(&[event], long)
+                .when(move |app| page(app) && !works(app));
+        }
         k.add(
             &[RefList],
             "switch page",
@@ -1623,7 +1635,7 @@ impl App<'_> {
             UserEvent::NextSection | UserEvent::PreviousSection => {
                 self.shell
                     .sidebar
-                    .select_section(event == UserEvent::NextSection);
+                    .select_section(Toward::of(event, UserEvent::NextSection));
                 self.show_sidebar_selection();
             }
             UserEvent::Confirm => {
@@ -1639,9 +1651,12 @@ impl App<'_> {
             UserEvent::Cancel => {
                 self.set_sidebar_focused(false);
             }
+            // on a ref, see `ref_command_applies`
             UserEvent::ToggleSelect => {
-                if let Err(err) = self.shell.sidebar.toggle_pick() {
-                    self.ec.send(AppEvent::NotifyWarn(err));
+                if let RefSelection::Ref(section, name) = self.shell.sidebar.selection() {
+                    if let Err(err) = self.shell.sidebar.toggle_pick(section, name) {
+                        self.ec.send(AppEvent::NotifyWarn(err));
+                    }
                 }
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
@@ -1653,8 +1668,8 @@ impl App<'_> {
                     RefSelection::Folder(RefSection::Remotes, name) => LinkTarget::Remote(name),
                     _ => return,
                 };
-                let copy = event == UserEvent::CopyLink;
-                self.ec.send(AppEvent::Link { target, copy });
+                let action = LinkAction::of(event);
+                self.ec.send(AppEvent::Link { target, action });
             }
             event @ (UserEvent::CreateRef
             | UserEvent::DeleteRef
@@ -1738,7 +1753,12 @@ impl App<'_> {
             "Apply the stash; on a branch, remote branch or tag, check it out",
         )
         .when(|app| on_stash(app) && app.sidebar_command_applies(ApplyStash));
-        register_graph_commands(k, |app: &Self, event| app.sidebar_command_applies(event));
+        // the picked refs aren't commits, see `ref_command_applies`
+        register_graph_commands(
+            k,
+            |app: &Self, event| app.sidebar_command_applies(event),
+            |_| false,
+        );
         k.add(
             &[ToggleSelect],
             "pick",
@@ -2542,24 +2562,25 @@ impl App<'_> {
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull
     // request from it; copies its link right away, but a branch's which.
-    fn open_link(&mut self, target: &LinkTarget, copy: bool) {
+    fn open_link(&mut self, target: &LinkTarget, action: LinkAction) {
         let services = &self.ctx.core_config.browser.services;
         match browse::links(self.repository, services, target) {
-            Ok(mut links) if copy && links.len() == 1 => self.open_url(links.remove(0).url, true),
-            Ok(links) => self.open_dialog(Ok(GitDialog::open_link(links, copy))),
+            Ok(mut links) if action == LinkAction::Copy && links.len() == 1 => {
+                self.open_url(links.remove(0).url, action)
+            }
+            Ok(links) => self.open_dialog(Ok(GitDialog::open_link(links, action))),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
     }
 
     // Opens `url` in the browser, or copies it.
-    fn open_url(&self, url: String, copy: bool) {
-        let event = if copy {
-            AppEvent::copy("Link", url)
-        } else {
-            match open::that_detached(&url) {
+    fn open_url(&self, url: String, action: LinkAction) {
+        let event = match action {
+            LinkAction::Copy => AppEvent::copy("Link", url),
+            LinkAction::Open => match open::that_detached(&url) {
                 Ok(()) => AppEvent::NotifySuccess(format!("Opened {url}")),
                 Err(err) => AppEvent::NotifyError(format!("Failed to open {url}: {err}")),
-            }
+            },
         };
         self.ec.send(event);
     }

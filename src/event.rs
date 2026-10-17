@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKin
 use serde::Deserialize;
 
 use crate::{
-    browse::LinkTarget,
+    browse::{LinkAction, LinkTarget},
     git::{CommitHash, FilesSnapshot, GitTask},
     graph::Fold,
     keybind::Scope,
@@ -63,12 +63,12 @@ pub enum AppEvent {
     // opens the link in the browser, or copies it
     OpenUrl {
         url: String,
-        copy: bool,
+        action: LinkAction,
     },
     // opens the page of the target on the web host of its remote, or copies its link
     Link {
         target: LinkTarget,
-        copy: bool,
+        action: LinkAction,
     },
     Refresh(RefreshViewContext),
     // the blame of the file at `path` as of the commit, on `line` (from 0) when one is selected
@@ -499,35 +499,5 @@ impl UserEvent {
             }
             _ => Scope::Global,
         }
-    }
-
-    // The events of the whole app, which work wherever the focus is: quitting, help, refreshing,
-    // switching pages and panels, and the remotes.
-    pub fn is_app_wide(&self) -> bool {
-        matches!(
-            self,
-            UserEvent::ForceQuit
-                | UserEvent::Quit
-                | UserEvent::HelpToggle
-                | UserEvent::Refresh
-                | UserEvent::RefList
-                | UserEvent::FocusPanel(_)
-                | UserEvent::ResizeLeft
-                | UserEvent::ResizeRight
-                | UserEvent::ResizeUp
-                | UserEvent::ResizeDown
-                | UserEvent::FocusLeft
-                | UserEvent::FocusRight
-                | UserEvent::FocusUp
-                | UserEvent::FocusDown
-                | UserEvent::KeysToggle
-                | UserEvent::CommandLog
-                | UserEvent::DismissNotifications
-                | UserEvent::ToggleWrap
-                | UserEvent::Fetch
-                | UserEvent::FetchAll
-                | UserEvent::Pull
-                | UserEvent::Push
-        )
     }
 }

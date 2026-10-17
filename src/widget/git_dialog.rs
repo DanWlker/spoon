@@ -8,9 +8,10 @@ use ratatui::{
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
-    browse::PageLink,
+    browse::{LinkAction, PageLink},
     color::ColorTheme,
     event::{AppEvent, UserEvent},
     git::{
@@ -159,7 +160,7 @@ enum DialogKind {
     // links to open in the browser, or to copy: the pages of each remote
     OpenLink {
         links: Vec<Vec<PageLink>>,
-        copy: bool,
+        action: LinkAction,
     },
     // a command made beforehand, like discarding changes, and what it loses
     Prepared {
@@ -411,9 +412,10 @@ impl GitDialog {
         self.trigger
     }
 
-    // Warns of the conflicts the command runs into, see `Repository::first_conflict`; `at` shows
-    // the commit it stops at, for the commands applying several.
-    pub fn conflicting(mut self, conflict: Option<Conflict>, at: bool) -> Self {
+    // Warns of the conflicts the command runs into, see `Repository::first_conflict`, with the
+    // commit it stops at for those applying several commits, all but merging.
+    pub fn conflicting(mut self, conflict: Option<Conflict>) -> Self {
+        let at = !matches!(self.kind, DialogKind::Merge { .. });
         self.conflicts = conflict.map(|conflict| {
             let (commit, files) = match conflict {
                 Conflict::At(commit, files) => (commit, files),
@@ -1332,11 +1334,10 @@ impl GitDialog {
     }
 
     // Confirms opening a link in the browser, choosing it when there are several; or which to copy.
-    pub fn open_link(links: Vec<PageLink>, copy: bool) -> Self {
-        let (title, verb, trigger) = if copy {
-            (" Copy link ", "copy", UserEvent::CopyLink)
-        } else {
-            (" Open in browser ", "open", UserEvent::OpenInBrowser)
+    pub fn open_link(links: Vec<PageLink>, action: LinkAction) -> Self {
+        let (title, verb, trigger) = match action {
+            LinkAction::Copy => (" Copy link ", "copy", UserEvent::CopyLink),
+            LinkAction::Open => (" Open in browser ", "open", UserEvent::OpenInBrowser),
         };
         // the links of each remote, which has the same pages as the others, see `browse::links`
         let links: Vec<Vec<PageLink>> = links
@@ -1345,7 +1346,7 @@ impl GitDialog {
             .collect();
         let remotes: Vec<String> = links.iter().map(|pages| pages[0].remote.clone()).collect();
         let pages: Vec<String> = links[0].iter().map(|link| link.page.clone()).collect();
-        let mut dialog = Self::with(title, verb, vec![], DialogKind::OpenLink { links, copy });
+        let mut dialog = Self::with(title, verb, vec![], DialogKind::OpenLink { links, action });
         if remotes.len() > 1 {
             dialog.push_choice(FieldId::Remote, "Remote", remotes, "");
         }
@@ -1608,9 +1609,12 @@ impl GitDialog {
             return DialogOutcome::None;
         }
         let len = self.fields.len().max(1);
-        if event.is_some() && event == self.trigger {
-            return self.run();
-        }
+        // the key that opened the popup confirms it, like enter
+        let event = if event.is_some() && event == self.trigger {
+            Some(UserEvent::Confirm)
+        } else {
+            event
+        };
         match event {
             Some(UserEvent::Cancel) => DialogOutcome::Close,
             Some(UserEvent::Quit) => DialogOutcome::Quit,
@@ -1623,16 +1627,16 @@ impl GitDialog {
                 DialogOutcome::None
             }
             Some(UserEvent::NavigateRight) => {
-                self.change(true);
+                self.change(Toward::Next);
                 DialogOutcome::None
             }
             Some(UserEvent::NavigateLeft) => {
-                self.change(false);
+                self.change(Toward::Previous);
                 DialogOutcome::None
             }
             Some(UserEvent::DialogToggle) => {
                 if self.can_toggle() {
-                    self.change(true);
+                    self.change(Toward::Next);
                 }
                 DialogOutcome::None
             }
@@ -1643,7 +1647,7 @@ impl GitDialog {
             // toggles when the field can be, else types into it
             Some(UserEvent::DialogActivate) => {
                 if self.can_toggle() {
-                    self.change(true);
+                    self.change(Toward::Next);
                 } else {
                     self.editing = self.can_edit();
                 }
@@ -1760,9 +1764,9 @@ impl GitDialog {
 
     fn run(&self) -> DialogOutcome {
         let event = match &self.kind {
-            DialogKind::OpenLink { links, copy } => AppEvent::OpenUrl {
+            DialogKind::OpenLink { links, action } => AppEvent::OpenUrl {
                 url: self.chosen_link(links).url.clone(),
-                copy: *copy,
+                action: *action,
             },
             _ => match self.command() {
                 Some(Ok(task)) => AppEvent::StartTask(task),
@@ -1784,7 +1788,7 @@ impl GitDialog {
     }
 
     // Changes the selected field to its next or previous option, or toggles it.
-    fn change(&mut self, forward: bool) {
+    fn change(&mut self, toward: Toward) {
         // the branch to pull, kept on another remote having it too
         let previous_branch = matches!(self.kind, DialogKind::Remote(RemoteAction::Pull, _))
             .then(|| self.value(FieldId::Branch));
@@ -1794,24 +1798,14 @@ impl GitDialog {
         let id = *id;
         match field {
             Field::Choice { options, index } => {
-                let len = options.len();
-                *index = if forward {
-                    (*index + 1) % len
-                } else {
-                    (*index + len - 1) % len
-                };
+                *index = toward.around(Some(*index), options.len());
             }
             Field::Text { input, options } => {
                 if options.is_empty() {
                     return;
                 }
-                let len = options.len();
-                let next = match options.iter().position(|o| o == input.value().trim()) {
-                    Some(i) if forward => (i + 1) % len,
-                    Some(i) => (i + len - 1) % len,
-                    None if forward => 0,
-                    None => len - 1,
-                };
+                let current = options.iter().position(|o| o == input.value().trim());
+                let next = toward.around(current, options.len());
                 *input = Input::new(options[next].clone());
             }
             Field::Check(checked) => *checked = !*checked,
@@ -2366,7 +2360,7 @@ mod tests {
                     page: "Commit".into(),
                     url: "https://h/c".into(),
                 }],
-                false,
+                LinkAction::Open,
             ),
         ];
         for dialog in &dialogs {
@@ -2431,10 +2425,10 @@ mod tests {
     }
 
     // The link the popup opens or copies.
-    fn opened(outcome: DialogOutcome) -> (String, bool) {
+    fn opened(outcome: DialogOutcome) -> (String, LinkAction) {
         match outcome {
             DialogOutcome::Send(event) => match *event {
-                AppEvent::OpenUrl { url, copy } => (url, copy),
+                AppEvent::OpenUrl { url, action } => (url, action),
                 event => panic!("no link but {event:?}"),
             },
             outcome => panic!("nothing opens but {outcome:?}"),
@@ -2726,13 +2720,13 @@ mod tests {
             link("origin", "Pull request", "https://h/o/r/compare/b"),
         ];
         // the branch first, the pull request chosen with the toggle; o again opens it
-        let mut dialog = GitDialog::open_link(links, false);
+        let mut dialog = GitDialog::open_link(links, LinkAction::Open);
         assert_eq!(dialog.fields.len(), 1);
         assert_eq!(dialog.summary(), "https://h/o/r/tree/b");
         press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
             opened(press(&mut dialog, UserEvent::OpenInBrowser)),
-            ("https://h/o/r/compare/b".into(), false)
+            ("https://h/o/r/compare/b".into(), LinkAction::Open)
         );
         // the remote chosen first, then the page on it
         let links = vec![
@@ -2741,20 +2735,23 @@ mod tests {
             link("up", "Branch", "https://h/u/r/tree/b"),
             link("up", "Pull request", "https://h/u/r/compare/b"),
         ];
-        let mut dialog = GitDialog::open_link(links, true);
+        let mut dialog = GitDialog::open_link(links, LinkAction::Copy);
         press(&mut dialog, UserEvent::DialogToggle);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
             opened(press(&mut dialog, UserEvent::Confirm)),
-            ("https://h/u/r/compare/b".into(), true)
+            ("https://h/u/r/compare/b".into(), LinkAction::Copy)
         );
         // one link, to confirm
-        let mut dialog = GitDialog::open_link(vec![link("origin", "Commit", "https://h/x")], false);
+        let mut dialog = GitDialog::open_link(
+            vec![link("origin", "Commit", "https://h/x")],
+            LinkAction::Open,
+        );
         assert!(dialog.fields.is_empty());
         assert_eq!(
             opened(press(&mut dialog, UserEvent::Confirm)),
-            ("https://h/x".into(), false)
+            ("https://h/x".into(), LinkAction::Open)
         );
     }
 
@@ -2772,6 +2769,15 @@ mod tests {
             press(&mut dialog, UserEvent::Push),
             DialogOutcome::None
         ));
+        // like enter, it goes to a required field left empty instead of failing
+        let mut dialog = GitDialog::remote(RemoteAction::Push, info()).unwrap();
+        dialog.selected = 2;
+        dialog.fields[2].2 = Field::text("", vec![]);
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Push),
+            DialogOutcome::None
+        ));
+        assert!(dialog.editing);
 
         // space toggles a field that can be: the next choice, the next option of a text field,
         // a checkbox; else it types, like e

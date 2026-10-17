@@ -75,11 +75,7 @@ global
 ```
 
 A key is looked up from the scope having the focus outward: the first scope binding it wins, so a scope can use a key differently from those around it.
-Each scope takes the keys of the scopes around it, except:
-
-- `details` doesn't take the commands of the graph, which act on the commit list.
-- `details_pane` takes only moving in it, scrolling, `confirm`, `cancel`, the search, `short_copy`, the tabs and `apply_change`, and the keys of the whole app: quitting, help, refresh, switching pages and panels, fetch, pull and push.
-- `local_changes_diff` doesn't take the keys of the files beside it: `toggle_select`, `next_picked`, `previous_picked`, `filter`, `full_copy`, `navigate_left` and `navigate_right`.
+The key then works only where its command does: the status bar, the keys popup (<kbd>H</kbd>) and the help list what works where the focus is, and other keys do nothing. The commands of the graph don't act on the details, say, and the diff beside the files doesn't take the keys of the files.
 
 An event written in `[keybind]` is bound in its own scope:
 the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) in `graph`;

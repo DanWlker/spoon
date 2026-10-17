@@ -5,7 +5,7 @@ use ratatui::{crossterm::event::KeyEvent, style::Style, text::Span};
 
 use crate::{
     app::AppContext,
-    browse::LinkTarget,
+    browse::{LinkAction, LinkTarget},
     event::{AppEvent, UserEvent},
     git::{CommitHash, FileRevision, Repository},
     keybind::Scope,
@@ -21,10 +21,12 @@ use crate::{
 };
 
 // The commands of the commit graph on the selected commit, or the picked ones, where `applies`
-// says each works: in the commit list and the details, and on a ref of the sidebar.
+// says each works: in the commit list and the details, and on a ref of the sidebar. While commits
+// are `picked`, those of one commit say to clear them, unlisted.
 pub fn register_graph_commands<T: ?Sized>(
     k: &mut Keys<T>,
     applies: impl Fn(&T, UserEvent) -> bool + Copy,
+    picked: impl Fn(&T) -> bool + Copy,
 ) {
     use UserEvent::*;
     let commands: [(UserEvent, &str, &'static str); 13] = [
@@ -87,8 +89,16 @@ pub fn register_graph_commands<T: ?Sized>(
         ),
     ];
     for (event, short, long) in commands {
+        let single = matches!(
+            event,
+            Rebase | Merge | Checkout | AmendCommit | Reset | CreateBranch | CreateTag
+        );
         k.add(&[event], short, long)
-            .when(move |view| applies(view, event));
+            .when(move |view| applies(view, event) && !(single && picked(view)));
+        if single {
+            k.quiet(&[event], long)
+                .when(move |view| applies(view, event) && picked(view));
+        }
     }
 }
 
@@ -141,7 +151,7 @@ pub fn commit_event(event: UserEvent, commit: &CommitHash) -> Option<AppEvent> {
         }
         UserEvent::OpenInBrowser | UserEvent::CopyLink => Some(AppEvent::Link {
             target: LinkTarget::Commit(commit.clone()),
-            copy: event == UserEvent::CopyLink,
+            action: LinkAction::of(event),
         }),
         UserEvent::Checkout => Some(AppEvent::Checkout(commit.clone())),
         UserEvent::Confirm => Some(AppEvent::ShowCommit(commit.clone())),
@@ -223,7 +233,7 @@ pub fn file_link(
     };
     AppEvent::Link {
         target,
-        copy: event == UserEvent::CopyLink,
+        action: LinkAction::of(event),
     }
 }
 

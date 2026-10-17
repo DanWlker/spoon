@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
@@ -526,7 +527,7 @@ impl<'a> DetailView<'a> {
         if let UserEvent::NextTab | UserEvent::PreviousTab = event {
             // the comparison only has changes; the focus stays where it is
             if !self.shows_compare() {
-                self.tab = self.tab.cycle(event == UserEvent::NextTab);
+                self.tab = self.tab.cycle(Toward::of(event, UserEvent::NextTab));
                 self.load_tab();
             }
             return;
@@ -771,10 +772,14 @@ impl<'a> DetailView<'a> {
         self.focus() == DetailFocus::Pane
     }
 
-    // The change of the file selected in the changes tab of a commit, which `u` resets; none in a
+    // The change of the file selected in the files of the changes tab of a commit, which `u` resets; none in a
     // comparison, having no commit to reset it before or at.
     fn reset_file_change(&self) -> Option<&FileChange> {
-        if self.list_focused || self.tab != DetailTab::Changes || self.shows_compare() {
+        // on the files, not their diff
+        if self.focus() != DetailFocus::Files
+            || self.tab != DetailTab::Changes
+            || self.shows_compare()
+        {
             return None;
         }
         let (path, false) = self.selected_entry()? else {
@@ -927,8 +932,8 @@ impl<'a> DetailView<'a> {
                 return true;
             }
             UserEvent::ToggleSelect => state.toggle_pick(),
-            UserEvent::NextPicked => state.select_next_pick(true),
-            UserEvent::PreviousPicked => state.select_next_pick(false),
+            UserEvent::NextPicked => state.select_next_pick(Toward::Next),
+            UserEvent::PreviousPicked => state.select_next_pick(Toward::Previous),
             // the details of the selected commit, over the comparison
             UserEvent::Confirm if shows_compare => {
                 self.park_compare();

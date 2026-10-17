@@ -10,15 +10,15 @@ const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
 // Where keys are bound: the parts of the app that can have the focus, nested. A key is looked up
 // from the focused scope outward, the first scope binding it wins, so a scope overrides the keys of
-// those around it; and each scope takes from around it only the events it lets through (see
-// `Scope::passes`), like the diff beside the files, which takes the keys of the whole app only.
+// those around it. Whether its event works where the focus is, the focused part registers, see
+// `Keys`: the diff beside the files takes none of the files' keys, say.
 //
 // global
 // ├─ graph                  the commands of the commit graph, bound here
 // │  ├─ sidebar             the refs; the commands of the graph work on the selected ref
 // │  ├─ commit_list
 // │  ├─ file_history        the blame and the timeline of a file, over everything
-// │  └─ details             not the commands of the graph
+// │  └─ details
 // │     └─ details_pane     the diff or preview beside the files
 // ├─ local_changes
 // │  └─ local_changes_diff
@@ -60,56 +60,6 @@ impl Scope {
             }
             Scope::DetailsPane => Some(Scope::Details),
             Scope::LocalChangesDiff => Some(Scope::LocalChanges),
-        }
-    }
-
-    // Whether the event of a key bound around this scope works in it.
-    fn passes(self, event: UserEvent) -> bool {
-        match self {
-            // the commands of the graph act on the commit list, not on the details
-            Scope::Details => event.home_scope() != Scope::Graph,
-            // the diff or preview takes its own keys, moving in it, and those of the whole app
-            Scope::DetailsPane => {
-                event.is_app_wide()
-                    || matches!(
-                        event,
-                        UserEvent::NavigateUp
-                            | UserEvent::NavigateDown
-                            | UserEvent::GoToTop
-                            | UserEvent::GoToBottom
-                            | UserEvent::ScrollUp
-                            | UserEvent::ScrollDown
-                            | UserEvent::PageUp
-                            | UserEvent::PageDown
-                            | UserEvent::HalfPageUp
-                            | UserEvent::HalfPageDown
-                            | UserEvent::Confirm
-                            | UserEvent::Cancel
-                            | UserEvent::Search
-                            | UserEvent::GoToNext
-                            | UserEvent::GoToPrevious
-                            | UserEvent::ShortCopy
-                            | UserEvent::NextTab
-                            | UserEvent::PreviousTab
-                            | UserEvent::ApplyChange
-                            | UserEvent::OpenInBrowser
-                            | UserEvent::CopyLink
-                            | UserEvent::Blame
-                            | UserEvent::Timeline
-                    )
-            }
-            // not the keys of the files beside it
-            Scope::LocalChangesDiff => !matches!(
-                event,
-                UserEvent::ToggleSelect
-                    | UserEvent::NextPicked
-                    | UserEvent::PreviousPicked
-                    | UserEvent::Filter
-                    | UserEvent::FullCopy
-                    | UserEvent::NavigateLeft
-                    | UserEvent::NavigateRight
-            ),
-            _ => true,
         }
     }
 
@@ -185,29 +135,19 @@ impl KeyBind {
         self.bindings.extend(patch.bindings);
     }
 
-    // What the keys pressed so far do in `scope`: from it outward, the first scope binding them (or
-    // a sequence starting with them) to an event that works in `scope`.
+    // What the keys pressed so far do in `scope`: from it outward, the first scope binding them, or
+    // a sequence starting with them. Whether the event works there is the focused part's to say,
+    // see `Keys`.
     pub fn resolve(&self, scope: Scope, pressed: &[KeyEvent]) -> SequenceMatch {
-        // the events bound around a scope work in it when every scope on the way lets them through
-        let mut passes: Vec<Scope> = vec![];
-        let allowed = |event: &UserEvent, passes: &[Scope]| passes.iter().all(|s| s.passes(*event));
         for s in scope.chain() {
-            if let Some(event) = self
-                .bindings
-                .get(&(s, pressed.to_vec()))
-                .filter(|e| allowed(e, &passes))
-            {
+            if let Some(event) = self.bindings.get(&(s, pressed.to_vec())) {
                 return SequenceMatch::Complete(*event);
             }
-            if self.bindings.iter().any(|((bound_scope, keys), event)| {
-                *bound_scope == s
-                    && keys.len() > pressed.len()
-                    && keys.starts_with(pressed)
-                    && allowed(event, &passes)
+            if self.bindings.keys().any(|(bound_scope, keys)| {
+                *bound_scope == s && keys.len() > pressed.len() && keys.starts_with(pressed)
             }) {
                 return SequenceMatch::Partial;
             }
-            passes.push(s);
         }
         SequenceMatch::None
     }
@@ -583,17 +523,15 @@ mod tests {
         assert_eq!(on(Scope::Sidebar, 'd'), Some(UserEvent::DeleteRef));
         // the keys of the whole app work everywhere
         assert_eq!(on(Scope::DetailsPane, 'q'), Some(UserEvent::Quit));
-        // the details don't take the commands of the graph, the pane only its own keys
-        assert_eq!(on(Scope::Details, 'd'), None);
-        assert_eq!(on(Scope::Details, 'v'), Some(UserEvent::ToggleSelect));
-        assert_eq!(on(Scope::DetailsPane, 'v'), None);
+        // around the details too; whether the event works there, they say, see `Keys`
+        assert_eq!(on(Scope::Details, 'd'), Some(UserEvent::DropCommit));
+        assert_eq!(on(Scope::DetailsPane, 'v'), Some(UserEvent::ToggleSelect));
         assert_eq!(on(Scope::DetailsPane, 'y'), Some(UserEvent::ShortCopy));
         let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty());
         assert_eq!(
             keybind.event_in(Scope::DetailsPane, &space),
             Some(UserEvent::ApplyChange)
         );
-        assert_eq!(on(Scope::LocalChangesDiff, 'v'), None);
         assert_eq!(on(Scope::LocalChangesDiff, 'd'), Some(UserEvent::Discard));
 
         // a key of an inner scope comes before a sequence starting with it around it

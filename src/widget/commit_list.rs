@@ -13,6 +13,7 @@ use ratatui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use tui_input::{backend::crossterm::EventHandler, Input, InputRequest};
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     color::ColorTheme,
@@ -463,12 +464,8 @@ impl<'a> CommitListState<'a> {
     }
 
     // Selects the next (or previous) picked commit, wrapping around.
-    pub fn select_next_pick(&mut self, forward: bool) {
-        let direction = if forward {
-            SearchDirection::Next
-        } else {
-            SearchDirection::Previous
-        };
+    pub fn select_next_pick(&mut self, toward: Toward) {
+        let direction = SearchDirection::from(toward);
         let current = self.current_selected_index();
         let target = find_around(self.commits.len(), current, direction, |i| {
             self.is_picked(&self.commits[i].commit.commit_hash)
@@ -1618,13 +1615,13 @@ mod tests {
                 state.toggle_pick();
             }
             state.select_index(0);
-            state.select_next_pick(true);
+            state.select_next_pick(Toward::Next);
             assert_eq!(state.current_selected_index(), 1);
-            state.select_next_pick(true);
+            state.select_next_pick(Toward::Next);
             assert_eq!(state.current_selected_index(), 3);
-            state.select_next_pick(true);
+            state.select_next_pick(Toward::Next);
             assert_eq!(state.current_selected_index(), 1);
-            state.select_next_pick(false);
+            state.select_next_pick(Toward::Previous);
             assert_eq!(state.current_selected_index(), 3);
         });
     }

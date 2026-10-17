@@ -56,7 +56,7 @@ pub fn graph_command(
             let conflict = rebase_conflict(repository, &target);
             Ok(
                 GitDialog::rebase(&branch, target, &label, rebase_auto_stash(repository))
-                    .conflicting(conflict, true),
+                    .conflicting(conflict),
             )
         }),
         UserEvent::Merge => single("Merge").and_then(|_| {
@@ -66,7 +66,7 @@ pub fn graph_command(
             let conflict = merge_conflict(repository, &target);
             Ok(
                 GitDialog::merge(&branch_label, target, &label, merge_ff.as_deref())
-                    .conflicting(conflict, false),
+                    .conflicting(conflict),
             )
         }),
         UserEvent::Checkout => {
@@ -84,7 +84,7 @@ pub fn graph_command(
                 .iter()
                 .map(|h| dialog_commit(repository, h))
                 .collect();
-            Ok(GitDialog::cherry_pick(&branch_label, commits).conflicting(conflict, true))
+            Ok(GitDialog::cherry_pick(&branch_label, commits).conflicting(conflict))
         }
         UserEvent::Squash => squash(repository, &branch_label, targets),
         UserEvent::Revert => {
@@ -99,7 +99,7 @@ pub fn graph_command(
                 .iter()
                 .map(|h| dialog_commit(repository, h))
                 .collect();
-            Ok(GitDialog::revert(&branch_label, commits).conflicting(conflict, true))
+            Ok(GitDialog::revert(&branch_label, commits).conflicting(conflict))
         }
         UserEvent::AmendCommit => {
             return Some(single("Amend").and_then(|_| amend(repository, &branch_label, &selected)))
@@ -153,15 +153,14 @@ pub fn ref_graph_command(
             let conflict = rebase_conflict(repository, &onto);
             Ok(
                 GitDialog::rebase(&branch, onto, name, rebase_auto_stash(repository))
-                    .conflicting(conflict, true),
+                    .conflicting(conflict),
             )
         }),
         UserEvent::Merge => checked_out().map(|_| {
             let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
             let merge_ff = repository.config("merge.ff");
             let conflict = merge_conflict(repository, &onto);
-            GitDialog::merge(&branch_label, onto, name, merge_ff.as_deref())
-                .conflicting(conflict, false)
+            GitDialog::merge(&branch_label, onto, name, merge_ff.as_deref()).conflicting(conflict)
         }),
         UserEvent::Checkout => checked_out().map(|_| {
             let mut targets = checkout_targets(repository, &target);
@@ -416,7 +415,7 @@ fn drop_commits(
     let dialog = GitDialog::drop(branch, commits, base, rebase_auto_stash(repository));
     Ok(dialog
         .selecting(select)
-        .conflicting(conflict, true)
+        .conflicting(conflict)
         .pushed(pushed))
 }
 

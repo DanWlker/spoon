@@ -6,7 +6,28 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
-use crate::git::{split_remote_branch, CommitHash, Repository};
+use crate::{
+    event::UserEvent,
+    git::{split_remote_branch, CommitHash, Repository},
+};
+
+// What a link is for: opened in the browser (o), or copied (O).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkAction {
+    Open,
+    Copy,
+}
+
+impl LinkAction {
+    // Of o or O.
+    pub fn of(event: UserEvent) -> Self {
+        if event == UserEvent::CopyLink {
+            LinkAction::Copy
+        } else {
+            LinkAction::Open
+        }
+    }
+}
 
 // What to link to, from the selected row.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -10,6 +10,7 @@ use rustc_hash::FxHashMap;
 use semver::Version;
 use unicode_width::UnicodeWidthStr;
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::UserEvent,
@@ -193,12 +194,9 @@ impl RefListState {
         &self.picked
     }
 
-    // Picks or unpicks the selected ref; refs of another section than the picked ones can't be
-    // picked with them.
-    pub fn toggle_pick(&mut self) -> Result<(), String> {
-        let RefSelection::Ref(section, name) = self.selection() else {
-            return Err("Select a branch, a tag or a stash to pick it".into());
-        };
+    // Picks or unpicks a ref, the selected one; refs of another section than the picked ones
+    // can't be picked with them.
+    pub fn toggle_pick(&mut self, section: RefSection, name: String) -> Result<(), String> {
         if self.picked.is_empty() {
             self.picked.section = section;
         } else if self.picked.section != section {
@@ -312,7 +310,7 @@ impl RefListState {
     }
 
     // Selects and opens the section after (or before) the selected one, round.
-    pub fn select_section(&mut self, forward: bool) {
+    pub fn select_section(&mut self, toward: Toward) {
         let sections: Vec<&NodeId> = self
             .roots
             .iter()
@@ -323,15 +321,8 @@ impl RefListState {
         if n == 0 {
             return;
         }
-        let next = match (
-            sections.iter().position(|s| **s == self.selected[0]),
-            forward,
-        ) {
-            (Some(i), true) => (i + 1) % n,
-            (Some(i), false) => (i + n - 1) % n,
-            (None, true) => 0,
-            (None, false) => n - 1,
-        };
+        let current = sections.iter().position(|s| **s == self.selected[0]);
+        let next = toward.around(current, n);
         self.open_section(sections[next].clone());
     }
 
@@ -865,6 +856,14 @@ mod tests {
         buf
     }
 
+    // Picks or unpicks the selected ref.
+    fn pick(state: &mut RefListState) -> Result<(), String> {
+        let RefSelection::Ref(section, name) = state.selection() else {
+            panic!("no ref selected");
+        };
+        state.toggle_pick(section, name)
+    }
+
     // Moves the selection to the row named `name`, from the top.
     fn select(state: &mut RefListState, name: &str) {
         state.select_first();
@@ -903,7 +902,7 @@ mod tests {
         }
 
         // a picked branch: across the row too
-        state.toggle_pick().unwrap();
+        pick(&mut state).unwrap();
         select(&mut state, "main");
         let buf = draw(&mut state, true);
         let y = find_row(&buf, "one");
@@ -926,21 +925,21 @@ mod tests {
         let refs = [&a, &b, &tag];
         let mut state = RefListState::new(&refs, &[]);
         state.select_next();
-        state.toggle_pick().unwrap();
+        pick(&mut state).unwrap();
         state.select_next();
-        state.toggle_pick().unwrap();
+        pick(&mut state).unwrap();
         assert_eq!(state.picked().names, ["a", "b"]);
         // a tag can't be picked with branches
         state.reset_tree_status(
             vec![NodeId::Section(RefSection::Tags), NodeId::Name("v1".into())],
             vec![vec![NodeId::Section(RefSection::Tags)]],
         );
-        assert!(state.toggle_pick().unwrap_err().contains("Only branches"));
+        assert!(pick(&mut state).unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
         state.set_refs(&[&a, &tag], &[], &Head::None);
         assert_eq!(state.picked().names, ["a"]);
         state.clear_picks();
-        state.toggle_pick().unwrap();
+        pick(&mut state).unwrap();
         assert_eq!(state.picked().section, RefSection::Tags);
     }
 
@@ -987,7 +986,7 @@ mod tests {
             ],
             vec![vec![NodeId::Section(RefSection::Stashes)]],
         );
-        state.toggle_pick().unwrap();
+        pick(&mut state).unwrap();
         // a new stash takes stash@{0}, the picked one is stash@{1} now
         state.set_refs(&[&stash(0, 'b'), &stash(1, 'a')], &[], &Head::None);
         assert_eq!(state.picked().names, ["stash@{1}"]);
@@ -1063,11 +1062,11 @@ mod tests {
             _ => None,
         };
         // from the local changes, round both ways
-        state.select_section(false);
+        state.select_section(Toward::Previous);
         assert_eq!(section(&state), Some(RefSection::Stashes));
-        state.select_section(true);
+        state.select_section(Toward::Next);
         assert_eq!(section(&state), Some(RefSection::Branches));
-        state.select_section(true);
+        state.select_section(Toward::Next);
         assert_eq!(section(&state), Some(RefSection::Remotes));
         // opened: the remote under it is the next row
         state.select_next();
@@ -1076,7 +1075,7 @@ mod tests {
             RefSelection::Folder(RefSection::Remotes, name) if name == "origin"
         ));
         // from a row in the section
-        state.select_section(false);
+        state.select_section(Toward::Previous);
         assert_eq!(section(&state), Some(RefSection::Branches));
     }
 }

@@ -9,6 +9,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     color::ColorTheme,
+    event::UserEvent,
     search::{case_insensitive, SearchOptions},
 };
 
@@ -196,6 +197,43 @@ pub fn match_range(
         found.map_or(text.len(), |(_, at)| *at)
     };
     Some(origin(start)..origin(end))
+}
+
+// Which way to go from the selection, to the next or the previous one; round, see `around`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Toward {
+    Next,
+    Previous,
+}
+
+impl Toward {
+    // `next` one way, the other event the other way.
+    pub fn of(event: UserEvent, next: UserEvent) -> Self {
+        if event == next {
+            Toward::Next
+        } else {
+            Toward::Previous
+        }
+    }
+
+    // The index of `len` after or before `index`, round; from none, the first or the last.
+    pub fn around(self, index: Option<usize>, len: usize) -> usize {
+        match (index, self) {
+            (Some(i), Toward::Next) => (i + 1) % len,
+            (Some(i), Toward::Previous) => (i + len - 1) % len,
+            (None, Toward::Next) => 0,
+            (None, Toward::Previous) => len - 1,
+        }
+    }
+}
+
+impl From<Toward> for SearchDirection {
+    fn from(toward: Toward) -> Self {
+        match toward {
+            Toward::Next => SearchDirection::Next,
+            Toward::Previous => SearchDirection::Previous,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -16,7 +16,7 @@ use super::{App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, Re
 use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
-    event::EventController,
+    event::{EventController, KeyHint},
     git::{refs_snapshot, FilesSnapshot, SortCommit},
     graph::{GraphImageWidthMode, GraphStyle},
     keybind::parse_key_event,
@@ -710,6 +710,47 @@ fn test_compare_ends_on_the_local_changes_page() {
         }),
         keys("tab"),
         check(|app| assert_eq!(graph_note(app), None)),
+    ]);
+}
+
+#[test]
+fn test_files_keys_do_nothing_in_their_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // the files of the changes tab reset a file; their diff doesn't
+        keys("3 u"),
+        check(|app| assert!(app.shell.dialog.is_some())),
+        keys("esc enter u"),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        // nor filters them
+        keys("?"),
+        check(|app| assert!(!app.is_typing())),
+    ]);
+}
+
+#[test]
+fn test_keys_unlisted_where_they_only_warn() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let listed = |hints: Vec<KeyHint>, short: &str| hints.iter().any(|(_, s)| s == short);
+    harness.run(vec![
+        // no remote: push, pull and fetch say so, unlisted
+        check(move |app| assert!(!listed(app.global_hints(), "push"))),
+        keys("p"),
+        check(|app| assert_notice(app, "No remotes configured")),
+        // with a commit picked, the commands of one commit ask to clear it, unlisted
+        keys(", v"),
+        check(move |app| assert!(!listed(app.view.keys().hints(), "new branch"))),
+        keys("b"),
+        check(|app| {
+            assert_notice(
+                app,
+                "works on the selected commit, clear the picked ones first",
+            )
+        }),
     ]);
 }
 

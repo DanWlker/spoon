@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget},
 };
 
+use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     color::ColorTheme,
@@ -20,7 +21,7 @@ use crate::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
         file_text::FileText,
-        file_tree::{render_tree, FileTree, FileTreeState},
+        file_tree::{render_tree, FileTree, FileTreeState, TreeShape},
         tree_query::SearchDirection,
     },
 };
@@ -38,15 +39,9 @@ impl DetailTab {
     const ALL: [DetailTab; 3] = [DetailTab::Info, DetailTab::Changes, DetailTab::Files];
 
     // The tab after (or before) this one, around from the last to the first.
-    pub fn cycle(self, forward: bool) -> Self {
-        let len = Self::ALL.len();
-        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
-        let next = if forward {
-            (i + 1) % len
-        } else {
-            (i + len - 1) % len
-        };
-        Self::ALL[next]
+    pub fn cycle(self, toward: Toward) -> Self {
+        let i = Self::ALL.iter().position(|t| *t == self);
+        Self::ALL[toward.around(i, Self::ALL.len())]
     }
 
     pub fn from_number(n: usize) -> Option<Self> {
@@ -175,8 +170,10 @@ impl<'a> CommitChangesState<'a> {
                 }
             })
             .collect();
-        let mut tree =
-            FileTreeState::new(FileTree::new(files.iter().map(|f| f.path.as_str())), true);
+        let mut tree = FileTreeState::new(
+            FileTree::new(files.iter().map(|f| f.path.as_str())),
+            TreeShape::Open,
+        );
         // start on the first file rather than its directory
         if let Some(path) = tree
             .rows()
@@ -346,7 +343,7 @@ impl<'a> CommitFilesState<'a> {
             self.tree = Some(match self.previous_tree.take() {
                 Some(previous) => previous.with_tree(tree),
                 // collapsed by default, a whole repository is too much to show at once
-                None => FileTreeState::new(tree, false),
+                None => FileTreeState::new(tree, TreeShape::Closed),
             });
             self.preview = None;
         }
@@ -857,7 +854,12 @@ mod tests {
             SearchOptions::default(),
         );
         let patch = state.pane.selected_patch().unwrap();
-        repository.apply_patch(&patch, false, false)?;
+        let task = crate::git::GitTask {
+            commands: vec![vec!["apply".into(), "-".into()]],
+            input: Some(patch),
+            ..Default::default()
+        };
+        crate::git::run_task(repo_path, &task)?;
         let mut expected = lines.clone();
         expected.insert(18, "eighteen\n".into());
         assert_eq!(fs::read_to_string(repo_path.join("f"))?, expected.concat());

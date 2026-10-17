@@ -98,6 +98,13 @@ impl Ref {
     }
 }
 
+// What `Repository::apply_patch` does with a patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchAction {
+    Stage,
+    Unstage,
+}
+
 // A branch, remote branch or tag by its name: a ref to work on, unlike a stash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamedRef {
@@ -1148,23 +1155,13 @@ impl Repository {
             .ok()
     }
 
-    // Applies the changes in `patch`, a diff produced by `local_change_diff`, to the index (staging
-    // them) with `cached`, else to the working tree; `reverse` undoes them, like unstaging.
-    pub fn apply_patch(
-        &self,
-        patch: &str,
-        reverse: bool,
-        cached: bool,
-    ) -> std::result::Result<(), String> {
-        let mut args = vec!["apply"];
-        if cached {
-            args.push("--cached");
-        }
-        if reverse {
-            args.push("--reverse");
-        }
-        args.push("-");
-        self.run(&args, Some(patch))
+    // Stages the changes in `patch`, a diff produced by `local_change_diff`, or unstages them.
+    pub fn apply_patch(&self, patch: &str, action: PatchAction) -> std::result::Result<(), String> {
+        let args: &[&str] = match action {
+            PatchAction::Stage => &["apply", "--cached", "-"],
+            PatchAction::Unstage => &["apply", "--cached", "--reverse", "-"],
+        };
+        self.run(args, Some(patch))
     }
 }
 
@@ -3294,7 +3291,9 @@ mod tests {
             parse_diff(&repository.local_change_diff(&["é.txt"], DiffOf::Staged { base: None }));
         // unstaging the second line keeps the file staged with the first
         let patch = diff.hunks[0].partial_patch(&[1], true);
-        repository.apply_patch(&patch, true, true).unwrap();
+        repository
+            .apply_patch(&patch, PatchAction::Unstage)
+            .unwrap();
         let staged = git_output(path, &["show", ":é.txt"]).unwrap();
         assert_eq!(staged, "a\n");
     }
@@ -3325,7 +3324,7 @@ mod tests {
             parse_diff(&repository.local_change_diff(&[":/"], DiffOf::Staged { base: None }));
         assert_eq!(staged.hunks.len(), 2);
         repository
-            .apply_patch(&staged.hunks[0].patch(), true, true)
+            .apply_patch(&staged.hunks[0].patch(), PatchAction::Unstage)
             .unwrap();
         let index = git_output(path, &["show", ":new.txt"]).unwrap();
         assert_eq!(index, numbers.replace("\n15\n", "\nfifteen\n"));
@@ -3338,9 +3337,13 @@ mod tests {
         let head = repository.head_commit().unwrap();
         let base = format!("{}~1", head.as_str());
         let diff = parse_diff(&repository.diff_between(&base, head.as_str(), &[]));
-        repository
-            .apply_patch(&diff.hunks[0].partial_patch(&[3, 4], false), false, false)
-            .unwrap();
+        // to the working tree, as `git apply` does from the changes of a commit
+        let task = GitTask {
+            commands: vec![vec!["apply".into(), "-".into()]],
+            input: Some(diff.hunks[0].partial_patch(&[3, 4], false)),
+            ..Default::default()
+        };
+        run_task(path, &task).unwrap();
         let content = std::fs::read_to_string(path.join("new.txt")).unwrap();
         assert_eq!(content, numbers.replace("\n5\n", "\nfive\n"));
     }
