@@ -86,11 +86,7 @@ impl CommandLogState {
             "copy",
             "Copy the command and its output",
         );
-        k.add(
-            &[Cancel, Close, CommandLog],
-            "close",
-            "Close the command log",
-        );
+        k.add(&[Cancel, CommandLog], "close", "Close the command log");
     }
 
     pub fn scroll_output(&mut self, event: UserEvent) -> bool {

@@ -140,7 +140,7 @@ pub fn commit_event(event: UserEvent, commit: &CommitHash) -> Option<AppEvent> {
             Some(copy_hash(commit, event == UserEvent::FullCopy))
         }
         UserEvent::OpenInBrowser | UserEvent::CopyLink => Some(AppEvent::Link {
-            target: LinkTarget::Commit(commit.as_str().into()),
+            target: LinkTarget::Commit(commit.clone()),
             copy: event == UserEvent::CopyLink,
         }),
         UserEvent::Checkout => Some(AppEvent::Checkout(commit.clone())),
@@ -217,7 +217,7 @@ pub fn file_link(
     lines: Option<(usize, usize)>,
 ) -> AppEvent {
     let target = LinkTarget::File {
-        commit: commit.as_str().into(),
+        commit: commit.clone(),
         path: path.into(),
         lines,
     };

@@ -55,7 +55,7 @@ impl HelpView {
     // The keys of the help, see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
-        k.add(&[HelpToggle, Cancel, Close], "close", "Close help");
+        k.add(&[HelpToggle, Cancel], "close", "Close help");
         k.quiet(
             &[NavigateDown, SelectDown, NavigateUp, SelectUp],
             "Scroll down/up",
@@ -68,7 +68,7 @@ impl HelpView {
 
     pub fn handle_event(&mut self, event: UserEvent) {
         match event {
-            UserEvent::HelpToggle | UserEvent::Cancel | UserEvent::Close => {
+            UserEvent::HelpToggle | UserEvent::Cancel => {
                 self.tx.send(AppEvent::CloseOverlay);
             }
             // the help has nothing to select, so these scroll too

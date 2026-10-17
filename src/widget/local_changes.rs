@@ -875,7 +875,7 @@ impl<'a> LocalChangesState<'a> {
         };
 
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "clear picks",
             "Back, then clear the picked files, the search, the filter",
         )
@@ -1010,13 +1010,13 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(files);
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "back",
             "Back to the files, from the diff, the conflict or the commit section",
         )
         .when(|v| diff(v) || conflict(v) || commit(v));
         k.quiet(
-            &[Cancel, Close],
+            &[Cancel],
             "Back, then clear the picked files, the search, the filter",
         )
         .when(|v| files(v) && !picks(v));
@@ -2161,7 +2161,7 @@ mod tests {
     // The git command of the popup asked for, to run as confirming it does, see `run_task`.
     fn confirm(state: &mut LocalChangesState) -> Result<(), String> {
         let dialog = state.take_dialog().expect("a popup asking to confirm");
-        state.request = Some(Request::Task(dialog.command()?));
+        state.request = Some(Request::Task(dialog.command().unwrap()?));
         Ok(())
     }
 

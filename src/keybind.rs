@@ -85,7 +85,6 @@ impl Scope {
                             | UserEvent::HalfPageDown
                             | UserEvent::Confirm
                             | UserEvent::Cancel
-                            | UserEvent::Close
                             | UserEvent::Search
                             | UserEvent::GoToNext
                             | UserEvent::GoToPrevious

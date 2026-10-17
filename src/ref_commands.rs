@@ -7,7 +7,7 @@ use crate::{
     keybind::Scope,
     widget::{
         git_dialog::GitDialog,
-        ref_list::{RefPicks, RefSection, RefSelection, DETACHED_HEAD},
+        ref_list::{RefPicks, RefSection, RefSelection},
     },
 };
 
@@ -24,20 +24,9 @@ pub fn ref_command_applies(
     use RefSection::*;
     let on_ref = matches!(selection, RefSelection::Ref(Branches | Remotes | Tags, _));
     let graph = event.home_scope() == Scope::Graph;
-    // a detached HEAD is no branch to delete, rename, pick or copy, only a commit to work on
-    let detached = matches!(selection, RefSelection::Ref(Branches, name) if name == DETACHED_HEAD);
+    // a detached HEAD is no ref to delete, rename, pick, copy or diff, only a commit to work on
+    let detached = *selection == RefSelection::DetachedHead;
     match event {
-        UserEvent::ShortCopy
-        | UserEvent::FullCopy
-        | UserEvent::ToggleSelect
-        | UserEvent::DeleteRef
-        | UserEvent::EditRef
-        | UserEvent::OpenInBrowser
-        | UserEvent::CopyLink
-            if detached =>
-        {
-            false
-        }
         // on the whole graph, wherever
         UserEvent::BranchOnly => true,
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
@@ -48,7 +37,7 @@ pub fn ref_command_applies(
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => !picked.is_empty(),
         },
-        UserEvent::Diff if !picked.is_empty() => picked.section != Stashes,
+        UserEvent::Diff => diff_refs(selection, picked).is_some(),
         // the others work on the selected row alone
         _ if !picked.is_empty() => {
             !(graph
@@ -69,9 +58,20 @@ pub fn ref_command_applies(
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => false,
         },
-        _ if graph => on_ref,
+        _ if graph => on_ref || (detached && event != UserEvent::Diff),
         _ => true,
     }
+}
+
+// The refs `D` diffs in the sidebar: the picked ones, else the selected branch, remote branch or
+// tag; None for stashes and the rows that are no ref.
+pub fn diff_refs(selection: &RefSelection, picked: &RefPicks) -> Option<Vec<String>> {
+    let (section, names) = match selection {
+        _ if !picked.is_empty() => (picked.section, picked.names.clone()),
+        RefSelection::Ref(section, name) => (*section, vec![name.clone()]),
+        _ => return None,
+    };
+    (section != RefSection::Stashes).then_some(names)
 }
 
 // The popup of `event` on the selected row, where `ref_command_applies`; None for other events.
@@ -258,7 +258,7 @@ mod tests {
                 ),
             };
         }
-        crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
     }
 
     fn typed(text: &str) -> Vec<Result<char, UserEvent>> {
@@ -390,7 +390,7 @@ mod tests {
             let dialog = ref_command(&repository, UserEvent::DeleteRef, &selection, &picked)
                 .unwrap()
                 .unwrap();
-            crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+            crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
         };
 
         delete(picks(Branches, &["a", "c"]));
@@ -500,7 +500,7 @@ mod tests {
                 KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
             );
         }
-        crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
         assert_eq!(branches(), "main \ntopic2 \n");
 
         run(path, UserEvent::DeleteRef, selection, &[]);
@@ -630,6 +630,13 @@ mod tests {
             &none
         ));
         assert!(!applies(UserEvent::ApplyStash, main(), &none));
+        // the detached HEAD is a commit to work on, no ref to copy, delete or diff
+        let head = || RefSelection::DetachedHead;
+        assert!(applies(UserEvent::Checkout, head(), &none));
+        assert!(applies(UserEvent::CreateBranch, head(), &none));
+        for event in [UserEvent::Diff, UserEvent::ShortCopy, UserEvent::DeleteRef] {
+            assert!(!applies(event, head(), &none), "{event:?}");
+        }
         assert!(applies(
             UserEvent::NavigateDown,
             RefSelection::Section(Tags),

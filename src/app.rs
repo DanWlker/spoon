@@ -29,7 +29,7 @@ use crate::{
     external::{copy_to_clipboard, exec_interactive},
     git::{
         moves_head_command, run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
-        GitTask, Head, Ref, Repository,
+        GitTask, Head, NamedRef, Ref, Repository,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -37,7 +37,7 @@ use crate::{
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, PanelLayout},
     protocol::ImageProtocol,
-    ref_commands::{ref_command, ref_command_applies},
+    ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::SearchOptions,
     view::{
         register_graph_commands, BlameView, Compare, HelpView, LocalChangesRefreshViewContext,
@@ -51,7 +51,7 @@ use crate::{
         keys_popup::KeysPopup,
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
-        ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode, DETACHED_HEAD},
+        ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
         style::{badge, key_hints, spinner, SPINNER_RATE},
     },
 };
@@ -937,9 +937,7 @@ impl App<'_> {
             return;
         };
         match event {
-            UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog => {
-                self.shell.overlay = None
-            }
+            UserEvent::Cancel | UserEvent::CommandLog => self.shell.overlay = None,
             UserEvent::NavigateDown | UserEvent::SelectDown => state.select_next(),
             UserEvent::NavigateUp | UserEvent::SelectUp => state.select_prev(),
             UserEvent::GoToTop => state.select_first(),
@@ -1635,10 +1633,10 @@ impl App<'_> {
                 }
             }
             // the picked refs are cleared first
-            UserEvent::Cancel | UserEvent::Close if !self.shell.sidebar.picked().is_empty() => {
+            UserEvent::Cancel if !self.shell.sidebar.picked().is_empty() => {
                 self.shell.sidebar.clear_picks();
             }
-            UserEvent::Cancel | UserEvent::Close => {
+            UserEvent::Cancel => {
                 self.set_sidebar_focused(false);
             }
             UserEvent::ToggleSelect => {
@@ -1706,7 +1704,7 @@ impl App<'_> {
                 || matches!(app.shell.sidebar.selection(), RefSelection::Ref(Stashes, _))
         };
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "clear picks",
             "Clear the picked refs, else back to the page",
         )
@@ -1771,7 +1769,7 @@ impl App<'_> {
             "Open/close a node, else back to the page",
         );
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "back",
             "Clear the picked refs, else back to the page",
         )
@@ -1954,9 +1952,9 @@ impl App<'_> {
         match dialog {
             // the popup would only lead to refusing its command
             Ok(dialog)
-                if dialog
-                    .command()
-                    .is_ok_and(|task| self.blocked_by_operation(&task)) => {}
+                if dialog.command().is_some_and(|task| {
+                    task.is_ok_and(|task| self.blocked_by_operation(&task))
+                }) => {}
             Ok(dialog) => {
                 self.shell.dialog = Some(Popup {
                     dialog,
@@ -2216,9 +2214,7 @@ impl App<'_> {
         if event == UserEvent::BranchOnly {
             // the selected branch's history, or the current one's off a branch
             let branch = match self.shell.sidebar.selection() {
-                RefSelection::Ref(RefSection::Branches, name) if name != DETACHED_HEAD => {
-                    Some(name)
-                }
+                RefSelection::Ref(RefSection::Branches, name) => Some(name),
                 _ => None,
             };
             self.shell.graph_filter = match &self.shell.graph_filter {
@@ -2229,34 +2225,44 @@ impl App<'_> {
             return;
         }
         if event == UserEvent::Diff {
-            match self.sidebar_compare() {
+            let selection = self.shell.sidebar.selection();
+            // there are some, see `ref_command_applies`
+            let Some(names) = diff_refs(&selection, self.shell.sidebar.picked()) else {
+                return;
+            };
+            match self.sidebar_compare(&names) {
                 Ok(compare) => self.request_ref_compare(compare),
                 Err(err) => self.ec.send(AppEvent::NotifyError(err)),
             }
             return;
         }
         // a branch, remote branch or tag, see `ref_command_applies`, of the row's section, as a
-        // tag may have a branch's name
-        let RefSelection::Ref(section, name) = self.shell.sidebar.selection() else {
-            return;
-        };
-        let selected = self.repository.all_refs().into_iter().find(|r| {
-            r.name() == name
-                && matches!(
-                    (r, section),
-                    (Ref::Branch { .. }, RefSection::Branches)
-                        | (Ref::RemoteBranch { .. }, RefSection::Remotes)
-                        | (Ref::Tag { .. }, RefSection::Tags)
-                )
-        });
-        let command = match (selected, self.repository.head()) {
-            (Some(selected), _) => ref_graph_command(self.repository, event, selected),
-            // the row of a detached HEAD, its commit
-            (None, Head::Detached { target }) if name == DETACHED_HEAD => {
-                graph_command(self.repository, event, target.clone(), vec![])
+        // tag may have a branch's name; or the row of a detached HEAD, its commit
+        let (section, name) = match self.shell.sidebar.selection() {
+            RefSelection::Ref(section, name) => (section, name),
+            RefSelection::DetachedHead => {
+                if let Head::Detached { target } = self.repository.head() {
+                    let command = graph_command(self.repository, event, target.clone(), vec![]);
+                    self.run_graph_command(event, command);
+                }
+                return;
             }
             _ => return,
         };
+        let selected = self.repository.all_refs().into_iter().find_map(|r| {
+            let named = r.named()?;
+            let of_section = matches!(
+                (&named, section),
+                (NamedRef::Branch(_), RefSection::Branches)
+                    | (NamedRef::RemoteBranch(_), RefSection::Remotes)
+                    | (NamedRef::Tag(_), RefSection::Tags)
+            );
+            (of_section && named.name() == name).then(|| (named, r.target().clone()))
+        });
+        let Some((selected, target)) = selected else {
+            return;
+        };
+        let command = ref_graph_command(self.repository, event, &selected, target);
         self.run_graph_command(event, command);
     }
 
@@ -2332,25 +2338,13 @@ impl App<'_> {
 
     // The refs to diff from the sidebar: the two picked ones, else HEAD and the picked or
     // selected one.
-    fn sidebar_compare(&self) -> Result<RefCompare, String> {
-        let picked = self.shell.sidebar.picked();
-        let (section, names) = if picked.is_empty() {
-            match self.shell.sidebar.selection() {
-                RefSelection::Ref(section, name) => (section, vec![name]),
-                _ => return Err("Select a branch or a tag to diff it".into()),
-            }
-        } else {
-            (picked.section, picked.names.clone())
-        };
-        if section == RefSection::Stashes {
-            return Err("Diff compares branches and tags".into());
-        }
+    fn sidebar_compare(&self, names: &[String]) -> Result<RefCompare, String> {
         let head = || {
             self.repository
                 .current_branch()
                 .unwrap_or_else(|| "HEAD".into())
         };
-        let (base, target) = match names.as_slice() {
+        let (base, target) = match names {
             [one] => (head(), one.clone()),
             [one, two] => (one.clone(), two.clone()),
             more => return Err(format!("Diff compares two refs, {} are picked", more.len())),

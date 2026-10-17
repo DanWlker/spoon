@@ -714,6 +714,23 @@ fn test_compare_ends_on_the_local_changes_page() {
 }
 
 #[test]
+fn test_no_other_diff_while_one_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    // in the commit list over the diff, picking and diffing say why they don't work
+    harness.run(vec![
+        compare_feat(),
+        keys("1 v"),
+        check(|app| assert_notice(app, "Close the diff first (esc) to pick other commits")),
+        keys(", shift-d"),
+        check(|app| assert_notice(app, "A diff is open, close it first (esc)")),
+        keys(", shift-l"),
+        check(|app| assert_notice(app, "A diff is open, close it first (esc)")),
+    ]);
+}
+
+#[test]
 fn test_compare_gives_the_branch_only_graph_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

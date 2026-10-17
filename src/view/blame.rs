@@ -146,7 +146,7 @@ impl BlameView {
         }
         let body = self.focus != BlameFocus::Revision;
         match event {
-            UserEvent::Cancel | UserEvent::Close => match self.query.clear() {
+            UserEvent::Cancel => match self.query.clear() {
                 QueryChange::None => self.tx.send(AppEvent::CloseOverlay),
                 _ => self.update_query_status(),
             },
@@ -364,7 +364,7 @@ impl BlameView {
             &[FocusPanel(0), FocusPanel(1)],
             "Focus the commit shown (also up from the first line)/the lines",
         );
-        k.add(&[Cancel, Close], "close", "Clear the search, then close");
+        k.add(&[Cancel], "close", "Clear the search, then close");
     }
 
     pub fn keys(&self) -> KeyList {

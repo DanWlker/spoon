@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, CommitHash, Conflict, Ref, Repository},
+    git::{split_remote_branch, CommitHash, Conflict, NamedRef, Ref, Repository},
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
 
@@ -126,9 +126,10 @@ pub fn graph_command(
 pub fn ref_graph_command(
     repository: &Repository,
     event: UserEvent,
-    selected: &Ref,
+    selected: &NamedRef,
+    target: CommitHash,
 ) -> Option<Result<GraphCommand, String>> {
-    let (name, target) = (selected.name(), selected.target().clone());
+    let name = selected.name();
     let shared = repository
         .all_refs()
         .iter()
@@ -189,12 +190,8 @@ pub fn ref_graph_command(
             GitDialog::checkout(targets)
         }),
         // from the name, so a branch made from a remote branch tracks it
-        UserEvent::CreateBranch => StartPoint::of_ref(selected)
-            .map(|from| create_branch(repository, from))
-            .ok_or_else(|| "Nothing starts from a stash".to_string()),
-        UserEvent::CreateTag => StartPoint::of_ref(selected)
-            .map(GitDialog::create_tag)
-            .ok_or_else(|| "A stash can't be tagged".to_string()),
+        UserEvent::CreateBranch => Ok(create_branch(repository, StartPoint::Ref(selected.clone()))),
+        UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Ref(selected.clone()))),
         _ => return graph_command(repository, event, target, vec![]),
     };
     Some(dialog.map(GraphCommand::Dialog))
@@ -209,7 +206,10 @@ fn create_branch(repository: &Repository, from: StartPoint) -> GitDialog {
         .map(|r| r.name().to_string())
         .collect();
     branches.sort();
-    let others = branches.into_iter().map(StartPoint::Branch).collect();
+    let others = branches
+        .into_iter()
+        .map(|branch| StartPoint::Ref(NamedRef::Branch(branch)))
+        .collect();
     GitDialog::create_branch(from, others)
 }
 
@@ -220,7 +220,7 @@ pub fn dialog_commit(repository: &Repository, hash: &CommitHash) -> DialogCommit
         .map(|c| c.subject.clone())
         .unwrap_or_default();
     DialogCommit {
-        hash: hash.as_str().to_string(),
+        hash: hash.clone(),
         line: format!("{} {subject}", hash.as_short_hash()),
     }
 }
@@ -397,9 +397,8 @@ fn drop_commits(
     commits: Vec<CommitHash>,
 ) -> Result<GitDialog, String> {
     let commits = sort_newest_first(repository, commits);
-    let (Some(newest), Some(oldest)) = (commits.first(), commits.last()) else {
-        return Err("No commit to drop".into());
-    };
+    // never empty: the picked commits, else the selected one
+    let (newest, oldest) = (&commits[0], &commits[commits.len() - 1]);
     let base = single_parent(repository, oldest, "dropped")?;
     rebased(repository, branch, base.as_ref(), &commits)?;
     for hash in &commits {
@@ -509,7 +508,9 @@ mod tests {
 
     fn args(command: Result<GraphCommand, String>) -> String {
         match command {
-            Ok(GraphCommand::Dialog(dialog)) => dialog.command().unwrap().commands[0].join(" "),
+            Ok(GraphCommand::Dialog(dialog)) => {
+                dialog.command().unwrap().unwrap().commands[0].join(" ")
+            }
             Ok(GraphCommand::Compare { title, .. }) => title,
             Ok(GraphCommand::AmendHead) => "amend head".into(),
             Err(err) => err,
@@ -708,7 +709,7 @@ mod tests {
         else {
             panic!("no dialog");
         };
-        crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
         assert_eq!(output(&["log", "-1", "--format=%s"]), "c2\n");
 
         // the page amends it: its message and changes, with a new file and message
@@ -719,7 +720,7 @@ mod tests {
         git.add(&["new"]);
         state.commit_or_continue().unwrap();
         let dialog = state.take_dialog().unwrap();
-        crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
         let repository = load();
         let _ = LocalChangesState::load(&repository);
         assert_eq!(output(&["log", "--format=%s"]), "c3\nc2\nc1\n");
@@ -775,7 +776,7 @@ mod tests {
                     let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
                     dialog.handle_key(None, key);
                 }
-                dialog.command().unwrap()
+                dialog.command().unwrap().unwrap()
             }
             _ => panic!("no command"),
         };
@@ -843,8 +844,11 @@ mod tests {
             name: name.into(),
             target: target.clone(),
         };
-        let on =
-            |event, selected: &Ref| args(ref_graph_command(&repository, event, selected).unwrap());
+        let on = |event, selected: &Ref| {
+            let named = selected.named().unwrap();
+            let target = selected.target().clone();
+            args(ref_graph_command(&repository, event, &named, target).unwrap())
+        };
 
         // rebase and merge name the branch, in full when a tag has its name
         let topic = branch("topic", &hashes[1]);
@@ -852,13 +856,19 @@ mod tests {
         assert!(on(UserEvent::Merge, &topic).ends_with(" topic"));
         git(&["tag", "topic", "HEAD~2"]);
         let (repository, _) = load(path);
-        let on =
-            |event, selected: &Ref| args(ref_graph_command(&repository, event, selected).unwrap());
+        let on = |event, selected: &Ref| {
+            let named = selected.named().unwrap();
+            let target = selected.target().clone();
+            args(ref_graph_command(&repository, event, &named, target).unwrap())
+        };
         assert!(on(UserEvent::Merge, &topic).ends_with(" refs/heads/topic"));
         git(&["tag", "-d", "topic"]);
         let (repository, _) = load(path);
-        let on =
-            |event, selected: &Ref| args(ref_graph_command(&repository, event, selected).unwrap());
+        let on = |event, selected: &Ref| {
+            let named = selected.named().unwrap();
+            let target = selected.target().clone();
+            args(ref_graph_command(&repository, event, &named, target).unwrap())
+        };
         let master = branch("master", &hashes[0]);
         assert!(on(UserEvent::Merge, &master).contains("is checked out"));
         // checkout offers the branch first, a tag detached
@@ -872,7 +882,8 @@ mod tests {
         let tag = command(&repository, UserEvent::CreateTag, &hashes[1], &[]);
         run(path, tag, "t1");
         assert_eq!(git(&["tag", "--points-at", "topic"]), "t1\n");
-        let tag = ref_graph_command(&repository, UserEvent::CreateTag, &topic);
+        let named = topic.named().unwrap();
+        let tag = ref_graph_command(&repository, UserEvent::CreateTag, &named, hashes[1].clone());
         assert_eq!(
             run(path, tag.unwrap(), "t2").commands,
             [["tag", "t2", "refs/heads/topic"]]
@@ -919,7 +930,7 @@ mod tests {
             Some(UserEvent::DialogToggle),
             KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
         );
-        crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
         assert_eq!(git(&["log", "--format=%B"]), "c2\n\nc1\n\n");
         assert_eq!(git(&["ls-files"]), "f0\nf1\nf2\n");
     }

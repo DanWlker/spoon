@@ -38,10 +38,10 @@ With the mouse captured, the terminal selects text while Shift is held.
 <kbd>f</kbd>, <kbd>p</kbd> and <kbd>P</kbd> open a popup over any page but the help:
 
 - Fetch: the remote to fetch from.
-- Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
+- Pull: the remote and the branch to pull, chosen among those fetched (only the remotes with fetched branches; with none, it asks to fetch first), whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, whether to force push (`--force-with-lease`), and whether to skip the pre-push hook (`--no-verify`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name, a URL, the branch to pull or to push to) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branch to push to cycles through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types into a text field, like a new branch to push to (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name, a URL, the branch to push to) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
@@ -124,7 +124,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 
 | Key                                  | Description                     | Corresponding keybind           |
 | ------------------------------------ | ------------------------------- | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `close` `cancel` |
+| <kbd>Esc</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up             | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up; jump half page while selecting lines or in a preview | `half_page_down` `half_page_up` |
@@ -209,7 +209,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 
 | Key                                                  | Description      | Corresponding keybind            |
 | ---------------------------------------------------- | ---------------- | -------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>                  | Back to the page | `close` `cancel`                 |
+| <kbd>Esc</kbd>                  | Back to the page | `cancel`                 |
 | <kbd>Enter</kbd>                                     | Open/Close node, else back to the page | `confirm`              |
 | <kbd>1</kbd> - <kbd>4</kbd>                          | Focus a panel of the page | `focus_panel_1` ... `focus_panel_4` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
@@ -256,7 +256,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter | `close` `cancel` |
+| <kbd>Esc</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter | `cancel` |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus the commit message, typing it when it is empty          | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Commit, like <kbd>c</kbd>, in the commit section or on an empty unstaged section<br>Go to the unstaged section from an empty staged one | `confirm`    |
@@ -303,7 +303,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the search, then close                                 | `close` `cancel`                |
+| <kbd>Esc</kbd>  | Clear the search, then close                                 | `cancel`                |
 | <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_0` `focus_panel_1` `focus_up` `focus_down` |
 | <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
@@ -323,7 +323,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the search, back out of the lines and hunks, then close | `close` `cancel`               |
+| <kbd>Esc</kbd>  | Clear the search, back out of the lines and hunks, then close | `cancel`               |
 | <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_0` `focus_panel_1` `focus_left` `focus_right` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Into the diff (its hunks)/back out of it                     | `navigate_right` `navigate_left` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
@@ -340,7 +340,7 @@ In both windows, <kbd>,</kbd> dismisses the notices, <kbd>w</kbd> wraps long lin
 
 | Key                                                            | Description              | Corresponding keybind           |
 | -------------------------------------------------------------- | ------------------------ | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>F1</kbd>              | Close help               | `close` `cancel` `help_toggle`  |
+| <kbd>Esc</kbd> <kbd>F1</kbd>              | Close help               | `cancel` `help_toggle`  |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                              | Scroll down/up           | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                                 | Scroll down/up           | `select_down` `select_up`       |
 | <kbd>Ctrl-f/b</kbd>                                            | Scroll page down/up      | `page_down` `page_up`           |

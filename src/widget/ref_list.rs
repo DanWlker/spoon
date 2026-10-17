@@ -23,12 +23,23 @@ use crate::{
     },
 };
 
-const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
-const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
-// the row of a detached HEAD in the branches, see `RefListState::set_head`
-pub const DETACHED_HEAD: &str = "HEAD";
-const TREE_TAG_ROOT_IDENT: &str = "__tags__";
-const TREE_STASH_ROOT_IDENT: &str = "__stashes__";
+// What a row of the tree is: a section, the detached HEAD (see `RefListState::set_head`), or a
+// folder or ref by its full name, like "origin", "feature" or "origin/main".
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum NodeId {
+    Section(RefSection),
+    DetachedHead,
+    Name(String),
+}
+
+impl NodeId {
+    fn name(&self) -> Option<&str> {
+        match self {
+            NodeId::Name(name) => Some(name),
+            _ => None,
+        }
+    }
+}
 
 const TREE_BRANCH_ROOT_TEXT: &str = "Branches";
 const TREE_REMOTE_ROOT_TEXT: &str = "Remotes";
@@ -36,7 +47,7 @@ const TREE_TAG_ROOT_TEXT: &str = "Tags";
 const TREE_STASH_ROOT_TEXT: &str = "Stashes";
 
 // The sections of the sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefSection {
     Branches,
     Remotes,
@@ -45,12 +56,9 @@ pub enum RefSection {
 }
 
 impl RefSection {
-    fn of_root(identifier: &str) -> Option<RefSection> {
+    fn of_root(identifier: &NodeId) -> Option<RefSection> {
         match identifier {
-            TREE_BRANCH_ROOT_IDENT => Some(RefSection::Branches),
-            TREE_REMOTE_ROOT_IDENT => Some(RefSection::Remotes),
-            TREE_TAG_ROOT_IDENT => Some(RefSection::Tags),
-            TREE_STASH_ROOT_IDENT => Some(RefSection::Stashes),
+            NodeId::Section(section) => Some(*section),
             _ => None,
         }
     }
@@ -106,14 +114,16 @@ pub enum RefSelection {
     Folder(RefSection, String),
     // a ref, by its full name: "main", "origin/main", "v1.0", "stash@{0}"
     Ref(RefSection, String),
+    // the detached HEAD, in the branches
+    DetachedHead,
 }
 
 #[derive(Debug)]
 pub struct RefListState {
     roots: Vec<RefTreeNode>,
     visible_rows: Vec<VisibleRefRow>,
-    selected: Vec<String>,
-    opened: HashSet<Vec<String>>,
+    selected: Vec<NodeId>,
+    opened: HashSet<Vec<NodeId>>,
     offset: usize,
     // the rows shown, see `set_height`
     height: usize,
@@ -121,8 +131,8 @@ pub struct RefListState {
     picked: RefPicks,
     // the commits to push and to pull of the local branches with an upstream, by name
     tracking: FxHashMap<String, Tracking>,
-    // the checked-out branch, or "HEAD" when detached, marked
-    head_branch: Option<String>,
+    // the row of the checked-out branch, or of the detached HEAD, marked
+    head: Option<NodeId>,
     // the commits of the stashes by name, their names change as stashes come and go
     stash_targets: FxHashMap<String, CommitHash>,
 }
@@ -130,8 +140,8 @@ pub struct RefListState {
 impl RefListState {
     // `remotes` are the names of the remotes, the folders of their branches.
     pub fn new(refs: &[&Ref], remotes: &[String]) -> Self {
-        let selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
-        let opened = HashSet::from([vec![TREE_BRANCH_ROOT_IDENT.into()]]);
+        let selected = vec![NodeId::Section(RefSection::Branches)];
+        let opened = HashSet::from([selected.clone()]);
         let mut state = Self {
             roots: build_ref_tree_nodes(refs, remotes),
             visible_rows: Vec::new(),
@@ -142,7 +152,7 @@ impl RefListState {
             scroll_to_selection: true,
             picked: RefPicks::default(),
             tracking: FxHashMap::default(),
-            head_branch: None,
+            head: None,
             stash_targets: refs
                 .iter()
                 .filter(|r| matches!(r, Ref::Stash { .. }))
@@ -160,20 +170,20 @@ impl RefListState {
 
     // Marks the checked-out branch; a detached HEAD gets a row of its own, first in the branches.
     pub fn set_head(&mut self, head: &Head) {
-        self.head_branch = match head {
-            Head::Branch { name } => Some(name.clone()),
+        self.head = match head {
+            Head::Branch { name } => Some(NodeId::Name(name.clone())),
             Head::Detached { target } => {
                 let name = format!("HEAD (detached at {})", target.as_short_hash());
-                let node = RefTreeNode::new(DETACHED_HEAD.into(), name, Vec::new());
+                let node = RefTreeNode::new(NodeId::DetachedHead, name, Vec::new());
                 if let Some(branches) = self
                     .roots
                     .iter_mut()
-                    .find(|r| r.identifier == TREE_BRANCH_ROOT_IDENT)
+                    .find(|r| r.identifier == NodeId::Section(RefSection::Branches))
                 {
                     branches.children.insert(0, node);
                 }
                 self.rebuild_visible_rows();
-                Some(DETACHED_HEAD.into())
+                Some(NodeId::DetachedHead)
             }
             Head::None => None,
         };
@@ -292,13 +302,18 @@ impl RefListState {
         self.scroll_to_selection = true;
     }
 
+    // The ref selected, as the graph names it: "HEAD" for the detached HEAD.
     pub fn selected_ref_name(&self) -> Option<String> {
-        self.selected.last().cloned()
+        match self.selected.last()? {
+            NodeId::Name(name) => Some(name.clone()),
+            NodeId::DetachedHead => Some("HEAD".into()),
+            NodeId::Section(_) => None,
+        }
     }
 
     // Selects and opens the section after (or before) the selected one, round.
     pub fn select_section(&mut self, forward: bool) {
-        let sections: Vec<&String> = self
+        let sections: Vec<&NodeId> = self
             .roots
             .iter()
             .map(|root| &root.identifier)
@@ -320,7 +335,7 @@ impl RefListState {
         self.open_section(sections[next].clone());
     }
 
-    fn open_section(&mut self, identifier: String) {
+    fn open_section(&mut self, identifier: NodeId) {
         self.selected = vec![identifier];
         self.opened.insert(self.selected.clone());
         self.rebuild_visible_rows();
@@ -336,8 +351,9 @@ impl RefListState {
                 .iter()
                 .any(|row| row.identifier == self.selected && !row.folder);
         match self.selected.last() {
-            Some(name) if is_ref => RefSelection::Ref(section, name.clone()),
-            Some(path) if self.selected.len() > 1 => RefSelection::Folder(section, path.clone()),
+            Some(NodeId::DetachedHead) => RefSelection::DetachedHead,
+            Some(NodeId::Name(name)) if is_ref => RefSelection::Ref(section, name.clone()),
+            Some(NodeId::Name(path)) => RefSelection::Folder(section, path.clone()),
             _ => RefSelection::Section(section),
         }
     }
@@ -381,11 +397,11 @@ impl RefListState {
         self.picked = picked;
     }
 
-    pub fn current_tree_status(&self) -> (Vec<String>, Vec<Vec<String>>) {
+    fn current_tree_status(&self) -> (Vec<NodeId>, Vec<Vec<NodeId>>) {
         (self.selected.clone(), self.opened.iter().cloned().collect())
     }
 
-    pub fn reset_tree_status(&mut self, selected: Vec<String>, opened: Vec<Vec<String>>) {
+    fn reset_tree_status(&mut self, selected: Vec<NodeId>, opened: Vec<Vec<NodeId>>) {
         self.opened = opened.into_iter().collect();
         self.rebuild_visible_rows();
         self.selected = selected;
@@ -393,7 +409,7 @@ impl RefListState {
             self.selected.pop();
         }
         if self.selected.is_empty() {
-            self.selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
+            self.selected = vec![NodeId::Section(RefSection::Branches)];
         }
         self.scroll_to_selection = true;
     }
@@ -419,7 +435,7 @@ impl RefListState {
 
 #[derive(Debug)]
 struct VisibleRefRow {
-    identifier: Vec<String>,
+    identifier: Vec<NodeId>,
     name: String,
     depth: usize,
     has_children: bool,
@@ -429,8 +445,8 @@ struct VisibleRefRow {
 
 fn collect_visible_rows(
     nodes: &[RefTreeNode],
-    opened: &HashSet<Vec<String>>,
-    parent: &[String],
+    opened: &HashSet<Vec<NodeId>>,
+    parent: &[NodeId],
     rows: &mut Vec<VisibleRefRow>,
 ) {
     for node in nodes {
@@ -518,12 +534,18 @@ impl StatefulWidget for RefList {
 
         // the lines of the tree, like the file trees'; a folder's fold marker and the checked-out
         // branch's dot go in their own column
-        let guides = tree_guides(state.visible_rows.iter().map(|row| {
-            let head = row.depth > 0
-                && row.identifier[0] == TREE_BRANCH_ROOT_IDENT
-                && state.head_branch.as_deref() == row.identifier.last().map(String::as_str);
-            (row.depth, row.has_children || head)
-        }));
+        let branches = NodeId::Section(RefSection::Branches);
+        let is_head = |row: &VisibleRefRow| {
+            row.depth > 0
+                && row.identifier[0] == branches
+                && state.head.as_ref() == row.identifier.last()
+        };
+        let guides = tree_guides(
+            state
+                .visible_rows
+                .iter()
+                .map(|row| (row.depth, row.has_children || is_head(row))),
+        );
         for ((line, row), guide) in state
             .visible_rows
             .iter()
@@ -534,9 +556,7 @@ impl StatefulWidget for RefList {
         {
             let y = inner.y + line as u16;
             // the checked-out branch, like `git branch`
-            let head = row.depth > 0
-                && row.identifier[0] == TREE_BRANCH_ROOT_IDENT
-                && state.head_branch.as_deref() == row.identifier.last().map(String::as_str);
+            let head = is_head(row);
             let symbol = if head {
                 "● "
             } else if !row.has_children {
@@ -562,9 +582,10 @@ impl StatefulWidget for RefList {
             let picked = !row.folder
                 && row.identifier.len() > 1
                 && RefSection::of_root(&row.identifier[0]).is_some_and(|section| {
-                    state
-                        .picked
-                        .contains(section, &row.identifier[row.identifier.len() - 1])
+                    row.identifier
+                        .last()
+                        .and_then(NodeId::name)
+                        .is_some_and(|name| state.picked.contains(section, name))
                 });
             let style = if row.depth == 0 {
                 root_style
@@ -574,8 +595,9 @@ impl StatefulWidget for RefList {
                 item_style
             };
             // a local branch: the commits to push and to pull, after its name
-            let branch = (row.depth > 0 && row.identifier[0] == TREE_BRANCH_ROOT_IDENT)
-                .then(|| row.identifier[row.identifier.len() - 1].as_str());
+            let branch = (row.depth > 0 && row.identifier[0] == branches)
+                .then(|| row.identifier.last().and_then(NodeId::name))
+                .flatten();
             // what runs on it, like lazygit's "Pushing |", in place of its counts
             let task = self.ctx.running_task.borrow();
             let running = task
@@ -647,33 +669,20 @@ fn build_ref_tree_nodes(refs: &[&Ref], remotes: &[String]) -> Vec<RefTreeNode> {
     sort_tag_tree_nodes(&mut tag_nodes);
     sort_stash_tree_nodes(&mut stash_nodes);
 
+    let section = |section, text: &str, children| {
+        RefTreeNode::new(NodeId::Section(section), text.into(), children)
+    };
     vec![
-        RefTreeNode::new(
-            TREE_BRANCH_ROOT_IDENT.into(),
-            TREE_BRANCH_ROOT_TEXT.into(),
-            branch_nodes,
-        ),
-        RefTreeNode::new(
-            TREE_REMOTE_ROOT_IDENT.into(),
-            TREE_REMOTE_ROOT_TEXT.into(),
-            remote_nodes,
-        ),
-        RefTreeNode::new(
-            TREE_TAG_ROOT_IDENT.into(),
-            TREE_TAG_ROOT_TEXT.into(),
-            tag_nodes,
-        ),
-        RefTreeNode::new(
-            TREE_STASH_ROOT_IDENT.into(),
-            TREE_STASH_ROOT_TEXT.into(),
-            stash_nodes,
-        ),
+        section(RefSection::Branches, TREE_BRANCH_ROOT_TEXT, branch_nodes),
+        section(RefSection::Remotes, TREE_REMOTE_ROOT_TEXT, remote_nodes),
+        section(RefSection::Tags, TREE_TAG_ROOT_TEXT, tag_nodes),
+        section(RefSection::Stashes, TREE_STASH_ROOT_TEXT, stash_nodes),
     ]
 }
 
 #[derive(Debug)]
 struct RefTreeNode {
-    identifier: String,
+    identifier: NodeId,
     name: String,
     children: Vec<RefTreeNode>,
     // a remote, a folder even without branches; others are folders when they have children
@@ -681,7 +690,7 @@ struct RefTreeNode {
 }
 
 impl RefTreeNode {
-    fn new(identifier: String, name: String, children: Vec<Self>) -> Self {
+    fn new(identifier: NodeId, name: String, children: Vec<Self>) -> Self {
         Self {
             identifier,
             name,
@@ -695,7 +704,7 @@ fn refs_to_stash_ref_tree_nodes(ref_name_messages: Vec<(String, String)>) -> Vec
     let mut nodes: Vec<RefTreeNode> = Vec::new();
     for (name, message) in ref_name_messages {
         let node = RefTreeNode {
-            identifier: name.clone(),
+            identifier: NodeId::Name(name),
             name: message.to_string(),
             children: Vec::new(),
             folder: false,
@@ -730,7 +739,7 @@ fn remotes_to_ref_tree_nodes(ref_names: Vec<String>, remotes: &[String]) -> Vec<
             prefix_identifiers(&mut children, &remote);
             RefTreeNode {
                 folder: true,
-                ..RefTreeNode::new(remote.clone(), remote, children)
+                ..RefTreeNode::new(NodeId::Name(remote.clone()), remote, children)
             }
         })
         .collect();
@@ -743,7 +752,9 @@ fn remotes_to_ref_tree_nodes(ref_names: Vec<String>, remotes: &[String]) -> Vec<
 // The identifiers of the nodes under the folder `prefix`, which are their full names.
 fn prefix_identifiers(nodes: &mut [RefTreeNode], prefix: &str) {
     for node in nodes {
-        node.identifier = format!("{prefix}/{}", node.identifier);
+        if let NodeId::Name(name) = &mut node.identifier {
+            *name = format!("{prefix}/{name}");
+        }
         prefix_identifiers(&mut node.children, prefix);
     }
 }
@@ -759,7 +770,7 @@ fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
             if let Some(index) = current_nodes.iter().position(|n| n.name == part) {
                 let node = &mut current_nodes[index];
                 current_nodes = &mut node.children;
-                parent_identifier.clone_from(&node.identifier);
+                parent_identifier = node.identifier.name().unwrap_or_default().to_string();
             } else {
                 let identifier = if parent_identifier.is_empty() {
                     part.to_string()
@@ -767,7 +778,7 @@ fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
                     format!("{parent_identifier}/{part}")
                 };
                 let node = RefTreeNode {
-                    identifier: identifier.clone(),
+                    identifier: NodeId::Name(identifier.clone()),
                     name: part.to_string(),
                     children: Vec::new(),
                     folder: false,
@@ -813,6 +824,8 @@ fn sort_tag_tree_nodes(nodes: &mut [RefTreeNode]) {
 fn sort_stash_tree_nodes(nodes: &mut [RefTreeNode]) {
     let index = |node: &RefTreeNode| {
         node.identifier
+            .name()
+            .unwrap_or_default()
             .trim_start_matches("stash@{")
             .trim_end_matches('}')
             .parse::<usize>()
@@ -856,7 +869,7 @@ mod tests {
     fn select(state: &mut RefListState, name: &str) {
         state.select_first();
         for _ in 0..50 {
-            if state.selected.last().map(String::as_str) == Some(name) {
+            if state.selected.last().and_then(NodeId::name) == Some(name) {
                 return;
             }
             state.select_next();
@@ -919,8 +932,8 @@ mod tests {
         assert_eq!(state.picked().names, ["a", "b"]);
         // a tag can't be picked with branches
         state.reset_tree_status(
-            vec![TREE_TAG_ROOT_IDENT.into(), "v1".into()],
-            vec![vec![TREE_TAG_ROOT_IDENT.into()]],
+            vec![NodeId::Section(RefSection::Tags), NodeId::Name("v1".into())],
+            vec![vec![NodeId::Section(RefSection::Tags)]],
         );
         assert!(state.toggle_pick().unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
@@ -951,7 +964,8 @@ mod tests {
         state.set_head(&head);
         assert!(names(&state).contains(&"HEAD (detached at aaaaaaa)".to_string()));
         state.select_next();
-        let selection = RefSelection::Ref(RefSection::Branches, DETACHED_HEAD.into());
+        let selection = RefSelection::DetachedHead;
+        assert_eq!(state.selected_ref_name().as_deref(), Some("HEAD"));
         assert_eq!(state.selection(), selection);
         // and stays selected through a reload
         state.set_refs(&[&branch], &[], &head);
@@ -967,8 +981,11 @@ mod tests {
         };
         let mut state = RefListState::new(&[&stash(0, 'a')], &[]);
         state.reset_tree_status(
-            vec![TREE_STASH_ROOT_IDENT.into(), "stash@{0}".into()],
-            vec![vec![TREE_STASH_ROOT_IDENT.into()]],
+            vec![
+                NodeId::Section(RefSection::Stashes),
+                NodeId::Name("stash@{0}".into()),
+            ],
+            vec![vec![NodeId::Section(RefSection::Stashes)]],
         );
         state.toggle_pick().unwrap();
         // a new stash takes stash@{0}, the picked one is stash@{1} now
@@ -997,7 +1014,7 @@ mod tests {
         let tree = |nodes: &[RefTreeNode]| -> Vec<(String, String)> {
             nodes
                 .iter()
-                .map(|n| (n.identifier.clone(), n.name.clone()))
+                .map(|n| (n.identifier.name().unwrap().to_string(), n.name.clone()))
                 .collect()
         };
         // a folder for each remote, named in full, then the branches of no remote known

@@ -362,7 +362,6 @@ pub enum UserEvent {
     Quit,
     HelpToggle,
     Cancel,
-    Close,
     NavigateUp,
     NavigateDown,
     NavigateRight,

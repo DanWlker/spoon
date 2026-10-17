@@ -122,7 +122,7 @@ impl TimelineView {
         let in_diff = self.pane.is_focused();
         match event {
             // the search, then out of the lines and hunks, then closes
-            UserEvent::Cancel | UserEvent::Close => {
+            UserEvent::Cancel => {
                 if self.query.clear() != QueryChange::None {
                     self.update_query_status();
                 } else if !self.pane.back() {
@@ -314,13 +314,13 @@ impl TimelineView {
             "Focus the commits/the diff",
         );
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "back",
             "Clear the search, back out of the diff, then close",
         )
         .when(diff);
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "close",
             "Clear the search, back out of the diff, then close",
         )

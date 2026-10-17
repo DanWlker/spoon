@@ -6,12 +6,12 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
-use crate::git::{split_remote_branch, Repository};
+use crate::git::{split_remote_branch, CommitHash, Repository};
 
 // What to link to, from the selected row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkTarget {
-    Commit(String),
+    Commit(CommitHash),
     // a local branch: its page, or a new pull request from it, on the remote of its upstream
     Branch(String),
     // "origin/main"
@@ -19,7 +19,7 @@ pub enum LinkTarget {
     Tag(String),
     // lines, when a hunk or line of the diff or a line of the file is selected: (first, last)
     File {
-        commit: String,
+        commit: CommitHash,
         path: String,
         lines: Option<(usize, usize)>,
     },
@@ -157,7 +157,7 @@ pub fn links(
     let (remotes, pages) = match target {
         LinkTarget::Commit(hash) => (
             remotes_of(current)?,
-            vec![("Commit", Page::Commit(hash.clone()))],
+            vec![("Commit", Page::Commit(hash.as_str().to_string()))],
         ),
         LinkTarget::File {
             commit,
@@ -168,7 +168,7 @@ pub fn links(
             vec![(
                 "File",
                 Page::File {
-                    commit: commit.clone(),
+                    commit: commit.as_str().to_string(),
                     path: path.clone(),
                     lines: *lines,
                 },

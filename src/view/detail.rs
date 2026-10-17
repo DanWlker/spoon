@@ -149,17 +149,13 @@ impl<'a> DetailView<'a> {
 
         // the commit list: back to the diff of two commits, closing it, or the list's own keys
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "back to diff",
             "Back to the diff of the two commits",
         )
         .when(|v| v.compare_parked() && v.focus() != Pane);
-        k.add(
-            &[Cancel, Close],
-            "close diff",
-            "Close the diff of the two commits",
-        )
-        .when(|v| v.is_comparing() && !v.compare_parked() && v.focus() != Pane);
+        k.add(&[Cancel], "close diff", "Close the diff of the two commits")
+            .when(|v| v.is_comparing() && !v.compare_parked() && v.focus() != Pane);
         // the help lists them under the commit list
         if k.view().is_some() {
             register_commit_list_keys(
@@ -173,6 +169,12 @@ impl<'a> DetailView<'a> {
                 },
             );
         }
+        // no other diff while one is open: they warn so, not listed where they don't work
+        k.quiet(
+            &[ToggleSelect, Diff, BranchOnly],
+            "While a diff of two commits is open, picking, diffing and branch only warn to close it first",
+        )
+        .when(|v| v.list_focused && v.is_comparing());
 
         // the tabs
         k.add(
@@ -223,7 +225,7 @@ impl<'a> DetailView<'a> {
         )
         .when(|v| pane(v) && tab(DetailTab::Files)(v));
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "clear picks",
             "Clear the picked commits, then close the details",
         )
@@ -234,7 +236,7 @@ impl<'a> DetailView<'a> {
                 && !v.as_list_state().picked_commit_hashes().is_empty()
         });
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "close",
             "Clear the picked commits, then close the details",
         )
@@ -245,7 +247,7 @@ impl<'a> DetailView<'a> {
                 && v.as_list_state().picked_commit_hashes().is_empty()
         });
         k.add(
-            &[Cancel, Close],
+            &[Cancel],
             "back",
             "Back from the diff or preview to the files",
         )
@@ -544,7 +546,7 @@ impl<'a> DetailView<'a> {
         }
         // the picked commits are cleared before the search, the filter and the details; in the
         // diff or preview, Esc goes back to the files first
-        if let UserEvent::Cancel | UserEvent::Close = event {
+        if let UserEvent::Cancel = event {
             // back from the details of a commit to the comparison
             if self.list_focused && self.compare_parked() {
                 self.unpark_compare();
@@ -669,10 +671,10 @@ impl<'a> DetailView<'a> {
                     self.tx.send(event);
                 }
             }
-            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close if self.compare_parked() => {
+            UserEvent::Confirm | UserEvent::Cancel if self.compare_parked() => {
                 self.unpark_compare();
             }
-            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
+            UserEvent::Confirm | UserEvent::Cancel => {
                 self.tx.send(AppEvent::CloseDetail);
             }
             _ => {}
@@ -823,7 +825,7 @@ impl<'a> DetailView<'a> {
                     UserEvent::Confirm => {
                         state.enter();
                     }
-                    UserEvent::Cancel | UserEvent::Close => {
+                    UserEvent::Cancel => {
                         state.back();
                     }
                     UserEvent::ApplyChange => self.apply_change(),
@@ -845,7 +847,7 @@ impl<'a> DetailView<'a> {
                     return;
                 }
                 match event {
-                    UserEvent::Cancel | UserEvent::Close => {
+                    UserEvent::Cancel => {
                         state.back();
                     }
                     UserEvent::ShortCopy => {
@@ -938,7 +940,7 @@ impl<'a> DetailView<'a> {
                 return true;
             }
             // the details stay open; they are closed from them
-            UserEvent::Cancel | UserEvent::Close => return true,
+            UserEvent::Cancel => return true,
             _ => return false,
         }
         if *self.as_list_state().selected_commit_hash() != before {
@@ -1020,7 +1022,7 @@ impl<'a> DetailView<'a> {
                 self.search(direction);
                 return true;
             }
-            UserEvent::Cancel | UserEvent::Close => {
+            UserEvent::Cancel => {
                 // clear the search, then the filter, before closing
                 let change = query.clear();
                 if change == QueryChange::None {

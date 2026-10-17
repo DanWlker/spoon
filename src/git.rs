@@ -87,13 +87,38 @@ impl Ref {
         }
     }
 
+    // A branch, remote branch or tag; None for a stash.
+    pub fn named(&self) -> Option<NamedRef> {
+        match self {
+            Ref::Branch { name, .. } => Some(NamedRef::Branch(name.clone())),
+            Ref::RemoteBranch { name, .. } => Some(NamedRef::RemoteBranch(name.clone())),
+            Ref::Tag { name, .. } => Some(NamedRef::Tag(name.clone())),
+            Ref::Stash { .. } => None,
+        }
+    }
+}
+
+// A branch, remote branch or tag by its name: a ref to work on, unlike a stash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedRef {
+    Branch(String),
+    RemoteBranch(String),
+    Tag(String),
+}
+
+impl NamedRef {
+    pub fn name(&self) -> &str {
+        match self {
+            NamedRef::Branch(name) | NamedRef::RemoteBranch(name) | NamedRef::Tag(name) => name,
+        }
+    }
+
     // The name git can't take for another ref, as a branch and a tag may share a name.
     pub fn full_name(&self) -> String {
         match self {
-            Ref::Tag { name, .. } => format!("refs/tags/{name}"),
-            Ref::Branch { name, .. } => format!("refs/heads/{name}"),
-            Ref::RemoteBranch { name, .. } => format!("refs/remotes/{name}"),
-            Ref::Stash { name, .. } => name.clone(),
+            NamedRef::Branch(name) => format!("refs/heads/{name}"),
+            NamedRef::RemoteBranch(name) => format!("refs/remotes/{name}"),
+            NamedRef::Tag(name) => format!("refs/tags/{name}"),
         }
     }
 }
