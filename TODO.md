@@ -9,7 +9,3 @@ TODO:
    - Risk: squash, drop, amend and rebase from the graph look up commit parents in the loaded graph, and in a filtered graph those parents are wrong. Running them there could rewrite the wrong commits. I'd turn them off while the filter is on, with a message.
    - Not planned: following renames (--follow). git only supports it for a single file, and it doesn't work well with a graph.
 1. Interactive rebase, Shift R? need to find another keybind for refresh
-1. now, using enums is an example of preventing multiple booleans and triggering invalid states, passing something not null is
-   ensuring null cannot happen in the first place. the best guard is to ensure that state is impossible in the first place, check the
-   ones that you wrote compared to master and find any such enhancements
-1. regen demo.gif and the images
