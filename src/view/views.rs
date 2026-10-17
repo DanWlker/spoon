@@ -4,110 +4,15 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
-    git::{Commit, CommitHash, FileChange, Ref, Repository},
+    event::{hint, KeyHint, Sender, UserEvent},
+    git::{Commit, FileChange, Ref, Repository},
     layout::Direction,
-    search::SearchOptions,
     view::{
         detail::DetailView, list::ListView, local_changes::LocalChangesView,
-        user_command::UserCommandView,
+        user_command::UserCommandView, RefreshViewContext,
     },
-    widget::commit_tabs::DetailTab,
-    widget::{
-        commit_list::{CommitListState, SearchRefreshContext},
-        file_tree::ROOT_PATH,
-        local_changes::LocalChangesState,
-    },
+    widget::{commit_list::CommitListState, local_changes::LocalChangesState},
 };
-
-// The keys of the commit graph, with the commands on the selected or picked commits.
-pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
-    let mut hints = vec![];
-    if picked > 0 {
-        hints.push(hint(UserEvent::Cancel, "clear picks"));
-    }
-    hints.extend([
-        hint(UserEvent::ToggleSelect, "pick"),
-        hint(UserEvent::Diff, "diff"),
-        hint(UserEvent::Checkout, "checkout"),
-        hint(UserEvent::Merge, "merge"),
-        hint(UserEvent::Rebase, "rebase"),
-        hint(UserEvent::CherryPick, "cherry-pick"),
-        hint(UserEvent::Squash, "squash"),
-        hint(UserEvent::AmendCommit, "amend"),
-        hint(UserEvent::DropCommit, "drop"),
-        hint(UserEvent::CreateBranch, "branch"),
-        hint(UserEvent::CreateTag, "tag"),
-        hint(UserEvent::BranchOnly, "branch only"),
-        hint(UserEvent::OpenInBrowser, "open in browser"),
-        hint(UserEvent::Revert, "revert"),
-        hint(UserEvent::Reset, "reset"),
-        hint(UserEvent::Search, "search"),
-        (
-            vec![UserEvent::ShortCopy, UserEvent::FullCopy],
-            "copy hash".into(),
-        ),
-    ]);
-    hints
-}
-
-// The keys while typing a search or filter.
-pub fn typing_hints(searching_commits: bool) -> Vec<KeyHint> {
-    let mut hints = vec![];
-    if searching_commits {
-        hints.extend([
-            hint(UserEvent::SearchTargetToggle, "target"),
-            hint(UserEvent::SmartCaseToggle, "smart case"),
-            hint(UserEvent::FuzzyToggle, "fuzzy"),
-        ]);
-    }
-    hints.extend([
-        hint(UserEvent::Confirm, "apply"),
-        hint(UserEvent::Cancel, "cancel"),
-    ]);
-    hints
-}
-
-// Copies a commit hash: short, or in full with `full`.
-pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
-    let (name, value) = if full {
-        ("Commit SHA", hash.as_str())
-    } else {
-        ("Commit SHA (short)", hash.as_short_hash())
-    };
-    AppEvent::copy(name, value)
-}
-
-// The status line showing what is `typed`, with its cursor, and `metadata` on the right, like
-// a search; cleared when nothing is typed.
-pub fn status_input(typed: Option<(String, u16)>, metadata: String) -> AppEvent {
-    match typed {
-        Some((message, cursor_position)) => AppEvent::UpdateStatusInput {
-            message,
-            cursor_position,
-            metadata,
-        },
-        None => AppEvent::ClearStatusLine,
-    }
-}
-
-// Copies the selected part of a diff or a file: a line, or else a hunk.
-pub fn copy_selection(text: String, line: bool) -> AppEvent {
-    AppEvent::copy(if line { "Line" } else { "Hunk" }, text)
-}
-
-// Copies the path of a file in the repository: relative to its top, or absolute with `full`.
-pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
-    // the root row of the local changes stands for the whole repository
-    let relative = if path == ROOT_PATH { "." } else { path };
-    if full {
-        let absolute = repository.path().join(relative);
-        let absolute = absolute.to_string_lossy();
-        AppEvent::copy("Absolute Path", absolute.trim_end_matches("/."))
-    } else {
-        AppEvent::copy("Path", relative)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
@@ -338,82 +243,3 @@ impl<'a> View<'a> {
         on_page!(self, view => Some(view.refresh_context()), None)
     }
 }
-
-#[derive(Debug, Clone)]
-pub enum RefreshViewContext {
-    List {
-        list_context: ListRefreshViewContext,
-    },
-    Detail {
-        list_context: ListRefreshViewContext,
-        // the tab shown
-        tab: DetailTab,
-    },
-    UserCommand {
-        list_context: ListRefreshViewContext,
-        user_command_context: UserCommandRefreshViewContext,
-    },
-    LocalChanges {
-        list_context: ListRefreshViewContext,
-        local_changes_context: LocalChangesRefreshViewContext,
-    },
-}
-
-impl RefreshViewContext {
-    pub fn list_context_mut(&mut self) -> &mut ListRefreshViewContext {
-        match self {
-            RefreshViewContext::List { list_context }
-            | RefreshViewContext::Detail { list_context, .. }
-            | RefreshViewContext::UserCommand { list_context, .. }
-            | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
-        }
-    }
-
-    pub fn list_context(&self) -> &ListRefreshViewContext {
-        match self {
-            RefreshViewContext::List { list_context }
-            | RefreshViewContext::Detail { list_context, .. }
-            | RefreshViewContext::UserCommand { list_context, .. }
-            | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ListRefreshViewContext {
-    pub commit_hash: String,
-    pub picked_commit_hashes: Vec<CommitHash>,
-    pub selected: usize,
-    pub height: usize,
-    pub scroll_to_top: bool,
-    pub search_options: SearchOptions,
-    pub search_context: Option<SearchRefreshContext>,
-}
-
-impl From<&CommitListState<'_>> for ListRefreshViewContext {
-    fn from(list_state: &CommitListState) -> Self {
-        let commit_hash = list_state.selected_commit_hash().as_str().into();
-        let (selected, offset, height) = list_state.current_list_status();
-        // If the selected commit is the top one and there is no offset, it means the list is already scrolled to the top.
-        // In this case, we set scroll_to_top to true to indicate that the view should be scrolled to the top after refresh.
-        let scroll_to_top = selected == 0 && offset == 0;
-        let search_options = list_state.search_options();
-        let search_context = list_state.search_refresh_context();
-        ListRefreshViewContext {
-            commit_hash,
-            picked_commit_hashes: list_state.picked_commit_hashes().to_vec(),
-            selected,
-            height,
-            scroll_to_top,
-            search_options,
-            search_context,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct UserCommandRefreshViewContext {
-    pub n: usize,
-}
-
-pub use crate::widget::local_changes::LocalChangesSnapshot as LocalChangesRefreshViewContext;
