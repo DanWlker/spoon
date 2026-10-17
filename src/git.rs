@@ -764,21 +764,6 @@ impl Repository {
         })
     }
 
-    // Applies `patch` to the working tree, `reverse` to undo the changes in it.
-    #[cfg(test)]
-    pub fn apply_patch_to_worktree(
-        &self,
-        patch: &str,
-        reverse: bool,
-    ) -> std::result::Result<(), String> {
-        let mut args = vec!["apply"];
-        if reverse {
-            args.push("--reverse");
-        }
-        args.push("-");
-        self.run(&args, Some(patch))
-    }
-
     // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
     pub fn operation_in_progress(&self) -> Option<Operation> {
         let exists = |name: &str| self.git_path(name).is_some_and(|p| p.exists());
@@ -1060,13 +1045,18 @@ impl Repository {
             .ok()
     }
 
-    // Stages (or unstages, with `reverse`) the changes in `patch`, a diff produced by `local_change_diff`.
-    pub fn apply_patch_to_index(
+    // Applies the changes in `patch`, a diff produced by `local_change_diff`, to the index (staging
+    // them) with `cached`, else to the working tree; `reverse` undoes them, like unstaging.
+    pub fn apply_patch(
         &self,
         patch: &str,
         reverse: bool,
+        cached: bool,
     ) -> std::result::Result<(), String> {
-        let mut args = vec!["apply", "--cached"];
+        let mut args = vec!["apply"];
+        if cached {
+            args.push("--cached");
+        }
         if reverse {
             args.push("--reverse");
         }
@@ -2919,7 +2909,7 @@ mod tests {
         let diff = parse_diff(&repository.local_change_diff(&["é.txt"], false, true, None));
         // unstaging the second line keeps the file staged with the first
         let patch = diff.hunks[0].partial_patch(&[1], true);
-        repository.apply_patch_to_index(&patch, true).unwrap();
+        repository.apply_patch(&patch, true, true).unwrap();
         let staged = git_output(path, &["show", ":é.txt"]).unwrap();
         assert_eq!(staged, "a\n");
     }
@@ -2949,7 +2939,7 @@ mod tests {
         let staged = parse_diff(&repository.local_change_diff(&[":/"], false, true, None));
         assert_eq!(staged.hunks.len(), 2);
         repository
-            .apply_patch_to_index(&staged.hunks[0].patch(), true)
+            .apply_patch(&staged.hunks[0].patch(), true, true)
             .unwrap();
         let index = git_output(path, &["show", ":new.txt"]).unwrap();
         assert_eq!(index, numbers.replace("\n15\n", "\nfifteen\n"));
@@ -2963,7 +2953,7 @@ mod tests {
         let base = format!("{}~1", head.as_str());
         let diff = parse_diff(&repository.diff_between(&base, head.as_str(), &[]));
         repository
-            .apply_patch_to_worktree(&diff.hunks[0].partial_patch(&[3, 4], false), false)
+            .apply_patch(&diff.hunks[0].partial_patch(&[3, 4], false), false, false)
             .unwrap();
         let content = std::fs::read_to_string(path.join("new.txt")).unwrap();
         assert_eq!(content, numbers.replace("\n5\n", "\nfive\n"));

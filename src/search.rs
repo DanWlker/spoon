@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use serde::Deserialize;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -58,24 +56,6 @@ impl SearchOptions {
 // uppercase letter, case-sensitive never is.
 pub fn case_insensitive(smart_case: bool, query: &str) -> bool {
     smart_case && !query.chars().any(char::is_uppercase)
-}
-
-// The commit list's options, which the file trees, diffs and commit details search with too.
-// shortcut: global, keep them in `TreeQuery` if the trees get toggles of their own.
-static SHARED_SMART_CASE: AtomicBool = AtomicBool::new(true);
-static SHARED_FUZZY: AtomicBool = AtomicBool::new(false);
-
-pub fn share(options: SearchOptions) {
-    SHARED_SMART_CASE.store(options.smart_case, Ordering::Relaxed);
-    SHARED_FUZZY.store(options.fuzzy, Ordering::Relaxed);
-}
-
-pub fn shared_smart_case() -> bool {
-    SHARED_SMART_CASE.load(Ordering::Relaxed)
-}
-
-pub fn shared_fuzzy() -> bool {
-    SHARED_FUZZY.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

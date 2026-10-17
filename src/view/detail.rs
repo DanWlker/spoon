@@ -345,7 +345,8 @@ impl<'a> DetailView<'a> {
         if self.list_focused {
             let before = self.as_list_state().selected_commit_hash().clone();
             let tx = self.tx.clone();
-            if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
+            let ctx = self.ctx.clone();
+            if handle_search_event(self.as_mut_list_state(), &ctx, &tx, event, key) {
                 if *self.as_list_state().selected_commit_hash() != before {
                     self.update_selected_commit(|_| {});
                 }
@@ -843,6 +844,7 @@ impl<'a> DetailView<'a> {
     }
 
     fn apply_query_change(&mut self, change: QueryChange) {
+        let options = self.ctx.search_options.get();
         match change {
             QueryChange::None => {}
             QueryChange::Search => self.search(SearchDirection::Current),
@@ -851,8 +853,12 @@ impl<'a> DetailView<'a> {
                 let filter = filter.as_deref();
                 match self.tab {
                     DetailTab::Info => {}
-                    DetailTab::Changes => self.changes_state.update_tree(|t| t.set_filter(filter)),
-                    DetailTab::Files => self.files_state.update_tree(|t| t.set_filter(filter)),
+                    DetailTab::Changes => self
+                        .changes_state
+                        .update_tree(|t| t.set_filter(filter, options)),
+                    DetailTab::Files => self
+                        .files_state
+                        .update_tree(|t| t.set_filter(filter, options)),
                 }
             }
         }
@@ -862,10 +868,11 @@ impl<'a> DetailView<'a> {
         let Some(search) = self.query().and_then(TreeQuery::search).map(String::from) else {
             return;
         };
+        let options = self.ctx.search_options.get();
         if self.is_pane_focused() {
             let found = match self.tab {
-                DetailTab::Changes => self.changes_state.search_diff(&search, direction),
-                DetailTab::Files => self.files_state.search_preview(&search, direction),
+                DetailTab::Changes => self.changes_state.search_diff(&search, direction, options),
+                DetailTab::Files => self.files_state.search_preview(&search, direction, options),
                 DetailTab::Info => true,
             };
             // while typing, the status line shows the query instead
@@ -879,10 +886,10 @@ impl<'a> DetailView<'a> {
             DetailTab::Info => {}
             DetailTab::Changes => self
                 .changes_state
-                .update_tree(|t| t.search(&search, direction)),
+                .update_tree(|t| t.search(&search, direction, options)),
             DetailTab::Files => self
                 .files_state
-                .update_tree(|t| t.search(&search, direction)),
+                .update_tree(|t| t.search(&search, direction, options)),
         }
     }
 

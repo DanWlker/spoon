@@ -18,6 +18,7 @@ use ratatui::{
 use crate::{
     color::ColorTheme,
     git::Repository,
+    search::SearchOptions,
     widget::{
         style::{divider, mark_selected_bar, placeholder, ScrollState},
         tree_query::{find_around, match_range, patch_range, SearchDirection},
@@ -314,6 +315,7 @@ impl DiffCursor {
         query: &str,
         direction: SearchDirection,
         lines: bool,
+        options: SearchOptions,
     ) -> Option<bool> {
         let selected = if lines {
             self.line
@@ -322,7 +324,7 @@ impl DiffCursor {
         };
         let start = self.search_row.unwrap_or(selected);
         let row = find_around(diff.rows.len(), start, direction, |r| {
-            match_range(&diff.rows[r].text, query).is_some()
+            match_range(&diff.rows[r].text, query, options).is_some()
         })?;
         let changed = diff.rows[row].is_change();
         if changed {

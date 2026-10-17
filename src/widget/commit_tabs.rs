@@ -14,6 +14,7 @@ use crate::{
     event::UserEvent,
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{fit_size, Panel},
+    search::SearchOptions,
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
         diff::{
@@ -21,7 +22,7 @@ use crate::{
             visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
         file_tree::{render_tree, FileTree, FileTreeState},
-        tree_query::{find_around, highlight_match, keeps, match_range, SearchDirection},
+        tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
 };
 
@@ -215,7 +216,7 @@ impl<'a> CommitChangesState<'a> {
                     .files
                     .iter()
                     .filter(|f| row.contains(&f.path))
-                    .filter(|f| keeps(self.tree.filter(), &f.path))
+                    .filter(|f| self.tree.keeps(&f.path))
                     .collect();
                 let mut paths: Vec<&str> = match self.tree.filter() {
                     Some(_) if row.is_dir() => files.iter().map(|f| f.path.as_str()).collect(),
@@ -349,12 +350,17 @@ impl<'a> CommitChangesState<'a> {
 
     // Selects a row of the diff matching `query`, see `DiffCursor::search`. Returns false when
     // nothing matches.
-    pub fn search_diff(&mut self, query: &str, direction: SearchDirection) -> bool {
+    pub fn search_diff(
+        &mut self,
+        query: &str,
+        direction: SearchDirection,
+        options: SearchOptions,
+    ) -> bool {
         let Some(diff) = &self.diff else {
             return false;
         };
         let lines = self.focus == ChangesFocus::Lines;
-        match self.cursor.search(diff, query, direction, lines) {
+        match self.cursor.search(diff, query, direction, lines, options) {
             Some(changed) => {
                 self.focus = if changed {
                     ChangesFocus::Lines
@@ -554,13 +560,18 @@ impl<'a> CommitFilesState<'a> {
 
     // Selects the line of the preview matching `query`, around from the last match; false when
     // nothing matches.
-    pub fn search_preview(&mut self, query: &str, direction: SearchDirection) -> bool {
+    pub fn search_preview(
+        &mut self,
+        query: &str,
+        direction: SearchDirection,
+        options: SearchOptions,
+    ) -> bool {
         let Some(lines) = self.text_lines() else {
             return false;
         };
         let start = self.search_row.unwrap_or(self.cursor.line);
         let found = find_around(lines.len(), start, direction, |i| {
-            match_range(&lines[i], query).is_some()
+            match_range(&lines[i], query, options).is_some()
         });
         let Some(line) = found else {
             return false;
@@ -692,7 +703,7 @@ impl CommitTab {
         };
         if let Some(query) = &self.pane_search {
             for line in lines.iter_mut() {
-                highlight_match(line, query, theme);
+                highlight_match(line, query, self.ctx.search_options.get(), theme);
             }
         }
         let wrap = self.ctx.wrap.get();
@@ -749,7 +760,12 @@ impl CommitTab {
                                 Span::raw(line.replace('\t', "    ")),
                             ]);
                             if let Some(query) = &self.pane_search {
-                                highlight_match(&mut line, query, theme);
+                                highlight_match(
+                                    &mut line,
+                                    query,
+                                    self.ctx.search_options.get(),
+                                    theme,
+                                );
                             }
                             if selected.contains(&i) {
                                 line.style = line.style.patch(highlight_style);
@@ -1013,17 +1029,25 @@ mod tests {
         assert!(state.back() && state.back() && !state.back());
 
         // searching selects the line matched, around from the last match
-        assert!(!state.search_diff("TWO", SearchDirection::Current));
-        assert!(state.search_diff("two", SearchDirection::Current));
+        assert!(!state.search_diff("TWO", SearchDirection::Current, SearchOptions::default()));
+        assert!(state.search_diff("two", SearchDirection::Current, SearchOptions::default()));
         assert_eq!(state.selected_text().as_deref(), Some("two"));
-        assert!(state.search_diff("line 1", SearchDirection::Next));
-        assert!(state.search_diff("line 1", SearchDirection::Previous));
+        assert!(state.search_diff("line 1", SearchDirection::Next, SearchOptions::default()));
+        assert!(state.search_diff(
+            "line 1",
+            SearchDirection::Previous,
+            SearchOptions::default()
+        ));
 
         // applying the added line to a working tree going back to the first commit
         fs::write(repo_path.join("f"), lines.concat())?;
-        state.search_diff("eighteen", SearchDirection::Current);
+        state.search_diff(
+            "eighteen",
+            SearchDirection::Current,
+            SearchOptions::default(),
+        );
         let patch = state.selected_patch().unwrap();
-        repository.apply_patch_to_worktree(&patch, false)?;
+        repository.apply_patch(&patch, false, false)?;
         let mut expected = lines.clone();
         expected.insert(18, "eighteen\n".into());
         assert_eq!(fs::read_to_string(repo_path.join("f"))?, expected.concat());
@@ -1055,11 +1079,11 @@ mod tests {
         assert_eq!(state.selected_text().as_deref(), Some("three"));
 
         // searching goes around from the last match
-        assert!(state.search_preview("o", SearchDirection::Next));
+        assert!(state.search_preview("o", SearchDirection::Next, SearchOptions::default()));
         assert_eq!(state.selected_text().as_deref(), Some("one"));
-        assert!(state.search_preview("o", SearchDirection::Next));
+        assert!(state.search_preview("o", SearchDirection::Next, SearchOptions::default()));
         assert_eq!(state.selected_text().as_deref(), Some("\ttwo"));
-        assert!(!state.search_preview("zzz", SearchDirection::Next));
+        assert!(!state.search_preview("zzz", SearchDirection::Next, SearchOptions::default()));
         assert!(state.back() && !state.back());
         assert_eq!(state.selected_text(), None);
         Ok(())

@@ -18,6 +18,7 @@ use crate::{
         LocalChanges, Operation, Repository,
     },
     layout::{fit_size, Direction, Panel},
+    search::SearchOptions,
     widget::{
         conflict::ConflictView,
         diff::{
@@ -595,7 +596,7 @@ impl<'a> LocalChangesState<'a> {
         self.files()
             .iter()
             .filter(|f| self.picked().iter().any(|p| path_contains(p, &f.path)))
-            .filter(|f| self.query().keeps(&f.path))
+            .filter(|f| self.tree().keeps(&f.path))
             .collect()
     }
 
@@ -1081,7 +1082,7 @@ impl<'a> LocalChangesState<'a> {
             return Ok(());
         };
         let reverse = self.section == LocalChangesSection::Staged;
-        self.repository.apply_patch_to_index(&hunk.patch(), reverse)
+        self.repository.apply_patch(&hunk.patch(), reverse, true)
     }
 
     fn toggle_stage_line(&self) -> Result<(), String> {
@@ -1089,7 +1090,7 @@ impl<'a> LocalChangesState<'a> {
         let Some(patch) = self.cursor.line_patch(&self.diff, reverse) else {
             return Ok(());
         };
-        self.repository.apply_patch_to_index(&patch, reverse)
+        self.repository.apply_patch(&patch, reverse, true)
     }
 
     fn toggle_stage_row(&self) -> Result<(), String> {
@@ -1188,7 +1189,7 @@ impl<'a> LocalChangesState<'a> {
     fn row_files(&self, row: &FileTreeRow) -> Vec<&LocalChangeFile> {
         self.files()
             .iter()
-            .filter(|f| row.contains(&f.path) && self.query().keeps(&f.path))
+            .filter(|f| row.contains(&f.path) && self.tree().keeps(&f.path))
             .collect()
     }
 
@@ -1215,21 +1216,21 @@ impl<'a> LocalChangesState<'a> {
             .or_else(|| self.query().status_input())
     }
 
-    pub fn handle_query_key(&mut self, key: KeyEvent) {
+    pub fn handle_query_key(&mut self, key: KeyEvent, options: SearchOptions) {
         if self.diff_query.is_editing() {
             if self.diff_query.handle_key(key) == QueryChange::Search {
-                self.search_diff(SearchDirection::Current);
+                self.search_diff(SearchDirection::Current, options);
             }
             return;
         }
         let change = self.query_mut().handle_key(key);
-        self.apply_query_change(change);
+        self.apply_query_change(change, options);
     }
 
     // Clears the search, or else the filter. Returns false when there was neither.
-    pub fn clear_query(&mut self) -> bool {
+    pub fn clear_query(&mut self, options: SearchOptions) -> bool {
         let change = self.query_mut().clear();
-        self.apply_query_change(change);
+        self.apply_query_change(change, options);
         change != QueryChange::None
     }
 
@@ -1238,26 +1239,29 @@ impl<'a> LocalChangesState<'a> {
         self.is_diff_focused() && self.diff_query.clear() != QueryChange::None
     }
 
-    pub fn search_next(&mut self, forward: bool) {
+    pub fn search_next(&mut self, forward: bool, options: SearchOptions) {
         let direction = if forward {
             SearchDirection::Next
         } else {
             SearchDirection::Previous
         };
         if self.is_diff_focused() {
-            self.search_diff(direction);
+            self.search_diff(direction, options);
         } else {
-            self.search(direction);
+            self.search(direction, options);
         }
     }
 
     // Selects the match of the diff search: the changed line it is on, else its hunk.
-    fn search_diff(&mut self, direction: SearchDirection) {
+    fn search_diff(&mut self, direction: SearchDirection, options: SearchOptions) {
         let Some(query) = self.diff_query.search() else {
             return;
         };
         let lines = self.focus == Focus::Lines;
-        if let Some(changed) = self.cursor.search(&self.diff, query, direction, lines) {
+        if let Some(changed) = self
+            .cursor
+            .search(&self.diff, query, direction, lines, options)
+        {
             self.focus = if changed { Focus::Lines } else { Focus::Hunks };
         }
     }
@@ -1272,24 +1276,24 @@ impl<'a> LocalChangesState<'a> {
             .flatten()
     }
 
-    fn apply_query_change(&mut self, change: QueryChange) {
+    fn apply_query_change(&mut self, change: QueryChange, options: SearchOptions) {
         match change {
             QueryChange::None => {}
-            QueryChange::Search => self.search(SearchDirection::Current),
+            QueryChange::Search => self.search(SearchDirection::Current, options),
             QueryChange::Filter => {
                 // only the focused section is filtered
                 let filter = self.query().filter().map(String::from);
-                self.update_tree(|tree| tree.set_filter(filter.as_deref()));
+                self.update_tree(|tree| tree.set_filter(filter.as_deref(), options));
             }
         }
     }
 
     // Selects the match of the search in the current section, expanding the directories hiding it.
-    fn search(&mut self, direction: SearchDirection) {
+    fn search(&mut self, direction: SearchDirection, options: SearchOptions) {
         let Some(query) = self.query().search().map(String::from) else {
             return;
         };
-        self.update_tree(|tree| tree.search(&query, direction));
+        self.update_tree(|tree| tree.search(&query, direction, options));
     }
 
     // Moves the cursor to the next (or previous) picked row, wrapping around.
@@ -1690,7 +1694,12 @@ impl LocalChangesPanel<'_> {
         let search = state.diff_query.search().filter(|_| selected);
         if let Some(query) = search {
             for line in lines.iter_mut() {
-                highlight_match(line, query, &self.ctx.color_theme);
+                highlight_match(
+                    line,
+                    query,
+                    self.ctx.search_options.get(),
+                    &self.ctx.color_theme,
+                );
             }
         }
         let rows = offset..offset + lines.len();
@@ -2225,15 +2234,21 @@ mod tests {
         // the search of the diff selects the line matched; the files' query is left alone
         state.start_query(QueryKind::Search);
         for c in "new".chars() {
-            state.handle_query_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            state.handle_query_key(
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                SearchOptions::default(),
+            );
         }
-        state.handle_query_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        state.handle_query_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            SearchOptions::default(),
+        );
         assert!(state.is_selecting_lines());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
         assert_eq!(state.query().search(), None);
-        state.search_next(true);
+        state.search_next(true, SearchOptions::default());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new B"));
-        state.search_next(true);
+        state.search_next(true, SearchOptions::default());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
 
         // a filter can't start from the diff, esc clears the search before going back
@@ -2725,9 +2740,9 @@ mod tests {
     fn type_query(state: &mut LocalChangesState, kind: QueryKind, text: &str) {
         state.start_query(kind);
         for c in text.chars() {
-            state.handle_query_key(key(KeyCode::Char(c)));
+            state.handle_query_key(key(KeyCode::Char(c)), SearchOptions::default());
         }
-        state.handle_query_key(key(KeyCode::Enter));
+        state.handle_query_key(key(KeyCode::Enter), SearchOptions::default());
     }
 
     #[test]
@@ -2761,7 +2776,7 @@ mod tests {
                 .as_deref(),
             Some("/app")
         );
-        assert!(state.clear_query());
+        assert!(state.clear_query(SearchOptions::default()));
 
         // filter, then stage everything shown: only the matching files
         type_query(&mut state, QueryKind::Filter, "list");
@@ -2793,18 +2808,18 @@ mod tests {
         // n and N step through matches, wrapping around
         type_query(&mut state, QueryKind::Search, "list");
         assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
-        state.search_next(true);
+        state.search_next(true, SearchOptions::default());
         assert_eq!(state.selected_path().as_deref(), Some("src/view/list.rs"));
-        state.search_next(true);
+        state.search_next(true, SearchOptions::default());
         assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
 
         // esc clears the search of the staged section, the filter is the unstaged one's
-        assert!(state.clear_query());
-        assert!(!state.clear_query());
+        assert!(state.clear_query(SearchOptions::default()));
+        assert!(!state.clear_query(SearchOptions::default()));
         state.focus_section(LocalChangesSection::Unstaged);
         assert!(visible(&state).is_empty());
-        assert!(state.clear_query());
-        assert!(!state.clear_query());
+        assert!(state.clear_query(SearchOptions::default()));
+        assert!(!state.clear_query(SearchOptions::default()));
         assert_eq!(visible(&state), vec![":/", "src", "src/app.rs"]);
 
         Ok(())
@@ -2887,8 +2902,8 @@ mod tests {
         assert!(!state.back());
         assert!(state.clear_picks());
         assert!(!state.clear_picks());
-        assert!(state.clear_query());
-        assert!(!state.clear_query());
+        assert!(state.clear_query(SearchOptions::default()));
+        assert!(!state.clear_query(SearchOptions::default()));
 
         Ok(())
     }

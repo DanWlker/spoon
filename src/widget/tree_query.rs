@@ -9,7 +9,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     color::ColorTheme,
-    search::{case_insensitive, shared_fuzzy, shared_smart_case},
+    search::{case_insensitive, SearchOptions},
 };
 
 // Searching (`/`) and filtering (`?`) a file tree by path.
@@ -95,11 +95,6 @@ impl TreeQuery {
         self.filter.as_deref()
     }
 
-    // Whether `path` passes the filter.
-    pub fn keeps(&self, path: &str) -> bool {
-        keeps(self.filter(), path)
-    }
-
     // The query being typed, as shown in the status line: (text, cursor position).
     pub fn status_input(&self) -> Option<(String, u16)> {
         let (kind, input) = self.editing.as_ref()?;
@@ -153,12 +148,8 @@ fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
 
 // Whether `path` matches `query`, searching as the commit list does: fuzzily or as a substring,
 // smart case or case-sensitive.
-pub fn path_matches(path: &str, query: &str) -> bool {
-    path_matches_with(path, query, shared_fuzzy(), shared_smart_case())
-}
-
-pub fn keeps(filter: Option<&str>, path: &str) -> bool {
-    filter.is_none_or(|f| path_matches(path, f))
+pub fn path_matches(path: &str, query: &str, options: SearchOptions) -> bool {
+    path_matches_with(path, query, options.fuzzy, options.smart_case)
 }
 
 fn path_matches_with(path: &str, query: &str, fuzzy: bool, smart_case: bool) -> bool {
@@ -172,8 +163,12 @@ fn path_matches_with(path: &str, query: &str, fuzzy: bool, smart_case: bool) -> 
 }
 
 // The byte range of the first match of `query` in `text`, to highlight it.
-pub fn match_range(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
-    let start = if !case_insensitive(shared_smart_case(), query) {
+pub fn match_range(
+    text: &str,
+    query: &str,
+    options: SearchOptions,
+) -> Option<std::ops::Range<usize>> {
+    let start = if !case_insensitive(options.smart_case, query) {
         text.find(query)?
     } else {
         // lowercasing can change byte lengths, so only use the result when it does not
@@ -215,14 +210,19 @@ pub fn find_around(
 }
 
 // Highlights the match of `query` in the last span of a line, its text after any line numbers.
-pub fn highlight_match(line: &mut Line<'_>, query: &str, theme: &ColorTheme) {
+pub fn highlight_match(
+    line: &mut Line<'_>,
+    query: &str,
+    options: SearchOptions,
+    theme: &ColorTheme,
+) {
     let text: String = line
         .spans
         .iter()
         .skip(1)
         .map(|s| s.content.as_ref())
         .collect();
-    if let Some(matched) = match_range(&text, query) {
+    if let Some(matched) = match_range(&text, query, options) {
         let style = Style::default()
             .fg(theme.list_match_fg)
             .bg(theme.list_match_bg);
@@ -261,11 +261,10 @@ pub fn patch_range(line: &mut Line<'_>, range: std::ops::Range<usize>, style: St
 pub fn highlighted_name(
     name: &str,
     search: Option<&str>,
+    options: SearchOptions,
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
-    let ranges = search.map_or(vec![], |query| {
-        name_match_ranges(name, query, shared_fuzzy())
-    });
+    let ranges = search.map_or(vec![], |query| name_match_ranges(name, query, options));
     let mut spans = Vec::new();
     let mut at = 0;
     for range in ranges {
@@ -283,11 +282,15 @@ pub fn highlighted_name(
 
 // The byte ranges of `name` matching `query`: the letters a fuzzy match picks, joined where they
 // follow each other, or the substring. None when only the rest of the path matches.
-fn name_match_ranges(name: &str, query: &str, fuzzy: bool) -> Vec<std::ops::Range<usize>> {
-    if !fuzzy {
-        return match_range(name, query).into_iter().collect();
+fn name_match_ranges(
+    name: &str,
+    query: &str,
+    options: SearchOptions,
+) -> Vec<std::ops::Range<usize>> {
+    if !options.fuzzy {
+        return match_range(name, query, options).into_iter().collect();
     }
-    let matcher = path_matcher(shared_smart_case());
+    let matcher = path_matcher(options.smart_case);
     let Some((_, indices)) = matcher.fuzzy_indices(name, query) else {
         return vec![];
     };
@@ -330,8 +333,7 @@ mod tests {
         // esc while typing clears that query only
         query.start(QueryKind::Filter);
         type_str(&mut query, "src");
-        assert!(query.keeps("src/main.rs"));
-        assert!(!query.keeps("README.md"));
+        assert_eq!(query.filter(), Some("src"));
         assert_eq!(query.indicator(), Some("/ma  filter: src".into()));
         query.handle_key(KeyEvent::from(KeyCode::Esc));
         assert_eq!(query.filter(), None);
@@ -348,11 +350,15 @@ mod tests {
 
     #[test]
     fn test_path_matches() {
-        assert!(path_matches("src/Main.rs", "main"));
-        assert!(!path_matches("src/main.rs", "Main"));
-        assert!(path_matches("src/Main.rs", "Main"));
-        assert_eq!(match_range("src/Main.rs", "main"), Some(4..8));
-        assert_eq!(match_range("README", "x"), None);
+        let smart_case = SearchOptions {
+            smart_case: true,
+            ..Default::default()
+        };
+        assert!(path_matches("src/Main.rs", "main", smart_case));
+        assert!(!path_matches("src/main.rs", "Main", smart_case));
+        assert!(path_matches("src/Main.rs", "Main", smart_case));
+        assert_eq!(match_range("src/Main.rs", "main", smart_case), Some(4..8));
+        assert_eq!(match_range("README", "x", smart_case), None);
     }
 
     #[test]
@@ -367,8 +373,12 @@ mod tests {
         assert!(!path_matches_with("src/Main.rs", "mn", true, false));
         assert!(path_matches_with("src/Main.rs", "Mn", true, false));
         // the picked letters of the name, joined where they follow each other; by bytes
-        assert_eq!(name_match_ranges("dïff.rs", "dïrs", true), [0..3, 6..8]);
+        let fuzzy = SearchOptions {
+            fuzzy: true,
+            ..Default::default()
+        };
+        assert_eq!(name_match_ranges("dïff.rs", "dïrs", fuzzy), [0..3, 6..8]);
         // only the rest of the path matched
-        assert!(name_match_ranges("diff.rs", "src", true).is_empty());
+        assert!(name_match_ranges("diff.rs", "src", fuzzy).is_empty());
     }
 }

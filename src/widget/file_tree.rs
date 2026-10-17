@@ -14,11 +14,12 @@ use ratatui::{
 use crate::{
     app::AppContext,
     color::ColorTheme,
+    search::SearchOptions,
     widget::{
         style::{
             change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder, scroll_to,
         },
-        tree_query::{find_around, highlighted_name, keeps, path_matches, SearchDirection},
+        tree_query::{find_around, highlighted_name, path_matches, SearchDirection},
     },
 };
 
@@ -110,8 +111,9 @@ pub struct FileTreeState {
     rooted: bool,
     // directories whose state differs from `open_by_default`
     toggled: HashSet<String>,
-    // only files whose path matches are shown, with all directories expanded
-    filter: Option<String>,
+    // only files whose path matches are shown, with all directories expanded; matched with the
+    // search options of when it was set
+    filter: Option<(String, SearchOptions)>,
     rows: Vec<FileTreeRow>,
     // the indent markers of the rows, see `tree_guides`
     guides: Vec<String>,
@@ -198,8 +200,7 @@ impl FileTreeState {
 
     // All rows with every directory expanded, passing the filter, to search in.
     pub fn all_rows(&self) -> Vec<FileTreeRow> {
-        let keep = |path: &str| keeps(self.filter.as_deref(), path);
-        self.tree.rows(|_| true, keep)
+        self.tree.rows(|_| true, |path| self.keeps(path))
     }
 
     pub fn cursor(&self) -> usize {
@@ -215,19 +216,26 @@ impl FileTreeState {
     }
 
     pub fn filter(&self) -> Option<&str> {
-        self.filter.as_deref()
+        self.filter.as_ref().map(|(filter, _)| filter.as_str())
     }
 
-    pub fn set_filter(&mut self, filter: Option<&str>) {
-        self.filter = filter.map(String::from);
+    pub fn set_filter(&mut self, filter: Option<&str>, options: SearchOptions) {
+        self.filter = filter.map(|f| (f.to_string(), options));
         self.rebuild_rows();
     }
 
+    // Whether `path` passes the filter.
+    pub fn keeps(&self, path: &str) -> bool {
+        self.filter
+            .as_ref()
+            .is_none_or(|(filter, options)| path_matches(path, filter, *options))
+    }
+
     // Selects the next match of `query`, expanding the directories that hide it.
-    pub fn search(&mut self, query: &str, direction: SearchDirection) {
+    pub fn search(&mut self, query: &str, direction: SearchDirection, options: SearchOptions) {
         let all_rows = self.all_rows();
         let current = self.selected().map(|r| r.path.as_str());
-        let path = find_match(&all_rows, current, query, direction);
+        let path = find_match(&all_rows, current, query, direction, options);
         self.reveal(path.as_deref());
     }
 
@@ -322,8 +330,9 @@ impl FileTreeState {
     // Keeps the selected path, or else the position of the cursor.
     fn rebuild_rows(&mut self) {
         let selected = self.selected().map(|r| r.path.clone());
-        let keep = |path: &str| keeps(self.filter.as_deref(), path);
-        let rows = self.tree.rows(|path| self.is_open(path), keep);
+        let rows = self
+            .tree
+            .rows(|path| self.is_open(path), |path| self.keeps(path));
         self.rows = if self.rooted {
             under_root(rows, self.is_open(ROOT_PATH))
         } else {
@@ -383,9 +392,10 @@ pub fn find_match(
     current: Option<&str>,
     query: &str,
     direction: SearchDirection,
+    options: SearchOptions,
 ) -> Option<String> {
     find_next(rows, current, direction, |row| {
-        path_matches(&row.path, query)
+        path_matches(&row.path, query, options)
     })
 }
 
@@ -516,11 +526,12 @@ pub fn dir_line(
     guide: &str,
     open: bool,
     search: Option<&str>,
+    options: SearchOptions,
     theme: &ColorTheme,
 ) -> Line<'static> {
     let mut spans = vec![guide_span(guide, theme), fold_marker(open).into()];
     spans.extend(
-        highlighted_name(&row.name, search, theme)
+        highlighted_name(&row.name, search, options, theme)
             .into_iter()
             .map(|span| match span.style.fg {
                 Some(_) => span,
@@ -553,6 +564,7 @@ pub fn render_tree(
     ctx: &AppContext,
 ) -> usize {
     let theme = &ctx.color_theme;
+    let options = ctx.search_options.get();
     let rows = tree.rows();
     if rows.is_empty() {
         Paragraph::new(placeholder(empty, theme)).render(area, buf);
@@ -572,13 +584,13 @@ pub fn render_tree(
         .map(|(index, row)| {
             let guide = tree.guide(index);
             let Some(file) = row.file_index else {
-                return dir_line(row, guide, tree.is_open(&row.path), search, theme);
+                return dir_line(row, guide, tree.is_open(&row.path), search, options, theme);
             };
             let mut spans = vec![guide_span(guide, theme)];
             if let Some(symbol) = symbol(file) {
                 spans.extend([change_span(symbol, theme), Span::raw(" ")]);
             }
-            spans.extend(highlighted_name(&row.name, search, theme));
+            spans.extend(highlighted_name(&row.name, search, options, theme));
             Line::from(spans)
         })
         .collect();
@@ -776,9 +788,9 @@ mod tests {
         assert_eq!(visible(&state), vec!["docs", "src", "README.md"]);
 
         // searching expands the directories hiding the match, and wraps around
-        state.search("list", SearchDirection::Current);
+        state.search("list", SearchDirection::Current, SearchOptions::default());
         assert_eq!(state.selected().unwrap().path, "docs/list.md");
-        state.search("list", SearchDirection::Next);
+        state.search("list", SearchDirection::Next, SearchOptions::default());
         assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
         assert_eq!(
             visible(&state),
@@ -792,13 +804,13 @@ mod tests {
                 "README.md"
             ]
         );
-        state.search("list", SearchDirection::Next);
+        state.search("list", SearchDirection::Next, SearchOptions::default());
         assert_eq!(state.selected().unwrap().path, "docs/list.md");
-        state.search("list", SearchDirection::Previous);
+        state.search("list", SearchDirection::Previous, SearchOptions::default());
         assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
 
         // filtering shows only matching files, expanded, keeping the selection
-        state.set_filter(Some("list"));
+        state.set_filter(Some("list"), SearchOptions::default());
         assert_eq!(
             visible(&state),
             vec![
@@ -811,9 +823,9 @@ mod tests {
         );
         assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
 
-        state.set_filter(Some("nothing"));
+        state.set_filter(Some("nothing"), SearchOptions::default());
         assert!(visible(&state).is_empty());
-        state.set_filter(None);
+        state.set_filter(None, SearchOptions::default());
         assert_eq!(visible(&state).len(), 7);
     }
 

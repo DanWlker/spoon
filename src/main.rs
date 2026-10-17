@@ -12,6 +12,7 @@ mod keybind;
 mod layout;
 mod protocol;
 mod ref_commands;
+mod refresher;
 mod search;
 mod view;
 mod widget;
@@ -210,6 +211,7 @@ fn main() -> Result<()> {
         key_names: Default::default(),
         layout: Default::default(),
         wrap: Default::default(),
+        search_options: Default::default(),
     });
 
     let ec = event::EventController::init();
@@ -262,12 +264,13 @@ fn main() -> Result<()> {
                 ratatui::crossterm::event::EnableFocusChange,
                 ratatui::crossterm::event::EnableMouseCapture
             );
-            ec.start_refresher(
+            ec.set_refresher(refresher::spawn(
+                ec.sender(),
                 repository.path().to_path_buf(),
                 repository.git_dir().map(Path::to_path_buf),
                 REFS_INTERVAL,
                 FILES_INTERVAL,
-            );
+            ));
         }
 
         let mut app = App::new(

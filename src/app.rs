@@ -40,7 +40,7 @@ use crate::{
     layout::{fit_size, Direction, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
-    search::{self, SearchOptions},
+    search::SearchOptions,
     view::{
         user_command_height, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View,
         ViewKind,
@@ -108,6 +108,9 @@ pub struct AppContext {
     pub layout: RefCell<PanelLayout>,
     // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
     pub wrap: Cell<bool>,
+    // the search options of the commit list, which the file trees, diffs and previews search
+    // with too
+    pub search_options: Cell<SearchOptions>,
 }
 
 impl AppContext {
@@ -305,7 +308,7 @@ impl<'a> App<'a> {
             smart_case: ctx.core_config.search.smart_case,
             fuzzy: ctx.core_config.search.fuzzy,
         };
-        search::share(search_options);
+        ctx.search_options.set(search_options);
         let mut commit_list_state = CommitListState::new(
             commits,
             graph_image_manager,

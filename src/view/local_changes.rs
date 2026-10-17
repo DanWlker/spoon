@@ -77,7 +77,8 @@ impl<'a> LocalChangesView<'a> {
             return;
         }
         if self.local_changes_state.is_typing_query() {
-            self.local_changes_state.handle_query_key(key);
+            let options = self.ctx.search_options.get();
+            self.local_changes_state.handle_query_key(key, options);
             self.update_query_status();
             return;
         }
@@ -127,6 +128,7 @@ impl<'a> LocalChangesView<'a> {
             return;
         }
 
+        let options = self.ctx.search_options.get();
         match event {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
@@ -139,7 +141,7 @@ impl<'a> LocalChangesView<'a> {
                 let _ = state.clear_diff_query()
                     || state.back()
                     || state.clear_picks()
-                    || state.clear_query();
+                    || state.clear_query(options);
             }
             UserEvent::ToggleSelect => {
                 self.local_changes_state.toggle_pick();
@@ -188,10 +190,10 @@ impl<'a> LocalChangesView<'a> {
                 self.update_query_status();
             }
             UserEvent::GoToNext => {
-                self.local_changes_state.search_next(true);
+                self.local_changes_state.search_next(true, options);
             }
             UserEvent::GoToPrevious => {
-                self.local_changes_state.search_next(false);
+                self.local_changes_state.search_next(false, options);
             }
             UserEvent::Confirm => {
                 let result = self.local_changes_state.enter();

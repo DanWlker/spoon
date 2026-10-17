@@ -7,7 +7,6 @@ use crate::{
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
-    search,
     view::{
         copy_hash, graph_hints, status_input, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
@@ -43,7 +42,8 @@ impl<'a> ListView<'a> {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         let tx = self.tx.clone();
-        if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
+        let ctx = self.ctx.clone();
+        if handle_search_event(self.as_mut_list_state(), &ctx, &tx, event, key) {
             return;
         }
         match event {
@@ -172,10 +172,10 @@ impl<'a> ListView<'a> {
             search_options,
             search_context,
         } = list_context;
+        self.ctx.search_options.set(*search_options);
         let list_state = self.as_mut_list_state();
         list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
         list_state.restore_search_options(*search_options);
-        search::share(*search_options);
         list_state.reset_height(*height);
         if *scroll_to_top {
             list_state.select_first();
@@ -193,6 +193,7 @@ impl<'a> ListView<'a> {
 // options, going through the matches and clearing it. Returns whether the event was one of these.
 pub fn handle_search_event(
     state: &mut CommitListState,
+    ctx: &AppContext,
     tx: &Sender,
     event: UserEvent,
     key: KeyEvent,
@@ -212,12 +213,12 @@ pub fn handle_search_event(
         }
         (SearchState::Searching { .. }, UserEvent::SmartCaseToggle) => {
             state.toggle_smart_case();
-            search::share(state.search_options());
+            ctx.search_options.set(state.search_options());
             update_search_status(state, tx);
         }
         (SearchState::Searching { .. }, UserEvent::FuzzyToggle) => {
             state.toggle_fuzzy();
-            search::share(state.search_options());
+            ctx.search_options.set(state.search_options());
             update_search_status(state, tx);
         }
         (SearchState::Searching { .. }, _) => {
@@ -234,12 +235,12 @@ pub fn handle_search_event(
         }
         (_, UserEvent::SmartCaseToggle) => {
             state.toggle_smart_case();
-            search::share(state.search_options());
+            ctx.search_options.set(state.search_options());
             update_search_options_message(state, tx);
         }
         (_, UserEvent::FuzzyToggle) => {
             state.toggle_fuzzy();
-            search::share(state.search_options());
+            ctx.search_options.set(state.search_options());
             update_search_options_message(state, tx);
         }
         (SearchState::Applied { .. }, UserEvent::GoToNext) => {
