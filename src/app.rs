@@ -475,12 +475,7 @@ impl App<'_> {
                 {
                     Some(event) => event,
                     None => {
-                        let now = Instant::now();
-                        // no second press, the popup shows
-                        if self.shell.dialog_reveal.is_some_and(|at| at <= now) {
-                            self.shell.dialog_reveal = None;
-                        }
-                        self.shell.notices.retain(|n| n.until > now);
+                        self.expire(Instant::now());
                         continue;
                     }
                 },
@@ -1656,6 +1651,14 @@ impl App<'_> {
             self.ec.send(AppEvent::Quit);
         }
         quit
+    }
+
+    // What waited until `now`: the popup waiting for a second press shows, the notices go.
+    fn expire(&mut self, now: Instant) {
+        if self.shell.dialog_reveal.is_some_and(|at| at <= now) {
+            self.shell.dialog_reveal = None;
+        }
+        self.shell.notices.retain(|n| n.until > now);
     }
 
     fn close_dialog(&mut self) {

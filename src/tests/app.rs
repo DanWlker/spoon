@@ -12,7 +12,7 @@ use ratatui::{
     layout::Rect,
 };
 
-use super::{App, AppContext, AppEvent, InitialSelection, Launch, Ret};
+use super::{App, AppContext, AppEvent, InitialSelection, Launch, Ret, StatusLine};
 use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
@@ -34,12 +34,16 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 enum Step {
     // a key, named as in the keybind config: "j", "shift-d", "esc", "ctrl-c"
     Key(KeyEvent),
+    // an event the app sends itself, like running a command in the terminal
+    Event(Box<AppEvent>),
     // something done outside the app, like in another terminal
     Outside(Box<dyn FnOnce(&Path)>),
     // the refs and the local changes checked, as the refresher does every few seconds
     Tick,
     // waits until the repository is so, like once a fetch in the background is done
     WaitFor(Box<dyn Fn(&Path) -> bool>),
+    // time passing without a key, for what the app shows after a while
+    Sleep(Duration),
     Check(Box<dyn FnOnce(&App)>),
 }
 
@@ -74,6 +78,10 @@ fn wait_for(f: impl Fn(&Path) -> bool + 'static) -> Vec<Step> {
 
 fn check(f: impl FnOnce(&App) + 'static) -> Vec<Step> {
     vec![Step::Check(Box::new(f))]
+}
+
+fn sleep(millis: u64) -> Vec<Step> {
+    vec![Step::Sleep(Duration::from_millis(millis))]
 }
 
 fn tick() -> Vec<Step> {
@@ -157,6 +165,7 @@ impl Harness {
 // returns what ends or reloads the app.
 fn settle(app: &mut App, ec: &EventController, ctx: &AppContext) -> Option<Ret> {
     loop {
+        app.expire(Instant::now());
         app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
         let event = if ctx.running_task.borrow().is_some() {
             ec.recv_timeout(TIMEOUT)
@@ -173,6 +182,7 @@ fn settle(app: &mut App, ec: &EventController, ctx: &AppContext) -> Option<Ret> 
 fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
     match step {
         Step::Key(key) => ec.send(AppEvent::Key(key)),
+        Step::Event(event) => ec.send(*event),
         Step::Outside(f) => f(path),
         Step::Tick => {
             ec.send(AppEvent::RefsSnapshot(refs_snapshot(path).unwrap()));
@@ -186,6 +196,7 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
+        Step::Sleep(duration) => std::thread::sleep(duration),
         Step::Check(f) => f(app),
     }
 }
@@ -820,4 +831,102 @@ fn test_add_remote_fetching_nothing_keeps_it() {
     harness.run(steps);
     // added, to edit or remove it
     assert_eq!(git(&path, &["remote"]), "bad\norigin\n");
+}
+
+// The popups of fetch, pull and push
+
+#[test]
+fn test_pressed_twice_runs_without_the_popup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("f f"),
+        check(|app| {
+            assert!(app.shell.dialog.is_none());
+            let done = &app.shell.app_status.status_line;
+            assert!(
+                matches!(done, StatusLine::NotificationSuccess(m) if m == "Fetched origin"),
+                "{done:?}"
+            );
+        }),
+    ]);
+    assert!(path.join(".git/FETCH_HEAD").exists());
+}
+
+#[test]
+fn test_pressed_once_the_popup_shows_after_a_while() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("f"),
+        check(|app| {
+            assert!(app.shell.dialog.is_some());
+            assert!(app.visible_dialog().is_none());
+        }),
+        sleep(300),
+        // shown, and the key still runs it
+        check(|app| assert!(app.visible_dialog().is_some())),
+        keys("f"),
+        check(|app| assert!(app.shell.dialog.is_none())),
+    ]);
+    assert!(path.join(".git/FETCH_HEAD").exists());
+}
+
+#[test]
+fn test_another_key_shows_the_popup_right_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("f j"),
+        check(|app| assert!(app.visible_dialog().is_some())),
+    ]);
+    assert!(!path.join(".git/FETCH_HEAD").exists());
+}
+
+// Commands run in the terminal, like the editor: here stand-ins for them, as the editor is
+// chosen by the environment, which the tests running at once share
+
+fn run_in_terminal(command: &[&str]) -> Vec<Step> {
+    let command = command.iter().map(|a| a.to_string()).collect();
+    vec![Step::Event(Box::new(AppEvent::RunExternal(command)))]
+}
+
+#[test]
+fn test_command_in_the_terminal_reloads_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            local_changes: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        check(|app| assert_eq!(app.repository.loaded_local_change_count(), 0)),
+        // like an editor saving a file; run where the app is, which here isn't the repository
+        run_in_terminal(&["sh", "-c", &format!("echo x > {}/new.txt", path.display())]),
+        check(|app| {
+            assert!(matches!(app.view, View::LocalChanges(_)));
+            assert_eq!(app.repository.loaded_local_change_count(), 1);
+            assert!(notices(app).is_empty());
+        }),
+    ]);
+    assert_eq!(harness.loads, 2);
+}
+
+#[test]
+fn test_command_in_the_terminal_failing_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        run_in_terminal(&["false"]),
+        check(|app| assert_notice(app, "false exited with non-zero status: exit status: 1")),
+        run_in_terminal(&["/nonexistent/editor"]),
+        check(|app| assert_notice(app, "Failed to execute /nonexistent/editor")),
+    ]);
 }

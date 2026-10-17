@@ -163,6 +163,8 @@ pub struct EventController {
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     // wakes the refresher up, see `refresh_now`
     poke: Mutex<Option<mpsc::Sender<()>>>,
+    // the terminal is read and given to the commands run in it, but in tests
+    terminal: bool,
 }
 
 impl EventController {
@@ -177,6 +179,7 @@ impl EventController {
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
             poke: Mutex::new(None),
+            terminal: true,
         };
         controller.start();
 
@@ -193,6 +196,7 @@ impl EventController {
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
             poke: Mutex::new(None),
+            terminal: false,
         }
     }
 
@@ -244,6 +248,9 @@ impl EventController {
     }
 
     pub fn resume(&self) {
+        if !self.terminal {
+            return;
+        }
         ratatui::crossterm::execute!(
             std::io::stdout(),
             ratatui::crossterm::terminal::EnterAlternateScreen,
@@ -258,6 +265,9 @@ impl EventController {
     }
 
     pub fn suspend(&self) {
+        if !self.terminal {
+            return;
+        }
         self.stop();
 
         ratatui::crossterm::terminal::disable_raw_mode().unwrap();
