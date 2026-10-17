@@ -101,6 +101,15 @@ pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
     }
 }
 
+// Two revisions compared in the details: commits, or refs diffed from the sidebar, which are
+// resolved again once reloaded.
+#[derive(Debug, Clone)]
+pub struct Compare {
+    pub base: String,
+    pub target: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum RefreshViewContext {
     List {
@@ -110,6 +119,8 @@ pub enum RefreshViewContext {
         list_context: ListRefreshViewContext,
         // the tab shown
         tab: DetailTab,
+        // the comparison shown, opened again once reloaded
+        compare: Option<Compare>,
     },
     LocalChanges {
         list_context: ListRefreshViewContext,

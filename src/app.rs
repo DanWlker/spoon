@@ -38,7 +38,7 @@ use crate::{
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
-    view::{HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
+    view::{Compare, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
     widget::{
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState},
@@ -216,11 +216,10 @@ enum GraphFilter {
     All,
     // the current branch's, see `UserEvent::BranchOnly`
     BranchOnly,
-    // that of two refs diffed from the sidebar while their comparison is open; `opened` once it is
-    // (the repository is first reloaded for it), going back to `branch_only` once it closes
+    // that of two refs diffed from the sidebar while their comparison is shown, going back to
+    // `branch_only` once it isn't, see `end_stale_ref_compare`
     Compare {
         refs: RefCompare,
-        opened: bool,
         branch_only: bool,
     },
 }
@@ -423,7 +422,7 @@ impl<'a> App<'a> {
                 }
             }
         }
-        app.open_ref_compare();
+        app.end_stale_ref_compare();
 
         app
     }
@@ -431,22 +430,19 @@ impl<'a> App<'a> {
     // Shows `view` in place of the page; once the comparison of refs diffed from the sidebar is
     // closed, the graph shows the history it showed before again.
     fn replace_view(&mut self, view: View<'a>) {
-        let was_comparing = matches!(&self.view, View::Detail(view) if view.is_comparing());
         self.view = view;
-        let comparing = matches!(&self.view, View::Detail(view) if view.is_comparing());
-        let opened = matches!(
-            self.shell.graph_filter,
-            GraphFilter::Compare { opened: true, .. }
-        );
-        if opened && was_comparing && !comparing {
-            self.end_ref_compare();
-        }
+        self.end_stale_ref_compare();
     }
 
-    // The graph shows the history it showed before the refs were diffed from the sidebar again.
-    fn end_ref_compare(&mut self) {
-        if let GraphFilter::Compare { branch_only, .. } = self.shell.graph_filter {
-            self.shell.graph_filter = if branch_only {
+    // The graph shows the history of the refs diffed from the sidebar only while their comparison
+    // is shown: once it closed, or wasn't opened again after a reload (a ref gone, another page
+    // shown), the graph shows the history it showed before.
+    fn end_stale_ref_compare(&mut self) {
+        let comparing = matches!(&self.view, View::Detail(view) if view.is_comparing());
+        if let (GraphFilter::Compare { branch_only, .. }, false) =
+            (&self.shell.graph_filter, comparing)
+        {
+            self.shell.graph_filter = if *branch_only {
                 GraphFilter::BranchOnly
             } else {
                 GraphFilter::All
@@ -1780,7 +1776,10 @@ impl App<'_> {
             }
             if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
                 // the details open again when coming back to the graph
-                if let RefreshViewContext::Detail { tab, .. } = context {
+                if let RefreshViewContext::Detail {
+                    tab, compare: None, ..
+                } = context
+                {
                     self.shell.parked_detail_tab = Some(tab);
                 }
                 // the page opens once the repository is reloaded
@@ -1986,8 +1985,8 @@ impl App<'_> {
         Ok(RefCompare { base, target })
     }
 
-    // Diffs refs from the sidebar: the graph is loaded again with only their history, then
-    // their comparison opens, see `open_ref_compare`.
+    // Diffs refs from the sidebar: the graph is loaded again with only their history, showing
+    // their comparison, see `end_stale_ref_compare`.
     fn request_ref_compare(&mut self, compare: RefCompare) {
         let Some(context) = self.view.refresh_context() else {
             return;
@@ -1997,48 +1996,23 @@ impl App<'_> {
             self.shell.parked_local_changes = Some(view.context());
         }
         let branch_only = matches!(self.shell.graph_filter, GraphFilter::BranchOnly);
+        // reloaded for the history of both, opening their comparison like after any reload
+        let shown = Compare {
+            base: compare.base.clone(),
+            target: compare.target.clone(),
+            title: format!("Diff {} → {}", compare.base, compare.target),
+        };
         self.shell.graph_filter = GraphFilter::Compare {
             refs: compare,
-            opened: false,
             branch_only,
         };
         self.shell.sidebar.clear_picks();
         self.set_sidebar_focused(false);
-        let list_context = context.list_context().clone();
-        self.ec
-            .send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
-    }
-
-    // Opens the comparison of the refs diffed from the sidebar, once the repository is loaded
-    // for it, and again after a refresh while it is open.
-    fn open_ref_compare(&mut self) {
-        let GraphFilter::Compare { refs, .. } = &self.shell.graph_filter else {
-            return;
-        };
-        let compare = refs.clone();
-        // another page shows after the reload, like the local changes after a merge
-        if !matches!(self.view, View::List(_) | View::Detail(_)) {
-            self.end_ref_compare();
-            return;
-        }
-        let resolved = self
-            .repository
-            .resolve(&compare.base)
-            .zip(self.repository.resolve(&compare.target));
-        let Some((base, target)) = resolved else {
-            // gone meanwhile, the graph shows all again
-            self.ec.send(AppEvent::NotifyError(format!(
-                "Cannot diff {} and {}, one of them is gone",
-                compare.base, compare.target
-            )));
-            self.end_ref_compare();
-            return;
-        };
-        let title = format!("Diff {} → {}", compare.base, compare.target);
-        self.open_compare(base, target, title);
-        if let GraphFilter::Compare { opened, .. } = &mut self.shell.graph_filter {
-            *opened = true;
-        }
+        self.ec.send(AppEvent::Refresh(RefreshViewContext::Detail {
+            list_context: context.list_context().clone(),
+            tab: DetailTab::Changes,
+            compare: Some(shown),
+        }));
     }
 
     fn run_graph_command(
@@ -2054,7 +2028,11 @@ impl App<'_> {
                 base,
                 target,
                 title,
-            })) => self.open_compare(base, target, title),
+            })) => self.open_compare(Compare {
+                base: base.as_str().into(),
+                target: target.as_str().into(),
+                title,
+            }),
             // the popups tell first that a command is running
             Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
@@ -2101,11 +2079,23 @@ impl App<'_> {
         }
     }
 
-    // Shows the changes from `base` to `target` in the details.
-    fn open_compare(&mut self, base: CommitHash, target: CommitHash, title: String) {
+    // Shows the changes from the base to the target of `compare` in the details.
+    fn open_compare(&mut self, compare: Compare) {
         if !matches!(self.view, View::List(_) | View::Detail(_)) {
             return;
         }
+        let resolved = self
+            .repository
+            .resolve(&compare.base)
+            .zip(self.repository.resolve(&compare.target));
+        let Some((base, target)) = resolved else {
+            // gone meanwhile, like a ref deleted
+            self.ec.send(AppEvent::NotifyError(format!(
+                "Cannot diff {} and {}, one of them is gone",
+                compare.base, compare.target
+            )));
+            return;
+        };
         // the details show the target, else (left out by --max-count) the selected commit
         let shown = match self.repository.commit(&target) {
             Some(_) => target.clone(),
@@ -2119,7 +2109,7 @@ impl App<'_> {
         };
         let (commit, changes) = self.repository.commit_detail(&shown);
         let refs = self.repository.refs(&shown).into_iter().cloned().collect();
-        self.replace_view(View::of_detail(
+        let mut view = View::of_detail(
             commit_list_state,
             commit,
             changes,
@@ -2127,10 +2117,12 @@ impl App<'_> {
             self.repository,
             self.ctx.clone(),
             self.ec.sender(),
-        ));
-        if let View::Detail(ref mut view) = self.view {
-            view.start_compare(base, target, title);
+        );
+        // comparing before it is shown, see `end_stale_ref_compare`
+        if let View::Detail(ref mut view) = view {
+            view.start_compare(base, target, compare);
         }
+        self.replace_view(view);
     }
 
     fn select_older_commit(&mut self) {
@@ -2151,6 +2143,10 @@ impl App<'_> {
         }
         match context {
             RefreshViewContext::List { .. } => {}
+            RefreshViewContext::Detail {
+                compare: Some(compare),
+                ..
+            } => self.open_compare(compare),
             RefreshViewContext::Detail { tab, .. } => self.open_detail(tab),
             RefreshViewContext::LocalChanges {
                 local_changes_context,

@@ -15,7 +15,7 @@ use crate::{
     layout::{fit_size, Direction, Panel},
     view::{
         copy_hash, copy_path, copy_selection, graph_hints, handle_search_event, status_input,
-        typing_hints, ListRefreshViewContext, RefreshViewContext,
+        typing_hints, Compare, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -63,10 +63,10 @@ pub struct DetailView<'a> {
     commit: Commit,
     changes: Vec<FileChange>,
     refs: Vec<Ref>,
-    // comparing two commits: only their changes are shown, under this title
-    compare: Option<String>,
+    // comparing two commits: only their changes are shown, under its title
+    compare: Option<Compare>,
     // the comparison, set aside while the details of a commit in it are shown
-    parked_compare: Option<(String, CommitChangesState<'a>)>,
+    parked_compare: Option<(Compare, CommitChangesState<'a>)>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
     list_focused: bool,
     // the selection moved to another commit, whose details load once used, see `load_selected`
@@ -114,11 +114,11 @@ impl<'a> DetailView<'a> {
     }
 
     // Shows the changes from `base` to `target` instead of the selected commit.
-    pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, title: String) {
+    pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, compare: Compare) {
         let repository = self.repository;
         let changes = repository.diff_summary_between(&base, &target);
         self.changes_state = CommitChangesState::between(repository, Some(base), target, &changes);
-        self.compare = Some(title);
+        self.compare = Some(compare);
         self.show_tab(DetailTab::Changes);
     }
 
@@ -281,23 +281,23 @@ impl<'a> DetailView<'a> {
 
     // Shows the details of the selected commit over the comparison, which comes back with Esc.
     fn park_compare(&mut self) {
-        let Some(title) = self.compare.take() else {
+        let Some(compare) = self.compare.take() else {
             return;
         };
         let changes = std::mem::replace(
             &mut self.changes_state,
             CommitChangesState::new(self.repository, self.commit.commit_hash.clone(), &[]),
         );
-        self.parked_compare = Some((title, changes));
+        self.parked_compare = Some((compare, changes));
         self.update_selected_commit(|_| {});
         self.show_tab(DetailTab::Info);
     }
 
     fn unpark_compare(&mut self) {
-        let Some((title, changes)) = self.parked_compare.take() else {
+        let Some((compare, changes)) = self.parked_compare.take() else {
             return;
         };
-        self.compare = Some(title);
+        self.compare = Some(compare);
         self.changes_state = changes;
         self.tab = DetailTab::Changes;
         self.list_focused = true;
@@ -546,8 +546,8 @@ impl<'a> DetailView<'a> {
         let detail_area = panel_area;
         match &self.compare {
             // the panel 2, like the tabs
-            Some(title) => render_compare_title(
-                &format!("[2] {title}"),
+            Some(compare) => render_compare_title(
+                &format!("[2] {}", compare.title),
                 focused,
                 indicator,
                 &self.ctx.color_theme,
@@ -976,14 +976,15 @@ impl<'a> DetailView<'a> {
     // What to show again once the repository is reloaded.
     pub fn refresh_context(&self) -> RefreshViewContext {
         let list_context = ListRefreshViewContext::from(self.as_list_state());
-        // the comparison is not kept, it is opened again with the picks
-        if self.is_comparing() {
-            RefreshViewContext::List { list_context }
-        } else {
-            RefreshViewContext::Detail {
-                list_context,
-                tab: self.tab,
-            }
+        // also while the details of a commit in it are shown over it
+        let compare = self
+            .compare
+            .clone()
+            .or_else(|| self.parked_compare.as_ref().map(|(c, _)| c.clone()));
+        RefreshViewContext::Detail {
+            list_context,
+            tab: self.tab,
+            compare,
         }
     }
 }
