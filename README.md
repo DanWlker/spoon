@@ -134,6 +134,14 @@ Branches, remotes and tags in the sidebar:
 
 <img src="./img/refs.png" width=800>
 
+Who last changed each line of a file, stepping back through the commits changing it:
+
+<img src="./img/blame.png" width=800>
+
+The commits changing a file, with its changes in each:
+
+<img src="./img/timeline.png" width=800>
+
 Git commands confirm in a popup showing what they run:
 
 <img src="./img/popup.png" width=800>

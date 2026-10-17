@@ -87,6 +87,10 @@ demo:
     k P; shot popup
     k '<escape>' '<tab>' / '(#2818)' '<enter>' '<enter>' 3 j; shot details
     k '<escape>' '<escape>' 0 j l ']' l ']' l '[' '[' j j; shot refs
+    # the blame and the timeline of a file, found in the files of the selected commit
+    k '<escape>' 4 / 'ratatui-widgets/src/scrollbar.rs' '<enter>' B; sleep 1
+    D=0.3 k j j j j j j j j; shot blame
+    k '<escape>' T; sleep 1; k j j l; shot timeline
     k q; sleep 1.5
 
     # recorded losslessly: wf-recorder's default video marks limited-range colors as full range
@@ -100,7 +104,10 @@ demo:
     sleep 0.8; k '<escape>' c; sleep 1.8; k '<enter>'; sleep 1.8
     k '<tab>'; sleep 1.2; D=0.25 k j j j j j; sleep 0.5; k '<enter>'; sleep 1; k 3; sleep 1; k j; sleep 1.5
     k '<escape>' '<escape>'; k 0; sleep 0.5; D=0.8 k ']' ']'; sleep 0.8; k '<escape>'; sleep 0.5
+    k 4; sleep 0.6; k / 'ratatui-widgets/src/scrollbar.rs'; sleep 0.6; k '<enter>' B; sleep 1.5
+    D=0.3 k j j j j j j j j; sleep 0.6; k '['; sleep 1.5; k ']'; sleep 0.8; k '<escape>'
+    k T; sleep 1.5; D=0.6 k j j; k l; sleep 1.5; D=0.4 k '<escape>' '<escape>' '<escape>' '<escape>'; sleep 0.8
     k P; sleep 2; k '<escape>'; sleep 1.5
     kill -INT $rec; wait $rec || true
     ffmpeg -v error -y -i $tmp/demo.mkv -vf "fps=12,scale=1200:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" "$img/demo.gif"
-    ls -la "$img"/{demo.gif,graph.png,local-changes.png,popup.png,details.png,refs.png}
+    ls -la "$img"/{demo.gif,graph.png,local-changes.png,popup.png,details.png,refs.png,blame.png,timeline.png}
