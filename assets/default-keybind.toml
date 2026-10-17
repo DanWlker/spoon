@@ -153,6 +153,8 @@ dismiss_notifications = [","]
 toggle_wrap = ["w"]
 # show who last changed each line of the selected file, in a window over everything
 blame = ["shift-b"]
-# in that window, the blame as of the older/newer commit changing the file
+# show the commits changing the selected file, with its changes in each, in a window over everything
+timeline = ["shift-t"]
+# in these windows, the older/newer commit changing the file
 older_commit = ["["]
 newer_commit = ["]"]

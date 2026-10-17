@@ -39,8 +39,8 @@ use crate::{
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
     view::{
-        BlameView, Compare, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View,
-        ViewKind,
+        BlameView, Compare, HelpView, LocalChangesRefreshViewContext, RefreshViewContext,
+        TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -218,13 +218,44 @@ pub struct AppShell {
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
-// `UserEvent::HelpToggle`), the blame of a file (see `UserEvent::Blame`), or the git commands run
+// `UserEvent::HelpToggle`), the blame or the timeline of a file (see `UserEvent::Blame`), or the git
+// commands run
 // (see `UserEvent::CommandLog`), over everything.
 #[derive(Debug)]
 enum Overlay {
     Help(HelpView),
     Blame(Box<BlameView>),
+    Timeline(Box<TimelineView>),
     CommandLog(CommandLogState),
+}
+
+impl Overlay {
+    // Whether a search is being typed in the blame or the timeline; None over the other overlays.
+    fn is_typing(&self) -> Option<bool> {
+        match self {
+            Overlay::Blame(blame) => Some(blame.is_typing()),
+            Overlay::Timeline(timeline) => Some(timeline.is_typing()),
+            Overlay::Help(_) | Overlay::CommandLog(_) => None,
+        }
+    }
+
+    // The name of the blame or the timeline and the path of its file, for the page bar.
+    fn file_title(&self) -> Option<(&'static str, &str)> {
+        match self {
+            Overlay::Blame(blame) => Some(("Blame", blame.path())),
+            Overlay::Timeline(timeline) => Some(("Timeline", timeline.path())),
+            Overlay::Help(_) | Overlay::CommandLog(_) => None,
+        }
+    }
+
+    // The keys of the blame and the timeline.
+    fn handle_file_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
+        match self {
+            Overlay::Blame(blame) => blame.handle_event(event, key, repository),
+            Overlay::Timeline(timeline) => timeline.handle_event(event, key, repository),
+            Overlay::Help(_) | Overlay::CommandLog(_) => {}
+        }
+    }
 }
 
 // A popup confirming a git command; `reveal` is when it shows, while it waits for the key opening
@@ -556,19 +587,21 @@ impl App<'_> {
                     self.handle_dialog_key(key);
                     return Ok(None);
                 }
-                if matches!(self.shell.overlay, Some(Overlay::Blame(_))) {
+                if let Some(typing) = self.shell.overlay.as_ref().and_then(Overlay::is_typing) {
                     // typing a search, keys go as they are
-                    let typing =
-                        matches!(&self.shell.overlay, Some(Overlay::Blame(b)) if b.is_typing());
                     let event = match typing {
                         true if self.force_quit(&key) => None,
                         true => Some(UserEvent::Unknown),
                         false => self.ctx.keybind.event_in(Scope::FileHistory, &key),
                     };
-                    if let (Some(event), Some(Overlay::Blame(blame))) =
-                        (event, self.shell.overlay.as_mut())
-                    {
-                        blame.handle_event(event, key, self.repository);
+                    match (event, self.shell.overlay.as_mut()) {
+                        (Some(UserEvent::KeysToggle), _) => {
+                            self.shell.keys_popup = !self.shell.keys_popup
+                        }
+                        (Some(event), Some(overlay)) => {
+                            overlay.handle_file_event(event, key, self.repository)
+                        }
+                        _ => {}
                     }
                     return Ok(None);
                 }
@@ -714,6 +747,13 @@ impl App<'_> {
                     Err(err) => self.ec.send(AppEvent::NotifyError(err)),
                 }
             }
+            AppEvent::OpenTimeline { commit, path } => {
+                let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
+                match TimelineView::new(self.repository, &commit, &path, ctx, tx) {
+                    Ok(view) => self.shell.overlay = Some(Overlay::Timeline(Box::new(view))),
+                    Err(err) => self.ec.send(AppEvent::NotifyError(err)),
+                }
+            }
             AppEvent::Checkout(commit) => {
                 let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
                 self.run_graph_command(UserEvent::Checkout, command);
@@ -848,6 +888,8 @@ impl App<'_> {
             vec![hint(UserEvent::Cancel, "close")]
         } else if let Some(Overlay::Blame(blame)) = &self.shell.overlay {
             blame.key_hints()
+        } else if let Some(Overlay::Timeline(timeline)) = &self.shell.overlay {
+            timeline.key_hints()
         } else if self.shell.sidebar_focused() {
             self.sidebar_hints()
         } else {
@@ -926,12 +968,12 @@ impl App<'_> {
         match self.shell.overlay.as_mut() {
             Some(Overlay::CommandLog(_)) => self.handle_command_log_event(Some(event)),
             Some(Overlay::Help(help)) => help.handle_event(event),
-            Some(Overlay::Blame(blame)) if idle => {
+            Some(overlay) if idle => {
                 let code = if down { KeyCode::Down } else { KeyCode::Up };
                 let key = KeyEvent::new(code, KeyModifiers::NONE);
-                blame.handle_event(event, key, self.repository);
+                overlay.handle_file_event(event, key, self.repository);
             }
-            Some(Overlay::Blame(_)) => {}
+            Some(_) => {}
             None if idle => {
                 let code = if down { KeyCode::Down } else { KeyCode::Up };
                 self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
@@ -948,7 +990,14 @@ impl App<'_> {
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
     // hidden. Computed once a frame, for clearing the screen and drawing.
     fn keys_popup_keys(&self) -> Vec<(String, String)> {
-        if !self.shell.keys_popup || self.keys_are_local() {
+        // over the blame and the timeline, the popup lists all their keys
+        let file_window = self.shell.overlay.as_ref().and_then(Overlay::file_title);
+        let local = self.visible_dialog().is_some() || self.is_typing();
+        let shown = match file_window {
+            Some(_) => !local,
+            None => !self.keys_are_local(),
+        };
+        if !self.shell.keys_popup || !shown {
             return vec![];
         }
         self.shown_keys(self.local_hints())
@@ -1059,10 +1108,18 @@ impl App<'_> {
             f.render_widget(base.clone(), app_area);
             help.render(f, app_area);
         }
-        if let Some(Overlay::Blame(blame)) = self.shell.overlay.as_mut() {
-            f.render_widget(Clear, app_area);
-            f.render_widget(base, app_area);
-            blame.render(f, app_area);
+        match self.shell.overlay.as_mut() {
+            Some(Overlay::Blame(blame)) => {
+                f.render_widget(Clear, app_area);
+                f.render_widget(base, app_area);
+                blame.render(f, app_area);
+            }
+            Some(Overlay::Timeline(timeline)) => {
+                f.render_widget(Clear, app_area);
+                f.render_widget(base, app_area);
+                timeline.render(f, app_area);
+            }
+            _ => {}
         }
         if !keys.is_empty() {
             let popup = KeysPopup::new(keys, &self.ctx.color_theme);
@@ -1115,8 +1172,11 @@ impl App<'_> {
                 theme.accent_fg,
             ),
         ];
+        // the blame or the timeline over them, after them, with its file
+        let window = self.shell.overlay.as_ref().and_then(Overlay::file_title);
         let mut spans = vec![Span::raw(" ")];
         for (name, shown, color) in pages {
+            let shown = shown && window.is_none();
             if shown {
                 spans.extend([
                     Span::raw("\u{e0b6}").fg(color),
@@ -1127,6 +1187,15 @@ impl App<'_> {
                 spans.push(Span::raw(format!(" {name} ")).fg(theme.muted_fg));
             }
             spans.push(Span::raw("  "));
+        }
+        if let Some((name, path)) = window {
+            let color = theme.accent_fg;
+            spans.extend([
+                Span::raw("\u{e0b6}").fg(color),
+                Span::raw(name).fg(theme.accent_text_fg).bg(color).bold(),
+                Span::raw("\u{e0b4}").fg(color),
+                Span::raw(format!(" {path}")).fg(theme.muted_fg),
+            ]);
         }
         f.render_widget(Line::from(spans), area);
     }
@@ -1840,8 +1909,11 @@ impl App<'_> {
         if self.blocked_by_operation(&task) {
             return;
         }
-        // a checkout from the blame shows the graph
-        if matches!(self.shell.overlay, Some(Overlay::Blame(_))) {
+        // a checkout from the blame or the timeline shows the graph
+        if matches!(
+            self.shell.overlay,
+            Some(Overlay::Blame(_) | Overlay::Timeline(_))
+        ) {
             self.shell.overlay = None;
         }
         // a commit made clears the message box, see `finish_task`

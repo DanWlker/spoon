@@ -17,13 +17,11 @@ use crate::{
     search::SearchOptions,
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
-        diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
-            ParsedDiff, Step,
-        },
+        diff::{parse_diff, Step},
+        diff_pane::DiffPane,
         file_text::FileText,
         file_tree::{render_tree, FileTree, FileTreeState},
-        tree_query::{highlight_match, SearchDirection},
+        tree_query::SearchDirection,
     },
 };
 
@@ -111,15 +109,6 @@ pub fn render_compare_title(
     Line::from(spans).render(area, buf);
 }
 
-// What has the focus in the changes tab: the files, or the hunks or lines of the diff beside them.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum ChangesFocus {
-    #[default]
-    Files,
-    Hunks,
-    Lines,
-}
-
 // A file changed by a commit, as listed in the changes tab.
 #[derive(Debug)]
 struct ChangedFile {
@@ -138,10 +127,8 @@ pub struct CommitChangesState<'a> {
     files: Vec<ChangedFile>,
     // expanded by default, to show every changed file
     tree: FileTreeState,
-    // loaded lazily, only while the tab is shown
-    diff: Option<ParsedDiff>,
-    focus: ChangesFocus,
-    cursor: DiffCursor,
+    // the diff of the selected file, loaded lazily, only while the tab is shown
+    pub pane: DiffPane,
 }
 
 impl<'a> CommitChangesState<'a> {
@@ -205,14 +192,12 @@ impl<'a> CommitChangesState<'a> {
             base,
             files,
             tree,
-            diff: None,
-            focus: ChangesFocus::default(),
-            cursor: DiffCursor::default(),
+            pane: DiffPane::default(),
         }
     }
 
     pub fn ensure_loaded(&mut self) {
-        if self.diff.is_some() {
+        if self.pane.diff().is_some() {
             return;
         }
         let diff = match self.tree.selected() {
@@ -242,9 +227,7 @@ impl<'a> CommitChangesState<'a> {
         };
         let mut diff = parse_diff(&diff);
         diff.drop_converted(self.repository);
-        self.diff = Some(diff);
-        self.focus = ChangesFocus::Files;
-        self.cursor.reset();
+        self.pane.set_diff(Some(diff));
     }
 
     // Applies a tree operation, reloading the diff when the selection changed.
@@ -252,138 +235,16 @@ impl<'a> CommitChangesState<'a> {
         let before = self.tree.selected().map(|r| r.path.clone());
         f(&mut self.tree);
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
-            self.diff = None;
+            self.pane.set_diff(None);
             self.ensure_loaded();
         }
-    }
-
-    // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
-    // whether `event` was one.
-    pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
-        let jumped = match &self.diff {
-            Some(diff) if self.focus == ChangesFocus::Lines => {
-                self.cursor.jump_half_page(diff, event)
-            }
-            _ => false,
-        };
-        jumped || self.cursor.scroll.handle_scroll(event)
     }
 
     // Whether hunks were left out of the diff of the selected file, see
     // `ParsedDiff::drop_converted`; a directory opens and closes instead.
     pub fn is_converted(&self) -> bool {
         self.tree.selected().is_some_and(|r| !r.is_dir())
-            && self.diff.as_ref().is_some_and(|d| d.converted)
-    }
-
-    pub fn is_diff_focused(&self) -> bool {
-        self.focus != ChangesFocus::Files
-    }
-
-    pub fn is_selecting_lines(&self) -> bool {
-        self.focus == ChangesFocus::Lines
-    }
-
-    // The lines of the selected hunk or line in the file at the commit, (first, last); None for
-    // the files, or lines only removed.
-    pub fn selected_lines(&self) -> Option<(usize, usize)> {
-        let diff = self.diff.as_ref().filter(|_| self.is_diff_focused())?;
-        let rows = self.cursor.highlighted(diff, self.is_selecting_lines());
-        let mut lines = diff.rows.get(rows)?.iter().filter_map(|row| row.new);
-        let first = lines.next()?;
-        Some((first, lines.next_back().unwrap_or(first)))
-    }
-
-    // Goes one level deeper, like on the local changes page: files -> hunks -> lines of the
-    // selected hunk. Returns false when the diff has no hunk.
-    pub fn enter(&mut self) -> bool {
-        let Some(diff) = &self.diff else {
-            return false;
-        };
-        match self.focus {
-            ChangesFocus::Files if self.cursor.select_hunk(diff, 0) => {
-                self.focus = ChangesFocus::Hunks
-            }
-            ChangesFocus::Hunks if self.cursor.enter_lines(diff) => {
-                self.focus = ChangesFocus::Lines
-            }
-            ChangesFocus::Files => return false,
-            _ => {}
-        }
-        true
-    }
-
-    // Goes one level back: lines -> hunks -> files. Returns false when already at the files.
-    pub fn back(&mut self) -> bool {
-        match self.focus {
-            ChangesFocus::Files => return false,
-            ChangesFocus::Hunks => self.focus = ChangesFocus::Files,
-            ChangesFocus::Lines => {
-                self.focus = ChangesFocus::Hunks;
-                if let Some(diff) = &self.diff {
-                    self.cursor.leave_lines(diff);
-                }
-            }
-        }
-        true
-    }
-
-    // Moves the selected hunk or line in the diff.
-    pub fn step(&mut self, step: Step) {
-        let Some(diff) = &self.diff else {
-            return;
-        };
-        match self.focus {
-            ChangesFocus::Files => {}
-            ChangesFocus::Hunks => self.cursor.move_hunk(diff, step),
-            ChangesFocus::Lines => self.cursor.move_line(diff, step),
-        }
-    }
-
-    // The patch of the selected hunk or line, to apply to the working tree.
-    pub fn selected_patch(&self) -> Option<String> {
-        let diff = self.diff.as_ref()?;
-        match self.focus {
-            ChangesFocus::Files => None,
-            ChangesFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
-            ChangesFocus::Lines => self.cursor.line_patch(diff, false),
-        }
-    }
-
-    // The selected line as in the file, or the selected hunk as a diff, to copy.
-    pub fn selected_text(&self) -> Option<String> {
-        let diff = self.diff.as_ref()?;
-        (self.focus != ChangesFocus::Files)
-            .then(|| {
-                self.cursor
-                    .selected_text(diff, self.focus == ChangesFocus::Lines)
-            })
-            .flatten()
-    }
-
-    // Selects a row of the diff matching `query`, see `DiffCursor::search`. Returns false when
-    // nothing matches.
-    pub fn search_diff(
-        &mut self,
-        query: &str,
-        direction: SearchDirection,
-        options: SearchOptions,
-    ) -> bool {
-        let Some(diff) = &self.diff else {
-            return false;
-        };
-        let lines = self.focus == ChangesFocus::Lines;
-        match self.cursor.search(diff, query, direction, lines, options) {
-            Some(changed) => {
-                self.focus = if changed {
-                    ChangesFocus::Lines
-                } else {
-                    ChangesFocus::Hunks
-                };
-                true
-            }
-            None => false,
-        }
+            && self.pane.diff().is_some_and(|d| d.converted)
     }
 }
 
@@ -666,7 +527,7 @@ impl CommitTab {
         } else {
             "No matches"
         };
-        let tree_focused = !state.is_diff_focused();
+        let tree_focused = !state.pane.is_focused();
         let offset = render_tree(
             buf,
             tree_area,
@@ -680,25 +541,10 @@ impl CommitTab {
         );
         render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
 
-        let count = state.diff.as_ref().map_or(0, diff_line_count);
-        let range = state.cursor.scroll.fit(count, diff_area.height as usize);
-        let Some(diff) = &state.diff else {
-            return;
-        };
-        let border = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
-        render_scrollbar(buf, border, count, range.start, self.focused, theme);
-        let mut lines = diff_lines(diff, theme, range.clone(), diff_area.width);
-        let highlighted = match state.focus {
-            ChangesFocus::Files => 0..0,
-            focus => state.cursor.highlighted(diff, focus == ChangesFocus::Lines),
-        };
-        if let Some(query) = &self.pane_search {
-            for line in lines.iter_mut() {
-                highlight_match(line, query, self.ctx.search_options.get(), theme);
-            }
-        }
-        let wrap = self.ctx.wrap.get();
-        render_diff_lines(lines, range, highlighted, wrap, theme, diff_area, buf);
+        let search = self.pane_search.as_deref();
+        state
+            .pane
+            .render(diff_area, buf, &self.ctx, self.focused, search);
     }
 
     pub fn render_files(self, area: Rect, buf: &mut Buffer, state: &mut CommitFilesState) {
@@ -832,11 +678,11 @@ mod tests {
         state.ensure_loaded();
         assert_eq!(visible(&state.tree), vec!["src", "src/a.rs", "DOC.md"]);
         assert_eq!(selected(&state.tree), "src/a.rs");
-        assert!(state.diff.as_ref().unwrap().raw.contains("+changed"));
+        assert!(state.pane.diff().unwrap().raw.contains("+changed"));
         state.update_tree(FileTreeState::select_last);
         assert!(state
-            .diff
-            .as_ref()
+            .pane
+            .diff()
             .unwrap()
             .raw
             .contains("rename from README"));
@@ -845,13 +691,13 @@ mod tests {
         state.update_tree(FileTreeState::select_first);
         state.update_tree(FileTreeState::toggle);
         assert_eq!(visible(&state.tree), vec!["src", "DOC.md"]);
-        assert!(state.diff.as_ref().unwrap().raw.contains("+changed"));
+        assert!(state.pane.diff().unwrap().raw.contains("+changed"));
 
         // the root commit is compared to the empty tree
         let (_, changes) = repository.commit_detail(&first);
         let mut state = CommitChangesState::new(&repository, first.clone(), &changes);
         state.ensure_loaded();
-        assert!(state.diff.as_ref().unwrap().raw.contains("+a"));
+        assert!(state.pane.diff().unwrap().raw.contains("+a"));
 
         // files: collapsed by default, with a preview of the selected file
         let (second_commit, second_changes) = repository.commit_detail(&second);
@@ -971,27 +817,33 @@ mod tests {
         state.ensure_loaded();
 
         // enter goes into the hunks, then the lines of the selected one; back goes out
-        assert!(!state.is_diff_focused());
-        assert!(state.enter());
+        assert!(!state.pane.is_focused());
+        assert!(state.pane.enter());
         assert_eq!(
-            state.selected_text().unwrap().lines().nth(2),
+            state.pane.selected_text().unwrap().lines().nth(2),
             Some("-line 2")
         );
-        state.step(Step::Next);
-        assert!(state.selected_text().unwrap().contains("+eighteen"));
-        state.enter();
-        assert!(state.is_selecting_lines());
-        assert_eq!(state.selected_text().as_deref(), Some("line 18"));
-        state.step(Step::Next);
-        assert_eq!(state.selected_text().as_deref(), Some("eighteen"));
-        assert!(state.back() && state.back() && !state.back());
+        state.pane.step(Step::Next);
+        assert!(state.pane.selected_text().unwrap().contains("+eighteen"));
+        state.pane.enter();
+        assert!(state.pane.is_selecting_lines());
+        assert_eq!(state.pane.selected_text().as_deref(), Some("line 18"));
+        state.pane.step(Step::Next);
+        assert_eq!(state.pane.selected_text().as_deref(), Some("eighteen"));
+        assert!(state.pane.back() && state.pane.back() && !state.pane.back());
 
         // searching selects the line matched, around from the last match
-        assert!(!state.search_diff("TWO", SearchDirection::Current, SearchOptions::default()));
-        assert!(state.search_diff("two", SearchDirection::Current, SearchOptions::default()));
-        assert_eq!(state.selected_text().as_deref(), Some("two"));
-        assert!(state.search_diff("line 1", SearchDirection::Next, SearchOptions::default()));
-        assert!(state.search_diff(
+        assert!(!state
+            .pane
+            .search("TWO", SearchDirection::Current, SearchOptions::default()));
+        assert!(state
+            .pane
+            .search("two", SearchDirection::Current, SearchOptions::default()));
+        assert_eq!(state.pane.selected_text().as_deref(), Some("two"));
+        assert!(state
+            .pane
+            .search("line 1", SearchDirection::Next, SearchOptions::default()));
+        assert!(state.pane.search(
             "line 1",
             SearchDirection::Previous,
             SearchOptions::default()
@@ -999,12 +851,12 @@ mod tests {
 
         // applying the added line to a working tree going back to the first commit
         fs::write(repo_path.join("f"), lines.concat())?;
-        state.search_diff(
+        state.pane.search(
             "eighteen",
             SearchDirection::Current,
             SearchOptions::default(),
         );
-        let patch = state.selected_patch().unwrap();
+        let patch = state.pane.selected_patch().unwrap();
         repository.apply_patch(&patch, false, false)?;
         let mut expected = lines.clone();
         expected.insert(18, "eighteen\n".into());

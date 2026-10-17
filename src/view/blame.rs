@@ -22,9 +22,24 @@ use crate::{
         diff::Step,
         file_text::FileText,
         style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
-        tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
+        tree_query::{
+            find_around, highlighted_text, match_range, QueryChange, QueryKind, SearchDirection,
+            TreeQuery,
+        },
     },
 };
+
+// The keys moving in a list of lines, for the key hints of the blame and the timeline.
+pub fn moving_hints() -> Vec<KeyHint> {
+    use UserEvent::*;
+    vec![
+        (vec![NavigateDown, NavigateUp], "move".into()),
+        (vec![GoToTop, GoToBottom], "top/bottom".into()),
+        (vec![HalfPageDown, HalfPageUp], "half page".into()),
+        (vec![PageDown, PageUp], "page".into()),
+        (vec![ScrollDown, ScrollUp], "scroll".into()),
+    ]
+}
 
 // The width the authors' names are cut to.
 const AUTHOR_WIDTH: usize = 16;
@@ -105,6 +120,11 @@ impl BlameView {
         }
     }
 
+    // The path of the file as of the commit shown, for the page bar.
+    pub fn path(&self) -> &str {
+        &self.history[self.index].path
+    }
+
     // While typing a search, every key goes to it as is.
     pub fn is_typing(&self) -> bool {
         self.query.is_editing()
@@ -143,12 +163,12 @@ impl BlameView {
                 self.step_history(older, repository);
             }
             UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
-            UserEvent::Search => {
+            UserEvent::Search if body => {
                 self.query.start(QueryKind::Search);
                 self.update_query_status();
             }
-            UserEvent::GoToNext => self.search(SearchDirection::Next),
-            UserEvent::GoToPrevious => self.search(SearchDirection::Previous),
+            UserEvent::GoToNext if body => self.search(SearchDirection::Next),
+            UserEvent::GoToPrevious if body => self.search(SearchDirection::Previous),
             _ if body => self.handle_line_event(event),
             _ => {
                 let commit = &self.history[self.index].commit;
@@ -223,13 +243,41 @@ impl BlameView {
         }
     }
 
+    // Searches what has the focus: the commits of the lines, by hash, author or date, from one run
+    // of lines to the next, or the text.
     fn search(&mut self, direction: SearchDirection) {
-        let Some(search) = self.query.search() else {
+        let Some(search) = self.query.search().map(String::from) else {
             return;
         };
-        let found = self
-            .text
-            .search(search, direction, self.ctx.search_options.get());
+        let options = self.ctx.search_options.get();
+        let found = match self.focus {
+            // the commit shown isn't searched
+            BlameFocus::Revision => return,
+            BlameFocus::Commit => {
+                let commits = &self.commits;
+                let found = find_around(commits.len(), self.text.selected_line(), direction, |i| {
+                    let starts = i == 0 || commits[i - 1] != commits[i];
+                    let commit = &commits[i];
+                    let author = self.authors.get(commit);
+                    let date = author.map(|c| format_date(&self.ctx, &c.date));
+                    let texts = [
+                        Some(commit.as_str()),
+                        author.map(|c| c.author.as_str()),
+                        date.as_deref(),
+                    ];
+                    starts
+                        && texts
+                            .iter()
+                            .flatten()
+                            .any(|text| match_range(text, &search, options).is_some())
+                });
+                if let Some(line) = found {
+                    self.text.select_line(line);
+                }
+                found.is_some()
+            }
+            BlameFocus::Text => self.text.search(&search, direction, options),
+        };
         // while typing, the status line shows the query instead
         if !found && !self.query.is_editing() {
             let message = format!("No match for {search}");
@@ -242,36 +290,50 @@ impl BlameView {
         self.tx.send(status_input(typed, String::new()));
     }
 
+    // The keys working where the focus is, the most useful first: the status bar shows as many as
+    // fit, the keys popup all.
     pub fn key_hints(&self) -> Vec<KeyHint> {
+        use UserEvent::*;
         // on the commit shown, left and right step too
-        let mut steps = vec![UserEvent::OlderCommit, UserEvent::NewerCommit];
+        let mut steps = vec![OlderCommit, NewerCommit];
         if self.focus == BlameFocus::Revision {
-            steps.extend([UserEvent::NavigateLeft, UserEvent::NavigateRight]);
+            steps.extend([NavigateLeft, NavigateRight]);
         }
         let mut hints = vec![(steps, "older/newer commit".into())];
         let commit = [
-            hint(UserEvent::Checkout, "checkout"),
-            hint(UserEvent::OpenInBrowser, "open in browser"),
-            (
-                vec![UserEvent::ShortCopy, UserEvent::FullCopy],
-                "copy hash".into(),
-            ),
+            hint(Confirm, "show on graph"),
+            hint(Checkout, "checkout"),
+            hint(OpenInBrowser, "open in browser"),
+            hint(CopyLink, "copy link"),
+            (vec![ShortCopy, FullCopy], "copy hash".into()),
         ];
         match self.focus {
-            BlameFocus::Revision => hints.extend(commit),
-            BlameFocus::Commit => {
-                hints.push(hint(UserEvent::Confirm, "show on graph"));
+            BlameFocus::Revision => {
                 hints.extend(commit);
+                hints.push(hint(NavigateDown, "to the lines"));
+            }
+            BlameFocus::Commit => {
+                hints.extend(commit);
+                hints.push(hint(NavigateRight, "to the text"));
             }
             BlameFocus::Text => hints.extend([
-                hint(UserEvent::ShortCopy, "copy line"),
-                hint(UserEvent::OpenInBrowser, "open in browser"),
+                hint(ShortCopy, "copy line"),
+                hint(OpenInBrowser, "open in browser"),
+                hint(CopyLink, "copy link"),
+                hint(NavigateLeft, "to the commits"),
             ]),
         }
+        if self.focus != BlameFocus::Revision {
+            hints.extend(moving_hints());
+            hints.extend([
+                hint(Search, "search"),
+                (vec![GoToNext, GoToPrevious], "next/previous match".into()),
+            ]);
+        }
         hints.extend([
-            hint(UserEvent::Search, "search"),
-            hint(UserEvent::ToggleWrap, "wrap"),
-            hint(UserEvent::Cancel, "close"),
+            (vec![FocusPanel(0), FocusPanel(1)], "focus panel".into()),
+            hint(ToggleWrap, "wrap"),
+            hint(Cancel, "close"),
         ]);
         hints
     }
@@ -282,13 +344,14 @@ impl BlameView {
         let buf = f.buffer_mut();
         let [top, body] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
 
-        // the commit shown, with its date and subject, cycled with left and right
+        // the commit shown, with its date and subject, stepped through with left and right
         let focused = self.focus == BlameFocus::Revision;
         let (count, revision) = (self.history.len(), &self.history[self.index]);
         let position = format!("{}/{count}", count - self.index);
         let block =
             panel_block(focused, theme).title(panel_title("[0] Commit", &position, focused, theme));
-        let [left, right] = choice_arrows(focused, theme);
+        // [ and ] step from anywhere
+        let [left, right] = choice_arrows(self.index + 1 < count, self.index > 0, theme);
         let line = Line::from(vec![
             left,
             Span::raw(revision.commit.as_short_hash().to_string()).fg(theme.list_hash_fg),
@@ -330,10 +393,13 @@ impl BlameView {
         for y in divider.top()..divider.bottom() {
             buf.set_string(divider.x, y, "│", Style::default().fg(theme.divider_fg));
         }
-        let search = self.query.search();
+        // the search highlighted where it applies, in the text or the commits
+        let search_in = |focus| self.query.search().filter(|_| self.focus == focus);
+        let text_search = search_in(BlameFocus::Text);
+        let search = search_in(BlameFocus::Commit);
         let rows = self
             .text
-            .render(text_area, buf, &ctx, focused, true, search);
+            .render(text_area, buf, &ctx, focused, true, text_search);
 
         let selected = self.text.selected_line();
         let selected_style = Style::default().bg(theme.list_selected_bg);
@@ -368,13 +434,17 @@ impl BlameView {
                 })
                 .collect();
             author += &" ".repeat(author_width - author.width());
-            let line = Line::from(vec![
-                Span::raw(commit.as_short_hash().to_string()).fg(theme.list_hash_fg),
-                Span::raw(" "),
-                Span::raw(author).fg(theme.list_name_fg),
-                Span::raw(" "),
-                Span::raw(date.to_string()).fg(theme.list_date_fg),
-            ]);
+            let options = ctx.search_options.get();
+            let text = |text: &str, shown: usize, fg| {
+                highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)
+            };
+            let hash = commit.as_str();
+            let mut spans = text(hash, 7, theme.list_hash_fg);
+            spans.push(Span::raw(" "));
+            spans.extend(text(&author, author.len(), theme.list_name_fg));
+            spans.push(Span::raw(" "));
+            spans.extend(text(date, date.len(), theme.list_date_fg));
+            let line = Line::from(spans);
             buf.set_line(gutter.x, y, &line, gutter.width);
         }
     }
@@ -476,51 +546,152 @@ mod tests {
         assert_eq!(shown(&view).0, c3);
         assert_eq!(view.focus, BlameFocus::Revision);
 
+        // searching the commits shown by hash, the lines' commits by hash, from run to run
+        let search = |view: &mut BlameView, query: &str| {
+            press(view, UserEvent::Search);
+            for c in query.chars() {
+                let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+                view.handle_event(UserEvent::Unknown, key, &repository);
+            }
+            let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+            view.handle_event(UserEvent::Unknown, enter, &repository);
+        };
+        // not on the commit shown
+        search(&mut view, &c1.as_str()[..7]);
+        assert_eq!(shown(&view).0, c3);
+        press(&mut view, UserEvent::NavigateDown);
+        search(&mut view, &c2.as_str()[..7]);
+        assert_eq!(
+            (view.focus, view.text.selected_line()),
+            (BlameFocus::Commit, 1)
+        );
+        press(&mut view, UserEvent::Cancel);
+
         // from an older commit not changing the file, as of the last one changing it
         let view = BlameView::new(&repository, &c2, "a", None, test_ctx(), ec.sender()).unwrap();
         assert_eq!(shown(&view).0, c2);
     }
 
-    // The arrows of a value cycled with left and right look the same in the blame and the popups.
+    // The arrows of a value changed with left and right look the same in the blame and the popups:
+    // each lit while its key changes the value.
     #[test]
     fn test_choice_arrows_alike_in_the_blame_and_the_popups() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         let repo = GitRepository::new(path);
         repo.init();
+        for (i, date) in ["2024-01-01", "2024-01-02", "2024-01-03"]
+            .iter()
+            .enumerate()
+        {
+            fs::write(path.join("a"), format!("{i}\n")).unwrap();
+            repo.add(&["a"]);
+            repo.commit("c", date);
+        }
+        let head = CommitHash::from(repo.rev_parse_head().as_str());
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let ctx = test_ctx();
+        let (lit, muted) = (ctx.color_theme.highlight_fg, ctx.color_theme.muted_fg);
+        let mut view =
+            BlameView::new(&repository, &head, "a", None, ctx.clone(), ec.sender()).unwrap();
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+        let arrows = |buf: &Buffer| {
+            let fg = |symbol| {
+                buf.content
+                    .iter()
+                    .find(|c| c.symbol() == symbol)
+                    .unwrap()
+                    .fg
+            };
+            (fg("‹"), fg("›"))
+        };
+        let blame_arrows = |view: &mut BlameView, event| {
+            view.handle_event(event, key, &repository);
+            let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+            let frame = terminal.draw(|f| view.render(f, f.area())).unwrap();
+            arrows(frame.buffer)
+        };
+        // the newest, the oldest, between them; whatever has the focus, as [ and ] work from anywhere
+        assert_eq!(blame_arrows(&mut view, UserEvent::Unknown), (lit, muted));
+        assert_eq!(blame_arrows(&mut view, UserEvent::OlderCommit), (lit, lit));
+        assert_eq!(
+            blame_arrows(&mut view, UserEvent::OlderCommit),
+            (muted, lit)
+        );
+
+        // the first field of the popup, selected, its options going around
+        let popup_arrows = |labels: &[&str]| {
+            let targets = labels
+                .iter()
+                .map(|label| CheckoutTarget {
+                    label: label.to_string(),
+                    args: vec![label.to_string()],
+                })
+                .collect();
+            let dialog = GitDialog::checkout(targets);
+            let area = Rect::new(0, 0, 80, 20);
+            let mut buf = Buffer::empty(area);
+            GitDialogWidget::new(&dialog, &ctx).render(area, &mut buf);
+            arrows(&buf)
+        };
+        assert_eq!(popup_arrows(&["main", "feat"]), (lit, lit));
+        assert_eq!(popup_arrows(&["main"]), (muted, muted));
+    }
+
+    // A search's matches look the same in the blame's commits and the timeline's as everywhere.
+    #[test]
+    fn test_matches_highlighted_like_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
         fs::write(path.join("a"), "one\n").unwrap();
         repo.add(&["a"]);
-        repo.commit("c1", "2024-01-01");
-        let c1 = CommitHash::from(repo.rev_parse_head().as_str());
+        repo.commit("fix the thing", "2024-01-01");
+        let head = CommitHash::from(repo.rev_parse_head().as_str());
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let ec = EventController::without_terminal();
         let ctx = test_ctx();
         let theme = &ctx.color_theme;
-        let mut view =
-            BlameView::new(&repository, &c1, "a", None, ctx.clone(), ec.sender()).unwrap();
-        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
-        let arrow_fg = |buf: &Buffer| {
-            let cell = buf.content.iter().find(|c| c.symbol() == "‹").unwrap();
-            cell.fg
+        let typed = |query: &str| {
+            let mut keys: Vec<KeyEvent> = query
+                .chars()
+                .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .collect();
+            keys.push(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            keys
         };
-        let blame_arrow = |view: &mut BlameView| {
-            let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
-            let frame = terminal.draw(|f| view.render(f, f.area())).unwrap();
-            arrow_fg(frame.buffer)
+        // the text of the cells in the colors of a match
+        let matched = |buf: &Buffer| -> String {
+            buf.content
+                .iter()
+                .filter(|c| c.fg == theme.list_match_fg && c.bg == theme.list_match_bg)
+                .map(|c| c.symbol())
+                .collect()
         };
-        assert_eq!(blame_arrow(&mut view), theme.muted_fg);
-        view.handle_event(UserEvent::FocusPanel(0), key, &repository);
-        let selected = blame_arrow(&mut view);
-        assert_eq!(selected, theme.highlight_fg);
+        let draw = |render: &mut dyn FnMut(&mut Frame)| {
+            let mut terminal = Terminal::new(TestBackend::new(140, 8)).unwrap();
+            matched(terminal.draw(|f| render(f)).unwrap().buffer)
+        };
+        let short = &head.as_str()[..7];
 
-        let target = CheckoutTarget {
-            label: "main".into(),
-            args: vec!["main".into()],
-        };
-        let dialog = GitDialog::checkout(vec![target]);
-        let area = Rect::new(0, 0, 80, 20);
-        let mut buf = Buffer::empty(area);
-        GitDialogWidget::new(&dialog, &ctx).render(area, &mut buf);
-        assert_eq!(arrow_fg(&buf), selected);
+        let mut blame =
+            BlameView::new(&repository, &head, "a", None, ctx.clone(), ec.sender()).unwrap();
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+        blame.handle_event(UserEvent::Search, key, &repository);
+        for key in typed(&short[..4]) {
+            blame.handle_event(UserEvent::Unknown, key, &repository);
+        }
+        assert_eq!(draw(&mut |f| blame.render(f, f.area())), &short[..4]);
+
+        let mut timeline =
+            crate::view::TimelineView::new(&repository, &head, "a", ctx.clone(), ec.sender())
+                .unwrap();
+        timeline.handle_event(UserEvent::Search, key, &repository);
+        for key in typed("thing") {
+            timeline.handle_event(UserEvent::Unknown, key, &repository);
+        }
+        assert_eq!(draw(&mut |f| timeline.render(f, f.area())), "thing");
     }
 }

@@ -1,7 +1,7 @@
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
 };
 use std::sync::LazyLock;
@@ -221,11 +221,41 @@ pub fn highlight_match(
         .map(|s| s.content.as_ref())
         .collect();
     if let Some(matched) = match_range(&text, query, options) {
-        let style = Style::default()
-            .fg(theme.list_match_fg)
-            .bg(theme.list_match_bg);
-        patch_range(line, matched, style);
+        patch_range(line, matched, match_style(theme));
     }
+}
+
+// The style of what a search matches, the same everywhere.
+pub fn match_style(theme: &ColorTheme) -> Style {
+    Style::default()
+        .fg(theme.list_match_fg)
+        .bg(theme.list_match_bg)
+}
+
+// `shown`, the start of `text` (all of it, or a short hash), in `style`, with the match of `search`
+// in `text` highlighted where it is shown.
+pub fn highlighted_text(
+    text: &str,
+    shown: usize,
+    style: Style,
+    search: Option<&str>,
+    options: SearchOptions,
+    theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    let shown = &text[..shown];
+    let range = search.and_then(|query| match_range(text, query, options));
+    let Some(range) = range.filter(|r| r.start < shown.len()) else {
+        return vec![Span::styled(shown.to_string(), style)];
+    };
+    let end = range.end.min(shown.len());
+    vec![
+        Span::styled(shown[..range.start].to_string(), style),
+        Span::styled(
+            shown[range.start..end].to_string(),
+            style.patch(match_style(theme)),
+        ),
+        Span::styled(shown[end..].to_string(), style),
+    ]
 }
 
 // Patches `style` onto the bytes `range` of the text after the first span, a line number.
@@ -267,11 +297,10 @@ pub fn highlighted_name(
     let mut at = 0;
     for range in ranges {
         spans.push(Span::raw(name[at..range.start].to_string()));
-        spans.push(
-            Span::raw(name[range.clone()].to_string())
-                .fg(theme.list_match_fg)
-                .bg(theme.list_match_bg),
-        );
+        spans.push(Span::styled(
+            name[range.clone()].to_string(),
+            match_style(theme),
+        ));
         at = range.end;
     }
     spans.push(Span::raw(name[at..].to_string()));

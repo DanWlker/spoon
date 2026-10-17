@@ -2,14 +2,17 @@
 // and what each page keeps across a reload of the repository.
 
 use crate::{
+    app::AppContext,
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, UserEvent},
-    git::{CommitHash, Repository},
+    git::{CommitHash, FileRevision, Repository},
     search::SearchOptions,
     widget::{
+        commit_list::format_date,
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
         file_tree::ROOT_PATH,
+        tree_query::match_range,
     },
 };
 
@@ -86,6 +89,20 @@ pub fn commit_event(event: UserEvent, commit: &CommitHash) -> Option<AppEvent> {
         UserEvent::Confirm => Some(AppEvent::ShowCommit(commit.clone())),
         _ => None,
     }
+}
+
+// Whether a search matches the commit of a file's history, by its hash, date or subject; in the
+// blame and the timeline.
+pub fn revision_matches(
+    ctx: &AppContext,
+    revision: &FileRevision,
+    query: &str,
+    options: SearchOptions,
+) -> bool {
+    let date = format_date(ctx, &revision.date);
+    [revision.commit.as_str(), &date, &revision.subject]
+        .iter()
+        .any(|text| match_range(text, query, options).is_some())
 }
 
 // The status line showing what is `typed`, with its cursor, and `metadata` on the right, like

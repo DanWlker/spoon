@@ -1930,9 +1930,11 @@ impl Widget for GitDialogWidget<'_> {
             } else {
                 Style::default().fg(theme.fg)
             };
-            let [left, right] = choice_arrows(selected, theme);
             let line = match field {
                 Field::Choice { options, index } => {
+                    // the options go around
+                    let cycles = selected && options.len() > 1;
+                    let [left, right] = choice_arrows(cycles, cycles, theme);
                     let more = if options.len() > 1 {
                         format!("  {}/{}", index + 1, options.len())
                     } else {
@@ -1956,6 +1958,8 @@ impl Widget for GitDialogWidget<'_> {
                     } else {
                         "  new"
                     };
+                    let cycles = selected && !options.is_empty();
+                    let [left, right] = choice_arrows(cycles, cycles, theme);
                     let prefix_width = 2 + LABEL_WIDTH + 2;
                     if selected && dialog.editing {
                         let x = prefix_width + 2 + input.visual_cursor();

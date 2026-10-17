@@ -77,6 +77,11 @@ pub enum AppEvent {
         path: String,
         line: Option<usize>,
     },
+    // the commits changing the file at `path`, on the last one up to the commit
+    OpenTimeline {
+        commit: CommitHash,
+        path: String,
+    },
     // asks to check out the commit, see `UserEvent::Checkout`
     Checkout(CommitHash),
     // selects the commit on the graph
@@ -448,6 +453,7 @@ pub enum UserEvent {
     Ignore,
     CommandLog,
     Blame,
+    Timeline,
     OlderCommit,
     NewerCommit,
     #[serde(skip)]

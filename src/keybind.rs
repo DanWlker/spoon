@@ -17,7 +17,7 @@ const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 // ├─ graph                  the commands of the commit graph, bound here
 // │  ├─ sidebar             the refs; the commands of the graph work on the selected ref
 // │  ├─ commit_list
-// │  ├─ file_history        the blame of a file, over everything
+// │  ├─ file_history        the blame and the timeline of a file, over everything
 // │  └─ details             not the commands of the graph
 // │     └─ details_pane     the diff or preview beside the files
 // ├─ local_changes
@@ -96,6 +96,7 @@ impl Scope {
                             | UserEvent::OpenInBrowser
                             | UserEvent::CopyLink
                             | UserEvent::Blame
+                            | UserEvent::Timeline
                     )
             }
             // not the keys of the files beside it

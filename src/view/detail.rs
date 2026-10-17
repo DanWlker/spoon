@@ -170,7 +170,7 @@ impl<'a> DetailView<'a> {
         }
         let mut hints = vec![];
         if self.is_pane_focused() && self.tab == DetailTab::Changes {
-            let lines = self.changes_state.is_selecting_lines();
+            let lines = self.changes_state.pane.is_selecting_lines();
             if !lines {
                 hints.push(hint(UserEvent::Confirm, "select lines"));
             }
@@ -231,9 +231,11 @@ impl<'a> DetailView<'a> {
             (Direction::Up, Info | Files | Pane, _) => self.focus_list(),
             (Direction::Down, List, _) => self.show_tab(self.tab),
             // into the diff or preview beside the files, and back
-            (Direction::Right, Files, DetailTab::Changes) => return self.changes_state.enter(),
+            (Direction::Right, Files, DetailTab::Changes) => {
+                return self.changes_state.pane.enter()
+            }
             (Direction::Right, Files, DetailTab::Files) => return self.files_state.enter(),
-            (Direction::Left, Pane, DetailTab::Changes) => return self.changes_state.back(),
+            (Direction::Left, Pane, DetailTab::Changes) => return self.changes_state.pane.back(),
             (Direction::Left, Pane, DetailTab::Files) => return self.files_state.back(),
             _ => return false,
         }
@@ -244,7 +246,7 @@ impl<'a> DetailView<'a> {
         let pane = match self.tab {
             _ if self.list_focused => return DetailFocus::List,
             DetailTab::Info => return DetailFocus::Info,
-            DetailTab::Changes => self.changes_state.is_diff_focused(),
+            DetailTab::Changes => self.changes_state.pane.is_focused(),
             DetailTab::Files => self.files_state.is_preview_focused(),
         };
         if pane {
@@ -430,18 +432,27 @@ impl<'a> DetailView<'a> {
             return;
         }
 
-        // the file selected in the tree, on the line selected in its diff or preview
-        if event == UserEvent::Blame && !self.list_focused {
+        // the file selected in the tree: its blame, on the line selected in its diff or preview, or
+        // its timeline
+        if let (UserEvent::Blame | UserEvent::Timeline, false) = (event, self.list_focused) {
             let line = match self.tab {
-                DetailTab::Changes => self.changes_state.selected_lines().map(|(first, _)| first),
+                DetailTab::Changes => self
+                    .changes_state
+                    .pane
+                    .selected_lines()
+                    .map(|(first, _)| first),
                 DetailTab::Files => self.files_state.selected_line(),
                 DetailTab::Info => None,
             };
             if let Some((path, false)) = self.selected_entry() {
-                self.tx.send(AppEvent::OpenBlame {
-                    commit: self.commit.commit_hash.clone(),
-                    path: path.into(),
-                    line: line.map(|line| line.saturating_sub(1)),
+                let (commit, path) = (self.commit.commit_hash.clone(), path.into());
+                self.tx.send(match event {
+                    UserEvent::Blame => AppEvent::OpenBlame {
+                        commit,
+                        path,
+                        line: line.map(|line| line.saturating_sub(1)),
+                    },
+                    _ => AppEvent::OpenTimeline { commit, path },
                 });
             }
             return;
@@ -638,7 +649,7 @@ impl<'a> DetailView<'a> {
         // o opens the file at this commit on the web host, at the selected lines; O copies the link
         if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
             let lines = match self.tab {
-                DetailTab::Changes => self.changes_state.selected_lines(),
+                DetailTab::Changes => self.changes_state.pane.selected_lines(),
                 DetailTab::Files => self.files_state.selected_line().map(|line| (line, line)),
                 DetailTab::Info => None,
             };
@@ -662,7 +673,7 @@ impl<'a> DetailView<'a> {
         };
         match self.tab {
             DetailTab::Changes => {
-                let state = &mut self.changes_state;
+                let state = &mut self.changes_state.pane;
                 if let Some(step) = step {
                     state.step(step);
                     return;
@@ -682,7 +693,7 @@ impl<'a> DetailView<'a> {
                         }
                     }
                     _ => {
-                        self.changes_state.scroll_diff(event);
+                        self.changes_state.pane.scroll(event);
                     }
                 }
             }
@@ -713,14 +724,14 @@ impl<'a> DetailView<'a> {
     // Returns whether the event was handled by the files of the changes tab.
     fn handle_changes_event(&mut self, event: UserEvent) -> bool {
         // into the diff; a directory without one opens or closes
-        if event == UserEvent::Confirm && self.changes_state.enter() {
+        if event == UserEvent::Confirm && self.changes_state.pane.enter() {
             return true;
         }
         if event == UserEvent::Confirm && self.changes_state.is_converted() {
             self.tx.send(AppEvent::NotifyWarn(CONVERTED_DIFF.into()));
             return true;
         }
-        if event == UserEvent::ApplyChange || self.changes_state.scroll_diff(event) {
+        if event == UserEvent::ApplyChange || self.changes_state.pane.scroll(event) {
             return true;
         }
         let state = &mut self.changes_state;
@@ -729,10 +740,10 @@ impl<'a> DetailView<'a> {
 
     // Applies the selected hunk or line of the diff to the working tree.
     fn apply_change(&self) {
-        let Some(patch) = self.changes_state.selected_patch() else {
+        let Some(patch) = self.changes_state.pane.selected_patch() else {
             return;
         };
-        let what = if self.changes_state.is_selecting_lines() {
+        let what = if self.changes_state.pane.is_selecting_lines() {
             "line"
         } else {
             "hunk"
@@ -911,7 +922,7 @@ impl<'a> DetailView<'a> {
         let options = self.ctx.search_options.get();
         if self.is_pane_focused() {
             let found = match self.tab {
-                DetailTab::Changes => self.changes_state.search_diff(&search, direction, options),
+                DetailTab::Changes => self.changes_state.pane.search(&search, direction, options),
                 DetailTab::Files => self.files_state.search_preview(&search, direction, options),
                 DetailTab::Info => true,
             };

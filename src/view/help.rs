@@ -226,6 +226,7 @@ fn build_lines(
         (vec![UserEvent::FullCopy], "Copy commit hash; the absolute path in a file tree".into()),
         (vec![UserEvent::Ignore], "Add the file or directory to .gitignore, in a file tree".into()),
         (vec![UserEvent::Blame], "Blame the selected file, from the selected line".into()),
+        (vec![UserEvent::Timeline], "Show the commits changing the selected file".into()),
     ];
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
 
@@ -267,6 +268,7 @@ fn build_lines(
         (vec![UserEvent::Confirm], "Select hunks / lines; Resolve a conflict; Commit".into()),
         (vec![UserEvent::Edit], "Open the file in $VISUAL / $EDITOR".into()),
         (vec![UserEvent::Blame], "Blame the selected file as of the last commit".into()),
+        (vec![UserEvent::Timeline], "Show the commits changing the selected file".into()),
         (vec![UserEvent::Commit], "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase".into()),
         (vec![UserEvent::ToggleAmend], "Toggle amending the last commit".into()),
         (vec![UserEvent::Abort], "Abort the rebase, merge, cherry-pick or revert in progress".into()),
@@ -306,10 +308,23 @@ fn build_lines(
         (vec![UserEvent::Checkout], "Check out the commit".into()),
         (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the commit short/full hash; the line, on its text".into()),
         (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the commit, or the file at the line, on the web host; copy its link".into()),
-        (vec![UserEvent::Search], "Search the file".into()),
+        (vec![UserEvent::Search], "Search the lines' commits (hash, author, date) or the text".into()),
         (vec![UserEvent::GoToNext, UserEvent::GoToPrevious], "Go to next/previous search match".into()),
     ];
     let (blame_key_lines, blame_value_lines) = build_block_lines("Blame:", blame_helps, color_theme, keybind);
+
+    let timeline_helps = vec![
+        (vec![UserEvent::Cancel, UserEvent::Close], "Clear the search, back out of the diff, then close".into()),
+        (vec![UserEvent::FocusPanel(0), UserEvent::FocusPanel(1)], "Focus the commits/the diff".into()),
+        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Into the diff/back out of it".into()),
+        (vec![UserEvent::OlderCommit, UserEvent::NewerCommit], "Select the older/newer commit, from the diff too".into()),
+        (vec![UserEvent::Confirm], "Select the commit on the graph; in the diff, select lines".into()),
+        (vec![UserEvent::Checkout], "Check out the commit".into()),
+        (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the commit short/full hash; the hunk or line, in the diff".into()),
+        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the commit, or the file at the lines, on the web host; copy its link".into()),
+        (vec![UserEvent::Search], "Search the commits (hash, date, subject), or the diff".into()),
+    ];
+    let (timeline_key_lines, timeline_value_lines) = build_block_lines("Timeline:", timeline_helps, color_theme, keybind);
 
     let dialog_helps = vec![
         (vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "Select next/previous field".into()),
@@ -330,6 +345,7 @@ fn build_lines(
         refs_key_lines,
         local_changes_key_lines,
         blame_key_lines,
+        timeline_key_lines,
         dialog_key_lines,
     ]);
     let value_lines = join_line_groups_with_empty(vec![
@@ -340,6 +356,7 @@ fn build_lines(
         refs_value_lines,
         local_changes_value_lines,
         blame_value_lines,
+        timeline_value_lines,
         dialog_value_lines,
     ]);
 

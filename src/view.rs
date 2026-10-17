@@ -1,5 +1,7 @@
 mod blame;
 pub use blame::BlameView;
+mod timeline;
+pub use timeline::TimelineView;
 mod common;
 mod views;
 

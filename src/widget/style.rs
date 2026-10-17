@@ -53,14 +53,16 @@ pub fn panel_block<'a>(focused: bool, theme: &ColorTheme) -> Block<'a> {
 }
 
 // The arrows around a value cycled with left and right, like a popup's option or the commit of
-// the blame: lit while it is selected.
-pub fn choice_arrows(selected: bool, theme: &ColorTheme) -> [Span<'static>; 2] {
-    let fg = if selected {
-        theme.highlight_fg
-    } else {
-        theme.muted_fg
+// the blame: each lit while its key would change the value.
+pub fn choice_arrows(left: bool, right: bool, theme: &ColorTheme) -> [Span<'static>; 2] {
+    let fg = |lit| {
+        if lit {
+            theme.highlight_fg
+        } else {
+            theme.muted_fg
+        }
     };
-    [Span::raw("‹ ").fg(fg), Span::raw(" ›").fg(fg)]
+    [Span::raw("‹ ").fg(fg(left)), Span::raw(" ›").fg(fg(right))]
 }
 
 // The marker of a folder or section that opens: nvim-tree's chevrons (Nerd Font, Octicons).

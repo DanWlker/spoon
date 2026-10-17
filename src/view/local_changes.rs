@@ -157,15 +157,18 @@ impl<'a> LocalChangesView<'a> {
                 self.after_action(result);
             }
             // as of the last commit, the local changes aren't blamed
-            UserEvent::Blame => {
+            UserEvent::Blame | UserEvent::Timeline => {
                 let state = &self.local_changes_state;
                 let head = state.repository().head_commit();
                 if let (Some(path), Some(commit)) = (state.selected_file(), head) {
                     let path = path.into();
-                    self.tx.send(AppEvent::OpenBlame {
-                        commit,
-                        path,
-                        line: None,
+                    self.tx.send(match event {
+                        UserEvent::Blame => AppEvent::OpenBlame {
+                            commit,
+                            path,
+                            line: None,
+                        },
+                        _ => AppEvent::OpenTimeline { commit, path },
                     });
                 }
             }

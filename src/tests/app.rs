@@ -396,13 +396,14 @@ fn test_sidebar_only_beside_the_graph() {
     ]);
 }
 
-// What covers the app: "none", "help", "blame" or "log".
+// What covers the app: "none", "help", "blame", "timeline" or "log".
 fn overlay(expected: &'static str) -> Vec<Step> {
     check(move |app: &App| {
         let shown = match &app.shell.overlay {
             None => "none",
             Some(super::Overlay::Help(_)) => "help",
             Some(super::Overlay::Blame(_)) => "blame",
+            Some(super::Overlay::Timeline(_)) => "timeline",
             Some(super::Overlay::CommandLog(_)) => "log",
         };
         assert_eq!(shown, expected);
@@ -849,6 +850,59 @@ fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
         keys("enter"),
         overlay("none"),
         check(move |app| assert_eq!(app.repository.head_commit().unwrap().as_str(), c1)),
+    ]);
+}
+
+#[test]
+fn test_keys_popup_over_the_blame_and_the_timeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let popup_has = |keys: &'static [&'static str]| {
+        check(move |app| {
+            let shown: Vec<String> = app.keys_popup_keys().into_iter().map(|(_, d)| d).collect();
+            for key in keys {
+                assert!(shown.iter().any(|d| d == key), "no {key:?} in {shown:?}");
+            }
+        })
+    };
+    harness.run(vec![
+        keys("4 shift-b shift-h"),
+        popup_has(&[
+            "older/newer commit",
+            "show on graph",
+            "checkout",
+            "search",
+            "close",
+        ]),
+        keys("esc shift-t"),
+        popup_has(&["into the diff", "copy hash", "move", "focus panel"]),
+        // typing a search, the popup gives way
+        keys("/"),
+        popup_has(&[]),
+        check(|app| assert!(app.keys_popup_keys().is_empty())),
+    ]);
+}
+
+#[test]
+fn test_timeline_shows_a_commit_on_the_graph() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(&path, &["branch", "-q", "-D", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // f.txt in the files of c2, then c1, the commit before changing it
+        keys("4 shift-t"),
+        overlay("timeline"),
+        keys("j enter"),
+        overlay("none"),
+        check(|app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            let commit = view.as_list_state().selected_commit_hash();
+            assert_eq!(app.repository.commit(commit).unwrap().subject, "c1");
+        }),
     ]);
 }
 
