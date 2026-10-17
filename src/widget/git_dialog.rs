@@ -962,6 +962,16 @@ impl GitDialog {
             ]);
         }
         if new_upstream != *upstream {
+            // else the name would change and the upstream not, git refusing it after the rename
+            let known = matches!(
+                self.field(FieldId::Upstream),
+                Some(Field::Text { options, .. }) if options.contains(&new_upstream)
+            );
+            if !new_upstream.is_empty() && !known {
+                return Err(format!(
+                    "{new_upstream} is no remote branch, fetch it first"
+                ));
+            }
             let upstream_arg = if new_upstream.is_empty() {
                 "--unset-upstream".to_string()
             } else {
@@ -2160,7 +2170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_names_starting_with_dash_are_refused() {
+    fn test_bad_names_and_upstreams_are_refused() {
         // `git branch -D feature` would delete feature
         let mut dialog = GitDialog::create_branch("feature", vec!["feature".into()]);
         dialog.handle_key(None, key(KeyCode::Char('-')));
@@ -2175,6 +2185,14 @@ mod tests {
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('f')));
         assert!(dialog.command().is_err());
+        // an upstream that isn't a remote branch is refused before renaming
+        let remote_branches = vec!["origin/main".to_string()];
+        let mut dialog = GitDialog::edit_branch("topic", None, remote_branches.clone());
+        dialog.fields[1].2 = Field::text("origin/nope", remote_branches.clone());
+        let err = dialog.command().unwrap_err();
+        assert_eq!(err, "origin/nope is no remote branch, fetch it first");
+        dialog.fields[1].2 = Field::text("origin/main", remote_branches);
+        assert_eq!(args(&dialog), "branch --set-upstream-to=origin/main topic");
         let mut dialog = GitDialog::create_tag("v1");
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('d')));

@@ -522,7 +522,8 @@ impl Repository {
         out.trim().parse().map_err(|e| format!("{e}"))
     }
 
-    // A remote branch having the commit, like "origin/main", to warn before rewriting it.
+    // A remote branch having the commit, like "origin/main", to warn before rewriting it; of any
+    // remote, as where the branch is pushed to may be none of its upstream.
     pub fn remote_branch_containing(&self, commit: &str) -> Option<String> {
         let contains = format!("--contains={commit}");
         let args = [
