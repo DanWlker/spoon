@@ -23,7 +23,7 @@ tap version:
     perl -pi -e "s{^  url \".*\"}{  url \"$url\"}; s{^  sha256 \".*\"}{  sha256 \"$sha\"}" "{{tap}}/Formula/spoon.rb"
     git -C "{{tap}}" diff
 
-# Needs Hyprland (Lua config), kitty, wf-recorder, grim and ffmpeg; runs on a temporary headless monitor
+# Needs Hyprland (Lua config), kitty, wf-recorder, grim, ffmpeg and Maple Mono NF; runs on a temporary headless monitor
 # Record img/demo.gif and the README screenshots, of a ratatui clone
 demo:
     #!/usr/bin/env bash
@@ -60,10 +60,13 @@ demo:
     hyprctl output create headless SPOONDEMO >/dev/null; sleep 1
     hyprctl eval 'hl.monitor({ output = "SPOONDEMO", mode = "1600x1000@30", position = "20000x0", scale = 1 })' >/dev/null
     hyprctl eval 'hl.window_rule({ name = "spoon-demo", enabled = true, match = { class = "spoondemo" }, opacity = "1.0 override 1.0 override 1.0 override", no_blur = true, rounding = 0, border_size = 0, fullscreen = true, workspace = "11 silent" })' >/dev/null
-    # HOME keeps your spoon and kitty config out
+    font="Maple Mono NF"
+    fc-list -q "$font" || { echo "install $font first"; exit 1; }
+    # HOME keeps your spoon and kitty config out; XDG_DATA_HOME keeps the fonts in it
+    data=${XDG_DATA_HOME:-$HOME/.local/share}
     launch() {
         rm -f $tmp/kitty.sock*
-        hyprctl eval "hl.exec_cmd(\"env HOME=$tmp kitty --class spoondemo --config NONE -o allow_remote_control=yes --listen-on $sock -o background=#1e1e2e -o foreground=#cdd6f4 -o font_size=13 -o window_padding_width=6 -o confirm_os_window_close=0 -o enable_audio_bell=no --directory $repo $bin\")" >/dev/null
+        hyprctl eval "hl.exec_cmd(\"env HOME=$tmp XDG_DATA_HOME=$data kitty --class spoondemo --config NONE -o 'font_family=$font' -o allow_remote_control=yes --listen-on $sock -o background=#1e1e2e -o foreground=#cdd6f4 -o font_size=13 -o window_padding_width=6 -o confirm_os_window_close=0 -o enable_audio_bell=no --directory $repo $bin\")" >/dev/null
         sleep 4
     }
     # keys in <> are key names, others text; each followed by a pause of $D seconds
