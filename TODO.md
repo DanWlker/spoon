@@ -10,3 +10,4 @@ TODO:
    - Not planned: following renames (--follow). git only supports it for a single file, and it doesn't work well with a graph.
 1. Interactive rebase, Shift R? need to find another keybind for refresh
 1. if N is pressed in a diff pane, it should go to the next search result and display that diff, while still keeping focus on diff pane, same with ]f
+1. Remove user command function
