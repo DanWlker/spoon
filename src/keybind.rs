@@ -222,6 +222,11 @@ impl KeyBind {
     }
 
     // The keys bound to the event, in any scope: single keys first.
+    #[cfg(test)]
+    pub fn bound_events(&self) -> impl Iterator<Item = UserEvent> + '_ {
+        self.bindings.values().copied()
+    }
+
     pub fn keys_for_event(&self, user_event: UserEvent) -> Vec<String> {
         let mut keys: Vec<&Vec<KeyEvent>> = self
             .bindings

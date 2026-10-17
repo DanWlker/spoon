@@ -9,6 +9,7 @@ mod git;
 mod graph;
 mod graph_commands;
 mod keybind;
+mod keys;
 mod layout;
 mod protocol;
 mod ref_commands;

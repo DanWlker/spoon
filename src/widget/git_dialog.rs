@@ -12,11 +12,12 @@ use crate::{
     app::AppContext,
     browse::PageLink,
     color::ColorTheme,
-    event::{AppEvent, KeyHint, UserEvent},
+    event::{AppEvent, UserEvent},
     git::{
-        parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, Conflict, FileChange,
-        GitTask, RemoteInfo, MAX_CONFLICT_STEPS,
+        parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, CommitHash, Conflict,
+        FileChange, GitTask, Ref, RemoteInfo, MAX_CONFLICT_STEPS,
     },
+    keys::{KeyList, Keys},
     widget::style::{change_span, choice_arrows, focused_title, render_popup},
 };
 
@@ -32,6 +33,48 @@ pub enum RemoteAction {
 pub struct CheckoutTarget {
     pub label: String,
     pub args: Vec<String>,
+}
+
+// Where a new branch starts or a tag goes: a commit, or a branch, remote branch or tag (a branch
+// made from a remote branch tracks it). Never typed, so always one that exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartPoint {
+    Commit(CommitHash),
+    Branch(String),
+    RemoteBranch(String),
+    Tag(String),
+}
+
+impl StartPoint {
+    // None for a stash, which nothing starts from.
+    pub fn of_ref(r: &Ref) -> Option<Self> {
+        match r {
+            Ref::Branch { name, .. } => Some(StartPoint::Branch(name.clone())),
+            Ref::RemoteBranch { name, .. } => Some(StartPoint::RemoteBranch(name.clone())),
+            Ref::Tag { name, .. } => Some(StartPoint::Tag(name.clone())),
+            Ref::Stash { .. } => None,
+        }
+    }
+
+    // As the popup shows it: the short hash, or the name.
+    fn label(&self) -> String {
+        match self {
+            StartPoint::Commit(hash) => hash.as_short_hash().to_string(),
+            StartPoint::Branch(name) | StartPoint::RemoteBranch(name) | StartPoint::Tag(name) => {
+                name.clone()
+            }
+        }
+    }
+
+    // As git takes it, in full so a branch and a tag of the same name can't be mixed up.
+    fn revision(&self) -> String {
+        match self {
+            StartPoint::Commit(hash) => hash.as_str().to_string(),
+            StartPoint::Branch(name) => format!("refs/heads/{name}"),
+            StartPoint::RemoteBranch(name) => format!("refs/remotes/{name}"),
+            StartPoint::Tag(name) => format!("refs/tags/{name}"),
+        }
+    }
 }
 
 // A commit listed in a popup: its full hash, and the line describing it.
@@ -83,7 +126,10 @@ enum DialogKind {
         commits: Vec<DialogCommit>,
         base: Option<String>,
     },
-    CreateBranch,
+    // where it may start, the first chosen
+    CreateBranch {
+        starts: Vec<StartPoint>,
+    },
     // local branches, with those whose commits are on no other branch, and their upstreams
     // still on their remotes, as (remote, branch), which may be deleted too
     DeleteBranches {
@@ -108,7 +154,9 @@ enum DialogKind {
     RemoveRemote {
         name: String,
     },
-    CreateTag,
+    CreateTag {
+        at: StartPoint,
+    },
     // `remote` is where they may be deleted too
     DeleteTags {
         names: Vec<String>,
@@ -220,6 +268,9 @@ const MERGE_TYPES: [&str; 5] = [
 const LOCAL_CHANGES_OPTIONS: [&str; 3] = ["Keep", "Stash and reapply", "Discard"];
 
 const SQUASH_MESSAGES: [&str; 2] = ["Combine the messages", "Keep the parent's message (fixup)"];
+
+// the upstream of a branch having none, chosen to remove it
+const NO_UPSTREAM: &str = "None";
 
 const FILE_STATES: [&str; 2] = ["At the commit", "Before the commit"];
 
@@ -366,6 +417,11 @@ impl GitDialog {
     }
 
     // The event its key confirms it with besides Enter, like the key that opened it.
+    // Typing into a text field, which takes every key.
+    pub fn is_editing(&self) -> bool {
+        self.editing
+    }
+
     pub fn trigger(&self) -> Option<UserEvent> {
         self.trigger
     }
@@ -836,19 +892,29 @@ impl GitDialog {
         })
     }
 
-    // A branch starting at `from`, one of `branches` or any revision typed.
-    pub fn create_branch(from: &str, branches: Vec<String>) -> Self {
-        let mut dialog = Self::with(" New branch ", "create", vec![], DialogKind::CreateBranch);
+    // A branch starting at `from`, or one of `others` chosen instead (none from a commit).
+    pub fn create_branch(from: StartPoint, others: Vec<StartPoint>) -> Self {
+        let mut starts = vec![from];
+        starts.extend(
+            others
+                .into_iter()
+                .filter(|other| *other != starts[0])
+                .collect::<Vec<_>>(),
+        );
+        let options = starts.iter().map(StartPoint::label).collect();
+        let kind = DialogKind::CreateBranch { starts };
+        let mut dialog = Self::with(" New branch ", "create", vec![], kind);
         dialog.push_text(FieldId::Name, "Name", "", vec![]);
-        dialog.push_text(FieldId::From, "From", from, branches);
+        dialog.push_choice(FieldId::From, "From", options, "");
         dialog.push_check(FieldId::Checkout, "Check it out", true);
         dialog.editing = true;
         dialog
     }
 
-    fn create_branch_command(&self) -> Result<GitTask, String> {
+    fn create_branch_command(&self, starts: &[StartPoint]) -> Result<GitTask, String> {
         let name = self.value(FieldId::Name);
-        let from = self.value(FieldId::From);
+        let start = &starts[self.choice(FieldId::From)];
+        let from = start.revision();
         if name.is_empty() {
             return Err("Type a name for the branch".into());
         }
@@ -856,7 +922,6 @@ impl GitDialog {
         if name.starts_with('-') {
             return Err("A branch name can't start with -".into());
         }
-        let from = if from.is_empty() { "HEAD".into() } else { from };
         // tracking `from` when it is a remote branch, either way
         let args: &[&str] = if self.checked(FieldId::Checkout) {
             &["checkout", "-b", &name, &from]
@@ -866,7 +931,7 @@ impl GitDialog {
         Ok(GitTask::new(
             args,
             format!("Creating {name}"),
-            format!("Created {name} from {from}"),
+            format!("Created {name} from {}", start.label()),
         ))
     }
 
@@ -958,14 +1023,24 @@ impl GitDialog {
         };
         let mut dialog = Self::with(" Edit branch ", "save", vec![], kind);
         dialog.push_text(FieldId::Name, "Name", name, vec![]);
-        dialog.push_text(FieldId::Upstream, "Upstream", &upstream, remote_branches);
+        let mut options = vec![NO_UPSTREAM.to_string()];
+        options.extend(remote_branches);
+        let upstream = if upstream.is_empty() {
+            NO_UPSTREAM
+        } else {
+            &upstream
+        };
+        dialog.push_choice(FieldId::Upstream, "Upstream", options, upstream);
         dialog.editing = true;
         dialog
     }
 
     fn edit_branch_command(&self, name: &str, upstream: &str) -> Result<GitTask, String> {
         let new_name = self.value(FieldId::Name);
-        let new_upstream = self.value(FieldId::Upstream);
+        let new_upstream = match self.value(FieldId::Upstream) {
+            none if none == NO_UPSTREAM => String::new(),
+            upstream => upstream,
+        };
         if new_name.is_empty() {
             return Err("Type a name for the branch".into());
         }
@@ -983,16 +1058,6 @@ impl GitDialog {
             ]);
         }
         if new_upstream != *upstream {
-            // else the name would change and the upstream not, git refusing it after the rename
-            let known = matches!(
-                self.field(FieldId::Upstream),
-                Some(Field::Text { options, .. }) if options.contains(&new_upstream)
-            );
-            if !new_upstream.is_empty() && !known {
-                return Err(format!(
-                    "{new_upstream} is no remote branch, fetch it first"
-                ));
-            }
             let upstream_arg = if new_upstream.is_empty() {
                 "--unset-upstream".to_string()
             } else {
@@ -1098,19 +1163,21 @@ impl GitDialog {
     }
 
     // A tag at `at`, annotated when it has a message.
-    pub fn create_tag(at: &str) -> Self {
-        let mut dialog = Self::with(" New tag ", "create", vec![], DialogKind::CreateTag);
+    pub fn create_tag(at: StartPoint) -> Self {
+        let label = at.label();
+        let mut dialog = Self::with(" New tag ", "create", vec![], DialogKind::CreateTag { at });
         dialog.push_text(FieldId::Name, "Name", "", vec![]);
         dialog.push_text(FieldId::Message, "Message", "", vec![]);
-        dialog.push_text(FieldId::At, "At", at, vec![]);
+        // where the cursor is, the only option
+        dialog.push_choice(FieldId::At, "At", vec![label], "");
         dialog.editing = true;
         dialog
     }
 
-    fn create_tag_command(&self) -> Result<GitTask, String> {
+    fn create_tag_command(&self, at: &StartPoint) -> Result<GitTask, String> {
         let name = self.value(FieldId::Name);
         let message = self.value(FieldId::Message);
-        let at = self.value(FieldId::At);
+        let (label, at) = (at.label(), at.revision());
         if name.is_empty() {
             return Err("Type a name for the tag".into());
         }
@@ -1118,7 +1185,6 @@ impl GitDialog {
         if name.starts_with('-') {
             return Err("A tag name can't start with -".into());
         }
-        let at = if at.is_empty() { "HEAD".into() } else { at };
         let mut args = vec!["tag"];
         if !message.is_empty() {
             args.extend(["-a", "-m", &message]);
@@ -1126,8 +1192,8 @@ impl GitDialog {
         args.extend([name.as_str(), &at]);
         Ok(GitTask::new(
             &args,
-            format!("Tagging {at} {name}"),
-            format!("Tagged {at} {name}"),
+            format!("Tagging {label} {name}"),
+            format!("Tagged {label} {name}"),
         ))
     }
 
@@ -1573,56 +1639,90 @@ impl GitDialog {
         }
     }
 
-    // The next required text field (a name or a URL) still empty, after the selected one.
+    // The next required text field still empty, after the selected one: a name, a URL, the branch
+    // to pull or to push to.
     fn missing_field(&self) -> Option<usize> {
         let len = self.fields.len();
         (1..=len)
             .map(|step| (self.selected + step) % len)
             .find(|&index| match &self.fields[index] {
-                (FieldId::Name | FieldId::Url, _, Field::Text { input, .. }) => {
-                    input.value().trim().is_empty()
-                }
+                (
+                    FieldId::Name | FieldId::Url | FieldId::Branch | FieldId::RemoteBranch,
+                    _,
+                    Field::Text { input, .. },
+                ) => input.value().trim().is_empty(),
                 _ => false,
             })
     }
 
-    // The keys of the selected field and the popup, for the status bar.
-    pub fn key_hints(&self) -> Vec<KeyHint> {
+    // The keys of the popup and its selected field, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
-        let h =
-            |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
-        if self.editing {
-            return match self.missing_field() {
-                Some(index) if index != self.selected => {
-                    vec![h(&[Confirm], "next"), h(&[Cancel], "done typing")]
-                }
-                // this one is required, enter stays in it
-                Some(_) => vec![h(&[Cancel], "done typing")],
-                None => vec![h(&[Confirm, Cancel], "done typing")],
-            };
-        }
-        let mut hints = vec![];
+        const RUN: &str = "Run the command (the key that opened the popup too)";
+        let typing = |d: &Self| d.editing;
+        let idle = |d: &Self| !d.editing;
+        let next_missing = |d: &Self| d.missing_field().is_some_and(|i| i != d.selected);
+        k.add(
+            &[Confirm],
+            "next",
+            "While typing, go on to the next empty required field, else stop typing",
+        )
+        .when(move |d| typing(d) && next_missing(d));
+        // a required field still empty keeps enter typing into it
+        k.add(
+            &[Confirm],
+            "done typing",
+            "While typing, go on to the next empty required field, else stop typing",
+        )
+        .when(|d| d.editing && d.missing_field().is_none());
+        k.add(&[Cancel], "done typing", "While typing, stop typing")
+            .when(typing);
         // space toggles the field when it can, else types into it
-        match (self.can_toggle(), self.can_edit()) {
-            (true, true) => hints.extend([
-                h(&[DialogActivate, DialogToggle], "toggle"),
-                h(&[DialogEdit], "type"),
-            ]),
-            (true, false) => hints.push(h(&[DialogActivate, DialogToggle], "toggle")),
-            (false, true) => hints.push(h(&[DialogActivate, DialogEdit], "type")),
-            (false, false) => {}
+        k.add(
+            &[DialogActivate, DialogToggle],
+            "toggle",
+            "Toggle the checkbox, or go to the next option",
+        )
+        .when(|d| idle(d) && d.can_toggle());
+        k.add(&[DialogEdit], "type", "Type into the text field")
+            .when(|d| idle(d) && d.can_toggle() && d.can_edit());
+        k.add(
+            &[DialogActivate, DialogEdit],
+            "type",
+            "Type into the text field",
+        )
+        .when(|d| idle(d) && !d.can_toggle() && d.can_edit());
+        k.add(&[Confirm], "run", RUN)
+            .when(idle)
+            .short(|d| d.verb.to_string());
+        if let Some(trigger) = k.view().and_then(|d| d.trigger) {
+            k.add(&[trigger], "run", RUN)
+                .when(idle)
+                .short(|d| d.verb.to_string());
         }
-        // the key that opened the popup runs it too
-        let run: Vec<UserEvent> = std::iter::once(Confirm).chain(self.trigger).collect();
-        hints.push((run, self.verb.to_string()));
-        hints.push(h(&[Cancel], "cancel"));
-        hints
+        k.add(&[Cancel, Close], "cancel", "Cancel").when(idle);
+        k.quiet(
+            &[NavigateDown, SelectDown, NavigateUp, SelectUp],
+            "Select the next/previous field",
+        )
+        .when(idle);
+        k.quiet(&[NavigateRight, NavigateLeft], "Change the selected field")
+            .when(idle);
+        k.quiet(&[Quit], "Quit app").when(idle);
+    }
+
+    pub fn keys(&self) -> KeyList {
+        let mut keys = Keys::of(self);
+        Self::register_keys(&mut keys);
+        keys.list()
     }
 
     // Whether the selected field is a checkbox, or has options to go through.
     fn can_toggle(&self) -> bool {
         match self.fields.get(self.selected) {
-            Some((_, _, Field::Check(_) | Field::Choice { .. })) => true,
+            Some((_, _, Field::Check(_))) => true,
+            // a single option is fixed, like where a branch starts from a commit
+            Some((_, _, Field::Choice { options, .. })) => options.len() > 1,
             Some((_, _, Field::Text { options, .. })) => !options.is_empty(),
             None => false,
         }
@@ -1733,7 +1833,7 @@ impl GitDialog {
             DialogKind::Squash { commits, base } => self.squash_command(commits, base.as_deref()),
             DialogKind::Edit { commit, base } => self.edit_command(commit, base.as_deref()),
             DialogKind::Drop { commits, base } => self.drop_command(commits, base.as_deref()),
-            DialogKind::CreateBranch => self.create_branch_command(),
+            DialogKind::CreateBranch { starts } => self.create_branch_command(starts),
             DialogKind::DeleteBranches {
                 names, upstreams, ..
             } => self.delete_branches_command(names, upstreams),
@@ -1748,7 +1848,7 @@ impl GitDialog {
                 format!("Removing {name}"),
                 format!("Removed {name}"),
             )),
-            DialogKind::CreateTag => self.create_tag_command(),
+            DialogKind::CreateTag { at } => self.create_tag_command(at),
             DialogKind::DeleteTags { names, remote } => {
                 self.delete_tags_command(names, remote.as_deref())
             }
@@ -2216,7 +2316,7 @@ mod tests {
             GitDialog::delete_branches(vec!["a".into(), "b".into()], vec!["a".into()], vec![]),
             GitDialog::commit(preview, GitTask::default()),
             GitDialog::remote(RemoteAction::Push, info()).unwrap(),
-            GitDialog::create_tag("HEAD"),
+            GitDialog::create_tag(StartPoint::Branch("main".into())),
             GitDialog::open_link(
                 vec![PageLink {
                     remote: "origin".into(),
@@ -2374,7 +2474,7 @@ mod tests {
 
     #[test]
     fn test_enter_goes_to_empty_required_fields() {
-        let mut dialog = GitDialog::create_tag("HEAD");
+        let mut dialog = GitDialog::create_tag(StartPoint::Branch("main".into()));
         let enter = key(KeyCode::Enter);
         // the name, still empty, stays typed into
         dialog.handle_key(Some(UserEvent::Confirm), enter);
@@ -2383,7 +2483,7 @@ mod tests {
         // the message is optional, so typing is done
         dialog.handle_key(Some(UserEvent::Confirm), enter);
         assert_eq!((dialog.selected, dialog.editing), (0, false));
-        assert_eq!(args(&dialog), "tag v HEAD");
+        assert_eq!(args(&dialog), "tag v refs/heads/main");
 
         // enter on the popup goes to the empty URL instead of failing
         let mut dialog = GitDialog::add_remote();
@@ -2436,7 +2536,7 @@ mod tests {
     #[test]
     fn test_bad_names_and_upstreams_are_refused() {
         // `git branch -D feature` would delete feature
-        let mut dialog = GitDialog::create_branch("feature", vec!["feature".into()]);
+        let mut dialog = GitDialog::create_branch(StartPoint::Branch("feature".into()), vec![]);
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('D')));
         assert!(dialog.command().is_err());
@@ -2449,21 +2549,27 @@ mod tests {
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('f')));
         assert!(dialog.command().is_err());
-        // an upstream that isn't a remote branch is refused before renaming
+        // the upstream only chosen among the remote branches, or none
         let remote_branches = vec!["origin/main".to_string()];
-        let mut dialog = GitDialog::edit_branch("topic", None, remote_branches.clone());
-        dialog.fields[1].2 = Field::text("origin/nope", remote_branches.clone());
-        let err = dialog.command().unwrap_err();
-        assert_eq!(err, "origin/nope is no remote branch, fetch it first");
-        dialog.fields[1].2 = Field::text("origin/main", remote_branches);
+        let mut dialog = GitDialog::edit_branch("topic", None, remote_branches);
+        dialog.handle_key(None, key(KeyCode::Esc));
+        press(&mut dialog, UserEvent::NavigateDown);
+        assert!(!dialog.can_edit());
+        press(&mut dialog, UserEvent::NavigateRight);
         assert_eq!(args(&dialog), "branch --set-upstream-to=origin/main topic");
-        let mut dialog = GitDialog::create_tag("v1");
+        // from a commit, or a tag at it, where the cursor is
+        let dialog =
+            GitDialog::create_branch(StartPoint::Commit("a".repeat(40).as_str().into()), vec![]);
+        assert!(matches!(&dialog.fields[1].2, Field::Choice { options, .. } if options.len() == 1));
+        let dialog = GitDialog::create_tag(StartPoint::Commit("a".repeat(40).as_str().into()));
+        assert!(matches!(&dialog.fields[2].2, Field::Choice { options, .. } if options.len() == 1));
+        let mut dialog = GitDialog::create_tag(StartPoint::Tag("v1".into()));
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('d')));
         assert!(dialog.command().is_err());
         dialog.handle_key(None, key(KeyCode::Home));
         dialog.handle_key(None, key(KeyCode::Delete));
-        assert_eq!(args(&dialog), "tag d v1");
+        assert_eq!(args(&dialog), "tag d refs/tags/v1");
     }
 
     #[test]

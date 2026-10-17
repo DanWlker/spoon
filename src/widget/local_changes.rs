@@ -12,11 +12,12 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     app::AppContext,
-    event::{KeyHint, UserEvent},
+    event::UserEvent,
     git::{
         AfterTask, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
         LocalChangeStatus, LocalChanges, Operation, Repository,
     },
+    keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions},
     widget::{
@@ -843,99 +844,248 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // The keys of what has the focus, for the status bar; not the ones moving around.
-    pub fn key_hints(&self) -> Vec<KeyHint> {
+    // The keys of the local changes page, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
-        let h =
-            |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
-        if self.is_typing_query() {
-            return crate::view::typing_hints(self.query_kind());
-        }
-        let unstaged = self.section == LocalChangesSection::Unstaged;
-        let stage = if unstaged { "stage" } else { "unstage" };
-        let commit = if self.editing_commit {
-            "amend"
-        } else if self
-            .operation
-            .is_some_and(Operation::continues_without_commit)
-        {
-            "continue"
-        } else if self.draft.amend.is_some() {
-            "amend"
-        } else {
-            "commit"
+        let files = |v: &Self| v.focus == Focus::Files;
+        let diff = |v: &Self| matches!(v.focus, Focus::Hunks | Focus::Lines);
+        let commit = |v: &Self| v.focus == Focus::Commit { editing: false };
+        let conflict = |v: &Self| v.focus == Focus::Conflict;
+        let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
+        let empty = |v: &Self| v.files().is_empty();
+        let picks = |v: &Self| !v.picked().is_empty();
+        let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
+        let what = |v: &Self| {
+            if v.focus == Focus::Hunks {
+                "hunk"
+            } else {
+                "line"
+            }
         };
-        // amending is not available while an operation is in progress, aborting is
-        let amend_or_abort = match (self.operation, self.draft.amend.is_some()) {
-            (Some(_), _) => h(&[Abort], "abort"),
-            (None, true) => h(&[ToggleAmend], "stop amending"),
-            (None, false) => h(&[ToggleAmend], "amend"),
+        // committing, or amending, or continuing an operation
+        let commit_word = |v: &Self| {
+            if v.editing_commit || v.draft.amend.is_some() {
+                "amend"
+            } else if v.operation.is_some_and(Operation::continues_without_commit) {
+                "continue"
+            } else {
+                "commit"
+            }
+            .to_string()
         };
-        let mut hints = match self.focus {
-            Focus::Commit { editing: true } => return vec![h(&[Cancel], "stop typing")],
-            Focus::Commit { editing: false } => vec![
-                h(&[ToggleStage, Edit], "type"),
-                h(&[Confirm, Commit], commit),
-                amend_or_abort,
-                h(&[Cancel], "back"),
+
+        k.add(
+            &[Cancel, Close],
+            "clear picks",
+            "Back, then clear the picked files, the search, the filter",
+        )
+        .when(|v| files(v) && picks(v));
+        k.add(
+            &[ToggleStage],
+            "stage",
+            "Stage/unstage the file, directory, hunk or line, or the picked files",
+        )
+        .when(files)
+        .short(|v| stage(v).into());
+        k.add(
+            &[ToggleStage],
+            "stage",
+            "Stage/unstage the file, directory, hunk or line, or the picked files",
+        )
+        .when(diff)
+        .short(|v| format!("{} {}", stage(v), what(v)));
+        k.add(
+            &[Confirm],
+            "hunks",
+            "Select the hunks of the diff, then their lines; resolve a conflict",
+        )
+        .when(|v| files(v) && !empty(v))
+        .short(|v| {
+            let resolve = v.conflict.is_some() && !picks(v);
+            if resolve { "resolve" } else { "hunks" }.into()
+        });
+        k.add(
+            &[Confirm],
+            "unstaged",
+            "On the empty staged files, go to the unstaged ones",
+        )
+        .when(|v| files(v) && empty(v) && !unstaged(v));
+        k.add(
+            &[Confirm],
+            "lines",
+            "Select the hunks of the diff, then their lines; resolve a conflict",
+        )
+        .when(|v| v.focus == Focus::Hunks);
+        k.add(
+            &[Confirm],
+            "choose",
+            "Choose the side or the tool of the conflict",
+        )
+        .when(conflict);
+        k.add(&[ToggleSelect], "pick", "Pick/unpick the file or directory")
+            .when(files);
+        k.add(
+            &[Discard],
+            "discard",
+            "Discard the unstaged file, directory, hunk or line",
+        )
+        .when(|v| (files(v) || diff(v)) && unstaged(v));
+        k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
+            .when(diff)
+            .short(|v| format!("copy {}", what(v)));
+        // on the empty unstaged files enter commits too, see `enter`
+        k.add(
+            &[Confirm],
+            "commit",
+            "Commit, in the commit section or on the empty unstaged files",
+        )
+        .when(|v| commit(v) || (files(v) && empty(v) && unstaged(v)))
+        .short(commit_word);
+        k.add(
+            &[Commit],
+            "commit",
+            "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase",
+        )
+        .when(|v| !matches!(v.focus, Focus::Commit { editing: true }))
+        .short(commit_word);
+        k.add(
+            &[Abort],
+            "abort",
+            "Abort the rebase, merge, cherry-pick or revert in progress",
+        )
+        .when(|v| v.operation.is_some());
+        k.add(
+            &[ToggleAmend],
+            "amend",
+            "Amend the last commit, or stop amending",
+        )
+        .when(|v| v.operation.is_none())
+        .short(|v| {
+            if v.draft.amend.is_some() {
+                "stop amending"
+            } else {
+                "amend"
+            }
+            .into()
+        });
+        k.add(
+            &[ToggleStage, Edit],
+            "type",
+            "Type the message, in the commit section",
+        )
+        .when(commit);
+        k.add(&[Stash], "stash", "Stash all changes, or the picked files")
+            .when(files);
+        k.add(&[Edit], "edit", "Open the file in $VISUAL or $EDITOR")
+            .when(files);
+        k.add(
+            &[Blame],
+            "blame",
+            "Blame the selected file as of the last commit",
+        )
+        .when(files);
+        k.add(
+            &[Timeline],
+            "timeline",
+            "Show the commits changing the selected file",
+        )
+        .when(files);
+        k.add(
+            &[Search],
+            "search",
+            "Search the files, or the diff while it has the focus",
+        )
+        .when(|v| files(v) || diff(v));
+        k.add(&[Filter], "filter", "Filter the files").when(files);
+        k.add(
+            &[ShortCopy, FullCopy],
+            "copy path",
+            "Copy the relative/absolute path of the file",
+        )
+        .when(files);
+        k.add(
+            &[Ignore],
+            "ignore",
+            "Add the file or directory to .gitignore",
+        )
+        .when(files);
+        k.add(
+            &[Cancel, Close],
+            "back",
+            "Back to the files, from the diff, the conflict or the commit section",
+        )
+        .when(|v| diff(v) || conflict(v) || commit(v));
+        k.quiet(
+            &[Cancel, Close],
+            "Back, then clear the picked files, the search, the filter",
+        )
+        .when(|v| files(v) && !picks(v));
+        k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
+            .when(|v| files(v) || diff(v));
+        k.quiet(
+            &[NextFile, PreviousFile],
+            "Go to the next/previous file, staying in the diff",
+        )
+        .when(|v| files(v) || diff(v));
+        k.quiet(
+            &[NextPicked, PreviousPicked],
+            "Go to the next/previous picked file",
+        )
+        .when(files);
+        k.quiet(
+            &[NavigateDown, SelectDown, NavigateUp, SelectUp],
+            "Select the next/previous file, hunk, line, conflict choice or message box",
+        );
+        k.quiet(
+            &[GoToTop, GoToBottom],
+            "Select the first/last file, hunk or line",
+        )
+        .when(|v| files(v) || diff(v));
+        k.quiet(
+            &[NavigateRight, NavigateLeft],
+            "Expand/collapse the directory; choose a side of the conflict",
+        )
+        .when(|v| files(v) || conflict(v));
+        k.quiet(
+            &[
+                PageDown,
+                PageUp,
+                HalfPageDown,
+                HalfPageUp,
+                ScrollDown,
+                ScrollUp,
             ],
-            Focus::Conflict => vec![h(&[Confirm], "choose"), h(&[Cancel], "back")],
-            Focus::Hunks | Focus::Lines => {
-                let (deeper, what) = if self.focus == Focus::Hunks {
-                    (vec![h(&[Confirm], "lines")], "hunk")
-                } else {
-                    (vec![], "line")
-                };
-                let mut hints = vec![h(&[ToggleStage], &format!("{stage} {what}"))];
-                if unstaged {
-                    hints.push(h(&[Discard], "discard"));
-                }
-                hints.extend(deeper);
-                hints.extend([
-                    h(&[ShortCopy], &format!("copy {what}")),
-                    h(&[Search], "search"),
-                    h(&[Cancel], "back"),
-                ]);
-                hints
-            }
-            Focus::Files => {
-                let empty = self.files().is_empty();
-                let mut hints = vec![h(&[ToggleStage], stage)];
-                // on the empty unstaged files enter commits, see `enter`
-                if empty && !unstaged {
-                    hints.push(h(&[Confirm], "unstaged"));
-                } else if !empty {
-                    let resolve = self.conflict.is_some() && self.picked().is_empty();
-                    hints.push(h(&[Confirm], if resolve { "resolve" } else { "hunks" }));
-                }
-                hints.push(h(&[ToggleSelect], "pick"));
-                if unstaged {
-                    hints.push(h(&[Discard], "discard"));
-                }
-                let commit_keys: &[UserEvent] = if empty && unstaged {
-                    &[Confirm, Commit]
-                } else {
-                    &[Commit]
-                };
-                hints.extend([
-                    h(commit_keys, commit),
-                    amend_or_abort,
-                    h(&[Stash], "stash"),
-                    h(&[Edit], "edit"),
-                    h(&[Blame], "blame"),
-                    h(&[Timeline], "timeline"),
-                    h(&[Search], "search"),
-                    h(&[Filter], "filter"),
-                    h(&[ShortCopy, FullCopy], "copy path"),
-                    h(&[Ignore], "ignore"),
-                ]);
-                if !self.picked().is_empty() {
-                    hints.insert(0, h(&[Cancel], "clear picks"));
-                }
-                hints
-            }
-        };
-        hints.retain(|(events, _)| !events.is_empty());
-        hints
+            "Scroll the diff; jump half a page while selecting lines",
+        );
+        k.quiet(
+            &[FocusPanel(1), FocusPanel(2), FocusPanel(3)],
+            "Focus the unstaged files, the staged files, the commit message",
+        );
+        if k.view().is_none() {
+            Self::register_typing_message(k);
+        }
+    }
+
+    pub fn keys(&self) -> KeyList {
+        if self.is_typing_query() {
+            return crate::view::typing_keys(self.query_kind());
+        }
+        let mut keys = Keys::of(self);
+        if self.focus == (Focus::Commit { editing: true }) {
+            // every other key is typed
+            Self::register_typing_message(&mut keys);
+        } else {
+            Self::register_keys(&mut keys);
+        }
+        keys.list()
+    }
+
+    fn register_typing_message(k: &mut Keys<Self>) {
+        k.add(
+            &[UserEvent::Cancel],
+            "stop typing",
+            "Stop typing the message",
+        );
     }
 
     pub fn repository(&self) -> &'a Repository {

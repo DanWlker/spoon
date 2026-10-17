@@ -1257,23 +1257,24 @@ fn test_delete_tag_also_on_an_unreachable_remote_keeps_it() {
 }
 
 #[test]
-fn test_edit_branch_to_an_unknown_upstream_refused() {
+fn test_edit_branch_upstream_only_chosen() {
     let dir = tempfile::tempdir().unwrap();
     let path = with_remote(dir.path());
     let mut harness = Harness::new(&path, launch());
     let mut steps = vec![keys("0 j e")];
-    // renamed, and set to an upstream that doesn't exist
+    // renamed; e doesn't type into the upstream, l chooses a remote branch
     steps.push(typing("x"));
-    steps.push(keys("esc j e"));
-    steps.push(keys("ctrl-u"));
-    steps.push(typing("origin/nope"));
-    steps.push(keys("esc enter"));
-    steps.push(check(|app| {
-        assert_notice(app, "origin/nope is no remote branch, fetch it first")
-    }));
+    steps.push(keys("esc j e l enter"));
     harness.run(steps);
-    // nothing was done
-    assert_eq!(git(&path, &["branch", "--list", "feat*"]), "  feat\n");
+    let branch = git(
+        &path,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short) %(upstream:short)",
+            "refs/heads/featx",
+        ],
+    );
+    assert!(branch.starts_with("featx origin/"), "{branch}");
 }
 
 #[test]

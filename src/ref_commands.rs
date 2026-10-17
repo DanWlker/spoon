@@ -492,18 +492,13 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        // it opens typing the name
+        // it opens typing the name; the upstream back to none
         dialog.handle_key(None, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        dialog.handle_key(
-            Some(UserEvent::NavigateDown),
-            KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
-        );
-        dialog.handle_key(
-            Some(UserEvent::DialogEdit),
-            KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
-        );
-        for _ in 0.."origin/main".len() {
-            dialog.handle_key(None, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        for event in [UserEvent::NavigateDown, UserEvent::NavigateLeft] {
+            dialog.handle_key(
+                Some(event),
+                KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+            );
         }
         crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
         assert_eq!(branches(), "main \ntopic2 \n");

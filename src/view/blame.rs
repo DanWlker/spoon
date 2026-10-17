@@ -13,13 +13,14 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
+    event::{AppEvent, Sender, UserEvent},
     git::{CommitHash, FileRevision, Repository},
+    keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, commit_hints, copy_selection, file_link, moving_hints, query_status,
-        revision_spans, type_query, typing_hints,
+        commit_event, copy_selection, file_link, query_status, register_commit_keys,
+        register_moving_keys, revision_spans, type_query, typing_keys,
     },
     widget::{
         commit_list::{format_date, ELLIPSIS},
@@ -145,11 +146,12 @@ impl BlameView {
         }
         let body = self.focus != BlameFocus::Revision;
         match event {
-            UserEvent::ForceQuit | UserEvent::Quit => self.tx.send(AppEvent::Quit),
             UserEvent::Cancel | UserEvent::Close => match self.query.clear() {
                 QueryChange::None => self.tx.send(AppEvent::CloseOverlay),
                 _ => self.update_query_status(),
             },
+            UserEvent::FocusPanel(0) => self.focus = BlameFocus::Revision,
+            UserEvent::FocusPanel(1) if !body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateLeft if body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateRight if body => self.focus = BlameFocus::Text,
             UserEvent::NavigateDown if !body => self.focus = BlameFocus::Commit,
@@ -294,43 +296,84 @@ impl BlameView {
         };
     }
 
-    pub fn key_hints(&self) -> Vec<KeyHint> {
+    // The keys of the blame, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
+        use BlameFocus::{Commit, Revision, Text};
         use UserEvent::*;
-        if self.query.is_editing() {
-            return typing_hints(self.query_kind());
-        }
+        let on = |focus: BlameFocus| move |v: &Self| v.focus == focus;
+        let body = |v: &Self| v.focus != Revision;
+        k.add(
+            &[OlderCommit, NewerCommit],
+            "older/newer commit",
+            "Blame as of the older/newer commit changing the file",
+        );
         // on the commit shown, left and right step too
-        let mut steps = vec![OlderCommit, NewerCommit];
-        if self.focus == BlameFocus::Revision {
-            steps.extend([NavigateLeft, NavigateRight]);
+        k.add(
+            &[NavigateLeft, NavigateRight],
+            "older/newer commit",
+            "On the commit shown, blame as of the older/newer commit; else act on the commit or the text of the line",
+        )
+        .when(on(Revision));
+        register_commit_keys(k, |v| v.focus != Text);
+        k.add(
+            &[NavigateDown],
+            "to the lines",
+            "Move down; from the commit shown to the lines",
+        )
+        .when(on(Revision));
+        k.add(
+            &[NavigateRight],
+            "to the text",
+            "On the commit shown, blame as of the older/newer commit; else act on the commit or the text of the line",
+        )
+        .when(on(Commit));
+        k.add(&[ShortCopy], "copy line", "Copy the line, on its text")
+            .when(on(Text));
+        k.add(
+            &[OpenInBrowser],
+            "open in browser",
+            "Open the file at the line on the web host, on its text",
+        )
+        .when(on(Text));
+        k.add(
+            &[CopyLink],
+            "copy link",
+            "Copy the link of the file at the line, on its text",
+        )
+        .when(on(Text));
+        k.add(
+            &[NavigateLeft],
+            "to the commits",
+            "On the commit shown, blame as of the older/newer commit; else act on the commit or the text of the line",
+        )
+        .when(on(Text));
+        register_moving_keys(k, body);
+        k.add(
+            &[Search],
+            "search",
+            "Search the lines' commits (hash, author, date) or the text",
+        )
+        .when(body);
+        k.add(
+            &[GoToNext, GoToPrevious],
+            "next/previous match",
+            "Go to the next/previous match",
+        )
+        .when(body);
+        k.quiet(
+            &[FocusPanel(0), FocusPanel(1)],
+            "Focus the commit shown (also up from the first line)/the lines",
+        );
+        k.add(&[Cancel, Close], "close", "Clear the search, then close");
+    }
+
+    pub fn keys(&self) -> KeyList {
+        if self.query.is_editing() {
+            return typing_keys(self.query_kind());
         }
-        let mut hints = vec![(steps, "older/newer commit".into())];
-        let commit = commit_hints();
-        match self.focus {
-            BlameFocus::Revision => {
-                hints.extend(commit);
-                hints.push(hint(NavigateDown, "to the lines"));
-            }
-            BlameFocus::Commit => {
-                hints.extend(commit);
-                hints.push(hint(NavigateRight, "to the text"));
-            }
-            BlameFocus::Text => hints.extend([
-                hint(ShortCopy, "copy line"),
-                hint(OpenInBrowser, "open in browser"),
-                hint(CopyLink, "copy link"),
-                hint(NavigateLeft, "to the commits"),
-            ]),
-        }
-        if self.focus != BlameFocus::Revision {
-            hints.extend(moving_hints());
-            hints.extend([
-                hint(Search, "search"),
-                (vec![GoToNext, GoToPrevious], "next/previous match".into()),
-            ]);
-        }
-        hints.extend([hint(ToggleWrap, "wrap"), hint(Cancel, "close")]);
-        hints
+        let mut keys = Keys::of(self);
+        Self::register_keys(&mut keys);
+        keys.list()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
@@ -344,7 +387,7 @@ impl BlameView {
         let (count, revision) = (self.history.len(), &self.history[self.index]);
         let position = format!("{}/{count}", count - self.index);
         let block =
-            panel_block(focused, theme).title(panel_title("Commit", &position, focused, theme));
+            panel_block(focused, theme).title(panel_title("[0] Commit", &position, focused, theme));
         // [ and ] step from anywhere
         let [left, right] = choice_arrows(self.index + 1 < count, self.index > 0, theme);
         let mut spans = vec![left];
@@ -357,8 +400,12 @@ impl BlameView {
 
         // the lines, each run of lines of a commit headed by it
         let focused = !focused;
-        let block =
-            panel_block(focused, theme).title(panel_title("Blame", &revision.path, focused, theme));
+        let block = panel_block(focused, theme).title(panel_title(
+            "[1] Blame",
+            &revision.path,
+            focused,
+            theme,
+        ));
         let inner = block.inner(body);
         block.render(body, buf);
         let author_width = self.author_width;
@@ -516,6 +563,11 @@ mod tests {
         view.move_focus(Direction::Up);
         assert_eq!(view.focus, BlameFocus::Revision);
         view.move_focus(Direction::Down);
+        assert_eq!(view.focus, BlameFocus::Commit);
+        // 0 and 1 too
+        press(&mut view, UserEvent::FocusPanel(0));
+        assert_eq!(view.focus, BlameFocus::Revision);
+        press(&mut view, UserEvent::FocusPanel(1));
         assert_eq!(view.focus, BlameFocus::Commit);
 
         // left and right on the commit shown step through the history too

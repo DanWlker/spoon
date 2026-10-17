@@ -6,9 +6,10 @@ use ratatui::{crossterm::event::KeyEvent, style::Style, text::Span};
 use crate::{
     app::AppContext,
     browse::LinkTarget,
-    event::{hint, AppEvent, KeyHint, UserEvent},
+    event::{AppEvent, UserEvent},
     git::{CommitHash, FileRevision, Repository},
     keybind::Scope,
+    keys::{KeyList, Keys},
     search::{SearchKind, SearchOptions},
     widget::{
         commit_list::format_date,
@@ -19,53 +20,106 @@ use crate::{
     },
 };
 
-// The keys of the commit graph, with the commands on the selected or picked commits.
-pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
-    let mut hints = vec![];
-    if picked > 0 {
-        hints.push(hint(UserEvent::Cancel, "clear picks"));
-    }
-    hints.extend([
-        hint(UserEvent::ToggleSelect, "pick"),
-        hint(UserEvent::Diff, "diff"),
-        hint(UserEvent::Checkout, "checkout"),
-        hint(UserEvent::Merge, "merge"),
-        hint(UserEvent::Rebase, "rebase"),
-        hint(UserEvent::CherryPick, "cherry-pick"),
-        hint(UserEvent::Squash, "squash"),
-        hint(UserEvent::AmendCommit, "amend"),
-        hint(UserEvent::DropCommit, "drop"),
-        hint(UserEvent::CreateBranch, "branch"),
-        hint(UserEvent::CreateTag, "tag"),
-        hint(UserEvent::BranchOnly, "branch only"),
-        hint(UserEvent::OpenInBrowser, "open in browser"),
-        hint(UserEvent::CopyLink, "copy link"),
-        hint(UserEvent::Revert, "revert"),
-        hint(UserEvent::Reset, "reset"),
-        hint(UserEvent::Search, "search"),
+// The commands of the commit graph on the selected commit, or the picked ones, where `applies`
+// says each works: in the commit list and the details, and on a ref of the sidebar.
+pub fn register_graph_commands<T: ?Sized>(
+    k: &mut Keys<T>,
+    applies: impl Fn(&T, UserEvent) -> bool + Copy,
+) {
+    use UserEvent::*;
+    let commands: [(UserEvent, &str, &'static str); 13] = [
         (
-            vec![UserEvent::ShortCopy, UserEvent::FullCopy],
-            "copy hash".into(),
+            Diff,
+            "diff",
+            "Diff with the checked-out commit, or the two picked commits or refs",
         ),
-    ]);
-    hints
+        (Checkout, "checkout", "Check out the branch, tag or commit"),
+        (
+            Merge,
+            "merge",
+            "Merge the commit or ref into the current branch",
+        ),
+        (
+            Rebase,
+            "rebase",
+            "Rebase the current branch onto the commit or ref",
+        ),
+        (
+            CherryPick,
+            "cherry-pick",
+            "Cherry-pick the picked commits, or the selected one",
+        ),
+        (
+            Squash,
+            "squash",
+            "Squash the picked commits, or the selected one, into their parents",
+        ),
+        (
+            AmendCommit,
+            "amend",
+            "Amend the commit on the local changes page",
+        ),
+        (
+            DropCommit,
+            "drop",
+            "Drop the picked commits, or the selected one",
+        ),
+        (
+            CreateBranch,
+            "new branch",
+            "New branch at the commit or ref",
+        ),
+        (CreateTag, "new tag", "New tag at the commit or ref"),
+        (
+            BranchOnly,
+            "branch only",
+            "Show only the commits of the current (or selected) branch, or all",
+        ),
+        (
+            Revert,
+            "revert",
+            "Revert the picked commits, or the selected one",
+        ),
+        (
+            Reset,
+            "reset",
+            "Reset the current branch to the commit or ref",
+        ),
+    ];
+    for (event, short, long) in commands {
+        k.add(&[event], short, long)
+            .when(move |view| applies(view, event));
+    }
 }
 
-// The keys while typing a search or filter.
-pub fn typing_hints(kind: SearchKind) -> Vec<KeyHint> {
-    let mut hints = vec![];
-    if kind.has_target() {
-        hints.push(hint(UserEvent::SearchTargetToggle, "target"));
-    }
-    hints.push(hint(UserEvent::SmartCaseToggle, "smart case"));
-    if kind.has_fuzzy() {
-        hints.push(hint(UserEvent::FuzzyToggle, "fuzzy"));
-    }
-    hints.extend([
-        hint(UserEvent::Confirm, "apply"),
-        hint(UserEvent::Cancel, "cancel"),
-    ]);
-    hints
+// The keys while typing a search or filter, of what `kind` is searched.
+pub fn register_typing_keys(k: &mut Keys<SearchKind>) {
+    use UserEvent::*;
+    k.add(
+        &[SearchTargetToggle],
+        "target",
+        "Toggle what the search of the commit list looks in",
+    )
+    .when(|kind| kind.has_target());
+    k.add(
+        &[SmartCaseToggle],
+        "smart case",
+        "Toggle smart case or case-sensitive, for every search",
+    );
+    k.add(
+        &[FuzzyToggle],
+        "fuzzy",
+        "Toggle fuzzy match, for every search but of text",
+    )
+    .when(|kind| kind.has_fuzzy());
+    k.add(&[Confirm], "apply", "Keep the query");
+    k.add(&[Cancel], "cancel", "Clear the query");
+}
+
+pub fn typing_keys(kind: SearchKind) -> KeyList {
+    let mut keys = Keys::of(&kind);
+    register_typing_keys(&mut keys);
+    keys.list()
 }
 
 // Copies a commit hash: short, or in full with `full`.
@@ -109,28 +163,50 @@ pub fn revision_matches(
         .any(|text| name_matches(text, query, options))
 }
 
-// The keys moving in a list of lines, for the key hints of the blame and the timeline.
-pub fn moving_hints() -> Vec<KeyHint> {
+// The keys moving in a list of lines, in the blame and the timeline, where `applies`.
+pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
     use UserEvent::*;
-    vec![
-        (vec![NavigateDown, NavigateUp], "move".into()),
-        (vec![GoToTop, GoToBottom], "top/bottom".into()),
-        (vec![HalfPageDown, HalfPageUp], "half page".into()),
-        (vec![PageDown, PageUp], "page".into()),
-        (vec![ScrollDown, ScrollUp], "scroll".into()),
-    ]
+    k.add(&[NavigateDown, NavigateUp], "move", "Move down/up")
+        .when(applies);
+    k.add(&[GoToTop, GoToBottom], "top/bottom", "Go to the top/bottom")
+        .when(applies);
+    k.add(
+        &[HalfPageDown, HalfPageUp],
+        "half page",
+        "Jump half a page down/up",
+    )
+    .when(applies);
+    k.add(&[PageDown, PageUp], "page", "Scroll a page down/up")
+        .when(applies);
+    k.add(&[ScrollDown, ScrollUp], "scroll", "Scroll down/up")
+        .when(applies);
 }
 
-// The keys of `commit_event`, for the key hints.
-pub fn commit_hints() -> [KeyHint; 5] {
+// The keys of `commit_event`, where `applies`.
+pub fn register_commit_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
     use UserEvent::*;
-    [
-        hint(Confirm, "show on graph"),
-        hint(Checkout, "checkout"),
-        hint(OpenInBrowser, "open in browser"),
-        hint(CopyLink, "copy link"),
-        (vec![ShortCopy, FullCopy], "copy hash".into()),
-    ]
+    k.add(
+        &[Confirm],
+        "show on graph",
+        "Select the commit on the graph, closing the window",
+    )
+    .when(applies);
+    k.add(&[Checkout], "checkout", "Check out the commit")
+        .when(applies);
+    k.add(
+        &[OpenInBrowser],
+        "open in browser",
+        "Open the commit on the web host",
+    )
+    .when(applies);
+    k.add(&[CopyLink], "copy link", "Copy the link of the commit")
+        .when(applies);
+    k.add(
+        &[ShortCopy, FullCopy],
+        "copy hash",
+        "Copy the commit short/full hash",
+    )
+    .when(applies);
 }
 
 // o and O on a file at a commit, at the selected lines: its page on the web host, or its link.

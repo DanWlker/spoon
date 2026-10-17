@@ -25,7 +25,7 @@ use crate::{
     browse::{self, LinkTarget},
     color::ColorTheme,
     config::{CoreConfig, CursorType, UiConfig},
-    event::{hint, AppEvent, EventController, KeyHint, UserEvent},
+    event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
         moves_head_command, run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
@@ -34,13 +34,14 @@ use crate::{
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
+    keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
     view::{
-        BlameView, Compare, HelpView, LocalChangesRefreshViewContext, RefreshViewContext,
-        TimelineView, View, ViewKind,
+        register_graph_commands, BlameView, Compare, HelpView, LocalChangesRefreshViewContext,
+        RefreshViewContext, TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -261,10 +262,10 @@ impl FileWindow {
         }
     }
 
-    fn key_hints(&self) -> Vec<KeyHint> {
+    fn keys(&self) -> KeyList {
         match self {
-            FileWindow::Blame(blame) => blame.key_hints(),
-            FileWindow::Timeline(timeline) => timeline.key_hints(),
+            FileWindow::Blame(blame) => blame.keys(),
+            FileWindow::Timeline(timeline) => timeline.keys(),
         }
     }
 
@@ -613,8 +614,9 @@ impl App<'_> {
                 }
 
                 if matches!(self.shell.overlay, Some(Overlay::CommandLog(_))) {
-                    let event = self.ctx.keybind.event_in(Scope::Global, &key);
-                    self.handle_command_log_event(event);
+                    if let Some(event) = self.ctx.keybind.event_in(Scope::Global, &key) {
+                        self.dispatch(event, key);
+                    }
                     return Ok(None);
                 }
                 if self.shell.dialog.is_some() {
@@ -632,12 +634,8 @@ impl App<'_> {
                     return Ok(None);
                 }
                 if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
-                    let event = self.ctx.keybind.event_in(Scope::Global, &key);
-                    let quit = self.force_quit(&key);
-                    if let (false, Some(event), Some(Overlay::Help(help))) =
-                        (quit, event, self.shell.overlay.as_mut())
-                    {
-                        help.handle_event(event);
+                    if let Some(event) = self.ctx.keybind.event_in(Scope::Global, &key) {
+                        self.dispatch(event, key);
                     }
                     return Ok(None);
                 }
@@ -901,33 +899,16 @@ impl App<'_> {
 
     // The keys of what has the focus: the popup, the sidebar or the view.
     fn local_hints(&self) -> Vec<KeyHint> {
-        if matches!(self.shell.overlay, Some(Overlay::CommandLog(_))) {
-            vec![
-                (
-                    vec![UserEvent::NavigateDown, UserEvent::NavigateUp],
-                    "move".into(),
-                ),
-                (
-                    vec![UserEvent::HalfPageDown, UserEvent::HalfPageUp],
-                    "scroll output".into(),
-                ),
-                (
-                    vec![UserEvent::GoToTop, UserEvent::GoToBottom],
-                    "top/bottom".into(),
-                ),
-                hint(UserEvent::ShortCopy, "copy"),
-                hint(UserEvent::Cancel, "close"),
-            ]
-        } else if let Some(dialog) = self.visible_dialog() {
-            dialog.key_hints()
-        } else if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
-            vec![hint(UserEvent::Cancel, "close")]
-        } else if let Some(Overlay::File(window)) = &self.shell.overlay {
-            window.key_hints()
+        if let Some(dialog) = self.visible_dialog() {
+            dialog.keys().hints()
+        } else if let Some(mut keys) = self.overlay_keys() {
+            // and the keys of the app working over it
+            keys.extend(self.app_keys());
+            keys.hints()
         } else if self.shell.sidebar_focused() {
             self.sidebar_hints()
         } else {
-            self.view.key_hints()
+            self.view.keys().hints()
         }
     }
 
@@ -947,35 +928,24 @@ impl App<'_> {
     // The keys working everywhere, for the status bar: the remotes, switching pages, the keys
     // popup and the help.
     fn global_hints(&self) -> Vec<KeyHint> {
-        vec![
-            hint(UserEvent::KeysToggle, "keys"),
-            hint(UserEvent::Push, "push"),
-            hint(UserEvent::Pull, "pull"),
-            hint(UserEvent::Fetch, "fetch"),
-            hint(UserEvent::RefList, "switch page"),
-            hint(UserEvent::Refresh, "refresh"),
-            hint(UserEvent::CommandLog, "log"),
-            hint(UserEvent::HelpToggle, "help"),
-        ]
+        self.app_keys().hints()
     }
 
     // Moves in the command log, scrolls the output of the selected command, copies it, or closes.
-    fn handle_command_log_event(&mut self, event: Option<UserEvent>) {
+    fn handle_command_log_event(&mut self, event: UserEvent) {
         let Some(Overlay::CommandLog(state)) = self.shell.overlay.as_mut() else {
             return;
         };
         match event {
-            Some(UserEvent::ForceQuit | UserEvent::Quit) => self.ec.send(AppEvent::Quit),
-            Some(UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog) => {
+            UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog => {
                 self.shell.overlay = None
             }
-            Some(UserEvent::KeysToggle) => self.shell.keys_popup = !self.shell.keys_popup,
-            Some(UserEvent::NavigateDown | UserEvent::SelectDown) => state.select_next(),
-            Some(UserEvent::NavigateUp | UserEvent::SelectUp) => state.select_prev(),
-            Some(UserEvent::GoToTop) => state.select_first(),
-            Some(UserEvent::GoToBottom) => state.select_last(),
-            Some(event) if state.scroll_output(event) => {}
-            Some(UserEvent::ShortCopy | UserEvent::FullCopy) => {
+            UserEvent::NavigateDown | UserEvent::SelectDown => state.select_next(),
+            UserEvent::NavigateUp | UserEvent::SelectUp => state.select_prev(),
+            UserEvent::GoToTop => state.select_first(),
+            UserEvent::GoToBottom => state.select_last(),
+            event if state.scroll_output(event) => {}
+            UserEvent::ShortCopy | UserEvent::FullCopy => {
                 if let Some(text) = state.selected_text() {
                     self.ec.send(AppEvent::copy("Command and output", text));
                 }
@@ -1000,13 +970,10 @@ impl App<'_> {
         };
         let code = if down { KeyCode::Down } else { KeyCode::Up };
         let key = KeyEvent::new(code, KeyModifiers::NONE);
-        let idle = self.shell.dialog.is_none() && !self.is_typing();
-        match self.shell.overlay.as_mut() {
-            Some(Overlay::CommandLog(_)) => self.handle_command_log_event(Some(event)),
-            Some(Overlay::Help(help)) => help.handle_event(event),
-            Some(Overlay::File(window)) if idle => window.handle_event(event, key, self.repository),
-            None if idle => self.dispatch(event, key),
-            Some(Overlay::File(_)) | None => {}
+        let typing_in_window =
+            matches!(&self.shell.overlay, Some(Overlay::File(w)) if w.is_typing());
+        if self.shell.dialog.is_none() && !self.is_typing() && !typing_in_window {
+            self.dispatch(event, key);
         }
     }
 
@@ -1450,70 +1417,156 @@ impl App<'_> {
         }
     }
 
-    // Handles what works on every page (the sidebar, switching pages, fetch, pull and push),
-    // else hands the event to the focused sidebar or the page.
+    // Hands the event to the app, when it is one of its keys (see `register_app_keys`), else to
+    // the window over everything, the focused sidebar or the page, when one of their keys works
+    // there: no key works without being listed in the hints and the help.
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
-        if event == UserEvent::ForceQuit {
-            self.ec.send(AppEvent::Quit);
-            return;
-        }
-        // over the blame or the timeline, the keys working over everything, and its own
-        if let Some(Overlay::File(window)) = self.shell.overlay.as_mut() {
-            match event {
-                UserEvent::KeysToggle => self.shell.keys_popup = !self.shell.keys_popup,
-                UserEvent::DismissNotifications => self.shell.notices.clear(),
-                UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
-                UserEvent::ResizeLeft => self.move_border(Direction::Left),
-                UserEvent::ResizeRight => self.move_border(Direction::Right),
-                UserEvent::ResizeUp => self.move_border(Direction::Up),
-                UserEvent::ResizeDown => self.move_border(Direction::Down),
-                UserEvent::FocusLeft => self.move_focus(Direction::Left),
-                UserEvent::FocusRight => self.move_focus(Direction::Right),
-                UserEvent::FocusUp => self.move_focus(Direction::Up),
-                UserEvent::FocusDown => self.move_focus(Direction::Down),
-                _ => window.handle_event(event, key, self.repository),
-            }
-            return;
-        }
         // keys typed into the search of the list belong to the view
-        let typing = matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
-        if typing {
-            self.view.handle_event(event, key);
-            return;
-        }
-        if self.handle_remote_event(event) {
-            return;
-        }
-        // on the sidebar, they work on its selected ref, see `handle_sidebar_event`
-        if event.home_scope() == Scope::Graph && !self.shell.sidebar_focused() {
-            self.handle_graph_event(event);
-            return;
-        }
-        match event {
-            UserEvent::ResizeLeft => return self.move_border(Direction::Left),
-            UserEvent::ResizeRight => return self.move_border(Direction::Right),
-            UserEvent::ResizeUp => return self.move_border(Direction::Up),
-            UserEvent::ResizeDown => return self.move_border(Direction::Down),
-            UserEvent::FocusLeft => return self.move_focus(Direction::Left),
-            UserEvent::FocusRight => return self.move_focus(Direction::Right),
-            UserEvent::FocusUp => return self.move_focus(Direction::Up),
-            UserEvent::FocusDown => return self.move_focus(Direction::Down),
-            UserEvent::KeysToggle => {
-                self.shell.keys_popup = !self.shell.keys_popup;
-                return;
+        if matches!(self.shell.app_status.status_line, StatusLine::Input { .. }) {
+            if !self.force_quit(&key) {
+                self.view.handle_event(event, key);
             }
+            return;
+        }
+        if self.app_keys().takes(event) {
+            self.handle_app_event(event);
+            return;
+        }
+        if let Some(keys) = self.overlay_keys() {
+            if keys.takes(event) {
+                match self.shell.overlay.as_mut() {
+                    Some(Overlay::File(window)) => window.handle_event(event, key, self.repository),
+                    Some(Overlay::Help(help)) => help.handle_event(event),
+                    Some(Overlay::CommandLog(_)) => self.handle_command_log_event(event),
+                    None => {}
+                }
+            }
+            return;
+        }
+        if self.shell.sidebar_focused() {
+            self.handle_sidebar_event(event, key);
+        } else if !self.view.keys().takes(event) {
+        } else if event.home_scope() == Scope::Graph {
+            self.handle_graph_event(event);
+        } else {
+            self.view.handle_event(event, key);
+        }
+    }
+
+    // The keys of the whole app: those of the pages work wherever the focus is on them, those of
+    // how things look (the keys popup, wrapping, resizing and moving the focus) over the blame and
+    // the timeline too, so a page or window has them without handling them itself.
+    pub fn register_app_keys(k: &mut Keys<Self>) {
+        use UserEvent::*;
+        let page = |app: &Self| app.shell.overlay.is_none();
+        let page_or_window =
+            |app: &Self| matches!(app.shell.overlay, None | Some(Overlay::File(_)));
+        k.add(
+            &[KeysToggle],
+            "keys",
+            "Show/hide the keys of the focused panel",
+        )
+        .when(|app| !matches!(app.shell.overlay, Some(Overlay::Help(_))));
+        k.add(&[Push], "push", "Push a branch to a remote")
+            .when(page);
+        k.add(&[Pull], "pull", "Pull a branch of a remote")
+            .when(page);
+        k.add(&[Fetch], "fetch", "Fetch from a remote").when(page);
+        k.quiet(&[FetchAll], "Fetch all remotes").when(page);
+        k.add(
+            &[RefList],
+            "switch page",
+            "Switch between local changes and the commit graph",
+        )
+        .when(page);
+        k.add(&[Refresh], "refresh", "Refresh").when(page);
+        k.add(
+            &[CommandLog],
+            "log",
+            "Show the git commands run that changed the repository, with their output",
+        )
+        .when(page);
+        k.add(&[HelpToggle], "help", "Open help").when(page);
+        k.add(
+            &[ToggleWrap],
+            "wrap",
+            "Wrap the long lines of the diffs and file previews, or not",
+        )
+        .when(page_or_window);
+        k.quiet(
+            &[DismissNotifications],
+            "Dismiss the errors and warnings at the top right",
+        )
+        .when(page_or_window);
+        k.quiet(
+            &[ResizeLeft, ResizeRight],
+            "Move the border beside the focused panel (or drag it)",
+        )
+        .when(page_or_window);
+        k.quiet(
+            &[ResizeUp, ResizeDown],
+            "Move the border above or under the focused panel (or drag it)",
+        )
+        .when(page_or_window);
+        k.quiet(
+            &[FocusLeft, FocusRight, FocusUp, FocusDown],
+            "Focus the panel beside, above or under the focused one",
+        )
+        .when(page_or_window);
+        k.quiet(
+            &[FocusPanel(0)],
+            "Focus the refs sidebar, again to shrink/grow it",
+        )
+        .when(page);
+        k.quiet(&[ForceQuit, Quit], "Quit app");
+    }
+
+    // The keys of the window over everything, if any.
+    fn overlay_keys(&self) -> Option<KeyList> {
+        Some(match self.shell.overlay.as_ref()? {
+            Overlay::File(window) => window.keys(),
+            Overlay::Help(help) => {
+                let mut keys = Keys::of(help);
+                HelpView::register_keys(&mut keys);
+                keys.list()
+            }
+            Overlay::CommandLog(state) => {
+                let mut keys = Keys::of(state);
+                CommandLogState::register_keys(&mut keys);
+                keys.list()
+            }
+        })
+    }
+
+    fn app_keys(&self) -> KeyList {
+        let mut keys = Keys::of(self);
+        Self::register_app_keys(&mut keys);
+        keys.list()
+    }
+
+    // The keys of `register_app_keys`, one implementation for every page and window.
+    fn handle_app_event(&mut self, event: UserEvent) {
+        match event {
+            UserEvent::ForceQuit | UserEvent::Quit => self.ec.send(AppEvent::Quit),
+            UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
+            UserEvent::Refresh => self.view.refresh(),
+            UserEvent::Fetch | UserEvent::FetchAll | UserEvent::Pull | UserEvent::Push => {
+                self.handle_remote_event(event);
+            }
+            UserEvent::ResizeLeft => self.move_border(Direction::Left),
+            UserEvent::ResizeRight => self.move_border(Direction::Right),
+            UserEvent::ResizeUp => self.move_border(Direction::Up),
+            UserEvent::ResizeDown => self.move_border(Direction::Down),
+            UserEvent::FocusLeft => self.move_focus(Direction::Left),
+            UserEvent::FocusRight => self.move_focus(Direction::Right),
+            UserEvent::FocusUp => self.move_focus(Direction::Up),
+            UserEvent::FocusDown => self.move_focus(Direction::Down),
+            UserEvent::KeysToggle => self.shell.keys_popup = !self.shell.keys_popup,
             UserEvent::CommandLog => {
                 self.shell.overlay = Some(Overlay::CommandLog(CommandLogState::new()));
-                return;
             }
-            UserEvent::DismissNotifications => {
-                self.shell.notices.clear();
-                return;
-            }
-            UserEvent::ToggleWrap => {
-                self.ctx.wrap.set(!self.ctx.wrap.get());
-                return;
-            }
+            UserEvent::DismissNotifications => self.shell.notices.clear(),
+            UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
             UserEvent::FocusPanel(0) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
                 if self.shell.sidebar_mode == SidebarMode::Focused {
@@ -1521,18 +1574,9 @@ impl App<'_> {
                 } else {
                     self.set_sidebar_focused(true);
                 }
-                return;
             }
-            UserEvent::RefList => {
-                self.switch_page();
-                return;
-            }
+            UserEvent::RefList => self.switch_page(),
             _ => {}
-        }
-        if self.shell.sidebar_focused() {
-            self.handle_sidebar_event(event, key);
-        } else {
-            self.view.handle_event(event, key);
         }
     }
 
@@ -1546,13 +1590,10 @@ impl App<'_> {
             UserEvent::ApplyStash if !stash => UserEvent::Checkout,
             event => event,
         };
-        if !self.sidebar_command_applies(event) {
+        if !self.sidebar_keys().takes(event) {
             return;
         }
         match event {
-            UserEvent::Quit => self.ec.send(AppEvent::Quit),
-            UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
-            UserEvent::Refresh => self.view.refresh(),
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 self.shell.sidebar.select_next();
                 self.show_sidebar_selection();
@@ -1653,53 +1694,113 @@ impl App<'_> {
         }
     }
 
-    // The commands on the selected row of the sidebar, then moving about.
-    fn sidebar_hints(&self) -> Vec<KeyHint> {
+    // The keys of the refs sidebar, see `Keys`: the commands on the selected row (or the picked
+    // refs) where they work, see `ref_command_applies`, then moving about.
+    pub fn register_sidebar_keys(k: &mut Keys<Self>) {
         use RefSection::*;
-        let picked = self.shell.sidebar.picked();
-        let selection = self.shell.sidebar.selection();
-        let stashes =
-            picked.section == Stashes || matches!(selection, RefSelection::Ref(Stashes, _));
-        let edit = if let RefSelection::Folder(..) = selection {
-            "edit remote"
-        } else {
-            "rename/upstream"
+        use UserEvent::*;
+        let applies = |event| move |app: &Self| app.sidebar_command_applies(event);
+        let picks = |app: &Self| !app.shell.sidebar.picked().is_empty();
+        let on_stash = |app: &Self| {
+            app.shell.sidebar.picked().section == Stashes
+                || matches!(app.shell.sidebar.selection(), RefSelection::Ref(Stashes, _))
         };
-        let mut hints = vec![];
-        if !picked.is_empty() {
-            hints.push(hint(UserEvent::Cancel, "clear picks"));
-        }
-        let commands = [
-            hint(UserEvent::CreateRef, "new remote"),
-            hint(UserEvent::EditRef, edit),
-            hint(
-                UserEvent::DeleteRef,
-                if stashes { "drop" } else { "delete" },
-            ),
-            hint(UserEvent::ApplyStash, "apply"),
-            hint(UserEvent::CreateBranch, "new branch"),
-            hint(UserEvent::CreateTag, "new tag"),
-            hint(UserEvent::Checkout, "checkout"),
-            hint(UserEvent::Merge, "merge"),
-            hint(UserEvent::Rebase, "rebase"),
-            hint(UserEvent::Diff, "diff"),
-            hint(UserEvent::ToggleSelect, "pick"),
-            hint(UserEvent::ShortCopy, "copy name"),
-            hint(UserEvent::OpenInBrowser, "open in browser"),
-            hint(UserEvent::CopyLink, "copy link"),
-        ];
-        hints.extend(
-            commands
-                .into_iter()
-                .filter(|(events, _)| self.sidebar_command_applies(events[0])),
+        k.add(
+            &[Cancel, Close],
+            "clear picks",
+            "Clear the picked refs, else back to the page",
+        )
+        .when(picks);
+        k.add(
+            &[CreateRef],
+            "new remote",
+            "New remote, on a remote or the remotes header",
+        )
+        .when(applies(CreateRef));
+        k.add(
+            &[EditRef],
+            "rename/upstream",
+            "Rename the branch or change its upstream; edit the remote",
+        )
+        .when(applies(EditRef))
+        .short(|app| match app.shell.sidebar.selection() {
+            RefSelection::Folder(..) => "edit remote".into(),
+            _ => "rename/upstream".into(),
+        });
+        k.add(
+            &[DeleteRef],
+            "delete",
+            "Delete the branches or tags, drop the stashes; remove the remote",
+        )
+        .when(applies(DeleteRef))
+        .short(|app| if on_stash(app) { "drop" } else { "delete" }.into());
+        k.add(
+            &[ApplyStash],
+            "apply",
+            "Apply the stash; on a branch, remote branch or tag, check it out",
+        )
+        .when(|app| on_stash(app) && app.sidebar_command_applies(ApplyStash));
+        register_graph_commands(k, |app: &Self, event| app.sidebar_command_applies(event));
+        k.add(
+            &[ToggleSelect],
+            "pick",
+            "Pick/unpick the ref, refs of one kind together",
+        )
+        .when(applies(ToggleSelect));
+        k.add(
+            &[ShortCopy, FullCopy],
+            "copy name",
+            "Copy the name of the ref",
+        )
+        .when(applies(ShortCopy));
+        k.add(
+            &[OpenInBrowser],
+            "open in browser",
+            "Open the branch (or a new pull request), the remote branch, tag or remote on the web host",
+        )
+        .when(applies(OpenInBrowser));
+        k.add(
+            &[CopyLink],
+            "copy link",
+            "Copy the link of the branch, remote branch, tag or remote",
+        )
+        .when(applies(CopyLink));
+        k.add(
+            &[Confirm],
+            "open",
+            "Open/close a node, else back to the page",
         );
-        if picked.is_empty() {
-            hints.extend([
-                hint(UserEvent::Confirm, "open"),
-                hint(UserEvent::Cancel, "back"),
-            ]);
-        }
-        hints
+        k.add(
+            &[Cancel, Close],
+            "back",
+            "Clear the picked refs, else back to the page",
+        )
+        .when(|app| !picks(app));
+        k.quiet(
+            &[NavigateDown, SelectDown, NavigateUp, SelectUp],
+            "Move down/up",
+        );
+        k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
+        k.quiet(&[HalfPageDown, HalfPageUp], "Jump half a page down/up");
+        k.quiet(&[NavigateRight, NavigateLeft], "Open/close the node");
+        k.quiet(
+            &[NextSection, PreviousSection],
+            "Go to the next/previous section, opening it",
+        );
+        k.quiet(
+            &[FocusPanel(1), FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+            "Focus a panel of the page",
+        );
+    }
+
+    fn sidebar_keys(&self) -> KeyList {
+        let mut keys = Keys::of(self);
+        Self::register_sidebar_keys(&mut keys);
+        keys.list()
+    }
+
+    fn sidebar_hints(&self) -> Vec<KeyHint> {
+        self.sidebar_keys().hints()
     }
 
     // Whether the event does something on the selected row of the sidebar, see
@@ -1882,6 +1983,8 @@ impl App<'_> {
             }
             _ => self.ctx.keybind.event_in(Scope::Dialog, &key),
         };
+        // only its keys working there, while not typing, which takes every key
+        let event = event.filter(|event| dialog.is_editing() || dialog.keys().takes(*event));
         match dialog.handle_key(event, key) {
             DialogOutcome::None => {}
             DialogOutcome::Close => self.close_dialog(),

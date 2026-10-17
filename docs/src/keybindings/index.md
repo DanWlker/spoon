@@ -1,6 +1,6 @@
 # Keybindings
 
-You can see the keybindings by pressing the `F1` key.
+You can see the keybindings by pressing the `F1` key. The help, the status bar and the keys popup list the keys of each part of the app from one place, where each part registers them: a key works only where it is listed.
 The status bar shows the keys working everywhere, like push, pull and fetch, as many as fit.
 <kbd>H</kbd> shows the keys of the focused panel in a popup at the bottom right, and hides it again; while a popup has the focus or text is typed, the status bar shows their keys instead.
 
@@ -41,7 +41,7 @@ With the mouse captured, the terminal selects text while Shift is held.
 - Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, whether to force push (`--force-with-lease`), and whether to skip the pre-push hook (`--no-verify`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name or a URL) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name, a URL, the branch to pull or to push to) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
@@ -233,13 +233,13 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 
 The commands on the refs ask first, in a popup:
 
-- <kbd>b</kbd>: a new branch from the selected branch, remote branch or tag (nothing on the other rows), checking it out or not. The start can be typed, or chosen among the branches with <kbd>v</kbd>.
+- <kbd>b</kbd>: a new branch from the selected branch, remote branch or tag (nothing on the other rows), checking it out or not. The start can be changed to one of the local branches with <kbd>h/l</kbd>, not typed; from the commit list (<kbd>b</kbd> there) it is the selected commit.
 - <kbd>a</kbd> on a remote (like `origin`, under the remotes), or on the remotes header: a new remote, with its name and URL, fetched once added.
-- <kbd>t</kbd>: a new tag at the selected branch, remote branch or tag (nothing on the other rows), annotated when it has a message. Where it goes can be typed.
+- <kbd>t</kbd>: a new tag at the selected branch, remote branch or tag (nothing on the other rows), annotated when it has a message. It goes where the cursor is, in the sidebar as in the commit list.
 - <kbd>v</kbd> picks refs, all of one kind: branches, remote branches, tags or stashes (picking another kind warns; <kbd>Esc</kbd> clears the picks first). The title of the sidebar shows how many are picked. <kbd>d</kbd> then deletes (or drops) all of them in one popup, and <kbd>D</kbd> diffs the two picked refs.
 - <kbd>D</kbd> diffs two refs: the two picked ones (the first picked is the base), else the current branch and the picked or selected one. The changes between them open in the details, like <kbd>D</kbd> on the graph, and the commit graph shows only the history of the two (its title says which); closing the comparison shows all of it again.
 - <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream; a checkbox deletes its upstream on the remote too, when it is still there), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from a remote too, `origin` or else the first one, named in the popup); and drops a stash. On a remote (like `origin`, under the remotes) it removes the remote, with its remote branches here; nothing changes on the remote itself.
-- <kbd>e</kbd> on a local branch renames it, or changes its upstream (typed, or chosen among the remote branches; empty for none). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
+- <kbd>e</kbd> on a local branch renames it, or changes its upstream (chosen among the remote branches with <kbd>h/l</kbd>, or None). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
 - the commands of the commit graph work on the selected branch, remote branch or tag: <kbd>m</kbd> merges it into the current branch and <kbd>r</kbd> rebases the current branch onto it (by its name), <kbd>c</kbd> checks it out (a tag detached); <kbd>b</kbd> and <kbd>t</kbd> make a branch or tag from it; the others, like <kbd>D</kbd> diff, work on the commit it points at. The keys of the sidebar come first (<kbd>d</kbd> deletes the ref, it doesn't drop the commit).
 - <kbd>L</kbd> on a local branch shows only its commits in the graph, and on it again all of them; on other rows, only those of the current branch, like on the graph.
 - <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
@@ -299,12 +299,12 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 #### Blame
 
-<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
+<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **[0] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **[1] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the search, then close                                 | `close` `cancel`                |
-| <kbd>Alt-Up/Down</kbd>               | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_up` `focus_down` |
+| <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_0` `focus_panel_1` `focus_up` `focus_down` |
 | <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |

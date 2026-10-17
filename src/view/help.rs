@@ -9,11 +9,18 @@ use ratatui::{
 };
 
 use crate::{
-    app::AppContext,
+    app::{App, AppContext},
     color::ColorTheme,
     event::{AppEvent, Sender, UserEvent},
     keybind::KeyBind,
-    widget::style::{key_span, ScrollState},
+    keys::Keys,
+    view::{detail::DetailView, list::ListView, register_typing_keys, BlameView, TimelineView},
+    widget::{
+        command_log::CommandLogState,
+        git_dialog::GitDialog,
+        local_changes::LocalChangesState,
+        style::{key_span, ScrollState},
+    },
 };
 
 // The keys of the whole app, over the page, see `AppShell::help`.
@@ -45,11 +52,22 @@ impl HelpView {
         }
     }
 
+    // The keys of the help, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
+        use UserEvent::*;
+        k.add(&[HelpToggle, Cancel, Close], "close", "Close help");
+        k.quiet(
+            &[NavigateDown, SelectDown, NavigateUp, SelectUp],
+            "Scroll down/up",
+        );
+        k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
+        k.quiet(&[HalfPageDown, HalfPageUp], "Scroll half a page down/up");
+        k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
+        k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
+    }
+
     pub fn handle_event(&mut self, event: UserEvent) {
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
             UserEvent::HelpToggle | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseOverlay);
             }
@@ -115,261 +133,58 @@ impl HelpView {
     }
 }
 
-#[rustfmt::skip]
+// The keys of every part of the app, as each registers them (see `Keys`), with their sentences.
 fn build_lines(
     color_theme: &ColorTheme,
     keybind: &KeyBind,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let common_helps = vec![
-        (vec![UserEvent::ForceQuit, UserEvent::Quit], "Quit app".into()),
-        (vec![UserEvent::HelpToggle], "Open help".into()),
-        (vec![UserEvent::RefList], "Switch between local changes and the commit graph".into()),
-        (vec![UserEvent::FocusPanel(0)], "Focus the refs sidebar, again to shrink/grow it".into()),
-        (vec![UserEvent::ResizeLeft, UserEvent::ResizeRight], "Move the border beside the focused panel (or drag it)".into()),
-        (vec![UserEvent::ResizeUp, UserEvent::ResizeDown], "Move the border above or under the focused panel (or drag it)".into()),
-        (vec![UserEvent::FocusLeft, UserEvent::FocusRight, UserEvent::FocusUp, UserEvent::FocusDown], "Focus the panel beside, above or under the focused one".into()),
-        (vec![UserEvent::KeysToggle], "Show/hide the keys of the focused panel".into()),
-        (vec![UserEvent::CommandLog], "Show the git commands run that changed the repository, with their output".into()),
-        (vec![UserEvent::DismissNotifications], "Dismiss the errors and warnings at the top right".into()),
-        (vec![UserEvent::ToggleWrap], "Wrap the long lines of the diffs and file previews, or not".into()),
-        (vec![UserEvent::Fetch], "Fetch from a remote".into()),
-        (vec![UserEvent::FetchAll], "Fetch all remotes".into()),
-        (vec![UserEvent::Pull], "Pull a branch of a remote".into()),
-        (vec![UserEvent::Push], "Push a branch to a remote".into()),
-    ];
-    let (common_key_lines, common_value_lines) = build_block_lines("Common:", common_helps, color_theme, keybind);
+    let (keys, values): (Vec<_>, Vec<_>) = sections()
+        .into_iter()
+        .map(|(title, helps)| build_block_lines(title, helps, color_theme, keybind))
+        .unzip();
+    (
+        join_line_groups_with_empty(keys),
+        join_line_groups_with_empty(values),
+    )
+}
 
-    let help_helps = vec![
-        (vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close], "Close help".into()),
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Scroll down".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Scroll up".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-    ];
-    let (help_key_lines, help_value_lines) = build_block_lines("Help:", help_helps, color_theme, keybind);
+type Section = (&'static str, Vec<(Vec<UserEvent>, &'static str)>);
 
-    let list_helps = vec![
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::NavigateLeft, UserEvent::NavigateRight], "Fold/Unfold the selected merge commit".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Jump half page down, scrolling as needed".into()),
-        (vec![UserEvent::HalfPageUp], "Jump half page up, scrolling as needed".into()),
-        (vec![UserEvent::ScrollDown], "Scroll down".into()),
-        (vec![UserEvent::ScrollUp], "Scroll up".into()),
-        (vec![UserEvent::Confirm], "Show commit details".into()),
-        (vec![UserEvent::FocusPanel(2)], "Show commit info".into()),
-        (vec![UserEvent::FocusPanel(3)], "Show changed files and their diff".into()),
-        (vec![UserEvent::FocusPanel(4)], "Show all files of the commit".into()),
-        (vec![UserEvent::Search], "Start search".into()),
-        (vec![UserEvent::Cancel], "Cancel search / Clear picked commits".into()),
-        (vec![UserEvent::ToggleSelect], "Pick/Unpick commit".into()),
-        (vec![UserEvent::NextPicked, UserEvent::PreviousPicked], "Go to next/previous picked commit".into()),
-        (vec![UserEvent::Diff], "Diff with the checked out commit, or the two picked commits".into()),
-        (vec![UserEvent::Rebase], "Rebase the current branch onto the selected commit".into()),
-        (vec![UserEvent::Merge], "Merge the selected commit into the current branch".into()),
-        (vec![UserEvent::Checkout], "Check out the selected branch or commit".into()),
-        (vec![UserEvent::CherryPick], "Cherry-pick the picked commits, or the selected one".into()),
-        (vec![UserEvent::Squash], "Squash the picked commits, or the selected one, into their parents".into()),
-        (vec![UserEvent::Revert], "Revert the picked commits, or the selected one".into()),
-        (vec![UserEvent::Reset], "Reset the current branch to the selected commit".into()),
-        (vec![UserEvent::AmendCommit], "Amend the selected commit on the local changes page".into()),
-        (vec![UserEvent::DropCommit], "Drop the picked commits, or the selected one".into()),
-        (vec![UserEvent::CreateBranch], "Create a branch at the selected commit".into()),
-        (vec![UserEvent::CreateTag], "Create a tag at the selected commit".into()),
-        (vec![UserEvent::BranchOnly], "Show only the commits of the current branch, or all".into()),
-        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the commit (in the details, the selected file) on the web host; copy its link".into()),
-        (vec![UserEvent::GoToNext], "Go to next search match".into()),
-        (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
-        (vec![UserEvent::SearchTargetToggle], "Toggle search target".into()),
-        (vec![UserEvent::SmartCaseToggle], "Toggle smart case or case-sensitive, for every search".into()),
-        (vec![UserEvent::FuzzyToggle], "Toggle fuzzy match, for every search but of text".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
-        (vec![UserEvent::FullCopy], "Copy commit hash".into()),
-    ];
-    let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);
-    
-    let detail_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Clear picked commits, then close commit details".into()),
-        (vec![UserEvent::Confirm], "Close commit details".into()),
-        (vec![UserEvent::FocusPanel(1)], "Focus the commit list, the details follow the selection".into()),
-        (vec![UserEvent::FocusPanel(2)], "Show commit info".into()),
-        (vec![UserEvent::FocusPanel(3)], "Show changed files and their diff".into()),
-        (vec![UserEvent::FocusPanel(4)], "Show all files of the commit with a preview".into()),
-        (vec![UserEvent::NextTab, UserEvent::PreviousTab], "Show the next/previous tab (while a tab has the focus)".into()),
-        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory (changes, files)".into()),
-        (vec![UserEvent::Search], "Search files (changes, files); the diff while it has the focus".into()),
-        (vec![UserEvent::Confirm], "Changes: focus the diff, select hunks, then lines".into()),
-        (vec![UserEvent::ApplyChange], "Apply the selected hunk or line to the working tree".into()),
-        (vec![UserEvent::ResetFile], "Reset the selected file to the commit or before it".into()),
-        (vec![UserEvent::Filter], "Filter files (changes, files)".into()),
-        (vec![UserEvent::GoToNext, UserEvent::GoToPrevious], "Go to next/previous search match".into()),
-        (vec![UserEvent::NavigateDown], "Scroll down".into()),
-        (vec![UserEvent::NavigateUp], "Scroll up".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down; jump half page while selecting lines or in a preview".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up; jump half page while selecting lines or in a preview".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::SelectDown], "Select older commit".into()),
-        (vec![UserEvent::SelectUp], "Select newer commit".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::ShortCopy], "Copy commit short hash; the relative path in a file tree".into()),
-        (vec![UserEvent::FullCopy], "Copy commit hash; the absolute path in a file tree".into()),
-        (vec![UserEvent::Ignore], "Add the file or directory to .gitignore, in a file tree".into()),
-        (vec![UserEvent::Blame], "Blame the selected file, from the selected line".into()),
-        (vec![UserEvent::Timeline], "Show the commits changing the selected file".into()),
-    ];
-    let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
-
-    let refs_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Back to the page".into()),
-        (vec![UserEvent::FocusPanel(1), UserEvent::FocusPanel(2), UserEvent::FocusPanel(3), UserEvent::FocusPanel(4)], "Focus a panel of the page".into()),
-        (vec![UserEvent::Confirm], "Open/Close node, or back to the page".into()),
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::HalfPageDown, UserEvent::HalfPageUp], "Jump half page down/up, scrolling as needed".into()),
-        (vec![UserEvent::NavigateRight], "Open node".into()),
-        (vec![UserEvent::NavigateLeft], "Close node".into()),
-        (vec![UserEvent::NextSection, UserEvent::PreviousSection], "Go to the next/previous section, opening it".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::ShortCopy], "Copy ref name".into()),
-        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the branch (or a new pull request), the remote branch, tag or remote on the web host; copy its link".into()),
-        (vec![UserEvent::CreateBranch], "New branch from the selected branch, remote branch or tag".into()),
-        (vec![UserEvent::CreateTag], "New tag at the selected branch, remote branch or tag".into()),
-        (vec![UserEvent::CreateRef], "New remote (on the remotes)".into()),
-        (vec![UserEvent::DeleteRef], "Delete the branch or tag, drop the stash".into()),
-        (vec![UserEvent::EditRef], "Rename the branch or change its upstream; edit the remote".into()),
-        (vec![UserEvent::ApplyStash], "Apply the selected stash".into()),
-        (vec![UserEvent::Merge], "Merge the branch into the current branch".into()),
-        (vec![UserEvent::Rebase], "Rebase the current branch onto the branch".into()),
-        (vec![UserEvent::Checkout], "Check out the branch or tag".into()),
-        (vec![UserEvent::ToggleSelect], "Pick/Unpick the ref, refs of one kind together".into()),
-        (vec![UserEvent::Diff], "Diff the two picked refs, or the current branch with the ref".into()),
-        (vec![UserEvent::BranchOnly], "Show only the commits of the selected branch (else the current one), or all".into()),
-    ];
-    let (refs_key_lines, refs_value_lines) = build_block_lines("Refs Sidebar:", refs_helps, color_theme, keybind);
-
-    let local_changes_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Back, then clear picked files, search, filter".into()),
-        (vec![UserEvent::FocusPanel(1)], "Focus unstaged files".into()),
-        (vec![UserEvent::FocusPanel(2)], "Focus staged files".into()),
-        (vec![UserEvent::FocusPanel(3)], "Focus the commit message, typing it when empty".into()),
-        (vec![UserEvent::Confirm], "Select hunks / lines; Resolve a conflict; Commit".into()),
-        (vec![UserEvent::Edit], "Open the file in $VISUAL / $EDITOR".into()),
-        (vec![UserEvent::Blame], "Blame the selected file as of the last commit".into()),
-        (vec![UserEvent::Timeline], "Show the commits changing the selected file".into()),
-        (vec![UserEvent::Commit], "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase".into()),
-        (vec![UserEvent::ToggleAmend], "Toggle amending the last commit".into()),
-        (vec![UserEvent::Abort], "Abort the rebase, merge, cherry-pick or revert in progress".into()),
-        (vec![UserEvent::ToggleStage], "Stage/Unstage file, directory, hunk or line, or the picked files".into()),
-        (vec![UserEvent::ToggleSelect], "Pick/Unpick file or directory".into()),
-        (vec![UserEvent::NextPicked, UserEvent::PreviousPicked], "Go to next/previous picked file".into()),
-        (vec![UserEvent::NextFile, UserEvent::PreviousFile], "Go to next/previous file, staying in the diff".into()),
-        (vec![UserEvent::Stash], "Stash all changes, or the picked files".into()),
-        (vec![UserEvent::Discard], "Discard unstaged file, directory, hunk or line".into()),
-        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Expand/Collapse directory".into()),
-        (vec![UserEvent::Search], "Search files".into()),
-        (vec![UserEvent::Filter], "Filter files".into()),
-        (vec![UserEvent::GoToNext, UserEvent::GoToPrevious], "Go to next/previous search match".into()),
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Select next file/hunk/line".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Select previous file/hunk/line".into()),
-        (vec![UserEvent::GoToTop], "Select first file/hunk/line".into()),
-        (vec![UserEvent::GoToBottom], "Select last file/hunk/line".into()),
-        (vec![UserEvent::PageDown], "Scroll diff page down".into()),
-        (vec![UserEvent::PageUp], "Scroll diff page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll diff half page down; jump half page while selecting lines".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll diff half page up; jump half page while selecting lines".into()),
-        (vec![UserEvent::ScrollDown], "Scroll diff down".into()),
-        (vec![UserEvent::ScrollUp], "Scroll diff up".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the relative/absolute path of the file".into()),
-        (vec![UserEvent::Ignore], "Add the file or directory to .gitignore".into()),
-    ];
-    let (local_changes_key_lines, local_changes_value_lines) = build_block_lines("Local Changes:", local_changes_helps, color_theme, keybind);
-    
-    let blame_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Clear the search, then close".into()),
-        (vec![UserEvent::FocusUp, UserEvent::FocusDown], "Focus the commit shown (also up from the first line)/the lines".into()),
-        (vec![UserEvent::FocusLeft, UserEvent::FocusRight], "Focus the commits/the text of the lines".into()),
-        (vec![UserEvent::NavigateLeft, UserEvent::NavigateRight], "Act on the commit or the text of the line; on the commit shown, older/newer commit".into()),
-        (vec![UserEvent::OlderCommit, UserEvent::NewerCommit], "Blame as of the older/newer commit changing the file".into()),
-        (vec![UserEvent::Confirm], "Select the commit of the line on the graph".into()),
-        (vec![UserEvent::Checkout], "Check out the commit".into()),
-        (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the commit short/full hash; the line, on its text".into()),
-        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the commit, or the file at the line, on the web host; copy its link".into()),
-        (vec![UserEvent::Search], "Search the lines' commits (hash, author, date) or the text".into()),
-        (vec![UserEvent::GoToNext, UserEvent::GoToPrevious], "Go to next/previous search match".into()),
-    ];
-    let (blame_key_lines, blame_value_lines) = build_block_lines("Blame:", blame_helps, color_theme, keybind);
-
-    let timeline_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Clear the search, back out of the diff, then close".into()),
-        (vec![UserEvent::FocusPanel(0), UserEvent::FocusPanel(1), UserEvent::FocusLeft, UserEvent::FocusRight], "Focus the commits/the diff".into()),
-        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Into the diff/back out of it".into()),
-        (vec![UserEvent::OlderCommit, UserEvent::NewerCommit], "Select the older/newer commit, from the diff too".into()),
-        (vec![UserEvent::Confirm], "Select the commit on the graph; in the diff, select lines".into()),
-        (vec![UserEvent::Checkout], "Check out the commit".into()),
-        (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the commit short/full hash; the hunk or line, in the diff".into()),
-        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the commit, or the file at the lines, on the web host; copy its link".into()),
-        (vec![UserEvent::Search], "Search the commits (hash, date, subject), or the diff".into()),
-    ];
-    let (timeline_key_lines, timeline_value_lines) = build_block_lines("Timeline:", timeline_helps, color_theme, keybind);
-
-    let dialog_helps = vec![
-        (vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "Select next/previous field".into()),
-        (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Change the selected field".into()),
-        (vec![UserEvent::DialogActivate], "Toggle the field if it can be, else type into it".into()),
-        (vec![UserEvent::DialogToggle], "Toggle the checkbox, or go to the next option".into()),
-        (vec![UserEvent::DialogEdit], "Type into the text field".into()),
-        (vec![UserEvent::Confirm], "Run the command".into()),
-        (vec![UserEvent::Cancel, UserEvent::Close], "Cancel".into()),
-    ];
-    let (dialog_key_lines, dialog_value_lines) = build_block_lines("Git Command Popups:", dialog_helps, color_theme, keybind);
-
-    let key_lines = join_line_groups_with_empty(vec![
-        common_key_lines,
-        help_key_lines,
-        list_key_lines,
-        detail_key_lines,
-        refs_key_lines,
-        local_changes_key_lines,
-        blame_key_lines,
-        timeline_key_lines,
-        dialog_key_lines,
-    ]);
-    let value_lines = join_line_groups_with_empty(vec![
-        common_value_lines,
-        help_value_lines,
-        list_value_lines,
-        detail_value_lines,
-        refs_value_lines,
-        local_changes_value_lines,
-        blame_value_lines,
-        timeline_value_lines,
-        dialog_value_lines,
-    ]);
-
-    (key_lines, value_lines)
+// Each part of the app with all the keys it registers, whatever its state.
+fn sections() -> Vec<Section> {
+    fn section<T: ?Sized>(
+        register: impl FnOnce(&mut Keys<T>),
+    ) -> Vec<(Vec<UserEvent>, &'static str)> {
+        let mut keys = Keys::all();
+        register(&mut keys);
+        keys.list().help()
+    }
+    vec![
+        ("Common:", section(App::register_app_keys)),
+        ("Search and filter:", section(register_typing_keys)),
+        ("Help:", section(HelpView::register_keys)),
+        ("Commit List:", section(ListView::register_keys)),
+        ("Commit Detail:", section(DetailView::register_keys)),
+        ("Refs Sidebar:", section(App::register_sidebar_keys)),
+        ("Local Changes:", section(LocalChangesState::register_keys)),
+        ("Blame:", section(BlameView::register_keys)),
+        ("Timeline:", section(TimelineView::register_keys)),
+        ("Command Log:", section(CommandLogState::register_keys)),
+        ("Git Command Popups:", section(GitDialog::register_keys)),
+    ]
 }
 
 fn build_block_lines(
     title: &'static str,
-    helps: Vec<(Vec<UserEvent>, String)>,
+    helps: Vec<(Vec<UserEvent>, &'static str)>,
     color_theme: &ColorTheme,
     keybind: &KeyBind,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    // the keys bound to nothing aren't listed
+    let helps: Vec<_> = helps
+        .into_iter()
+        .filter(|(events, _)| !keybind.all_keys(events).is_empty())
+        .collect();
     let mut key_lines = Vec::new();
     let mut value_lines = Vec::new();
 
@@ -411,6 +226,22 @@ mod tests {
     use ratatui::style::Modifier;
 
     use super::*;
+
+    #[test]
+    fn test_every_bound_key_is_registered() {
+        // a key no part of the app registers would never work, see `App::dispatch`, and the help
+        // wouldn't list it
+        let registered: Vec<UserEvent> = sections()
+            .into_iter()
+            .flat_map(|(_, helps)| helps.into_iter().flat_map(|(events, _)| events))
+            .collect();
+        for event in KeyBind::new(None).bound_events() {
+            assert!(
+                registered.contains(&event),
+                "{event:?} is registered nowhere"
+            );
+        }
+    }
 
     #[test]
     fn test_keys_look_like_everywhere() {

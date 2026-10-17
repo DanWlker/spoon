@@ -8,16 +8,17 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
+    event::{AppEvent, Sender, UserEvent},
     git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     graph_commands::dialog_commit,
     keybind::Scope,
+    keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_path, copy_selection, file_link, graph_hints, handle_search_event,
-        query_status, type_query, typing_hints, Compare, ListRefreshViewContext,
-        RefreshViewContext,
+        commit_event, copy_path, copy_selection, file_link, handle_search_event, query_status,
+        register_commit_list_keys, type_query, typing_keys, Compare, ListFacts,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -135,110 +136,232 @@ impl<'a> DetailView<'a> {
         self.as_mut_list_state().clear_picks();
     }
 
-    pub fn key_hints(&self) -> Vec<KeyHint> {
-        if self.is_typing_query() {
-            return typing_hints(self.query_kind());
+    // The keys of the details and the commit list over them, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
+        use DetailFocus::*;
+        use UserEvent::*;
+        let on = |focus: DetailFocus| move |v: &Self| v.focus() == focus;
+        let files = on(Files);
+        let pane = on(Pane);
+        let tab = |tab: DetailTab| move |v: &Self| v.tab == tab;
+        let file_selected =
+            |v: &Self| !v.list_focused && matches!(v.selected_entry(), Some((_, false)));
+
+        // the commit list: back to the diff of two commits, closing it, or the list's own keys
+        k.add(
+            &[Cancel, Close],
+            "back to diff",
+            "Back to the diff of the two commits",
+        )
+        .when(|v| v.compare_parked() && v.focus() != Pane);
+        k.add(
+            &[Cancel, Close],
+            "close diff",
+            "Close the diff of the two commits",
+        )
+        .when(|v| v.is_comparing() && !v.compare_parked() && v.focus() != Pane);
+        // the help lists them under the commit list
+        if k.view().is_some() {
+            register_commit_list_keys(
+                k,
+                |v| ListFacts::of(v.as_list_state()),
+                |v, event| {
+                    // no other diff until this one is closed, which clears the picks too
+                    v.list_focused
+                        && !(v.is_comparing()
+                            && matches!(event, ToggleSelect | Diff | BranchOnly | Cancel))
+                },
+            );
         }
-        let picked = self.as_list_state().picked_commit_hashes().len();
-        let searching = matches!(
-            self.as_list_state().search_state(),
-            SearchState::Searching { .. }
+
+        // the tabs
+        k.add(
+            &[Confirm],
+            "select hunks",
+            "Select the hunks of the diff, then their lines",
+        )
+        .when(|v| files(v) && tab(DetailTab::Changes)(v));
+        k.add(
+            &[Confirm],
+            "select lines",
+            "Select the lines of the preview",
+        )
+        .when(|v| files(v) && tab(DetailTab::Files)(v));
+        k.add(
+            &[Confirm],
+            "select lines",
+            "Select the hunks of the diff, then their lines",
+        )
+        .when(|v| {
+            pane(v) && tab(DetailTab::Changes)(v) && !v.changes_state.pane.is_selecting_lines()
+        });
+        k.quiet(&[Confirm], "Close the details").when(on(Info));
+        k.add(
+            &[ApplyChange],
+            "apply to working tree",
+            "Apply the selected hunk or line to the working tree",
+        )
+        .when(|v| pane(v) && tab(DetailTab::Changes)(v));
+        k.add(
+            &[ShortCopy],
+            "copy hunk",
+            "Copy the selected hunk, line or preview line",
+        )
+        .when(|v| pane(v) && tab(DetailTab::Changes)(v))
+        .short(|v| {
+            let what = if v.changes_state.pane.is_selecting_lines() {
+                "line"
+            } else {
+                "hunk"
+            };
+            format!("copy {what}")
+        });
+        k.add(
+            &[ShortCopy],
+            "copy line",
+            "Copy the selected hunk, line or preview line",
+        )
+        .when(|v| pane(v) && tab(DetailTab::Files)(v));
+        k.add(
+            &[Cancel, Close],
+            "clear picks",
+            "Clear the picked commits, then close the details",
+        )
+        .when(|v| {
+            !v.list_focused
+                && v.focus() != Pane
+                && !v.is_comparing()
+                && !v.as_list_state().picked_commit_hashes().is_empty()
+        });
+        k.add(
+            &[Cancel, Close],
+            "close",
+            "Clear the picked commits, then close the details",
+        )
+        .when(|v| {
+            !v.list_focused
+                && v.focus() != Pane
+                && !v.is_comparing()
+                && v.as_list_state().picked_commit_hashes().is_empty()
+        });
+        k.add(
+            &[Cancel, Close],
+            "back",
+            "Back from the diff or preview to the files",
+        )
+        .when(pane);
+        k.add(&[NextTab, PreviousTab], "tab", "Show the next/previous tab")
+            .when(|v| !v.list_focused && !v.shows_compare());
+        k.add(
+            &[ShortCopy, FullCopy],
+            "copy hash",
+            "Copy the commit short/full hash",
+        )
+        .when(on(Info));
+        k.add(
+            &[OpenInBrowser],
+            "open in browser",
+            "Open the commit on the web host",
+        )
+        .when(on(Info));
+        k.add(&[CopyLink], "copy link", "Copy the link of the commit")
+            .when(on(Info));
+        k.add(
+            &[ResetFile],
+            "reset file",
+            "Reset the selected file to the commit or before it",
+        )
+        .when(|v| v.reset_file_change().is_some());
+        k.add(
+            &[Search],
+            "search",
+            "Search the files; the diff or preview while it has the focus",
+        )
+        .when(|v| files(v) || pane(v));
+        k.add(&[Filter], "filter", "Filter the files").when(files);
+        k.add(
+            &[ShortCopy, FullCopy],
+            "copy path",
+            "Copy the relative/absolute path of the file",
+        )
+        .when(files);
+        k.add(
+            &[Ignore],
+            "ignore",
+            "Add the file or directory to .gitignore",
+        )
+        .when(files);
+        k.add(
+            &[OpenInBrowser],
+            "open in browser",
+            "Open the selected file at the commit on the web host, at the selected lines",
+        )
+        .when(|v| files(v) || pane(v));
+        k.add(
+            &[CopyLink],
+            "copy link",
+            "Copy the link of the selected file, at the selected lines",
+        )
+        .when(|v| files(v) || pane(v));
+        k.add(
+            &[Blame],
+            "blame",
+            "Blame the selected file, from the selected line",
+        )
+        .when(file_selected);
+        k.add(
+            &[Timeline],
+            "timeline",
+            "Show the commits changing the selected file",
+        )
+        .when(file_selected);
+        k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
+            .when(|v| files(v) || pane(v));
+        k.quiet(
+            &[NavigateDown, NavigateUp, GoToTop, GoToBottom],
+            "Move or scroll down/up, to the top/bottom",
+        )
+        .when(|v| !v.list_focused);
+        k.quiet(
+            &[NavigateRight, NavigateLeft],
+            "Expand/collapse the directory",
+        )
+        .when(files);
+        k.quiet(
+            &[
+                PageDown,
+                PageUp,
+                HalfPageDown,
+                HalfPageUp,
+                ScrollDown,
+                ScrollUp,
+            ],
+            "Scroll the info, diff or preview",
+        )
+        .when(|v| !v.list_focused);
+        k.quiet(&[SelectDown, SelectUp], "Select the older/newer commit")
+            .when(|v| on(Info)(v) || files(v));
+        k.quiet(
+            &[FocusPanel(1), FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+            "Focus the commit list, the info, changes or files",
         );
-        if self.list_focused && searching {
-            return typing_hints(SearchKind::Commits);
+    }
+
+    pub fn keys(&self) -> KeyList {
+        if self.is_typing_query() {
+            return typing_keys(self.query_kind());
         }
-        if self.list_focused {
-            let mut hints = graph_hints(picked);
-            if self.is_comparing() {
-                // no other diff until this one is closed, which clears the picks too
-                hints.retain(|(events, _)| {
-                    !events.iter().any(|e| {
-                        matches!(
-                            e,
-                            UserEvent::ToggleSelect
-                                | UserEvent::Diff
-                                | UserEvent::BranchOnly
-                                | UserEvent::Cancel
-                        )
-                    })
-                });
-            }
-            hints.insert(0, hint(UserEvent::Confirm, "details"));
-            if self.compare_parked() {
-                hints.insert(0, hint(UserEvent::Cancel, "back to diff"));
-            } else if self.is_comparing() {
-                hints.insert(0, hint(UserEvent::Cancel, "close diff"));
-            }
-            return hints;
+        if self.list_focused
+            && matches!(
+                self.as_list_state().search_state(),
+                SearchState::Searching { .. }
+            )
+        {
+            return typing_keys(SearchKind::Commits);
         }
-        let mut hints = vec![];
-        if self.is_pane_focused() && self.tab == DetailTab::Changes {
-            let lines = self.changes_state.pane.is_selecting_lines();
-            if !lines {
-                hints.push(hint(UserEvent::Confirm, "select lines"));
-            }
-            let what = if lines { "line" } else { "hunk" };
-            hints.extend([
-                hint(UserEvent::ApplyChange, "apply to working tree"),
-                hint(UserEvent::ShortCopy, &format!("copy {what}")),
-            ]);
-            hints.extend(Self::file_hints());
-            hints.extend([
-                hint(UserEvent::Search, "search"),
-                hint(UserEvent::Cancel, "back"),
-            ]);
-            return hints;
-        }
-        if self.is_pane_focused() {
-            let mut hints = vec![hint(UserEvent::ShortCopy, "copy line")];
-            hints.extend(Self::file_hints());
-            hints.extend([
-                hint(UserEvent::Search, "search"),
-                hint(UserEvent::Cancel, "back"),
-            ]);
-            return hints;
-        }
-        if self.compare_parked() {
-            hints.push(hint(UserEvent::Cancel, "back to diff"));
-        } else if self.is_comparing() {
-            hints.push(hint(UserEvent::Cancel, "close diff"));
-        } else if picked > 0 {
-            hints.push(hint(UserEvent::Cancel, "clear picks"));
-        } else {
-            hints.push(hint(UserEvent::Cancel, "close"));
-        }
-        match self.tab {
-            DetailTab::Changes => hints.push(hint(UserEvent::Confirm, "select hunks")),
-            DetailTab::Files => hints.push(hint(UserEvent::Confirm, "select lines")),
-            DetailTab::Info => {}
-        }
-        if !self.shows_compare() {
-            hints.push((
-                vec![UserEvent::NextTab, UserEvent::PreviousTab],
-                "tab".into(),
-            ));
-        }
-        let copy = vec![UserEvent::ShortCopy, UserEvent::FullCopy];
-        match self.tab {
-            DetailTab::Info => hints.extend([
-                (copy, "copy hash".into()),
-                hint(UserEvent::OpenInBrowser, "open in browser"),
-                hint(UserEvent::CopyLink, "copy link"),
-            ]),
-            DetailTab::Changes | DetailTab::Files => {
-                if self.reset_file_change().is_some() {
-                    hints.push(hint(UserEvent::ResetFile, "reset file"));
-                }
-                hints.extend([
-                    hint(UserEvent::Search, "search"),
-                    hint(UserEvent::Filter, "filter"),
-                    (copy, "copy path".into()),
-                    hint(UserEvent::Ignore, "ignore"),
-                ]);
-                hints.extend(Self::file_hints());
-            }
-        }
-        hints
+        let mut keys = Keys::of(self);
+        Self::register_keys(&mut keys);
+        keys.list()
     }
 
     // Moves the focus to the panel that way: the commit list above the details, the diff or
@@ -484,7 +607,7 @@ impl<'a> DetailView<'a> {
         }
         // the diff or preview beside the files gets only its own keys and those of the whole app
         // (see `Scope::DetailsPane`), which go on below
-        if self.is_pane_focused() && !event.is_app_wide() {
+        if self.is_pane_focused() {
             self.handle_pane_event(event);
             return;
         }
@@ -546,20 +669,11 @@ impl<'a> DetailView<'a> {
                     self.tx.send(event);
                 }
             }
-            UserEvent::HelpToggle => {
-                self.tx.send(AppEvent::OpenHelp);
-            }
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close if self.compare_parked() => {
                 self.unpark_compare();
             }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseDetail);
-            }
-            UserEvent::Refresh => {
-                self.refresh();
             }
             _ => {}
         }
@@ -655,7 +769,6 @@ impl<'a> DetailView<'a> {
         self.focus() == DetailFocus::Pane
     }
 
-    // The path selected in the file tree of the tab, and whether it is a directory.
     // The change of the file selected in the changes tab of a commit, which `u` resets; none in a
     // comparison, having no commit to reset it before or at.
     fn reset_file_change(&self) -> Option<&FileChange> {
@@ -673,23 +786,13 @@ impl<'a> DetailView<'a> {
         })
     }
 
+    // The path selected in the file tree of the tab, and whether it is a directory.
     fn selected_entry(&self) -> Option<(&str, bool)> {
         match self.tab {
             DetailTab::Info => None,
             DetailTab::Changes => self.changes_state.selected_entry(),
             DetailTab::Files => self.files_state.selected_entry(),
         }
-    }
-
-    // The keys on the selected file of a commit, from its tree, diff or preview: its page on the web
-    // host, at the selected lines, its blame and its timeline.
-    fn file_hints() -> [KeyHint; 4] {
-        [
-            hint(UserEvent::OpenInBrowser, "open in browser"),
-            hint(UserEvent::CopyLink, "copy link"),
-            hint(UserEvent::Blame, "blame"),
-            hint(UserEvent::Timeline, "timeline"),
-        ]
     }
 
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,

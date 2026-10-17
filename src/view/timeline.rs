@@ -10,13 +10,14 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
+    event::{AppEvent, Sender, UserEvent},
     git::{CommitHash, FileRevision, Repository},
+    keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, commit_hints, copy_selection, file_link, moving_hints, query_status,
-        revision_matches, revision_spans, type_query, typing_hints,
+        commit_event, copy_selection, file_link, query_status, register_commit_keys,
+        register_moving_keys, revision_matches, revision_spans, type_query, typing_keys,
     },
     widget::{
         diff::{parse_diff, Step},
@@ -120,7 +121,6 @@ impl TimelineView {
         }
         let in_diff = self.pane.is_focused();
         match event {
-            UserEvent::ForceQuit | UserEvent::Quit => self.tx.send(AppEvent::Quit),
             // the search, then out of the lines and hunks, then closes
             UserEvent::Cancel | UserEvent::Close => {
                 if self.query.clear() != QueryChange::None {
@@ -253,40 +253,87 @@ impl TimelineView {
         }
     }
 
-    pub fn key_hints(&self) -> Vec<KeyHint> {
+    // The keys of the timeline, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
+        let diff = |v: &Self| v.pane.is_focused();
+        let commits = |v: &Self| !v.pane.is_focused();
+        k.add(
+            &[OlderCommit, NewerCommit],
+            "older/newer commit",
+            "Select the older/newer commit, from the diff too",
+        );
+        k.add(
+            &[Confirm],
+            "select lines",
+            "Select the commit on the graph, closing the window; in the diff, select lines",
+        )
+        .when(diff);
+        k.add(&[ShortCopy], "copy", "Copy the hunk or line, in the diff")
+            .when(diff);
+        k.add(
+            &[OpenInBrowser],
+            "open in browser",
+            "Open the file at the selected lines on the web host, in the diff",
+        )
+        .when(diff);
+        k.add(
+            &[CopyLink],
+            "copy link",
+            "Copy the link of the file at the selected lines, in the diff",
+        )
+        .when(diff);
+        k.add(&[NavigateLeft], "back", "Into the diff/back out of it")
+            .when(diff);
+        k.add(
+            &[NavigateRight],
+            "into the diff",
+            "Into the diff/back out of it",
+        )
+        .when(commits);
+        register_commit_keys(k, commits);
+        register_moving_keys(k, |_| true);
+        k.quiet(
+            &[SelectDown, SelectUp],
+            "Select the older/newer commit, on the commits",
+        )
+        .when(commits);
+        k.add(
+            &[Search],
+            "search",
+            "Search the commits (hash, date, subject), or the diff",
+        );
+        k.add(
+            &[GoToNext, GoToPrevious],
+            "next/previous match",
+            "Go to the next/previous match",
+        );
+        k.add(
+            &[FocusPanel(0), FocusPanel(1)],
+            "focus panel",
+            "Focus the commits/the diff",
+        );
+        k.add(
+            &[Cancel, Close],
+            "back",
+            "Clear the search, back out of the diff, then close",
+        )
+        .when(diff);
+        k.add(
+            &[Cancel, Close],
+            "close",
+            "Clear the search, back out of the diff, then close",
+        )
+        .when(commits);
+    }
+
+    pub fn keys(&self) -> KeyList {
         if self.query.is_editing() {
-            return typing_hints(self.query_kind());
+            return typing_keys(self.query_kind());
         }
-        let mut hints = vec![(vec![OlderCommit, NewerCommit], "older/newer commit".into())];
-        if self.pane.is_focused() {
-            hints.extend([
-                hint(Confirm, "select lines"),
-                hint(ShortCopy, "copy"),
-                hint(OpenInBrowser, "open in browser"),
-                hint(CopyLink, "copy link"),
-                hint(NavigateLeft, "back"),
-            ]);
-        } else {
-            hints.push(hint(NavigateRight, "into the diff"));
-            hints.extend(commit_hints());
-        }
-        hints.extend(moving_hints());
-        hints.extend([
-            hint(Search, "search"),
-            (vec![GoToNext, GoToPrevious], "next/previous match".into()),
-            (vec![FocusPanel(0), FocusPanel(1)], "focus panel".into()),
-            hint(ToggleWrap, "wrap"),
-            hint(
-                Cancel,
-                if self.pane.is_focused() {
-                    "back"
-                } else {
-                    "close"
-                },
-            ),
-        ]);
-        hints
+        let mut keys = Keys::of(self);
+        Self::register_keys(&mut keys);
+        keys.list()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {

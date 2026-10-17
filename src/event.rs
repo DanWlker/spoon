@@ -353,11 +353,6 @@ impl EventController {
 // A hint in the status bar: the events of a key, and what it does.
 pub type KeyHint = (Vec<UserEvent>, String);
 
-// A hint for one event.
-pub fn hint(event: UserEvent, description: &str) -> KeyHint {
-    (vec![event], description.to_string())
-}
-
 // The event triggered by user's key input
 // Named in the keybind config like `go_to_top`; `focus_panel_1` is parsed by `parse_user_event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]

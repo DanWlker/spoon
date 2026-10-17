@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     event::UserEvent,
     git::{split_remote_branch, CommitHash, Conflict, Ref, Repository},
-    widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog},
+    widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
 
 pub enum GraphCommand {
@@ -108,10 +108,12 @@ pub fn graph_command(
             .map(|_| GitDialog::reset(&branch_label, dialog_commit(repository, &selected))),
         UserEvent::DropCommit => drop_commits(repository, &branch_label, targets),
         UserEvent::CreateTag => {
-            single("Tag").map(|_| GitDialog::create_tag(selected.as_short_hash()))
+            single("Tag").map(|_| GitDialog::create_tag(StartPoint::Commit(selected.clone())))
         }
         UserEvent::CreateBranch => {
-            single("Branch").map(|_| create_branch(repository, selected.as_short_hash()))
+            // from the commit, nothing else
+            single("Branch")
+                .map(|_| GitDialog::create_branch(StartPoint::Commit(selected.clone()), vec![]))
         }
         _ => return None,
     };
@@ -187,15 +189,19 @@ pub fn ref_graph_command(
             GitDialog::checkout(targets)
         }),
         // from the name, so a branch made from a remote branch tracks it
-        UserEvent::CreateBranch => Ok(create_branch(repository, name)),
-        UserEvent::CreateTag => Ok(GitDialog::create_tag(name)),
+        UserEvent::CreateBranch => StartPoint::of_ref(selected)
+            .map(|from| create_branch(repository, from))
+            .ok_or_else(|| "Nothing starts from a stash".to_string()),
+        UserEvent::CreateTag => StartPoint::of_ref(selected)
+            .map(GitDialog::create_tag)
+            .ok_or_else(|| "A stash can't be tagged".to_string()),
         _ => return graph_command(repository, event, target, vec![]),
     };
     Some(dialog.map(GraphCommand::Dialog))
 }
 
-// A new branch from `from`, or another local branch.
-fn create_branch(repository: &Repository, from: &str) -> GitDialog {
+// A new branch from `from`, or another local branch chosen instead.
+fn create_branch(repository: &Repository, from: StartPoint) -> GitDialog {
     let mut branches: Vec<String> = repository
         .all_refs()
         .into_iter()
@@ -203,7 +209,8 @@ fn create_branch(repository: &Repository, from: &str) -> GitDialog {
         .map(|r| r.name().to_string())
         .collect();
     branches.sort();
-    GitDialog::create_branch(from, branches)
+    let others = branches.into_iter().map(StartPoint::Branch).collect();
+    GitDialog::create_branch(from, others)
 }
 
 // The commit as a line in a popup: its short hash and subject.
@@ -868,7 +875,7 @@ mod tests {
         let tag = ref_graph_command(&repository, UserEvent::CreateTag, &topic);
         assert_eq!(
             run(path, tag.unwrap(), "t2").commands,
-            [["tag", "t2", "topic"]]
+            [["tag", "t2", "refs/heads/topic"]]
         );
 
         // a branch at a commit of the graph, checked out

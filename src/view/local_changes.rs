@@ -4,10 +4,11 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, KeyHint, Sender, UserEvent},
+    event::{AppEvent, Sender, UserEvent},
     external::{editor_command, merge_tool_command},
     git::FilesSnapshot,
     keybind::Scope,
+    keys::KeyList,
     layout::{Direction, Panel},
     view::{
         copy_path, copy_selection, query_status, toggle_search_option, ListRefreshViewContext,
@@ -138,9 +139,6 @@ impl<'a> LocalChangesView<'a> {
 
         let options = self.ctx.search_options.get();
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
             UserEvent::Cancel | UserEvent::Close => {
                 // lines -> hunks -> files, or commit section -> files,
                 // then clear the picked files, then the search, then the filter;
@@ -262,9 +260,6 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.collapse();
             }
             _ if self.local_changes_state.scroll_diff(event) => {}
-            UserEvent::HelpToggle => {
-                self.tx.send(AppEvent::OpenHelp);
-            }
             // y and Y copy the path of the selected file
             UserEvent::ShortCopy | UserEvent::FullCopy
                 if !self.local_changes_state.is_commit_focused() =>
@@ -282,15 +277,12 @@ impl<'a> LocalChangesView<'a> {
                     Err(err) => self.tx.send(AppEvent::NotifyError(err)),
                 }
             }
-            UserEvent::Refresh => {
-                self.refresh();
-            }
             _ => {}
         }
     }
 
-    pub fn key_hints(&self) -> Vec<KeyHint> {
-        self.local_changes_state.key_hints()
+    pub fn keys(&self) -> KeyList {
+        self.local_changes_state.keys()
     }
 
     pub fn move_focus(&mut self, direction: Direction) -> bool {

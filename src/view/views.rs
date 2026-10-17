@@ -4,8 +4,9 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{KeyHint, Sender, UserEvent},
+    event::{Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
+    keys::KeyList,
     layout::{Direction, Panel},
     view::{
         detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
@@ -82,13 +83,13 @@ impl<'a> View<'a> {
         on_page!(self, view => view.graph_image_ids_sorted(), Vec::new())
     }
 
-    // The keys of what has the focus in the view, for the status bar; not the ones moving around.
-    pub fn key_hints(&self) -> Vec<KeyHint> {
+    // The keys of what has the focus in the view, see `Keys`.
+    pub fn keys(&self) -> KeyList {
         match self {
-            View::List(view) => view.key_hints(),
-            View::Detail(view) => view.key_hints(),
-            View::LocalChanges(view) => view.key_hints(),
-            View::Default => vec![],
+            View::List(view) => view.keys(),
+            View::Detail(view) => view.keys(),
+            View::LocalChanges(view) => view.keys(),
+            View::Default => KeyList::default(),
         }
     }
 

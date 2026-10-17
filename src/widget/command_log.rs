@@ -13,6 +13,7 @@ use crate::{
     color::ColorTheme,
     event::UserEvent,
     git::{command_log, LoggedCommand},
+    keys::Keys,
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
         scroll_to, ScrollState,
@@ -58,6 +59,40 @@ impl CommandLogState {
     }
 
     // Scrolls the output by the scroll keys; returns whether `event` was one.
+    // The keys of the command log, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
+        use UserEvent::*;
+        k.add(
+            &[NavigateDown, NavigateUp, SelectDown, SelectUp],
+            "move",
+            "Select the next/previous command",
+        );
+        k.add(
+            &[HalfPageDown, HalfPageUp],
+            "scroll output",
+            "Scroll the output of the selected command",
+        );
+        k.quiet(
+            &[PageDown, PageUp, ScrollDown, ScrollUp],
+            "Scroll the output of the selected command",
+        );
+        k.add(
+            &[GoToTop, GoToBottom],
+            "top/bottom",
+            "Select the newest/oldest command",
+        );
+        k.add(
+            &[ShortCopy, FullCopy],
+            "copy",
+            "Copy the command and its output",
+        );
+        k.add(
+            &[Cancel, Close, CommandLog],
+            "close",
+            "Close the command log",
+        );
+    }
+
     pub fn scroll_output(&mut self, event: UserEvent) -> bool {
         self.output.handle_scroll(event)
     }

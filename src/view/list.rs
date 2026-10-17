@@ -4,11 +4,12 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{hint, AppEvent, KeyHint, Sender, UserEvent},
+    event::{AppEvent, Sender, UserEvent},
     git::CommitHash,
+    keys::{KeyList, Keys},
     search::SearchKind,
     view::{
-        commit_event, graph_hints, status_input, typing_hints, ListRefreshViewContext,
+        commit_event, register_graph_commands, status_input, typing_keys, ListRefreshViewContext,
         RefreshViewContext,
     },
     widget::{
@@ -46,9 +47,6 @@ impl<'a> ListView<'a> {
             return;
         }
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
             _ if self.as_mut_list_state().handle_navigation(event) => {}
             UserEvent::NavigateLeft | UserEvent::NavigateRight => {
                 if let Some(fold) = self.as_list_state().fold_event(event) {
@@ -63,9 +61,6 @@ impl<'a> ListView<'a> {
                 if let Some(event) = commit_event(event, commit) {
                     self.tx.send(event);
                 }
-            }
-            UserEvent::HelpToggle => {
-                self.tx.send(AppEvent::OpenHelp);
             }
             // an applied search is cleared first, see `handle_search_event`
             UserEvent::Cancel => {
@@ -89,21 +84,22 @@ impl<'a> ListView<'a> {
                     self.tx.send(AppEvent::OpenDetail(tab));
                 }
             }
-            UserEvent::Refresh => {
-                self.refresh();
-            }
             _ => {}
         }
     }
 
-    pub fn key_hints(&self) -> Vec<KeyHint> {
-        let state = self.as_list_state();
-        if let SearchState::Searching { .. } = state.search_state() {
-            return typing_hints(SearchKind::Commits);
+    // The keys of the graph page, see `Keys`.
+    pub fn register_keys(k: &mut Keys<Self>) {
+        register_commit_list_keys(k, |v| ListFacts::of(v.as_list_state()), |_, _| true);
+    }
+
+    pub fn keys(&self) -> KeyList {
+        if let SearchState::Searching { .. } = self.as_list_state().search_state() {
+            return typing_keys(SearchKind::Commits);
         }
-        let mut hints = vec![hint(UserEvent::Confirm, "details")];
-        hints.extend(graph_hints(state.picked_commit_hashes().len()));
-        hints
+        let mut keys = Keys::of(self);
+        Self::register_keys(&mut keys);
+        keys.list()
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -192,6 +188,97 @@ impl<'a> ListView<'a> {
 
 // Searching the commit list, from the list or from the details beside it: typing the query, its
 // options, going through the matches and clearing it. Returns whether the event was one of these.
+// What the keys of a commit list depend on.
+pub struct ListFacts {
+    pub picked: usize,
+    pub search_applied: bool,
+}
+
+impl ListFacts {
+    pub fn of(state: &CommitListState) -> Self {
+        ListFacts {
+            picked: state.picked_commit_hashes().len(),
+            search_applied: matches!(state.search_state(), SearchState::Applied { .. }),
+        }
+    }
+}
+
+// The keys of a commit list, on the graph page and over the details: the commands on the selected
+// or picked commits where `applies` says each works, picking, searching, and moving about.
+pub fn register_commit_list_keys<T: ?Sized>(
+    k: &mut Keys<T>,
+    facts: impl Fn(&T) -> ListFacts + Copy,
+    applies: impl Fn(&T, UserEvent) -> bool + Copy,
+) {
+    use UserEvent::*;
+    let applies_to = move |event| move |v: &T| applies(v, event);
+    k.add(&[Confirm], "details", "Show the details of the commit");
+    k.add(
+        &[Cancel],
+        "clear search",
+        "Clear the search, then the picked commits",
+    )
+    .when(move |v| facts(v).search_applied);
+    k.add(
+        &[Cancel],
+        "clear picks",
+        "Clear the search, then the picked commits",
+    )
+    .when(move |v| !facts(v).search_applied && facts(v).picked > 0 && applies(v, Cancel));
+    k.add(&[ToggleSelect], "pick", "Pick/unpick the commit")
+        .when(applies_to(ToggleSelect));
+    k.quiet(
+        &[NextPicked, PreviousPicked],
+        "Go to the next/previous picked commit",
+    );
+    register_graph_commands(k, applies);
+    k.add(
+        &[OpenInBrowser],
+        "open in browser",
+        "Open the commit on the web host",
+    );
+    k.add(&[CopyLink], "copy link", "Copy the link of the commit");
+    k.add(&[Search], "search", "Search the commits");
+    k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
+        .when(move |v| facts(v).search_applied);
+    k.quiet(
+        &[SearchTargetToggle],
+        "Toggle what the search of the commit list looks in",
+    );
+    k.quiet(
+        &[SmartCaseToggle],
+        "Toggle smart case or case-sensitive, for every search",
+    );
+    k.quiet(
+        &[FuzzyToggle],
+        "Toggle fuzzy match, for every search but of text",
+    );
+    k.add(
+        &[ShortCopy, FullCopy],
+        "copy hash",
+        "Copy the commit short/full hash",
+    );
+    k.quiet(
+        &[NavigateDown, SelectDown, NavigateUp, SelectUp],
+        "Select the older/newer commit",
+    );
+    k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
+    k.quiet(
+        &[HalfPageDown, HalfPageUp],
+        "Jump half a page down/up, scrolling as needed",
+    );
+    k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
+    k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
+    k.quiet(
+        &[NavigateLeft, NavigateRight],
+        "Fold/unfold the selected merge commit",
+    );
+    k.quiet(
+        &[FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+        "Show the info/changes/files of the commit",
+    );
+}
+
 pub fn handle_search_event(
     state: &mut CommitListState,
     tx: &Sender,
