@@ -14,10 +14,10 @@ use crate::{
     app::AppContext,
     event::{KeyHint, UserEvent},
     git::{
-        AfterTask, ConflictSide, FilesSnapshot, GitTask, Head, LocalChangeFile, LocalChangeStatus,
-        LocalChanges, Operation, Repository,
+        AfterTask, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
+        LocalChangeStatus, LocalChanges, Operation, Repository,
     },
-    layout::{fit_size, Direction, Panel},
+    layout::{fit_size, Direction, Edge, Panel},
     search::SearchOptions,
     widget::{
         conflict::ConflictView,
@@ -1503,17 +1503,21 @@ impl<'a> LocalChangesState<'a> {
 
     // The diff of the picked files, else of the selected row.
     fn diff_text(&self) -> String {
-        let staged = self.section == LocalChangesSection::Staged;
-        let base = self.draft.amend_base();
+        let tracked_of = match self.section {
+            LocalChangesSection::Staged => DiffOf::Staged {
+                base: self.draft.amend_base(),
+            },
+            LocalChangesSection::Unstaged => DiffOf::Unstaged,
+        };
         if self.diff_of_picked {
             // untracked files are only shown by diffing each against /dev/null
             let targets = self.target_files();
             let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = targets
                 .into_iter()
                 .partition(|f| f.status == LocalChangeStatus::Untracked);
-            let diff =
-                self.repository
-                    .local_change_diff(&file_paths(&tracked), false, staged, base);
+            let diff = self
+                .repository
+                .local_change_diff(&file_paths(&tracked), tracked_of);
             return diff + &self.repository.untracked_diff(&file_paths(&untracked));
         }
         self.selected_row()
@@ -1527,8 +1531,12 @@ impl<'a> LocalChangesState<'a> {
                 } else {
                     vec![row.path.as_str()]
                 };
-                self.repository
-                    .local_change_diff(&paths, untracked, staged, base)
+                let of = if untracked {
+                    DiffOf::Untracked
+                } else {
+                    tracked_of
+                };
+                self.repository.local_change_diff(&paths, of)
             })
             .unwrap_or_default()
     }
@@ -1615,9 +1623,9 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         let [unstaged_area, staged_area] =
             Layout::vertical([Constraint::Length(unstaged_height), Constraint::Min(0)])
                 .areas(files_area);
-        layout.place(Panel::Files, files_area, true, true);
-        layout.place(Panel::Unstaged, unstaged_area, false, true);
-        layout.place(Panel::Commit, commit_area, false, false);
+        layout.place(Panel::Files, files_area, Edge::Right);
+        layout.place(Panel::Unstaged, unstaged_area, Edge::Bottom);
+        layout.place(Panel::Commit, commit_area, Edge::Top);
         drop(layout);
 
         self.render_file_section(state, LocalChangesSection::Unstaged, unstaged_area, buf);
@@ -2235,7 +2243,7 @@ mod tests {
         state.select_next();
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.unstaged), vec!["a.txt"]);
-        let staged_diff = repository.local_change_diff(&["a.txt"], false, true, None);
+        let staged_diff = repository.local_change_diff(&["a.txt"], DiffOf::Staged { base: None });
         assert!(staged_diff.contains("+line two"));
         assert!(!staged_diff.contains("+line twenty-eight"));
 
@@ -2359,8 +2367,9 @@ mod tests {
 
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
-        let staged_diff = |path| repository.local_change_diff(&[path], false, true, None);
-        let unstaged_diff = |path| repository.local_change_diff(&[path], false, false, None);
+        let staged_diff =
+            |path| repository.local_change_diff(&[path], DiffOf::Staged { base: None });
+        let unstaged_diff = |path| repository.local_change_diff(&[path], DiffOf::Unstaged);
 
         // files -> hunks -> lines, starting on the first changed line
         select_row(&mut state, "a.txt");

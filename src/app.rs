@@ -34,7 +34,7 @@ use crate::{
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
-    layout::{fit_size, Direction, Panel, PanelLayout},
+    layout::{fit_size, Direction, Edge, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
@@ -47,7 +47,7 @@ use crate::{
         keys_popup::KeysPopup,
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
-        ref_list::{RefList, RefListState, RefSection, RefSelection, DETACHED_HEAD},
+        ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode, DETACHED_HEAD},
         style::{key_hints, spinner, SPINNER_RATE},
     },
 };
@@ -108,7 +108,7 @@ pub struct AppContext {
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
     // the git command running in the background, kept across refreshes
-    pub running_task: RefCell<Option<GitTask>>,
+    pub running_task: RefCell<Option<RunningTask>>,
     // the keys of the hints in the status bar, see `short_keys`
     pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
     // the sizes of the panels, set by the user, kept across refreshes
@@ -132,10 +132,22 @@ impl AppContext {
     }
 
     pub fn busy_message(&self) -> Option<String> {
-        let task = self.running_task.borrow();
-        task.as_ref()
-            .map(|task| format!("{}, wait for it to finish", task.running))
+        let running = self.running_task.borrow();
+        running
+            .as_ref()
+            .map(|running| format!("{}, wait for it to finish", running.task.running))
     }
+}
+
+// The git command running in the background, and what waits for it to finish.
+#[derive(Debug)]
+pub struct RunningTask {
+    pub task: GitTask,
+    // HEAD before committing the message of the local changes page, which is cleared once the
+    // commit is made, see `finish_task`
+    head_before_commit: Option<CommitHash>,
+    // quit was asked meanwhile, the app quits once it finishes
+    quit_after: bool,
 }
 
 // The longest the events waiting are handled for before drawing, see `App::run`.
@@ -196,12 +208,8 @@ pub struct AppShell {
     overlay: Option<Overlay>,
     // errors and warnings at the top right, until dismissed
     notices: Vec<Notice>,
-    // HEAD while committing the message of the local changes page, see `finish_task`
-    head_before_commit: Option<CommitHash>,
     // a rebase, merge, cherry-pick or revert waits to be finished, as last loaded, for the key hints
     operation_shown: bool,
-    // quit was asked while a git command ran, the app quits once it finishes
-    quit_after_task: bool,
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
@@ -242,15 +250,6 @@ struct RefCompare {
     target: String,
 }
 
-// The sidebar beside the page: shown, focused, or shrunk to its title by pressing its number again
-// while focused, which the focus leaves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SidebarMode {
-    Shown,
-    Focused,
-    Collapsed,
-}
-
 impl AppShell {
     fn sidebar_focused(&self) -> bool {
         self.sidebar_mode == SidebarMode::Focused
@@ -286,7 +285,7 @@ impl AppShell {
     }
 
     pub fn notify_error(&mut self, message: String) {
-        push_notice(&mut self.notices, Notice::new(true, message));
+        push_notice(&mut self.notices, Notice::error(message));
     }
 }
 
@@ -402,9 +401,7 @@ impl<'a> App<'a> {
                 keys_popup: false,
                 overlay: None,
                 notices: Vec::new(),
-                head_before_commit: None,
                 operation_shown: false,
-                quit_after_task: false,
             },
         };
         shell.operation_shown = repository.operation_in_progress().is_some();
@@ -413,7 +410,7 @@ impl<'a> App<'a> {
             .running_task
             .borrow()
             .as_ref()
-            .map(|t| t.running.clone());
+            .map(|running| running.task.running.clone());
         repository.set_busy(running);
         shell
             .sidebar
@@ -637,25 +634,19 @@ impl App<'_> {
             AppEvent::Resize(w, h) => {
                 let _ = (w, h);
             }
-            // quitting would kill the git command half done (a stash never popped), so it waits;
-            // asking again quits right away
-            AppEvent::Quit
-                if !self.shell.quit_after_task && self.ctx.running_task.borrow().is_some() =>
-            {
-                self.shell.quit_after_task = true;
-                let running = self
-                    .ctx
-                    .running_task
-                    .borrow()
-                    .as_ref()
-                    .unwrap()
-                    .running
-                    .clone();
-                self.ec.send(AppEvent::NotifyWarn(format!(
-                    "Quitting once {running} finishes, quit again to quit now"
-                )));
-            }
             AppEvent::Quit => {
+                // quitting would kill the git command half done (a stash never popped), so it
+                // waits; asking again quits right away
+                let mut running = self.ctx.running_task.borrow_mut();
+                if let Some(running) = running.as_mut().filter(|running| !running.quit_after) {
+                    running.quit_after = true;
+                    self.ec.send(AppEvent::NotifyWarn(format!(
+                        "Quitting once {} finishes, quit again to quit now",
+                        running.task.running
+                    )));
+                    return Ok(None);
+                }
+                drop(running);
                 self.cleanup_graph_images()?;
                 return Ok(Some(Ret::Quit));
             }
@@ -672,8 +663,7 @@ impl App<'_> {
             }
             AppEvent::StartTask(task) => self.start_task(task),
             AppEvent::TaskFinished { task, result } => {
-                self.finish_task(task, result);
-                if self.shell.quit_after_task {
+                if self.finish_task(task, result) {
                     self.ec.send(AppEvent::Quit);
                 }
             }
@@ -753,7 +743,7 @@ impl App<'_> {
                 self.warn_notification(msg);
             }
             AppEvent::NotifyError(msg) => {
-                push_notice(&mut self.shell.notices, Notice::new(true, msg));
+                push_notice(&mut self.shell.notices, Notice::error(msg));
             }
         }
         Ok(None)
@@ -999,7 +989,7 @@ impl App<'_> {
             self.ctx
                 .layout
                 .borrow_mut()
-                .place(Panel::Sidebar, sidebar_area, true, true);
+                .place(Panel::Sidebar, sidebar_area, Edge::Right);
         }
 
         self.update_state(view_area);
@@ -1010,11 +1000,7 @@ impl App<'_> {
                 .set_local_change_count(view.local_change_count());
         }
         // views are replaced while switching pages, they take the focus as they are drawn
-        let sidebar = RefList::new(
-            self.ctx.clone(),
-            self.shell.sidebar_focused(),
-            self.shell.sidebar_collapsed(),
-        );
+        let sidebar = RefList::new(self.ctx.clone(), self.shell.sidebar_mode);
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
         self.view
             .render(f, view_area, !self.shell.sidebar_focused());
@@ -1090,8 +1076,9 @@ impl App<'_> {
                 }
                 // what runs in the background, else where the repository is
                 match self.ctx.running_task.borrow().as_ref() {
-                    Some(task) => left.push(
-                        Span::raw(format!("{} {}", task.running, spinner())).fg(theme.highlight_fg),
+                    Some(running) => left.push(
+                        Span::raw(format!("{} {}", running.task.running, spinner()))
+                            .fg(theme.highlight_fg),
                     ),
                     None => {
                         // shortened like neovim's pathshorten when it would crowd the keys
@@ -1139,8 +1126,8 @@ impl App<'_> {
 
         // with a message, what runs in the background goes to the right
         let message = !matches!(self.shell.app_status.status_line, StatusLine::None);
-        if let Some(task) = self.ctx.running_task.borrow().as_ref().filter(|_| message) {
-            let text = format!("{} {} ", task.running, spinner());
+        if let Some(running) = self.ctx.running_task.borrow().as_ref().filter(|_| message) {
+            let text = format!("{} {} ", running.task.running, spinner());
             right.insert(0, Span::raw(text).fg(theme.highlight_fg));
         }
         // the selected commit and how many there are, like the line and column
@@ -1740,12 +1727,16 @@ impl App<'_> {
         if self.blocked_by_operation(&task) {
             return;
         }
-        *self.ctx.running_task.borrow_mut() = Some(task.clone());
-        self.repository.set_busy(Some(task.running.clone()));
         // a commit made clears the message box, see `finish_task`
-        if task.commits() {
-            self.shell.head_before_commit = Some(self.repository.head_commit().unwrap_or_default());
-        }
+        let head_before_commit = task
+            .commits()
+            .then(|| self.repository.head_commit().unwrap_or_default());
+        *self.ctx.running_task.borrow_mut() = Some(RunningTask {
+            task: task.clone(),
+            head_before_commit,
+            quit_after: false,
+        });
+        self.repository.set_busy(Some(task.running.clone()));
         let path = self.repository.path().to_path_buf();
         // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
         if task.may_sign() && self.repository.signs() {
@@ -1773,17 +1764,17 @@ impl App<'_> {
         });
     }
 
-    fn finish_task(&mut self, task: GitTask, mut result: Result<(), String>) {
-        *self.ctx.running_task.borrow_mut() = None;
+    // Shows what the git command did; returns whether quitting waited for it.
+    fn finish_task(&mut self, task: GitTask, mut result: Result<(), String>) -> bool {
+        let running = self.ctx.running_task.borrow_mut().take();
+        let quit = running.as_ref().is_some_and(|running| running.quit_after);
         self.repository.set_busy(None);
         if let (Err(_), Some(failed)) = (&result, &task.failed) {
             result = Err(failed.clone());
         }
         // the message is committed, even when going on with a rebase stopped afterwards
-        let committed = self
-            .shell
-            .head_before_commit
-            .take()
+        let committed = running
+            .and_then(|running| running.head_before_commit)
             .is_some_and(|before| self.repository.head_commit().unwrap_or_default() != before);
         if committed {
             match &mut self.view {
@@ -1802,7 +1793,7 @@ impl App<'_> {
                 Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
                 Err(err) => self.ec.send(AppEvent::NotifyError(err)),
             }
-            return;
+            return quit;
         }
         let typing = self.is_typing();
         if result.is_ok() && task.uses_picks {
@@ -1848,6 +1839,7 @@ impl App<'_> {
             Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
+        quit
     }
 
     // The selected commit and the picked ones, on the commit graph.
@@ -2208,7 +2200,7 @@ impl App<'_> {
     }
 
     fn warn_notification(&mut self, message: String) {
-        push_notice(&mut self.shell.notices, Notice::new(false, message));
+        push_notice(&mut self.shell.notices, Notice::warning(message));
     }
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull

@@ -34,6 +34,8 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 enum Step {
     // a key, named as in the keybind config: "j", "shift-d", "esc", "ctrl-c"
     Key(KeyEvent),
+    // keys pressed one right after another, before what the first does is done
+    KeysAtOnce(Vec<KeyEvent>),
     // an event the app sends itself, like running a command in the terminal
     Event(Box<AppEvent>),
     // something done outside the app, like in another terminal
@@ -52,6 +54,11 @@ fn keys(keys: &str) -> Vec<Step> {
     keys.split(' ')
         .map(|key| Step::Key(parse_key_event(key).unwrap()))
         .collect()
+}
+
+fn keys_at_once(keys: &str) -> Vec<Step> {
+    let keys = keys.split(' ').map(|key| parse_key_event(key).unwrap());
+    vec![Step::KeysAtOnce(keys.collect())]
 }
 
 // The keys typing `text`.
@@ -181,6 +188,7 @@ fn settle(app: &mut App, ec: &EventController, ctx: &AppContext) -> Option<Ret> 
 fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
     match step {
         Step::Key(key) => ec.send(AppEvent::Key(key)),
+        Step::KeysAtOnce(keys) => keys.into_iter().for_each(|key| ec.send(AppEvent::Key(key))),
         Step::Event(event) => ec.send(*event),
         Step::Outside(f) => f(path),
         Step::Tick => {
@@ -985,4 +993,47 @@ fn test_command_in_the_terminal_failing_says_why() {
         run_in_terminal(&["/nonexistent/editor"]),
         check(|app| assert_notice(app, "Failed to execute /nonexistent/editor")),
     ]);
+}
+
+// The git command running in the background
+
+#[test]
+fn test_quit_waits_for_the_git_command_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    git(
+        &path,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            "sleep 1; git-upload-pack",
+        ],
+    );
+    let mut harness = Harness::new(&path, launch());
+    // fetching, then quit while it runs
+    harness.run(vec![keys_at_once("f f q")]);
+    assert!(harness.quit);
+    // quit only once the fetch was done
+    assert!(path.join(".git/FETCH_HEAD").exists());
+}
+
+#[test]
+fn test_commit_made_clears_the_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            local_changes: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys("space 3"),
+        typing("my message"),
+        keys("esc c enter"),
+        check(|app| assert_eq!(draft(app), "")),
+    ]);
+    assert_eq!(git(&path, &["log", "-1", "--format=%s"]), "my message\n");
 }

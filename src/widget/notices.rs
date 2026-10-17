@@ -31,16 +31,19 @@ pub struct Notice {
 }
 
 impl Notice {
-    pub fn new(error: bool, message: String) -> Self {
-        let duration = if error {
-            ERROR_DURATION
-        } else {
-            WARNING_DURATION
-        };
+    pub fn error(message: String) -> Self {
         Notice {
-            error,
+            error: true,
             message,
-            until: Instant::now() + duration,
+            until: Instant::now() + ERROR_DURATION,
+        }
+    }
+
+    pub fn warning(message: String) -> Self {
+        Notice {
+            error: false,
+            message,
+            until: Instant::now() + WARNING_DURATION,
         }
     }
 }
@@ -124,7 +127,7 @@ mod tests {
         let theme = theme_with_bg();
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
-        let notices = [Notice::new(true, "it failed".into())];
+        let notices = [Notice::error("it failed".into())];
         render_notices(&notices, "x", area, &mut buf, &theme);
         let rect = popup_rect(&buf);
         // the border in the color of an error
@@ -137,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_push_notice() {
-        let notice = |m: &str| Notice::new(true, m.into());
+        let notice = |m: &str| Notice::error(m.into());
         let mut notices = vec![];
         for m in ["a", "b", "a", "c", "d", "e", "f"] {
             push_notice(&mut notices, notice(m));

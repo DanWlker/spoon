@@ -488,6 +488,15 @@ fn collect_visible_rows(
     }
 }
 
+// The sidebar beside the page: shown, focused, or shrunk to its title by pressing its number again
+// while focused, which the focus leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    Shown,
+    Focused,
+    Collapsed,
+}
+
 pub struct RefList {
     ctx: Rc<AppContext>,
     focused: bool,
@@ -496,11 +505,11 @@ pub struct RefList {
 }
 
 impl RefList {
-    pub fn new(ctx: Rc<AppContext>, focused: bool, collapsed: bool) -> RefList {
+    pub fn new(ctx: Rc<AppContext>, mode: SidebarMode) -> RefList {
         RefList {
             ctx,
-            focused,
-            collapsed,
+            focused: mode == SidebarMode::Focused,
+            collapsed: mode == SidebarMode::Collapsed,
         }
     }
 }
@@ -615,7 +624,7 @@ impl StatefulWidget for RefList {
             let task = self.ctx.running_task.borrow();
             let running = task
                 .as_ref()
-                .and_then(|task| task.branch_status.as_ref())
+                .and_then(|running| running.task.branch_status.as_ref())
                 .filter(|status| branch == Some(status.branch.as_str()));
             let tracking = branch
                 .filter(|_| running.is_none())
@@ -891,7 +900,12 @@ mod tests {
     fn draw(state: &mut RefListState, focused: bool) -> Buffer {
         let area = Rect::new(0, 0, 30, 12);
         let mut buf = Buffer::empty(area);
-        RefList::new(test_ctx(), focused, false).render(area, &mut buf, state);
+        let mode = if focused {
+            SidebarMode::Focused
+        } else {
+            SidebarMode::Shown
+        };
+        RefList::new(test_ctx(), mode).render(area, &mut buf, state);
         buf
     }
 

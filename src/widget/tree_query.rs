@@ -149,13 +149,11 @@ fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
 // Whether `path` matches `query`, searching as the commit list does: fuzzily or as a substring,
 // smart case or case-sensitive.
 pub fn path_matches(path: &str, query: &str, options: SearchOptions) -> bool {
-    path_matches_with(path, query, options.fuzzy, options.smart_case)
-}
-
-fn path_matches_with(path: &str, query: &str, fuzzy: bool, smart_case: bool) -> bool {
-    if fuzzy {
-        path_matcher(smart_case).fuzzy_match(path, query).is_some()
-    } else if case_insensitive(smart_case, query) {
+    if options.fuzzy {
+        path_matcher(options.smart_case)
+            .fuzzy_match(path, query)
+            .is_some()
+    } else if case_insensitive(options.smart_case, query) {
         path.to_lowercase().contains(&query.to_lowercase())
     } else {
         path.contains(query)
@@ -363,6 +361,14 @@ mod tests {
 
     #[test]
     fn test_fuzzy_paths() {
+        let path_matches_with = |path, query, fuzzy, smart_case| {
+            let options = SearchOptions {
+                fuzzy,
+                smart_case,
+                ..Default::default()
+            };
+            path_matches(path, query, options)
+        };
         assert!(path_matches_with("src/widget/diff.rs", "swd", true, true));
         assert!(!path_matches_with("src/widget/diff.rs", "swd", false, true));
         assert!(!path_matches_with("src/main.rs", "Main", true, true));

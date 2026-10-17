@@ -13,7 +13,7 @@ use crate::{
     color::ColorTheme,
     event::UserEvent,
     git::{Commit, CommitHash, FileChange, Repository},
-    layout::{fit_size, Panel},
+    layout::{fit_size, Edge, Panel},
     search::SearchOptions,
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
@@ -809,7 +809,7 @@ fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect
         Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(0)]).areas(inner);
     ctx.layout
         .borrow_mut()
-        .place(Panel::DetailTree, tree_area, true, true);
+        .place(Panel::DetailTree, tree_area, Edge::Right);
     let tree_block = Block::default()
         .borders(Borders::RIGHT)
         .style(Style::default().fg(theme.divider_fg))

@@ -159,8 +159,8 @@ struct SearchMatcher {
 }
 
 impl SearchMatcher {
-    fn new(query: &str, smart_case: bool, fuzzy: bool) -> Self {
-        let lowercase = case_insensitive(smart_case, query);
+    fn new(query: &str, options: SearchOptions) -> Self {
+        let lowercase = case_insensitive(options.smart_case, query);
         let query = if lowercase {
             query.to_lowercase()
         } else {
@@ -169,7 +169,7 @@ impl SearchMatcher {
         Self {
             query,
             lowercase,
-            fuzzy,
+            fuzzy: options.fuzzy,
         }
     }
 
@@ -707,11 +707,7 @@ impl<'a> CommitListState<'a> {
             self.search_state.update_match_index(0);
             return;
         }
-        let matcher = SearchMatcher::new(
-            self.search_input.value(),
-            self.search_options.smart_case,
-            self.search_options.fuzzy,
-        );
+        let matcher = SearchMatcher::new(self.search_input.value(), self.search_options);
         let mut match_index = 1;
         for (i, commit_info) in self.commits.iter().enumerate() {
             let m = &mut self.search_matches[i];
@@ -2105,7 +2101,7 @@ mod tests {
         ];
 
         for (target, query, expected) in cases {
-            let matcher = SearchMatcher::new(query, false, false);
+            let matcher = SearchMatcher::new(query, SearchOptions::default());
             let mut search_match = SearchMatch::default();
             search_match.set(&commit, &refs, &matcher, target);
             assert_eq!(search_match.matched(), expected, "{target:?}: {query}");
@@ -2132,7 +2128,13 @@ mod tests {
         };
 
         // the fuzzy matcher counts chars, the highlight takes bytes
-        let fuzzy = SearchMatcher::new("ül", false, true);
+        let fuzzy = SearchMatcher::new(
+            "ül",
+            SearchOptions {
+                fuzzy: true,
+                ..Default::default()
+            },
+        );
         let pos = fuzzy.matched_position("Müller").unwrap();
         assert_eq!(pos.matched_indices, vec![1, 2, 3]);
         assert_eq!(highlight("Müller", pos.matched_indices, false), "ül");
@@ -2147,7 +2149,11 @@ mod tests {
     fn test_smart_case() {
         // ignoring case unless the query has an uppercase letter; case-sensitive never
         let found = |query, smart_case, text| {
-            SearchMatcher::new(query, smart_case, false)
+            let options = SearchOptions {
+                smart_case,
+                ..Default::default()
+            };
+            SearchMatcher::new(query, options)
                 .matched_position(text)
                 .is_some()
         };
@@ -2170,7 +2176,7 @@ mod tests {
             target: commit.commit_hash.clone(),
         };
         let refs = [&reference];
-        let matcher = SearchMatcher::new("match", false, false);
+        let matcher = SearchMatcher::new("match", SearchOptions::default());
         let mut search_match = SearchMatch::default();
 
         search_match.set(&commit, &refs, &matcher, SearchTarget::All);

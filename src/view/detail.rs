@@ -12,7 +12,7 @@ use crate::{
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     keybind::Scope,
-    layout::{fit_size, Direction, Panel},
+    layout::{fit_size, Direction, Edge, Panel},
     view::{
         copy_hash, copy_path, copy_selection, graph_hints, handle_search_event, status_input,
         typing_hints, Compare, ListRefreshViewContext, RefreshViewContext,
@@ -527,7 +527,7 @@ impl<'a> DetailView<'a> {
         self.ctx
             .layout
             .borrow_mut()
-            .place(Panel::Details, panel_area, false, false);
+            .place(Panel::Details, panel_area, Edge::Top);
 
         match self.tab {
             DetailTab::Info => {

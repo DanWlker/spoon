@@ -38,26 +38,43 @@ pub enum Direction {
     Down,
 }
 
-// The border of a panel, where it was drawn: a vertical line is dragged left and right.
+// The edge of a panel its border is on, which dragging resizes it by: the right one is dragged
+// left and right, the bottom and top ones up and down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Right,
+    Bottom,
+    Top,
+}
+
+// The border of a panel, where it was drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Border {
     panel: Panel,
-    vertical: bool,
+    edge: Edge,
     // the x of a vertical line, the y of a horizontal one
     at: u16,
     // where the line goes along, [from, to)
     from: u16,
     to: u16,
-    // the size is measured from this edge: the left or top one going forward, else the right or
-    // bottom one
+    // the size is measured from the edge across the panel: the left one for the right edge, the
+    // top one for the bottom edge, the bottom one for the top edge
     anchor: u16,
-    forward: bool,
 }
 
 impl Border {
+    fn vertical(&self) -> bool {
+        self.edge == Edge::Right
+    }
+
+    // Moving the border right or down grows the panel.
+    fn forward(&self) -> bool {
+        self.edge != Edge::Top
+    }
+
     // The size putting the border at `pos`, along the axis it moves on.
     fn size_at(&self, pos: u16) -> u16 {
-        if self.forward {
+        if self.forward() {
             (pos + 1).saturating_sub(self.anchor)
         } else {
             self.anchor.saturating_sub(pos)
@@ -66,7 +83,7 @@ impl Border {
 
     // On the line, or the line of the panel next to it, which touches it.
     fn is_under(&self, x: u16, y: u16) -> bool {
-        let (pos, along) = if self.vertical { (x, y) } else { (y, x) };
+        let (pos, along) = if self.vertical() { (x, y) } else { (y, x) };
         pos.abs_diff(self.at) <= 1 && (self.from..self.to).contains(&along)
     }
 }
@@ -105,26 +122,26 @@ impl PanelLayout {
 
     // The border of `panel` being drawn in `area`: its right side when `vertical`, else its bottom
     // side going `forward`, or its top side.
-    pub fn place(&mut self, panel: Panel, area: Rect, vertical: bool, forward: bool) {
+    pub fn place(&mut self, panel: Panel, area: Rect, edge: Edge) {
         if area.is_empty() {
             return;
         }
-        let (at, from, to, anchor, size) = match (vertical, forward) {
-            (true, _) => (
+        let (at, from, to, anchor, size) = match edge {
+            Edge::Right => (
                 area.right() - 1,
                 area.top(),
                 area.bottom(),
                 area.left(),
                 area.width,
             ),
-            (false, true) => (
+            Edge::Bottom => (
                 area.bottom() - 1,
                 area.left(),
                 area.right(),
                 area.top(),
                 area.height,
             ),
-            (false, false) => (
+            Edge::Top => (
                 area.top(),
                 area.left(),
                 area.right(),
@@ -134,12 +151,11 @@ impl PanelLayout {
         };
         let border = Border {
             panel,
-            vertical,
+            edge,
             at,
             from,
             to,
             anchor,
-            forward: forward || vertical,
         };
         self.borders.push((border, size));
     }
@@ -150,7 +166,7 @@ impl PanelLayout {
         let Some((border, size)) = self.borders.iter_mut().find(|(b, _)| b.panel == panel) else {
             return false;
         };
-        let step = if border.forward { step } else { -step };
+        let step = if border.forward() { step } else { -step };
         // kept for the keys pressed before the next frame
         *size = (*size as i32 + step).max(1) as u16;
         let size = *size;
@@ -175,7 +191,7 @@ impl PanelLayout {
         let Some(border) = self.dragging else {
             return false;
         };
-        let pos = if border.vertical { x } else { y };
+        let pos = if border.vertical() { x } else { y };
         self.set_size(border.panel, border.size_at(pos).max(1));
         true
     }
@@ -191,8 +207,8 @@ mod tests {
 
     // the sidebar 30 wide, the details under the commit list from y 20 to the bottom at 40
     fn place(layout: &mut PanelLayout) {
-        layout.place(Panel::Sidebar, Rect::new(0, 0, 30, 40), true, true);
-        layout.place(Panel::Details, Rect::new(30, 20, 130, 20), false, false);
+        layout.place(Panel::Sidebar, Rect::new(0, 0, 30, 40), Edge::Right);
+        layout.place(Panel::Details, Rect::new(30, 20, 130, 20), Edge::Top);
     }
 
     #[test]

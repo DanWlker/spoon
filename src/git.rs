@@ -404,19 +404,11 @@ impl Repository {
             .unwrap_or_else(|| self.local_changes())
     }
 
-    // `staged_base` is the tree staged changes are compared to, HEAD when None (see `amend_base`)
-    // `untracked` only applies to a single path
-    pub fn local_change_diff(
-        &self,
-        paths: &[&str],
-        untracked: bool,
-        staged: bool,
-        staged_base: Option<&str>,
-    ) -> String {
+    pub fn local_change_diff(&self, paths: &[&str], of: DiffOf) -> String {
         if paths.is_empty() {
             return String::new();
         }
-        load_local_change_diff(&self.path, paths, untracked, staged, staged_base)
+        load_local_change_diff(&self.path, paths, of)
     }
 
     // The diffs of untracked files, which git diffs only one at a time (against /dev/null), so a few
@@ -435,7 +427,7 @@ impl Repository {
                         chunk
                             .iter()
                             .map(|path| {
-                                load_local_change_diff(work_tree, &[path], true, false, None)
+                                load_local_change_diff(work_tree, &[path], DiffOf::Untracked)
                             })
                             .collect::<String>()
                     })
@@ -1734,25 +1726,33 @@ const PATCH_DIFF_ARGS: [&str; 7] = [
     "--dst-prefix=b/",
 ];
 
-fn load_local_change_diff(
-    path: &Path,
-    targets: &[&str],
-    untracked: bool,
-    staged: bool,
-    staged_base: Option<&str>,
-) -> String {
+// Which changes of the working tree a diff shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffOf<'a> {
+    Unstaged,
+    // a file git doesn't track, diffed against nothing, one path at a time
+    Untracked,
+    // compared to `base`, HEAD when None, see `amend_base`
+    Staged { base: Option<&'a str> },
+}
+
+fn load_local_change_diff(path: &Path, targets: &[&str], of: DiffOf) -> String {
     let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
-    if staged {
-        args.push("--cached".into());
-        args.extend(staged_base.map(String::from));
-        args.push("--".into());
-        args.extend(pathspecs(targets));
-    } else if untracked {
-        args.extend(["--no-index", "--", "/dev/null"].map(String::from));
-        args.extend(targets.iter().map(|t| t.to_string()));
-    } else {
-        args.push("--".into());
-        args.extend(pathspecs(targets));
+    match of {
+        DiffOf::Staged { base } => {
+            args.push("--cached".into());
+            args.extend(base.map(String::from));
+            args.push("--".into());
+            args.extend(pathspecs(targets));
+        }
+        DiffOf::Untracked => {
+            args.extend(["--no-index", "--", "/dev/null"].map(String::from));
+            args.extend(targets.iter().map(|t| t.to_string()));
+        }
+        DiffOf::Unstaged => {
+            args.push("--".into());
+            args.extend(pathspecs(targets));
+        }
     }
     // `--no-index` exits with 1 when the files differ
     git_output_with_status(path, &args).map_or_else(String::new, |(_, out)| out)
@@ -2574,7 +2574,7 @@ mod tests {
         // side by side, the same as one after another, in order
         let one_by_one: String = paths
             .iter()
-            .map(|p| repository.local_change_diff(&[p], true, false, None))
+            .map(|p| repository.local_change_diff(&[p], DiffOf::Untracked))
             .collect();
         assert_eq!(repository.untracked_diff(&paths), one_by_one);
         assert!(one_by_one.contains("+f00") && one_by_one.contains("+f19"));
@@ -3107,7 +3107,8 @@ mod tests {
         repo.add(&["é.txt"]);
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let diff = parse_diff(&repository.local_change_diff(&["é.txt"], false, true, None));
+        let diff =
+            parse_diff(&repository.local_change_diff(&["é.txt"], DiffOf::Staged { base: None }));
         // unstaging the second line keeps the file staged with the first
         let patch = diff.hunks[0].partial_patch(&[1], true);
         repository.apply_patch(&patch, true, true).unwrap();
@@ -3137,7 +3138,8 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
         // unstaging a hunk of a staged rename keeps the rename and the other hunk staged
-        let staged = parse_diff(&repository.local_change_diff(&[":/"], false, true, None));
+        let staged =
+            parse_diff(&repository.local_change_diff(&[":/"], DiffOf::Staged { base: None }));
         assert_eq!(staged.hunks.len(), 2);
         repository
             .apply_patch(&staged.hunks[0].patch(), true, true)
