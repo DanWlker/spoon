@@ -396,21 +396,24 @@ fn test_sidebar_only_beside_the_graph() {
     ]);
 }
 
+// What covers the app: "none", "help", "blame" or "log".
+fn overlay(expected: &'static str) -> Vec<Step> {
+    check(move |app: &App| {
+        let shown = match &app.shell.overlay {
+            None => "none",
+            Some(super::Overlay::Help(_)) => "help",
+            Some(super::Overlay::Blame(_)) => "blame",
+            Some(super::Overlay::CommandLog(_)) => "log",
+        };
+        assert_eq!(shown, expected);
+    })
+}
+
 #[test]
 fn test_help_and_command_log_cover_the_app_one_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
-    let overlay = |expected: &'static str| {
-        check(move |app: &App| {
-            let shown = match &app.shell.overlay {
-                None => "none",
-                Some(super::Overlay::Help(_)) => "help",
-                Some(super::Overlay::CommandLog(_)) => "log",
-            };
-            assert_eq!(shown, expected);
-        })
-    };
     harness.run(vec![
         keys("f1"),
         overlay("help"),
@@ -814,6 +817,39 @@ fn test_fold_merge_with_branch_only() {
     ]);
     // the branch only view loads the repository again, folding draws the graph again only
     assert_eq!(harness.loads, 3);
+}
+
+#[test]
+fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let c1 = git(&path, &["rev-parse", "master~1"]).trim().to_string();
+    let mut harness = Harness::new(&path, launch());
+    let selected = move |subject: &'static str| {
+        check(move |app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            let commit = view.as_list_state().selected_commit_hash();
+            assert_eq!(app.repository.commit(commit).unwrap().subject, subject);
+        })
+    };
+    harness.run(vec![
+        // f.txt in the files of c2, the latest commit
+        keys("4 shift-b"),
+        overlay("blame"),
+        // the commit of its first line, c1, on the graph, the details still open
+        keys("enter"),
+        overlay("none"),
+        selected("c1"),
+        // checking out the commit shown, c1 again, closes the blame once confirmed
+        keys("k 4 shift-b ["),
+        keys("0 space"),
+        overlay("blame"),
+        keys("enter"),
+        overlay("none"),
+        check(move |app| assert_eq!(app.repository.head_commit().unwrap().as_str(), c1)),
+    ]);
 }
 
 #[test]

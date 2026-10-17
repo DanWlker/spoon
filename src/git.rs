@@ -673,6 +673,57 @@ impl Repository {
             .unwrap_or_default()
     }
 
+    // Who last changed each line of the file at `path` as of the commit, see `Blame`.
+    pub fn blame(
+        &self,
+        commit_hash: &CommitHash,
+        path: &str,
+    ) -> std::result::Result<Blame, String> {
+        let args = ["blame", "--porcelain", commit_hash.as_str(), "--", path];
+        git_output(&self.path, &args).map(|out| parse_blame(&out))
+    }
+
+    // The commits changing the file at `path` in the history of HEAD and of `start`, renames
+    // followed, the newest first; with the index of the last one changing it as of `start`.
+    pub fn file_history(
+        &self,
+        start: &CommitHash,
+        path: &str,
+    ) -> std::result::Result<(Vec<FileRevision>, usize), String> {
+        let format = "--format=%x01%H%x00%aI%x00%s";
+        let args = [
+            "log",
+            "--follow",
+            "--name-only",
+            "-z",
+            format,
+            "HEAD",
+            start.as_str(),
+        ];
+        let out = git_output(&self.path, &[&args[..], &["--", path]].concat())?;
+        let history: Vec<FileRevision> = out
+            .split('\x01')
+            .filter_map(|record| {
+                let mut fields = record.split('\0');
+                let (commit, date) = (fields.next()?, fields.next()?);
+                let (subject, path) = (fields.next()?, fields.next()?);
+                Some(FileRevision {
+                    commit: CommitHash::from(commit),
+                    date: parse_iso_date(date),
+                    subject: subject.into(),
+                    path: path.trim_start_matches('\n').into(),
+                })
+            })
+            .collect();
+        let args = ["log", "-1", "--format=%H", start.as_str(), "--", path];
+        let last = git_output(&self.path, &args)?;
+        let index = history
+            .iter()
+            .position(|r| r.commit.as_str() == last.trim())
+            .ok_or_else(|| format!("{path} has no history"))?;
+        Ok((history, index))
+    }
+
     // Changes between `base` and the index, i.e. what would be committed when amending.
     pub fn staged_changes_against(&self, base: &str) -> Vec<LocalChangeFile> {
         let args = ["diff", "--cached", "--name-status", "-z", "-M", base];
@@ -1299,6 +1350,70 @@ fn load_commits_format(mailmap: bool) -> String {
 
 fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339(s).unwrap()
+}
+
+// The lines of a file at a commit, each with the commit that last changed it.
+#[derive(Debug, Default, Clone)]
+pub struct Blame {
+    pub lines: Vec<(CommitHash, String)>,
+    pub commits: FxHashMap<CommitHash, BlameCommit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlameCommit {
+    pub author: String,
+    pub date: DateTime<FixedOffset>,
+}
+
+// A commit changing a file, and the file's path in it.
+#[derive(Debug, Clone)]
+pub struct FileRevision {
+    pub commit: CommitHash,
+    pub date: DateTime<FixedOffset>,
+    pub subject: String,
+    pub path: String,
+}
+
+// `git blame --porcelain`: each line is a header "<hash> <line> <line> [<count>]", the details of
+// its commit the first time it comes ("author A", "author-time 1700000000", "author-tz +0100"),
+// then the text after a tab.
+fn parse_blame(out: &str) -> Blame {
+    let mut blame = Blame::default();
+    let mut commit = CommitHash::default();
+    let (mut author, mut time, mut tz) = (String::new(), 0, 0);
+    for line in out.lines() {
+        if let Some(text) = line.strip_prefix('\t') {
+            blame.lines.push((commit.clone(), text.into()));
+            continue;
+        }
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        match key {
+            "author" => author = value.into(),
+            "author-time" => time = value.parse().unwrap_or(0),
+            // +hhmm
+            "author-tz" => {
+                let n: i32 = value.parse().unwrap_or(0);
+                tz = n / 100 * 3600 + n % 100 * 60;
+            }
+            // the details end with the file's name
+            "filename" => {
+                let offset = FixedOffset::east_opt(tz).unwrap_or(FixedOffset::east_opt(0).unwrap());
+                let date = DateTime::from_timestamp(time, 0).unwrap_or_default();
+                blame.commits.insert(
+                    commit.clone(),
+                    BlameCommit {
+                        author: std::mem::take(&mut author),
+                        date: date.with_timezone(&offset),
+                    },
+                );
+            }
+            _ if key.len() >= 40 && key.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                commit = CommitHash::from(key);
+            }
+            _ => {}
+        }
+    }
+    blame
 }
 
 fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
@@ -2416,6 +2531,29 @@ mod tests {
         };
         assert_eq!(name, "stash@{0}");
         assert!(repository.commit(target).is_some());
+    }
+
+    #[test]
+    fn test_parse_blame() {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let out = format!(
+            "{a} 1 1 1\nauthor Ann\nauthor-time 0\nauthor-tz -0130\nfilename f\n\tone\n\
+             {b} 2 2 1\nauthor Bo\nauthor-time 60\nauthor-tz +0100\nfilename f\n\t\ttwo\n\
+             {a} 3 3\n\tthree\n"
+        );
+        let blame = parse_blame(&out);
+        let lines: Vec<(&str, &str)> = blame
+            .lines
+            .iter()
+            .map(|(commit, text)| (commit.as_str(), text.as_str()))
+            .collect();
+        assert_eq!(lines, [(&*a, "one"), (&*b, "\ttwo"), (&*a, "three")]);
+        let ann = &blame.commits[&CommitHash::from(a.as_str())];
+        assert_eq!(ann.author, "Ann");
+        assert_eq!(ann.date.to_rfc3339(), "1969-12-31T22:30:00-01:30");
+        let bo = &blame.commits[&CommitHash::from(b.as_str())];
+        assert_eq!(bo.date.to_rfc3339(), "1970-01-01T01:01:00+01:00");
     }
 
     #[test]

@@ -17,6 +17,7 @@ const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 // ├─ graph                  the commands of the commit graph, bound here
 // │  ├─ sidebar             the refs; the commands of the graph work on the selected ref
 // │  ├─ commit_list
+// │  ├─ file_history        the blame of a file, over everything
 // │  └─ details             not the commands of the graph
 // │     └─ details_pane     the diff or preview beside the files
 // ├─ local_changes
@@ -32,11 +33,12 @@ pub enum Scope {
     DetailsPane,
     LocalChanges,
     LocalChangesDiff,
+    FileHistory,
     Dialog,
 }
 
 impl Scope {
-    const ALL: [Scope; 9] = [
+    const ALL: [Scope; 10] = [
         Scope::Global,
         Scope::Graph,
         Scope::Sidebar,
@@ -45,6 +47,7 @@ impl Scope {
         Scope::DetailsPane,
         Scope::LocalChanges,
         Scope::LocalChangesDiff,
+        Scope::FileHistory,
         Scope::Dialog,
     ];
 
@@ -52,7 +55,9 @@ impl Scope {
         match self {
             Scope::Global => None,
             Scope::Graph | Scope::LocalChanges | Scope::Dialog => Some(Scope::Global),
-            Scope::Sidebar | Scope::CommitList | Scope::Details => Some(Scope::Graph),
+            Scope::Sidebar | Scope::CommitList | Scope::FileHistory | Scope::Details => {
+                Some(Scope::Graph)
+            }
             Scope::DetailsPane => Some(Scope::Details),
             Scope::LocalChangesDiff => Some(Scope::LocalChanges),
         }
@@ -90,6 +95,7 @@ impl Scope {
                             | UserEvent::ApplyChange
                             | UserEvent::OpenInBrowser
                             | UserEvent::CopyLink
+                            | UserEvent::Blame
                     )
             }
             // not the keys of the files beside it
@@ -127,6 +133,7 @@ impl Scope {
             Scope::DetailsPane => "details_pane",
             Scope::LocalChanges => "local_changes",
             Scope::LocalChangesDiff => "local_changes_diff",
+            Scope::FileHistory => "file_history",
             Scope::Dialog => "dialog",
         }
     }

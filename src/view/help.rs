@@ -51,7 +51,7 @@ impl HelpView {
                 self.tx.send(AppEvent::Quit);
             }
             UserEvent::HelpToggle | UserEvent::Cancel | UserEvent::Close => {
-                self.tx.send(AppEvent::CloseHelp);
+                self.tx.send(AppEvent::CloseOverlay);
             }
             // the help has nothing to select, so these scroll too
             UserEvent::SelectDown => {
@@ -225,6 +225,7 @@ fn build_lines(
         (vec![UserEvent::ShortCopy], "Copy commit short hash; the relative path in a file tree".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash; the absolute path in a file tree".into()),
         (vec![UserEvent::Ignore], "Add the file or directory to .gitignore, in a file tree".into()),
+        (vec![UserEvent::Blame], "Blame the selected file, from the selected line".into()),
     ];
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
 
@@ -265,6 +266,7 @@ fn build_lines(
         (vec![UserEvent::FocusPanel(3)], "Focus the commit message, typing it when empty".into()),
         (vec![UserEvent::Confirm], "Select hunks / lines; Resolve a conflict; Commit".into()),
         (vec![UserEvent::Edit], "Open the file in $VISUAL / $EDITOR".into()),
+        (vec![UserEvent::Blame], "Blame the selected file as of the last commit".into()),
         (vec![UserEvent::Commit], "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase".into()),
         (vec![UserEvent::ToggleAmend], "Toggle amending the last commit".into()),
         (vec![UserEvent::Abort], "Abort the rebase, merge, cherry-pick or revert in progress".into()),
@@ -294,6 +296,21 @@ fn build_lines(
     ];
     let (local_changes_key_lines, local_changes_value_lines) = build_block_lines("Local Changes:", local_changes_helps, color_theme, keybind);
     
+    let blame_helps = vec![
+        (vec![UserEvent::Cancel, UserEvent::Close], "Clear the search, then close".into()),
+        (vec![UserEvent::FocusPanel(0)], "Focus the commit shown (also up from the first line)".into()),
+        (vec![UserEvent::FocusPanel(1)], "Focus the lines".into()),
+        (vec![UserEvent::NavigateLeft, UserEvent::NavigateRight], "Act on the commit or the text of the line; on the commit shown, older/newer commit".into()),
+        (vec![UserEvent::OlderCommit, UserEvent::NewerCommit], "Blame as of the older/newer commit changing the file".into()),
+        (vec![UserEvent::Confirm], "Select the commit of the line on the graph".into()),
+        (vec![UserEvent::Checkout], "Check out the commit".into()),
+        (vec![UserEvent::ShortCopy, UserEvent::FullCopy], "Copy the commit short/full hash; the line, on its text".into()),
+        (vec![UserEvent::OpenInBrowser, UserEvent::CopyLink], "Open the commit, or the file at the line, on the web host; copy its link".into()),
+        (vec![UserEvent::Search], "Search the file".into()),
+        (vec![UserEvent::GoToNext, UserEvent::GoToPrevious], "Go to next/previous search match".into()),
+    ];
+    let (blame_key_lines, blame_value_lines) = build_block_lines("Blame:", blame_helps, color_theme, keybind);
+
     let dialog_helps = vec![
         (vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "Select next/previous field".into()),
         (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Change the selected field".into()),
@@ -312,6 +329,7 @@ fn build_lines(
         detail_key_lines,
         refs_key_lines,
         local_changes_key_lines,
+        blame_key_lines,
         dialog_key_lines,
     ]);
     let value_lines = join_line_groups_with_empty(vec![
@@ -321,6 +339,7 @@ fn build_lines(
         detail_value_lines,
         refs_value_lines,
         local_changes_value_lines,
+        blame_value_lines,
         dialog_value_lines,
     ]);
 

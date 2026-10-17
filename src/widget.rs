@@ -4,6 +4,7 @@ pub mod commit_list;
 pub mod commit_tabs;
 pub mod conflict;
 pub mod diff;
+pub mod file_text;
 pub mod file_tree;
 pub mod git_dialog;
 pub mod keys_popup;

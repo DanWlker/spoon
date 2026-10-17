@@ -2,6 +2,7 @@
 // and what each page keeps across a reload of the repository.
 
 use crate::{
+    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, UserEvent},
     git::{CommitHash, Repository},
     search::SearchOptions,
@@ -68,6 +69,23 @@ pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
         ("Commit SHA (short)", hash.as_short_hash())
     };
     AppEvent::copy(name, value)
+}
+
+// The keys acting on a commit wherever it is shown: copying its hash, opening its page, checking
+// it out and selecting it on the graph.
+pub fn commit_event(event: UserEvent, commit: &CommitHash) -> Option<AppEvent> {
+    match event {
+        UserEvent::ShortCopy | UserEvent::FullCopy => {
+            Some(copy_hash(commit, event == UserEvent::FullCopy))
+        }
+        UserEvent::OpenInBrowser | UserEvent::CopyLink => Some(AppEvent::Link {
+            target: LinkTarget::Commit(commit.as_str().into()),
+            copy: event == UserEvent::CopyLink,
+        }),
+        UserEvent::Checkout => Some(AppEvent::Checkout(commit.clone())),
+        UserEvent::Confirm => Some(AppEvent::ShowCommit(commit.clone())),
+        _ => None,
+    }
 }
 
 // The status line showing what is `typed`, with its cursor, and `metadata` on the right, like

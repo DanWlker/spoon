@@ -52,7 +52,8 @@ pub enum AppEvent {
         result: Result<(), String>,
     },
     OpenHelp,
-    CloseHelp,
+    // closes the help or another window over everything
+    CloseOverlay,
     SelectNewerCommit,
     SelectOlderCommit,
     CopyToClipboard {
@@ -70,6 +71,16 @@ pub enum AppEvent {
         copy: bool,
     },
     Refresh(RefreshViewContext),
+    // the blame of the file at `path` as of the commit, on `line` (from 0) when one is selected
+    OpenBlame {
+        commit: CommitHash,
+        path: String,
+        line: Option<usize>,
+    },
+    // asks to check out the commit, see `UserEvent::Checkout`
+    Checkout(CommitHash),
+    // selects the commit on the graph
+    ShowCommit(CommitHash),
     // folds or unfolds the merge commit, the graph drawn again
     FoldMerge {
         commit: CommitHash,
@@ -436,6 +447,9 @@ pub enum UserEvent {
     FullCopy,
     Ignore,
     CommandLog,
+    Blame,
+    OlderCommit,
+    NewerCommit,
     #[serde(skip)]
     Unknown,
 }
@@ -466,6 +480,7 @@ impl UserEvent {
             | UserEvent::NextSection
             | UserEvent::PreviousSection => Scope::Sidebar,
             UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ApplyChange => Scope::Details,
+            UserEvent::OlderCommit | UserEvent::NewerCommit => Scope::FileHistory,
             UserEvent::ToggleStage
             | UserEvent::Stash
             | UserEvent::Commit

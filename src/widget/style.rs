@@ -52,6 +52,17 @@ pub fn panel_block<'a>(focused: bool, theme: &ColorTheme) -> Block<'a> {
         .border_style(Style::default().fg(fg))
 }
 
+// The arrows around a value cycled with left and right, like a popup's option or the commit of
+// the blame: lit while it is selected.
+pub fn choice_arrows(selected: bool, theme: &ColorTheme) -> [Span<'static>; 2] {
+    let fg = if selected {
+        theme.highlight_fg
+    } else {
+        theme.muted_fg
+    };
+    [Span::raw("‹ ").fg(fg), Span::raw(" ›").fg(fg)]
+}
+
 // The marker of a folder or section that opens: nvim-tree's chevrons (Nerd Font, Octicons).
 pub fn fold_marker(open: bool) -> &'static str {
     if open {

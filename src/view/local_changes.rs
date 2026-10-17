@@ -156,6 +156,19 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.local_changes_state.select_next_file(forward);
                 self.after_action(result);
             }
+            // as of the last commit, the local changes aren't blamed
+            UserEvent::Blame => {
+                let state = &self.local_changes_state;
+                let head = state.repository().head_commit();
+                if let (Some(path), Some(commit)) = (state.selected_file(), head) {
+                    let path = path.into();
+                    self.tx.send(AppEvent::OpenBlame {
+                        commit,
+                        path,
+                        line: None,
+                    });
+                }
+            }
             UserEvent::Edit => {
                 if let Err(err) = self.local_changes_state.request_edit() {
                     self.tx.send(AppEvent::NotifyError(err));

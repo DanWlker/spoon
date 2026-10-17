@@ -576,17 +576,19 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) {
+    // Selects the commit; false when the graph doesn't show it.
+    pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) -> bool {
         if !self.commit_hash_set.contains(commit_hash) {
-            return;
+            return false;
         }
-        if let Some(index) = self
+        let index = self
             .commits
             .iter()
-            .position(|commit_info| commit_info.commit.commit_hash == *commit_hash)
-        {
+            .position(|commit_info| commit_info.commit.commit_hash == *commit_hash);
+        if let Some(index) = index {
             self.select_index(index);
         }
+        index.is_some()
     }
 
     pub fn search_state(&self) -> SearchState {
@@ -857,6 +859,18 @@ pub fn commit_list_inner_height(height: u16) -> usize {
 
 // The commit list as the first panel of the graph: under a top border titled with its number,
 // which stands out while it has the focus, and the count of picked commits.
+// A commit's date as the commit list shows it, see `[ui.list]` in the config.
+pub fn format_date(ctx: &AppContext, date: &chrono::DateTime<chrono::FixedOffset>) -> String {
+    let format = &ctx.ui_config.list.date_format;
+    if ctx.ui_config.list.date_local {
+        date.with_timezone(&chrono::Local)
+            .format(format)
+            .to_string()
+    } else {
+        date.format(format).to_string()
+    }
+}
+
 pub fn render_commit_list_panel<'a>(
     f: &mut Frame,
     area: Rect,
@@ -1112,16 +1126,7 @@ impl CommitList<'_> {
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(i, commit_info)| {
-                let date = &commit_info.commit.author_date;
-                let date_str = if self.ctx.ui_config.list.date_local {
-                    let local = date.with_timezone(&chrono::Local);
-                    local
-                        .format(&self.ctx.ui_config.list.date_format)
-                        .to_string()
-                } else {
-                    date.format(&self.ctx.ui_config.list.date_format)
-                        .to_string()
-                };
+                let date_str = format_date(&self.ctx, &commit_info.commit.author_date);
                 self.to_commit_list_item(
                     i,
                     vec![date_str.fg(self.text_fg(commit_info, self.ctx.color_theme.list_date_fg))],

@@ -14,7 +14,7 @@ use crate::{
     keybind::Scope,
     layout::{fit_size, Direction, Edge, Panel},
     view::{
-        copy_hash, copy_path, copy_selection, graph_hints, handle_search_event, status_input,
+        commit_event, copy_path, copy_selection, graph_hints, handle_search_event, status_input,
         typing_hints, Compare, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
@@ -328,6 +328,15 @@ impl<'a> DetailView<'a> {
     }
 
     // Shows the commit of the ref, selected in the refs sidebar.
+    pub fn select_commit(&mut self, commit: &CommitHash) -> bool {
+        self.list_focused = true;
+        if !self.as_mut_list_state().select_commit_hash(commit) {
+            return false;
+        }
+        self.update_selected_commit(|_| {});
+        true
+    }
+
     pub fn select_ref(&mut self, name: &str) {
         let before = self.as_list_state().selected_commit_hash().clone();
         self.as_mut_list_state().select_ref(name);
@@ -421,6 +430,22 @@ impl<'a> DetailView<'a> {
             return;
         }
 
+        // the file selected in the tree, on the line selected in its diff or preview
+        if event == UserEvent::Blame && !self.list_focused {
+            let line = match self.tab {
+                DetailTab::Changes => self.changes_state.selected_lines().map(|(first, _)| first),
+                DetailTab::Files => self.files_state.selected_line(),
+                DetailTab::Info => None,
+            };
+            if let Some((path, false)) = self.selected_entry() {
+                self.tx.send(AppEvent::OpenBlame {
+                    commit: self.commit.commit_hash.clone(),
+                    path: path.into(),
+                    line: line.map(|line| line.saturating_sub(1)),
+                });
+            }
+            return;
+        }
         // the diff or preview beside the files gets only its own keys and those of the whole app
         // (see `Scope::DetailsPane`), which go on below
         if self.is_pane_focused() && !event.is_app_wide() {
@@ -482,15 +507,13 @@ impl<'a> DetailView<'a> {
             UserEvent::SelectUp => {
                 self.tx.send(AppEvent::SelectNewerCommit);
             }
-            UserEvent::ShortCopy | UserEvent::FullCopy => {
-                let full = event == UserEvent::FullCopy;
-                self.tx.send(copy_hash(&self.commit.commit_hash, full));
-            }
-            UserEvent::OpenInBrowser | UserEvent::CopyLink => {
-                self.tx.send(AppEvent::Link {
-                    target: LinkTarget::Commit(self.commit.commit_hash.as_str().into()),
-                    copy: event == UserEvent::CopyLink,
-                });
+            UserEvent::ShortCopy
+            | UserEvent::FullCopy
+            | UserEvent::OpenInBrowser
+            | UserEvent::CopyLink => {
+                if let Some(event) = commit_event(event, &self.commit.commit_hash) {
+                    self.tx.send(event);
+                }
             }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);

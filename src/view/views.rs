@@ -5,7 +5,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 use crate::{
     app::AppContext,
     event::{KeyHint, Sender, UserEvent},
-    git::{Commit, FileChange, Ref, Repository},
+    git::{Commit, CommitHash, FileChange, Ref, Repository},
     layout::Direction,
     view::{
         detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
@@ -124,6 +124,16 @@ impl<'a> View<'a> {
     pub fn blur(&mut self) {
         if let View::LocalChanges(view) = self {
             view.blur();
+        }
+    }
+
+    // Selects the commit in the commit list, focusing it; false when the view has none or doesn't
+    // show the commit.
+    pub fn select_commit(&mut self, commit: &CommitHash) -> bool {
+        match self {
+            View::List(view) => view.select_commit(commit),
+            View::Detail(view) => view.select_commit(commit),
+            _ => false,
         }
     }
 

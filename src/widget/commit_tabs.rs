@@ -15,16 +15,15 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Repository},
     layout::{fit_size, Edge, Panel},
     search::SearchOptions,
-    widget::style::{
-        focused_title, half_page_jump, panel_title, placeholder, render_scrollbar, tree_panel_width,
-    },
+    widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
         diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, render_visual_rows,
-            visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
+            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
+            ParsedDiff, Step,
         },
+        file_text::FileText,
         file_tree::{render_tree, FileTree, FileTreeState},
-        tree_query::{find_around, highlight_match, match_range, SearchDirection},
+        tree_query::{highlight_match, SearchDirection},
     },
 };
 
@@ -391,8 +390,8 @@ impl<'a> CommitChangesState<'a> {
 // The contents of the file selected in the files tab.
 #[derive(Debug)]
 enum FilePreview {
-    // the lines of a file, `focused` while the selection moves in them
-    Text { lines: Vec<String>, focused: bool },
+    // the lines of a file, in `CommitFilesState::text`, `focused` while the selection moves in them
+    Text { focused: bool },
     Binary,
     Directory,
     Error(String),
@@ -413,9 +412,8 @@ pub struct CommitFilesState<'a> {
     // the tree of the previously shown commit, whose expanded directories and selection are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
-    cursor: DiffCursor,
-    // the line the search last matched, where the next one starts from
-    search_row: Option<usize>,
+    // the lines of a file with text, see `FilePreview::Text`
+    text: FileText,
 }
 
 impl<'a> CommitFilesState<'a> {
@@ -436,8 +434,7 @@ impl<'a> CommitFilesState<'a> {
             tree: None,
             previous_tree: None,
             preview: None,
-            cursor: DiffCursor::default(),
-            search_row: None,
+            text: FileText::default(),
         }
     }
 
@@ -512,33 +509,17 @@ impl<'a> CommitFilesState<'a> {
     // Scrolls the preview by the scroll keys, or moves the selected line half a page; returns
     // whether `event` was one.
     pub fn scroll_preview(&mut self, event: UserEvent) -> bool {
-        let lines = self.text_lines().filter(|_| self.is_preview_focused());
-        let height = self.cursor.scroll.height;
-        match lines.and_then(|l| half_page_jump(event, self.cursor.line, height, l.len())) {
-            Some(line) => {
-                self.select_line(line);
-                self.search_row = None;
-                true
-            }
-            None => self.cursor.scroll.handle_scroll(event),
-        }
+        self.is_preview_focused() && self.text.scroll(event)
     }
 
     pub fn is_preview_focused(&self) -> bool {
-        matches!(self.preview, Some(FilePreview::Text { focused: true, .. }))
-    }
-
-    fn text_lines(&self) -> Option<&[String]> {
-        match &self.preview {
-            Some(FilePreview::Text { lines, .. }) if !lines.is_empty() => Some(lines),
-            _ => None,
-        }
+        matches!(self.preview, Some(FilePreview::Text { focused: true }))
     }
 
     // Whether the preview has the focus, which only a file with text can.
     fn preview_focus(&mut self) -> Option<&mut bool> {
         match &mut self.preview {
-            Some(FilePreview::Text { lines, focused }) if !lines.is_empty() => Some(focused),
+            Some(FilePreview::Text { focused }) if !self.text.lines().is_empty() => Some(focused),
             _ => None,
         }
     }
@@ -549,7 +530,7 @@ impl<'a> CommitFilesState<'a> {
             return false;
         };
         if !std::mem::replace(focused, true) {
-            self.cursor.line = self.cursor.scroll.offset;
+            self.text.select_shown();
         }
         true
     }
@@ -560,33 +541,21 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn step(&mut self, step: Step) {
-        let Some(last) = self.text_lines().map(|l| l.len() - 1) else {
-            return;
-        };
-        let line = match step {
-            Step::Next => self.cursor.line + 1,
-            Step::Prev => self.cursor.line.saturating_sub(1),
-            Step::First => 0,
-            Step::Last => last,
-        };
-        self.select_line(line.min(last));
-        self.search_row = None;
-    }
-
-    fn select_line(&mut self, line: usize) {
-        self.cursor.line = line;
-        self.cursor.scroll_to(line..line + 1);
+        if self.preview_focus().is_some() {
+            self.text.step(step);
+        }
     }
 
     // The selected line of the preview, to copy.
     pub fn selected_text(&self) -> Option<String> {
-        let lines = self.text_lines().filter(|_| self.is_preview_focused())?;
-        lines.get(self.cursor.line).cloned()
+        self.text
+            .selected_text()
+            .filter(|_| self.is_preview_focused())
     }
 
     // The number of the selected line of the preview, from 1.
     pub fn selected_line(&self) -> Option<usize> {
-        self.selected_text().map(|_| self.cursor.line + 1)
+        self.selected_text().map(|_| self.text.selected_line() + 1)
     }
 
     // Selects the line of the preview matching `query`, around from the last match; false when
@@ -597,27 +566,17 @@ impl<'a> CommitFilesState<'a> {
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
-        let Some(lines) = self.text_lines() else {
+        if self.preview_focus().is_none() || !self.text.search(query, direction, options) {
             return false;
-        };
-        let start = self.search_row.unwrap_or(self.cursor.line);
-        let found = find_around(lines.len(), start, direction, |i| {
-            match_range(&lines[i], query, options).is_some()
-        });
-        let Some(line) = found else {
-            return false;
-        };
+        }
         if let Some(focused) = self.preview_focus() {
             *focused = true;
         }
-        self.select_line(line);
-        self.search_row = Some(line);
         true
     }
 
     fn load_preview(&mut self) {
-        self.cursor.reset();
-        self.search_row = None;
+        self.text.set_lines(Vec::new());
         let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
             return;
@@ -633,13 +592,12 @@ impl<'a> CommitFilesState<'a> {
             // the same heuristic as git: a NUL byte near the start means binary
             Ok(bytes) if bytes.iter().take(8000).any(|b| *b == 0) => FilePreview::Binary,
             // as in the file, to copy; tabs are expanded when shown
-            Ok(bytes) => FilePreview::Text {
-                lines: String::from_utf8_lossy(&bytes)
-                    .lines()
-                    .map(String::from)
-                    .collect(),
-                focused: false,
-            },
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                self.text
+                    .set_lines(text.lines().map(String::from).collect());
+                FilePreview::Text { focused: false }
+            }
             Err(err) => FilePreview::Error(err),
         };
         self.preview = Some(preview);
@@ -766,47 +724,12 @@ impl CommitTab {
 
         let dim = |text: String| vec![placeholder(text, theme)];
         let lines = match &state.preview {
-            Some(FilePreview::Text { lines, .. }) => {
-                // only the visible lines are built, files can be long
-                let width = lines.len().to_string().len();
-                let range = state
-                    .cursor
-                    .scroll
-                    .fit(lines.len(), preview_area.height as usize);
-                let border =
-                    Rect::new(preview_area.right(), preview_area.y, 1, preview_area.height);
-                let focused = self.focused;
-                render_scrollbar(buf, border, lines.len(), range.start, focused, theme);
-                let highlight_style = Style::default().bg(theme.list_selected_bg);
-                let selected = if state.is_preview_focused() {
-                    state.cursor.line..state.cursor.line + 1
-                } else {
-                    0..0
-                };
-                let visible =
-                    lines[range.start.min(lines.len())..]
-                        .iter()
-                        .zip(range)
-                        .map(|(line, i)| {
-                            let mut line = Line::from(vec![
-                                Span::raw(format!("{:>width$} ", i + 1)).fg(theme.muted_fg),
-                                Span::raw(line.replace('\t', "    ")),
-                            ]);
-                            if let Some(query) = &self.pane_search {
-                                highlight_match(
-                                    &mut line,
-                                    query,
-                                    self.ctx.search_options.get(),
-                                    theme,
-                                );
-                            }
-                            if selected.contains(&i) {
-                                line.style = line.style.patch(highlight_style);
-                            }
-                            (i, line)
-                        });
-                let visual = visual_rows(visible, self.ctx.wrap.get(), &selected, preview_area);
-                render_visual_rows(visual, &selected, theme, preview_area, buf);
+            Some(FilePreview::Text { focused }) => {
+                let search = self.pane_search.as_deref();
+                let ctx = &self.ctx;
+                state
+                    .text
+                    .render(preview_area, buf, ctx, self.focused, *focused, search);
                 return;
             }
             Some(FilePreview::Binary) => dim("Binary file".into()),
@@ -941,7 +864,8 @@ mod tests {
         state.update_tree(FileTreeState::select_next);
         assert_eq!(selected(state.tree.as_ref().unwrap()), "src/a.rs");
         assert!(
-            matches!(&state.preview, Some(FilePreview::Text { lines, .. }) if lines == &["a", "changed"])
+            matches!(&state.preview, Some(FilePreview::Text { .. }))
+                && state.text.lines() == ["a", "changed"]
         );
         state.update_tree(FileTreeState::select_last);
         assert!(matches!(state.preview, Some(FilePreview::Binary)));
@@ -958,7 +882,8 @@ mod tests {
             vec!["src", "src/a.rs", "README", "image.bin"]
         );
         assert_eq!(selected(tree), "src/a.rs");
-        assert!(matches!(&state.preview, Some(FilePreview::Text { lines, .. }) if lines == &["a"]));
+        assert!(matches!(&state.preview, Some(FilePreview::Text { .. })));
+        assert_eq!(state.text.lines(), ["a"]);
 
         Ok(())
     }

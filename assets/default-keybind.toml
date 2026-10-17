@@ -151,3 +151,8 @@ command_log = ["@"]
 dismiss_notifications = [","]
 # wrap the long lines of the diffs and file previews, or not
 toggle_wrap = ["w"]
+# show who last changed each line of the selected file, in a window over everything
+blame = ["shift-b"]
+# in that window, the blame as of the older/newer commit changing the file
+older_commit = ["["]
+newer_commit = ["]"]

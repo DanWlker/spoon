@@ -1,3 +1,5 @@
+mod blame;
+pub use blame::BlameView;
 mod common;
 mod views;
 

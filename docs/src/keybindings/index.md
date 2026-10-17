@@ -141,6 +141,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `apply_change` |
 | <kbd>o/O</kbd>                       | Open the commit, or the selected file at it, on the web host; from the diff or the file, at the selected hunk or line; copy its link | `open_in_browser` `copy_link` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
+| <kbd>B</kbd>                         | Blame the selected file (see below), from the selected line of its diff or preview | `blame` |
 
 The commit detail has three tabs:
 
@@ -270,6 +271,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>?</kbd>                         | Filter files                                                 | `filter`                        |
 | <kbd>y/Y</kbd>                       | Copy the relative/absolute path of the file<br>Copy the line or hunk (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below)        | `ignore`                        |
+| <kbd>B</kbd>                         | Blame the file as of the last commit (see below); the local changes aren't blamed | `blame`     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
@@ -289,6 +291,24 @@ While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
 Unstaging while amending removes changes from the commit being amended. Turning it off restores the previous message.
+
+#### Blame
+
+<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything: at the top, **[0] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date; below, **[1] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
+
+| Key                                  | Description                                                  | Corresponding keybind           |
+| ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
+| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the search, then close                                 | `close` `cancel`                |
+| <kbd>0</kbd> <kbd>1</kbd>            | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too) | `focus_panel_0` `focus_panel_1` |
+| <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
+| <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
+| <kbd>Enter</kbd>                     | Select the commit of the line on the graph, closing the blame | `confirm`                      |
+| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the blame    | `checkout`                      |
+| <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the line (<kbd>y</kbd>), on its text | `short_copy` `full_copy` |
+| <kbd>o/O</kbd>                       | Open the commit, or the file at the line, on the web host; copy its link | `open_in_browser` `copy_link` |
+| <kbd>/</kbd> <kbd>n/N</kbd>          | Search the file; go to next/previous match                   | `search` `go_to_next` `go_to_previous` |
+
+The commit keys act on the commit at the top while it has the focus, and on the commit of the selected line in the left column; in the text, <kbd>y</kbd> and <kbd>o/O</kbd> act on the line, the other keys of the file preview work too. The commit selected with <kbd>Enter</kbd> may not be in the graph, hidden by <kbd>L</kbd> or a folded merge: a warning says so.
 
 #### Help
 

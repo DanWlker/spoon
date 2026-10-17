@@ -335,6 +335,12 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // The path of the selected file, not a directory.
+    pub fn selected_file(&self) -> Option<&str> {
+        let row = self.selected_row()?;
+        row.file_index.and(Some(row.path.as_str()))
+    }
+
     pub fn selected_path(&self) -> Option<String> {
         self.selected_row().map(|row| row.path.clone())
     }

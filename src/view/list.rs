@@ -4,11 +4,10 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
     view::{
-        copy_hash, graph_hints, status_input, typing_hints, ListRefreshViewContext,
+        commit_event, graph_hints, status_input, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
     },
     widget::{
@@ -56,17 +55,14 @@ impl<'a> ListView<'a> {
                     self.tx.send(fold);
                 }
             }
-            UserEvent::ShortCopy | UserEvent::FullCopy => {
-                let full = event == UserEvent::FullCopy;
-                self.tx
-                    .send(copy_hash(self.as_list_state().selected_commit_hash(), full));
-            }
-            UserEvent::OpenInBrowser | UserEvent::CopyLink => {
-                let hash = self.as_list_state().selected_commit_hash().as_str().into();
-                self.tx.send(AppEvent::Link {
-                    target: LinkTarget::Commit(hash),
-                    copy: event == UserEvent::CopyLink,
-                });
+            UserEvent::ShortCopy
+            | UserEvent::FullCopy
+            | UserEvent::OpenInBrowser
+            | UserEvent::CopyLink => {
+                let commit = self.as_list_state().selected_commit_hash();
+                if let Some(event) = commit_event(event, commit) {
+                    self.tx.send(event);
+                }
             }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
@@ -136,6 +132,10 @@ impl<'a> ListView<'a> {
 
     pub fn clear_picks(&mut self) {
         self.as_mut_list_state().clear_picks();
+    }
+
+    pub fn select_commit(&mut self, commit: &CommitHash) -> bool {
+        self.as_mut_list_state().select_commit_hash(commit)
     }
 
     pub fn select_ref(&mut self, name: &str) {

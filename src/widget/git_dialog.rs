@@ -16,7 +16,7 @@ use crate::{
         parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, Conflict, GitTask,
         RemoteInfo, MAX_CONFLICT_STEPS,
     },
-    widget::style::{change_span, focused_title, render_popup},
+    widget::style::{change_span, choice_arrows, focused_title, render_popup},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1930,11 +1930,7 @@ impl Widget for GitDialogWidget<'_> {
             } else {
                 Style::default().fg(theme.fg)
             };
-            let arrow_style = if selected {
-                Style::default().fg(theme.highlight_fg)
-            } else {
-                dim
-            };
+            let [left, right] = choice_arrows(selected, theme);
             let line = match field {
                 Field::Choice { options, index } => {
                     let more = if options.len() > 1 {
@@ -1945,9 +1941,9 @@ impl Widget for GitDialogWidget<'_> {
                     Line::from(vec![
                         bar,
                         Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
-                        Span::styled("‹ ", arrow_style),
+                        left,
                         Span::raw(options[*index].clone()).fg(theme.fg).bold(),
-                        Span::styled(" ›", arrow_style),
+                        right,
                         Span::styled(more, dim),
                     ])
                 }
@@ -1968,9 +1964,9 @@ impl Widget for GitDialogWidget<'_> {
                     Line::from(vec![
                         bar,
                         Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
-                        Span::styled("‹ ", arrow_style),
+                        left,
                         Span::raw(value.to_string()).fg(theme.fg).bold(),
-                        Span::styled(" ›", arrow_style),
+                        right,
                         Span::raw(note).fg(theme.highlight_fg),
                     ])
                 }

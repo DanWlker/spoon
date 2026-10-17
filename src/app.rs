@@ -38,7 +38,10 @@ use crate::{
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
-    view::{Compare, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
+    view::{
+        BlameView, Compare, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View,
+        ViewKind,
+    },
     widget::{
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState},
@@ -215,10 +218,12 @@ pub struct AppShell {
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
-// `UserEvent::HelpToggle`), or the git commands run (see `UserEvent::CommandLog`), over everything.
+// `UserEvent::HelpToggle`), the blame of a file (see `UserEvent::Blame`), or the git commands run
+// (see `UserEvent::CommandLog`), over everything.
 #[derive(Debug)]
 enum Overlay {
     Help(HelpView),
+    Blame(Box<BlameView>),
     CommandLog(CommandLogState),
 }
 
@@ -374,7 +379,9 @@ impl<'a> App<'a> {
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
                 Head::Branch { name } => commit_list_state.select_ref(name),
-                Head::Detached { target } => commit_list_state.select_commit_hash(target),
+                Head::Detached { target } => {
+                    commit_list_state.select_commit_hash(target);
+                }
                 Head::None => {}
             }
         }
@@ -549,6 +556,22 @@ impl App<'_> {
                     self.handle_dialog_key(key);
                     return Ok(None);
                 }
+                if matches!(self.shell.overlay, Some(Overlay::Blame(_))) {
+                    // typing a search, keys go as they are
+                    let typing =
+                        matches!(&self.shell.overlay, Some(Overlay::Blame(b)) if b.is_typing());
+                    let event = match typing {
+                        true if self.force_quit(&key) => None,
+                        true => Some(UserEvent::Unknown),
+                        false => self.ctx.keybind.event_in(Scope::FileHistory, &key),
+                    };
+                    if let (Some(event), Some(Overlay::Blame(blame))) =
+                        (event, self.shell.overlay.as_mut())
+                    {
+                        blame.handle_event(event, key, self.repository);
+                    }
+                    return Ok(None);
+                }
                 if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
                     let event = self.ctx.keybind.event_in(Scope::Global, &key);
                     let quit = self.force_quit(&key);
@@ -681,11 +704,21 @@ impl App<'_> {
                 let help = HelpView::new(self.ctx.clone(), self.ec.sender());
                 self.shell.overlay = Some(Overlay::Help(help));
             }
-            AppEvent::CloseHelp => {
-                if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
-                    self.shell.overlay = None;
+            AppEvent::CloseOverlay => {
+                self.shell.overlay = None;
+            }
+            AppEvent::OpenBlame { commit, path, line } => {
+                let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
+                match BlameView::new(self.repository, &commit, &path, line, ctx, tx) {
+                    Ok(blame) => self.shell.overlay = Some(Overlay::Blame(Box::new(blame))),
+                    Err(err) => self.ec.send(AppEvent::NotifyError(err)),
                 }
             }
+            AppEvent::Checkout(commit) => {
+                let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
+                self.run_graph_command(UserEvent::Checkout, command);
+            }
+            AppEvent::ShowCommit(commit) => self.show_commit(&commit),
             AppEvent::SelectOlderCommit => {
                 self.select_older_commit();
             }
@@ -813,6 +846,8 @@ impl App<'_> {
             dialog.key_hints()
         } else if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
             vec![hint(UserEvent::Cancel, "close")]
+        } else if let Some(Overlay::Blame(blame)) = &self.shell.overlay {
+            blame.key_hints()
         } else if self.shell.sidebar_focused() {
             self.sidebar_hints()
         } else {
@@ -891,6 +926,12 @@ impl App<'_> {
         match self.shell.overlay.as_mut() {
             Some(Overlay::CommandLog(_)) => self.handle_command_log_event(Some(event)),
             Some(Overlay::Help(help)) => help.handle_event(event),
+            Some(Overlay::Blame(blame)) if idle => {
+                let code = if down { KeyCode::Down } else { KeyCode::Up };
+                let key = KeyEvent::new(code, KeyModifiers::NONE);
+                blame.handle_event(event, key, self.repository);
+            }
+            Some(Overlay::Blame(_)) => {}
             None if idle => {
                 let code = if down { KeyCode::Down } else { KeyCode::Up };
                 self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
@@ -1015,8 +1056,13 @@ impl App<'_> {
             .render(f, view_area, !self.shell.sidebar_focused());
         if let Some(Overlay::Help(help)) = self.shell.overlay.as_mut() {
             f.render_widget(Clear, app_area);
-            f.render_widget(base, app_area);
+            f.render_widget(base.clone(), app_area);
             help.render(f, app_area);
+        }
+        if let Some(Overlay::Blame(blame)) = self.shell.overlay.as_mut() {
+            f.render_widget(Clear, app_area);
+            f.render_widget(base, app_area);
+            blame.render(f, app_area);
         }
         if !keys.is_empty() {
             let popup = KeysPopup::new(keys, &self.ctx.color_theme);
@@ -1577,6 +1623,20 @@ impl App<'_> {
         }
     }
 
+    // Selects the commit on the graph, from the blame, which closes; warns when the graph doesn't show it.
+    fn show_commit(&mut self, commit: &CommitHash) {
+        self.shell.overlay = None;
+        // the details stay open
+        if matches!(self.view, View::LocalChanges(_)) {
+            self.show_graph_page();
+        }
+        self.set_sidebar_focused(false);
+        if !self.view.select_commit(commit) {
+            let message = format!("{} isn't shown in the graph", commit.as_short_hash());
+            self.ec.send(AppEvent::NotifyWarn(message));
+        }
+    }
+
     // Tab: between the local changes page and the graph, focusing the page.
     fn switch_page(&mut self) {
         if matches!(self.view, View::LocalChanges(_)) {
@@ -1779,6 +1839,10 @@ impl App<'_> {
         }
         if self.blocked_by_operation(&task) {
             return;
+        }
+        // a checkout from the blame shows the graph
+        if matches!(self.shell.overlay, Some(Overlay::Blame(_))) {
+            self.shell.overlay = None;
         }
         // a commit made clears the message box, see `finish_task`
         let head_before_commit = task
