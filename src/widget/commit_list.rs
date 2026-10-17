@@ -31,7 +31,7 @@ use crate::{
     },
 };
 
-const ELLIPSIS: &str = "...";
+pub const ELLIPSIS: &str = "...";
 // before a branch whose upstream is on the same commit, a cloud
 const UPSTREAM_ICON: &str = "\u{f0160}";
 

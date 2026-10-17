@@ -8,15 +8,15 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     keybind::Scope,
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_path, copy_selection, graph_hints, handle_search_event, query_status,
-        toggle_search_option, typing_hints, Compare, ListRefreshViewContext, RefreshViewContext,
+        commit_event, copy_path, copy_selection, file_link, graph_hints, handle_search_event,
+        query_status, type_query, typing_hints, Compare, ListRefreshViewContext,
+        RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -376,10 +376,7 @@ impl<'a> DetailView<'a> {
         if self.is_typing_query() {
             let (ctx, kind) = (self.ctx.clone(), self.query_kind());
             if let Some(query) = self.query_mut() {
-                let change = match toggle_search_option(&ctx, &key, kind) {
-                    true => query.editing_change(),
-                    false => query.handle_key(key),
-                };
+                let change = type_query(&ctx, query, key, kind);
                 self.apply_query_change(change);
             }
             self.update_query_status();
@@ -490,14 +487,9 @@ impl<'a> DetailView<'a> {
             }
             // o opens the selected file at this commit on the web host, O copies its link
             if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-                if let Some(path) = self.selected_entry().map(|(path, _)| path.to_string()) {
-                    let target = LinkTarget::File {
-                        commit: self.commit.commit_hash.as_str().into(),
-                        path,
-                        lines: None,
-                    };
-                    let copy = event == UserEvent::CopyLink;
-                    self.tx.send(AppEvent::Link { target, copy });
+                if let Some((path, _)) = self.selected_entry() {
+                    let link = file_link(event, &self.commit.commit_hash, path, None);
+                    self.tx.send(link);
                     return;
                 }
             }
@@ -680,24 +672,13 @@ impl<'a> DetailView<'a> {
                 DetailTab::Files => self.files_state.selected_line().map(|line| (line, line)),
                 DetailTab::Info => None,
             };
-            if let Some(path) = self.selected_entry().map(|(path, _)| path.to_string()) {
-                let target = LinkTarget::File {
-                    commit: self.commit.commit_hash.as_str().into(),
-                    path,
-                    lines,
-                };
-                let copy = event == UserEvent::CopyLink;
-                self.tx.send(AppEvent::Link { target, copy });
+            if let Some((path, _)) = self.selected_entry() {
+                let link = file_link(event, &self.commit.commit_hash, path, lines);
+                self.tx.send(link);
             }
             return;
         }
-        let step = match event {
-            UserEvent::NavigateDown => Some(Step::Next),
-            UserEvent::NavigateUp => Some(Step::Prev),
-            UserEvent::GoToTop => Some(Step::First),
-            UserEvent::GoToBottom => Some(Step::Last),
-            _ => None,
-        };
+        let step = Step::of(event);
         match self.tab {
             DetailTab::Changes => {
                 let state = &mut self.changes_state.pane;

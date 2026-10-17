@@ -3,44 +3,34 @@ use std::rc::Rc;
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::Widget,
     Frame,
 };
 use rustc_hash::FxHashMap;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::AppContext,
-    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
-    git::{BlameCommit, CommitHash, FileRevision, Repository},
+    git::{CommitHash, FileRevision, Repository},
     search::SearchKind,
-    view::{commit_event, copy_selection, query_status, toggle_search_option, typing_hints},
+    view::{
+        commit_event, commit_hints, copy_selection, file_link, moving_hints, query_status,
+        revision_spans, type_query, typing_hints,
+    },
     widget::{
-        commit_list::format_date,
+        commit_list::{format_date, ELLIPSIS},
         diff::Step,
         file_text::FileText,
         style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
         tree_query::{
-            find_around, highlighted_text, match_ranges, QueryChange, QueryKind, SearchDirection,
+            find_around, highlighted_text, name_matches, QueryChange, QueryKind, SearchDirection,
             TreeQuery,
         },
     },
 };
-
-// The keys moving in a list of lines, for the key hints of the blame and the timeline.
-pub fn moving_hints() -> Vec<KeyHint> {
-    use UserEvent::*;
-    vec![
-        (vec![NavigateDown, NavigateUp], "move".into()),
-        (vec![GoToTop, GoToBottom], "top/bottom".into()),
-        (vec![HalfPageDown, HalfPageUp], "half page".into()),
-        (vec![PageDown, PageUp], "page".into()),
-        (vec![ScrollDown, ScrollUp], "scroll".into()),
-    ]
-}
 
 // The width the authors' names are cut to.
 const AUTHOR_WIDTH: usize = 16;
@@ -64,7 +54,10 @@ pub struct BlameView {
     index: usize,
     // the commit of each line
     commits: Vec<CommitHash>,
-    authors: FxHashMap<CommitHash, BlameCommit>,
+    // the author and date of each commit, as shown, and the width they are given
+    labels: FxHashMap<CommitHash, (String, String)>,
+    author_width: usize,
+    date_width: usize,
     text: FileText,
     focus: BlameFocus,
     query: TreeQuery,
@@ -87,7 +80,9 @@ impl BlameView {
             history,
             index,
             commits: Vec::new(),
-            authors: FxHashMap::default(),
+            labels: FxHashMap::default(),
+            author_width: 0,
+            date_width: 0,
             text: FileText::default(),
             focus: BlameFocus::Commit,
             query: TreeQuery::default(),
@@ -96,7 +91,7 @@ impl BlameView {
         };
         view.load(repository)?;
         if let Some(line) = line {
-            view.select_line(line);
+            view.text.select_line(line);
             view.focus = BlameFocus::Text;
         }
         Ok(view)
@@ -109,16 +104,23 @@ impl BlameView {
         let line = self.text.selected_line();
         let (commits, lines) = blame.lines.into_iter().unzip();
         self.commits = commits;
-        self.authors = blame.commits;
+        self.labels = blame
+            .commits
+            .into_iter()
+            .map(|(commit, c)| (commit, (c.author, format_date(&self.ctx, &c.date))))
+            .collect();
+        let widest = |f: fn(&(String, String)) -> &String| {
+            self.labels
+                .values()
+                .map(|l| f(l).width())
+                .max()
+                .unwrap_or(0)
+        };
+        self.author_width = widest(|l| &l.0).min(AUTHOR_WIDTH);
+        self.date_width = widest(|l| &l.1);
         self.text.set_lines(lines);
-        self.select_line(line);
+        self.text.select_line(line);
         Ok(())
-    }
-
-    fn select_line(&mut self, line: usize) {
-        if let Some(last) = self.commits.len().checked_sub(1) {
-            self.text.select_line(line.min(last));
-        }
     }
 
     // The path of the file as of the commit shown, for the page bar.
@@ -133,8 +135,8 @@ impl BlameView {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         if self.query.is_editing() {
-            let toggled = toggle_search_option(&self.ctx, &key, self.query_kind());
-            if toggled || self.query.handle_key(key) == QueryChange::Search {
+            let kind = self.query_kind();
+            if type_query(&self.ctx, &mut self.query, key, kind) == QueryChange::Search {
                 self.search(SearchDirection::Current);
             }
             self.update_query_status();
@@ -157,12 +159,11 @@ impl BlameView {
                 self.focus = BlameFocus::Revision
             }
             // on the commit shown, left and right step too, like a popup's option
-            UserEvent::OlderCommit
-            | UserEvent::NewerCommit
-            | UserEvent::NavigateLeft
-            | UserEvent::NavigateRight => {
-                let older = matches!(event, UserEvent::OlderCommit | UserEvent::NavigateLeft);
-                self.step_history(older, repository);
+            UserEvent::OlderCommit | UserEvent::NavigateLeft => {
+                self.select(self.index + 1, repository)
+            }
+            UserEvent::NewerCommit | UserEvent::NavigateRight => {
+                self.select(self.index.saturating_sub(1), repository)
             }
             UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
             UserEvent::Search if body => {
@@ -183,13 +184,7 @@ impl BlameView {
 
     // The keys on a line: moving, and acting on its commit or its text.
     fn handle_line_event(&mut self, event: UserEvent) {
-        let step = match event {
-            UserEvent::NavigateDown => Some(Step::Next),
-            UserEvent::NavigateUp => Some(Step::Prev),
-            UserEvent::GoToTop => Some(Step::First),
-            UserEvent::GoToBottom => Some(Step::Last),
-            _ => None,
-        };
+        let step = Step::of(event);
         if let Some(step) = step {
             self.text.step(step);
             return;
@@ -214,13 +209,9 @@ impl BlameView {
                 // the file at the commit shown, on the line
                 UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                     let revision = &self.history[self.index];
-                    let target = LinkTarget::File {
-                        commit: revision.commit.as_str().into(),
-                        path: revision.path.clone(),
-                        lines: Some((line + 1, line + 1)),
-                    };
-                    let copy = event == UserEvent::CopyLink;
-                    self.tx.send(AppEvent::Link { target, copy });
+                    let lines = Some((line + 1, line + 1));
+                    let link = file_link(event, &revision.commit, &revision.path, lines);
+                    self.tx.send(link);
                 }
                 _ => {}
             },
@@ -228,14 +219,10 @@ impl BlameView {
         }
     }
 
-    // Shows the blame as of the older or newer commit changing the file.
-    fn step_history(&mut self, older: bool, repository: &Repository) {
-        let index = if older {
-            self.index + 1
-        } else {
-            self.index.wrapping_sub(1)
-        };
-        if index >= self.history.len() {
+    // Shows the blame as of another commit changing the file, as the timeline selects one.
+    fn select(&mut self, index: usize, repository: &Repository) {
+        let index = index.min(self.history.len() - 1);
+        if index == self.index {
             return;
         }
         let shown = std::mem::replace(&mut self.index, index);
@@ -258,20 +245,13 @@ impl BlameView {
             BlameFocus::Commit => {
                 let commits = &self.commits;
                 let found = find_around(commits.len(), self.text.selected_line(), direction, |i| {
-                    let starts = i == 0 || commits[i - 1] != commits[i];
                     let commit = &commits[i];
-                    let author = self.authors.get(commit);
-                    let date = author.map(|c| format_date(&self.ctx, &c.date));
-                    let texts = [
-                        Some(commit.as_str()),
-                        author.map(|c| c.author.as_str()),
-                        date.as_deref(),
-                    ];
+                    let starts = i == 0 || commits[i - 1] != *commit;
+                    let (author, date) = &self.labels[commit];
                     starts
-                        && texts
+                        && [commit.as_str(), author, date]
                             .iter()
-                            .flatten()
-                            .any(|text| !match_ranges(text, &search, options).is_empty())
+                            .any(|text| name_matches(text, &search, options))
                 });
                 if let Some(line) = found {
                     self.text.select_line(line);
@@ -314,13 +294,7 @@ impl BlameView {
             steps.extend([NavigateLeft, NavigateRight]);
         }
         let mut hints = vec![(steps, "older/newer commit".into())];
-        let commit = [
-            hint(Confirm, "show on graph"),
-            hint(Checkout, "checkout"),
-            hint(OpenInBrowser, "open in browser"),
-            hint(CopyLink, "copy link"),
-            (vec![ShortCopy, FullCopy], "copy hash".into()),
-        ];
+        let commit = commit_hints();
         match self.focus {
             BlameFocus::Revision => {
                 hints.extend(commit);
@@ -366,15 +340,10 @@ impl BlameView {
             panel_block(focused, theme).title(panel_title("[0] Commit", &position, focused, theme));
         // [ and ] step from anywhere
         let [left, right] = choice_arrows(self.index + 1 < count, self.index > 0, theme);
-        let line = Line::from(vec![
-            left,
-            Span::raw(revision.commit.as_short_hash().to_string()).fg(theme.list_hash_fg),
-            Span::raw(" "),
-            Span::raw(format_date(&ctx, &revision.date)).fg(theme.list_date_fg),
-            Span::raw(" "),
-            Span::raw(revision.subject.clone()).fg(theme.list_subject_fg),
-            right,
-        ]);
+        let mut spans = vec![left];
+        spans.extend(revision_spans(&ctx, revision, None));
+        spans.push(right);
+        let line = Line::from(spans);
         let inner = block.inner(top);
         block.render(top, buf);
         line.render(inner, buf);
@@ -389,15 +358,8 @@ impl BlameView {
         ));
         let inner = block.inner(body);
         block.render(body, buf);
-        let dates: FxHashMap<&CommitHash, String> = self
-            .authors
-            .iter()
-            .map(|(commit, c)| (commit, format_date(&ctx, &c.date)))
-            .collect();
-        let author_width = self.authors.values().map(|c| c.author.width()).max();
-        let author_width = author_width.unwrap_or(0).min(AUTHOR_WIDTH);
-        let date_width = dates.values().map(|d| d.width()).max().unwrap_or(0);
-        let gutter_width = (7 + 1 + author_width + 1 + date_width) as u16;
+        let author_width = self.author_width;
+        let gutter_width = (7 + 1 + author_width + 1 + self.date_width) as u16;
         let [gutter, divider, text_area] = Layout::horizontal([
             Constraint::Length(gutter_width.min(inner.width / 2)),
             Constraint::Length(1),
@@ -434,20 +396,10 @@ impl BlameView {
             if !heads {
                 continue;
             }
-            let (author, date) = match self.authors.get(commit) {
-                Some(c) => (c.author.as_str(), dates[commit].as_str()),
-                None => ("", ""),
-            };
-            // cut to its width, then padded to it
-            let mut used = 0;
-            let mut author: String = author
-                .chars()
-                .take_while(|c| {
-                    used += c.width().unwrap_or(0);
-                    used <= author_width
-                })
-                .collect();
-            author += &" ".repeat(author_width - author.width());
+            let (author, date) = &self.labels[commit];
+            // cut and padded to the width, as the commit list cuts names
+            let author = console::truncate_str(author, author_width, ELLIPSIS);
+            let author = console::pad_str(&author, author_width, console::Alignment::Left, None);
             let options = ctx.search_options.get();
             let text = |text: &str, shown: usize, fg| {
                 highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)

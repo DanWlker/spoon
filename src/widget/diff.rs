@@ -253,6 +253,19 @@ pub enum Step {
     Last,
 }
 
+impl Step {
+    // The move of j and k, g and G.
+    pub fn of(event: UserEvent) -> Option<Step> {
+        match event {
+            UserEvent::NavigateDown => Some(Step::Next),
+            UserEvent::NavigateUp => Some(Step::Prev),
+            UserEvent::GoToTop => Some(Step::First),
+            UserEvent::GoToBottom => Some(Step::Last),
+            _ => None,
+        }
+    }
+}
+
 // The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
 // commit changes select the same way.
 #[derive(Debug, Default, Clone)]

@@ -155,9 +155,9 @@ fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
     }
 }
 
-// Whether `path` matches `query`, see `match_ranges`.
-pub fn path_matches(path: &str, query: &str, options: SearchOptions) -> bool {
-    !match_ranges(path, query, options).is_empty()
+// Whether a name, like a path or a field of a commit, matches `query`, see `match_ranges`.
+pub fn name_matches(name: &str, query: &str, options: SearchOptions) -> bool {
+    !match_ranges(name, query, options).is_empty()
 }
 
 // The byte range of the first occurrence of `query` in `text`, smart case or case-sensitive; the
@@ -169,6 +169,15 @@ pub fn match_range(
 ) -> Option<std::ops::Range<usize>> {
     if !case_insensitive(options.smart_case, query) {
         let start = text.find(query)?;
+        return Some(start..start + query.len());
+    }
+    // the usual case, without allocating: searched for every field of every commit as typed
+    if text.is_ascii() && query.is_ascii() {
+        let (text, query) = (text.as_bytes(), query.as_bytes());
+        let start = text
+            .windows(query.len().max(1))
+            .position(|w| w.eq_ignore_ascii_case(query))
+            .or_else(|| query.is_empty().then_some(0))?;
         return Some(start..start + query.len());
     }
     // lowercasing can change byte lengths: each char lowercased, with where it is in `text`
@@ -378,37 +387,37 @@ mod tests {
     }
 
     #[test]
-    fn test_path_matches() {
+    fn test_name_matches() {
         let smart_case = SearchOptions {
             smart_case: true,
             ..Default::default()
         };
-        assert!(path_matches("src/Main.rs", "main", smart_case));
-        assert!(!path_matches("src/main.rs", "Main", smart_case));
-        assert!(path_matches("src/Main.rs", "Main", smart_case));
+        assert!(name_matches("src/Main.rs", "main", smart_case));
+        assert!(!name_matches("src/main.rs", "Main", smart_case));
+        assert!(name_matches("src/Main.rs", "Main", smart_case));
         assert_eq!(match_range("src/Main.rs", "main", smart_case), Some(4..8));
         assert_eq!(match_range("README", "x", smart_case), None);
     }
 
     #[test]
     fn test_fuzzy_paths() {
-        let path_matches_with = |path, query, fuzzy, smart_case| {
+        let name_matches_with = |path, query, fuzzy, smart_case| {
             let options = SearchOptions {
                 fuzzy,
                 smart_case,
                 ..Default::default()
             };
-            path_matches(path, query, options)
+            name_matches(path, query, options)
         };
-        assert!(path_matches_with("src/widget/diff.rs", "swd", true, true));
-        assert!(!path_matches_with("src/widget/diff.rs", "swd", false, true));
-        assert!(!path_matches_with("src/main.rs", "Main", true, true));
-        assert!(!path_matches_with("src/main.rs", "xyz", true, true));
+        assert!(name_matches_with("src/widget/diff.rs", "swd", true, true));
+        assert!(!name_matches_with("src/widget/diff.rs", "swd", false, true));
+        assert!(!name_matches_with("src/main.rs", "Main", true, true));
+        assert!(!name_matches_with("src/main.rs", "xyz", true, true));
         // case-sensitive: a lowercase query no longer matches an uppercase path
-        assert!(path_matches_with("src/Main.rs", "main", false, true));
-        assert!(!path_matches_with("src/Main.rs", "main", false, false));
-        assert!(!path_matches_with("src/Main.rs", "mn", true, false));
-        assert!(path_matches_with("src/Main.rs", "Mn", true, false));
+        assert!(name_matches_with("src/Main.rs", "main", false, true));
+        assert!(!name_matches_with("src/Main.rs", "main", false, false));
+        assert!(!name_matches_with("src/Main.rs", "mn", true, false));
+        assert!(name_matches_with("src/Main.rs", "Mn", true, false));
         // the picked letters of the name, joined where they follow each other; by bytes
         let fuzzy = SearchOptions {
             fuzzy: true,

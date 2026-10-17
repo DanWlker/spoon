@@ -402,8 +402,8 @@ fn overlay(expected: &'static str) -> Vec<Step> {
         let shown = match &app.shell.overlay {
             None => "none",
             Some(super::Overlay::Help(_)) => "help",
-            Some(super::Overlay::Blame(_)) => "blame",
-            Some(super::Overlay::Timeline(_)) => "timeline",
+            Some(super::Overlay::File(super::FileWindow::Blame(_))) => "blame",
+            Some(super::Overlay::File(super::FileWindow::Timeline(_))) => "timeline",
             Some(super::Overlay::CommandLog(_)) => "log",
         };
         assert_eq!(shown, expected);

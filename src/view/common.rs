@@ -1,7 +1,7 @@
 // What the pages share: the key hints of the commit graph and of typing, the status line, copying,
 // and what each page keeps across a reload of the repository.
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::{crossterm::event::KeyEvent, style::Style, text::Span};
 
 use crate::{
     app::AppContext,
@@ -15,7 +15,7 @@ use crate::{
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
         file_tree::ROOT_PATH,
-        tree_query::match_ranges,
+        tree_query::{highlighted_text, name_matches, QueryChange, TreeQuery},
     },
 };
 
@@ -54,11 +54,11 @@ pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
 // The keys while typing a search or filter.
 pub fn typing_hints(kind: SearchKind) -> Vec<KeyHint> {
     let mut hints = vec![];
-    if kind == SearchKind::Commits {
+    if kind.has_target() {
         hints.push(hint(UserEvent::SearchTargetToggle, "target"));
     }
     hints.push(hint(UserEvent::SmartCaseToggle, "smart case"));
-    if kind != SearchKind::Text {
+    if kind.has_fuzzy() {
         hints.push(hint(UserEvent::FuzzyToggle, "fuzzy"));
     }
     hints.extend([
@@ -106,7 +106,49 @@ pub fn revision_matches(
     let date = format_date(ctx, &revision.date);
     [revision.commit.as_str(), &date, &revision.subject]
         .iter()
-        .any(|text| !match_ranges(text, query, options).is_empty())
+        .any(|text| name_matches(text, query, options))
+}
+
+// The keys moving in a list of lines, for the key hints of the blame and the timeline.
+pub fn moving_hints() -> Vec<KeyHint> {
+    use UserEvent::*;
+    vec![
+        (vec![NavigateDown, NavigateUp], "move".into()),
+        (vec![GoToTop, GoToBottom], "top/bottom".into()),
+        (vec![HalfPageDown, HalfPageUp], "half page".into()),
+        (vec![PageDown, PageUp], "page".into()),
+        (vec![ScrollDown, ScrollUp], "scroll".into()),
+    ]
+}
+
+// The keys of `commit_event`, for the key hints.
+pub fn commit_hints() -> [KeyHint; 5] {
+    use UserEvent::*;
+    [
+        hint(Confirm, "show on graph"),
+        hint(Checkout, "checkout"),
+        hint(OpenInBrowser, "open in browser"),
+        hint(CopyLink, "copy link"),
+        (vec![ShortCopy, FullCopy], "copy hash".into()),
+    ]
+}
+
+// o and O on a file at a commit, at the selected lines: its page on the web host, or its link.
+pub fn file_link(
+    event: UserEvent,
+    commit: &CommitHash,
+    path: &str,
+    lines: Option<(usize, usize)>,
+) -> AppEvent {
+    let target = LinkTarget::File {
+        commit: commit.as_str().into(),
+        path: path.into(),
+        lines,
+    };
+    AppEvent::Link {
+        target,
+        copy: event == UserEvent::CopyLink,
+    }
 }
 
 // The options toggled while typing a search other than the commit list's, as there: smart case,
@@ -116,11 +158,51 @@ pub fn toggle_search_option(ctx: &AppContext, key: &KeyEvent, kind: SearchKind) 
     let mut options = ctx.search_options.get();
     match ctx.keybind.event_in(Scope::Global, key) {
         Some(UserEvent::SmartCaseToggle) => options.smart_case = !options.smart_case,
-        Some(UserEvent::FuzzyToggle) if kind != SearchKind::Text => options.fuzzy = !options.fuzzy,
+        Some(UserEvent::FuzzyToggle) if kind.has_fuzzy() => options.fuzzy = !options.fuzzy,
         _ => return false,
     }
     ctx.search_options.set(options);
     true
+}
+
+// A key typed into a search or filter other than the commit list's: toggling an option applies it
+// again, other keys edit it. Returns what to apply.
+pub fn type_query(
+    ctx: &AppContext,
+    query: &mut TreeQuery,
+    key: KeyEvent,
+    kind: SearchKind,
+) -> QueryChange {
+    if toggle_search_option(ctx, &key, kind) {
+        query.editing_change()
+    } else {
+        query.handle_key(key)
+    }
+}
+
+// A commit changing a file, as the blame and the timeline show it: its hash, date and subject,
+// with what `search` matches in them highlighted.
+pub fn revision_spans(
+    ctx: &AppContext,
+    revision: &FileRevision,
+    search: Option<&str>,
+) -> Vec<Span<'static>> {
+    let theme = &ctx.color_theme;
+    let options = ctx.search_options.get();
+    let text = |text: &str, shown: usize, fg| {
+        highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)
+    };
+    let date = format_date(ctx, &revision.date);
+    let mut spans = text(revision.commit.as_str(), 7, theme.list_hash_fg);
+    spans.push(Span::raw(" "));
+    spans.extend(text(&date, date.len(), theme.list_date_fg));
+    spans.push(Span::raw(" "));
+    spans.extend(text(
+        &revision.subject,
+        revision.subject.len(),
+        theme.list_subject_fg,
+    ));
+    spans
 }
 
 // The status line showing what is `typed` in a search of `kind`, with its options, cleared when

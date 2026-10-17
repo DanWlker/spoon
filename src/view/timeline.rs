@@ -3,33 +3,28 @@ use std::rc::Rc;
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    style::Style,
-    text::{Line, Span},
+    text::Line,
     widgets::Widget,
     Frame,
 };
 
 use crate::{
     app::AppContext,
-    browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{CommitHash, FileRevision, Repository},
     search::SearchKind,
     view::{
-        blame::moving_hints, commit_event, copy_selection, query_status, revision_matches,
-        toggle_search_option, typing_hints,
+        commit_event, commit_hints, copy_selection, file_link, moving_hints, query_status,
+        revision_matches, revision_spans, type_query, typing_hints,
     },
     widget::{
-        commit_list::format_date,
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
         style::{
-            half_page_jump, mark_selected_bar, panel_block, panel_title, render_panel_scrollbar,
+            half_page_jump, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
             scroll_to,
         },
-        tree_query::{
-            find_around, highlighted_text, QueryChange, QueryKind, SearchDirection, TreeQuery,
-        },
+        tree_query::{find_around, QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
 
@@ -115,8 +110,8 @@ impl TimelineView {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         if self.query.is_editing() {
-            let toggled = toggle_search_option(&self.ctx, &key, self.query_kind());
-            if toggled || self.query.handle_key(key) == QueryChange::Search {
+            let kind = self.query_kind();
+            if type_query(&self.ctx, &mut self.query, key, kind) == QueryChange::Search {
                 self.search(SearchDirection::Current, repository);
             }
             self.update_query_status();
@@ -177,13 +172,7 @@ impl TimelineView {
 
     // The keys in the diff: moving the selected hunk or line, copying it and linking to it.
     fn handle_diff_event(&mut self, event: UserEvent) {
-        let step = match event {
-            UserEvent::NavigateDown => Some(Step::Next),
-            UserEvent::NavigateUp => Some(Step::Prev),
-            UserEvent::GoToTop => Some(Step::First),
-            UserEvent::GoToBottom => Some(Step::Last),
-            _ => None,
-        };
+        let step = Step::of(event);
         if let Some(step) = step {
             self.pane.step(step);
             return;
@@ -201,13 +190,9 @@ impl TimelineView {
             // the file at the commit, at the selected lines
             UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                 let revision = &self.history[self.selected];
-                let target = LinkTarget::File {
-                    commit: revision.commit.as_str().into(),
-                    path: revision.path.clone(),
-                    lines: self.pane.selected_lines(),
-                };
-                let copy = event == UserEvent::CopyLink;
-                self.tx.send(AppEvent::Link { target, copy });
+                let lines = self.pane.selected_lines();
+                let link = file_link(event, &revision.commit, &revision.path, lines);
+                self.tx.send(link);
             }
             _ => {
                 self.pane.scroll(event);
@@ -272,14 +257,8 @@ impl TimelineView {
                 hint(NavigateLeft, "back"),
             ]);
         } else {
-            hints.extend([
-                hint(NavigateRight, "into the diff"),
-                hint(Confirm, "show on graph"),
-                hint(Checkout, "checkout"),
-                hint(OpenInBrowser, "open in browser"),
-                hint(CopyLink, "copy link"),
-                (vec![ShortCopy, FullCopy], "copy hash".into()),
-            ]);
+            hints.push(hint(NavigateRight, "into the diff"));
+            hints.extend(commit_hints());
         }
         hints.extend(moving_hints());
         hints.extend([
@@ -323,26 +302,13 @@ impl TimelineView {
         self.offset = scroll_to(self.offset, self.selected, self.height, count, scrolloff);
         let rows = self.history.iter().enumerate().skip(self.offset);
         for ((i, revision), y) in rows.zip(inner.top()..inner.bottom()) {
-            let row = Rect::new(inner.x, y, inner.width, 1);
             if i == self.selected {
-                buf.set_style(row, Style::default().bg(theme.list_selected_bg));
-                mark_selected_bar(buf, inner.x - 1, y, focused, theme);
+                mark_selected_row(buf, inner, y, focused, theme);
             }
             // the search of the commits highlighted, not the diff's
             let search = self.query.search().filter(|_| focused);
-            let options = ctx.search_options.get();
-            let text = |text: &str, shown: usize, fg| {
-                highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)
-            };
-            let date = format_date(&ctx, &revision.date);
-            let mut spans = text(revision.commit.as_str(), 7, theme.list_hash_fg);
-            spans.push(Span::raw(" "));
-            spans.extend(text(&date, date.len(), theme.list_date_fg));
-            spans.push(Span::raw(" "));
-            let subject = &revision.subject;
-            spans.extend(text(subject, subject.len(), theme.list_subject_fg));
-            let line = Line::from(spans);
-            buf.set_line(row.x, y, &line, row.width);
+            let line = Line::from(revision_spans(&ctx, revision, search));
+            buf.set_line(inner.x, y, &line, inner.width);
         }
         render_panel_scrollbar(buf, list_area, count, self.offset, focused, theme);
 

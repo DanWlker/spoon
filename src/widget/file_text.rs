@@ -53,7 +53,7 @@ impl FileText {
             Step::First => 0,
             Step::Last => last,
         };
-        self.select_line(line.min(last));
+        self.select_line(line);
     }
 
     // Scrolls by the scroll keys, or moves the selected line half a page; returns whether `event`
@@ -69,7 +69,9 @@ impl FileText {
         }
     }
 
+    // Selects a line, the last one past the end.
     pub fn select_line(&mut self, line: usize) {
+        let line = line.min(self.lines.len().saturating_sub(1));
         self.cursor.line = line;
         self.cursor.scroll_to(line..line + 1);
         self.search_row = None;

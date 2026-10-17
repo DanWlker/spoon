@@ -19,7 +19,7 @@ use crate::{
         style::{
             change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder, scroll_to,
         },
-        tree_query::{find_around, highlighted_text, path_matches, SearchDirection},
+        tree_query::{find_around, highlighted_text, name_matches, SearchDirection},
     },
 };
 
@@ -228,7 +228,7 @@ impl FileTreeState {
     pub fn keeps(&self, path: &str) -> bool {
         self.filter
             .as_ref()
-            .is_none_or(|(filter, options)| path_matches(path, filter, *options))
+            .is_none_or(|(filter, options)| name_matches(path, filter, *options))
     }
 
     // Selects the next match of `query`, expanding the directories that hide it.
@@ -395,7 +395,7 @@ pub fn find_match(
     options: SearchOptions,
 ) -> Option<String> {
     find_next(rows, current, direction, |row| {
-        path_matches(&row.path, query, options)
+        name_matches(&row.path, query, options)
     })
 }
 

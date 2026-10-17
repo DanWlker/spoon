@@ -43,6 +43,17 @@ pub enum SearchKind {
     Text,
 }
 
+impl SearchKind {
+    // Whether the fields of the commits searched can be picked.
+    pub fn has_target(self) -> bool {
+        self == SearchKind::Commits
+    }
+
+    pub fn has_fuzzy(self) -> bool {
+        self != SearchKind::Text
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOptions {
     pub target: SearchTarget,
@@ -60,11 +71,11 @@ impl SearchOptions {
         };
         let matcher = if self.fuzzy { "fuzzy" } else { "substring" };
         let mut parts = vec![];
-        if kind == SearchKind::Commits {
+        if kind.has_target() {
             parts.push(self.target.as_str());
         }
         parts.push(case);
-        if kind != SearchKind::Text {
+        if kind.has_fuzzy() {
             parts.push(matcher);
         }
         parts

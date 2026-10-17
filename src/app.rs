@@ -51,7 +51,7 @@ use crate::{
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode, DETACHED_HEAD},
-        style::{key_hints, spinner, SPINNER_RATE},
+        style::{badge, key_hints, spinner, SPINNER_RATE},
     },
 };
 
@@ -217,43 +217,61 @@ pub struct AppShell {
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
-// `UserEvent::HelpToggle`), the blame or the timeline of a file (see `UserEvent::Blame`), or the git
-// commands run
-// (see `UserEvent::CommandLog`), over everything.
+// `UserEvent::HelpToggle`), the blame or the timeline of a file, or the git commands run (see
+// `UserEvent::CommandLog`), over everything.
 #[derive(Debug)]
 enum Overlay {
     Help(HelpView),
-    Blame(Box<BlameView>),
-    Timeline(Box<TimelineView>),
+    File(FileWindow),
     CommandLog(CommandLogState),
 }
 
 impl Overlay {
-    // Whether a search is being typed in the blame or the timeline; None over the other overlays.
-    fn is_typing(&self) -> Option<bool> {
-        match self {
-            Overlay::Blame(blame) => Some(blame.is_typing()),
-            Overlay::Timeline(timeline) => Some(timeline.is_typing()),
-            Overlay::Help(_) | Overlay::CommandLog(_) => None,
-        }
-    }
-
     // Its name in the page bar, with the path of the file of the blame and the timeline.
     fn title(&self) -> (&'static str, Option<&str>) {
         match self {
             Overlay::Help(_) => ("Help", None),
-            Overlay::Blame(blame) => ("Blame", Some(blame.path())),
-            Overlay::Timeline(timeline) => ("Timeline", Some(timeline.path())),
+            Overlay::File(FileWindow::Blame(blame)) => ("Blame", Some(blame.path())),
+            Overlay::File(FileWindow::Timeline(timeline)) => ("Timeline", Some(timeline.path())),
             Overlay::CommandLog(_) => ("Command Log", None),
         }
     }
+}
 
-    // The keys of the blame and the timeline.
-    fn handle_file_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
+// The blame or the timeline of a file, see `UserEvent::Blame` and `UserEvent::Timeline`.
+#[derive(Debug)]
+enum FileWindow {
+    Blame(Box<BlameView>),
+    Timeline(Box<TimelineView>),
+}
+
+impl FileWindow {
+    // While a search is typed, keys go to it as they are.
+    fn is_typing(&self) -> bool {
         match self {
-            Overlay::Blame(blame) => blame.handle_event(event, key, repository),
-            Overlay::Timeline(timeline) => timeline.handle_event(event, key, repository),
-            Overlay::Help(_) | Overlay::CommandLog(_) => {}
+            FileWindow::Blame(blame) => blame.is_typing(),
+            FileWindow::Timeline(timeline) => timeline.is_typing(),
+        }
+    }
+
+    fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
+        match self {
+            FileWindow::Blame(blame) => blame.handle_event(event, key, repository),
+            FileWindow::Timeline(timeline) => timeline.handle_event(event, key, repository),
+        }
+    }
+
+    fn key_hints(&self) -> Vec<KeyHint> {
+        match self {
+            FileWindow::Blame(blame) => blame.key_hints(),
+            FileWindow::Timeline(timeline) => timeline.key_hints(),
+        }
+    }
+
+    fn render(&mut self, f: &mut Frame, area: Rect) {
+        match self {
+            FileWindow::Blame(blame) => blame.render(f, area),
+            FileWindow::Timeline(timeline) => timeline.render(f, area),
         }
     }
 }
@@ -587,19 +605,18 @@ impl App<'_> {
                     self.handle_dialog_key(key);
                     return Ok(None);
                 }
-                if let Some(typing) = self.shell.overlay.as_ref().and_then(Overlay::is_typing) {
-                    // typing a search, keys go as they are
-                    let event = match typing {
-                        true if self.force_quit(&key) => None,
-                        true => Some(UserEvent::Unknown),
-                        false => self.ctx.keybind.event_in(Scope::FileHistory, &key),
+                if let Some(Overlay::File(window)) = &self.shell.overlay {
+                    let event = if window.is_typing() {
+                        (!self.force_quit(&key)).then_some(UserEvent::Unknown)
+                    } else {
+                        self.ctx.keybind.event_in(Scope::FileHistory, &key)
                     };
                     match (event, self.shell.overlay.as_mut()) {
                         (Some(UserEvent::KeysToggle), _) => {
                             self.shell.keys_popup = !self.shell.keys_popup
                         }
-                        (Some(event), Some(overlay)) => {
-                            overlay.handle_file_event(event, key, self.repository)
+                        (Some(event), Some(Overlay::File(window))) => {
+                            window.handle_event(event, key, self.repository)
                         }
                         _ => {}
                     }
@@ -743,14 +760,20 @@ impl App<'_> {
             AppEvent::OpenBlame { commit, path, line } => {
                 let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
                 match BlameView::new(self.repository, &commit, &path, line, ctx, tx) {
-                    Ok(blame) => self.shell.overlay = Some(Overlay::Blame(Box::new(blame))),
+                    Ok(blame) => {
+                        let window = FileWindow::Blame(Box::new(blame));
+                        self.shell.overlay = Some(Overlay::File(window));
+                    }
                     Err(err) => self.ec.send(AppEvent::NotifyError(err)),
                 }
             }
             AppEvent::OpenTimeline { commit, path } => {
                 let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
                 match TimelineView::new(self.repository, &commit, &path, ctx, tx) {
-                    Ok(view) => self.shell.overlay = Some(Overlay::Timeline(Box::new(view))),
+                    Ok(view) => {
+                        let window = FileWindow::Timeline(Box::new(view));
+                        self.shell.overlay = Some(Overlay::File(window));
+                    }
                     Err(err) => self.ec.send(AppEvent::NotifyError(err)),
                 }
             }
@@ -890,10 +913,8 @@ impl App<'_> {
             dialog.key_hints()
         } else if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
             vec![hint(UserEvent::Cancel, "close")]
-        } else if let Some(Overlay::Blame(blame)) = &self.shell.overlay {
-            blame.key_hints()
-        } else if let Some(Overlay::Timeline(timeline)) = &self.shell.overlay {
-            timeline.key_hints()
+        } else if let Some(Overlay::File(window)) = &self.shell.overlay {
+            window.key_hints()
         } else if self.shell.sidebar_focused() {
             self.sidebar_hints()
         } else {
@@ -960,7 +981,6 @@ impl App<'_> {
         self.visible_dialog().is_some() || self.shell.overlay.is_some() || self.is_typing()
     }
 
-    // Whether text is being typed or a prompt answered, in the view or the status bar.
     // The wheel moves the selection of what has the focus like j and k, whatever keys they are bound
     // to; over a popup, or while typing, it does nothing.
     fn scroll_wheel(&mut self, down: bool) {
@@ -969,24 +989,19 @@ impl App<'_> {
         } else {
             UserEvent::NavigateUp
         };
+        let code = if down { KeyCode::Down } else { KeyCode::Up };
+        let key = KeyEvent::new(code, KeyModifiers::NONE);
         let idle = self.shell.dialog.is_none() && !self.is_typing();
         match self.shell.overlay.as_mut() {
             Some(Overlay::CommandLog(_)) => self.handle_command_log_event(Some(event)),
             Some(Overlay::Help(help)) => help.handle_event(event),
-            Some(overlay) if idle => {
-                let code = if down { KeyCode::Down } else { KeyCode::Up };
-                let key = KeyEvent::new(code, KeyModifiers::NONE);
-                overlay.handle_file_event(event, key, self.repository);
-            }
-            Some(_) => {}
-            None if idle => {
-                let code = if down { KeyCode::Down } else { KeyCode::Up };
-                self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
-            }
-            None => {}
+            Some(Overlay::File(window)) if idle => window.handle_event(event, key, self.repository),
+            None if idle => self.dispatch(event, key),
+            Some(Overlay::File(_)) | None => {}
         }
     }
 
+    // Whether text is being typed or a prompt answered, in the view or the status bar.
     fn is_typing(&self) -> bool {
         self.view.is_capturing_keys()
             || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
@@ -996,13 +1011,11 @@ impl App<'_> {
     // hidden. Computed once a frame, for clearing the screen and drawing.
     fn keys_popup_keys(&self) -> Vec<(String, String)> {
         // over the windows with keys of their own, not the help, which lists them all
-        let own_keys = matches!(
-            self.shell.overlay,
-            Some(Overlay::Blame(_) | Overlay::Timeline(_) | Overlay::CommandLog(_))
-        );
-        let shown = match own_keys {
-            true => self.visible_dialog().is_none() && !self.is_typing(),
-            false => !self.keys_are_local(),
+        let shown = match self.shell.overlay {
+            Some(Overlay::File(_) | Overlay::CommandLog(_)) => {
+                self.visible_dialog().is_none() && !self.is_typing()
+            }
+            _ => !self.keys_are_local(),
         };
         if !self.shell.keys_popup || !shown {
             return vec![];
@@ -1110,22 +1123,14 @@ impl App<'_> {
         }
         self.view
             .render(f, view_area, !self.shell.sidebar_focused());
-        if let Some(Overlay::Help(help)) = self.shell.overlay.as_mut() {
+        // the windows under the popups; the command log is drawn over them, below
+        if let Some(Overlay::Help(_) | Overlay::File(_)) = self.shell.overlay {
             f.render_widget(Clear, app_area);
-            f.render_widget(base.clone(), app_area);
-            help.render(f, app_area);
+            f.render_widget(base, app_area);
         }
         match self.shell.overlay.as_mut() {
-            Some(Overlay::Blame(blame)) => {
-                f.render_widget(Clear, app_area);
-                f.render_widget(base, app_area);
-                blame.render(f, app_area);
-            }
-            Some(Overlay::Timeline(timeline)) => {
-                f.render_widget(Clear, app_area);
-                f.render_widget(base, app_area);
-                timeline.render(f, app_area);
-            }
+            Some(Overlay::Help(help)) => help.render(f, app_area),
+            Some(Overlay::File(window)) => window.render(f, app_area),
             _ => {}
         }
         if let Some(dialog) = self.visible_dialog() {
@@ -1185,7 +1190,7 @@ impl App<'_> {
         let pill = |name: String, color| {
             [
                 Span::raw("\u{e0b6}").fg(color),
-                Span::raw(name).fg(theme.accent_text_fg).bg(color).bold(),
+                badge(name, color, theme),
                 Span::raw("\u{e0b4}").fg(color),
             ]
         };
@@ -1918,10 +1923,7 @@ impl App<'_> {
             return;
         }
         // a checkout from the blame or the timeline shows the graph
-        if matches!(
-            self.shell.overlay,
-            Some(Overlay::Blame(_) | Overlay::Timeline(_))
-        ) {
+        if task.moves_head() && matches!(self.shell.overlay, Some(Overlay::File(_))) {
             self.shell.overlay = None;
         }
         // a commit made clears the message box, see `finish_task`
