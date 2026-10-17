@@ -471,12 +471,12 @@
         "list_selected_bg": {
           "type": "string",
           "description": "Background of the selected row in every list and file tree, and of the line numbers of the selected lines of a diff.",
-          "default": "#313244"
+          "default": "#3b3d4f"
         },
         "list_picked_fg": {
           "type": "string",
           "description": "Foreground color for commits picked with space in the commit list.",
-          "default": "#11111b"
+          "default": "#1e1e2e"
         },
         "list_picked_bg": {
           "type": "string",
@@ -486,17 +486,17 @@
         "list_ref_branch_fg": {
           "type": "string",
           "description": "Color for local branches in the commit list.",
-          "default": "#a6e3a1"
+          "default": "#89b4fa"
         },
         "list_ref_head_fg": {
           "type": "string",
-          "description": "Color for the checked-out branch in the commit list.",
-          "default": "#89b4fa"
+          "description": "Color for the checked-out branch in the commit list and the sidebar.",
+          "default": "#a6e3a1"
         },
         "list_ref_remote_branch_fg": {
           "type": "string",
           "description": "Color for remote branches in the commit list.",
-          "default": "#a6e3a1"
+          "default": "#89b4fa"
         },
         "list_ref_tag_fg": {
           "type": "string",
@@ -536,17 +536,17 @@
         "list_match_fg": {
           "type": "string",
           "description": "Foreground color for a search match in the commit list.",
-          "default": "#11111b"
+          "default": "#cdd6f4"
         },
         "list_match_bg": {
           "type": "string",
           "description": "Background color for a search match in the commit list.",
-          "default": "#f9e2af"
+          "default": "#415960"
         },
         "detail_label_fg": {
           "type": "string",
           "description": "Color for labels in the commit detail view.",
-          "default": "#7f849c"
+          "default": "#a6adc8"
         },
         "detail_name_fg": {
           "type": "string",
@@ -626,7 +626,7 @@
         "virtual_cursor_fg": {
           "type": "string",
           "description": "Foreground color for the virtual cursor.",
-          "default": "#cdd6f4"
+          "default": "#f5e0dc"
         },
         "muted_fg": {
           "type": "string",
@@ -656,7 +656,7 @@
         "divider_fg": {
           "type": "string",
           "description": "Color for dividers.",
-          "default": "#45475a"
+          "default": "#6c7086"
         },
         "accent_fg": {
           "type": "string",
@@ -666,7 +666,7 @@
         "accent_text_fg": {
           "type": "string",
           "description": "Color for text on the accent color, like the title badge of the focused panel.",
-          "default": "#11111b"
+          "default": "#1e1e2e"
         },
         "panel_title_focused_fg": {
           "type": "string",

@@ -15,18 +15,20 @@ pub struct ColorTheme {
 
     #[default(TEXT)]
     pub list_selected_fg: RatatuiColor,
-    #[default(SURFACE0)]
+    // Overlay 2 at 25% over Base, the style guide's selection
+    #[default(RatatuiColor::Rgb(0x3B, 0x3D, 0x4F))]
     pub list_selected_bg: RatatuiColor,
-    #[default(CRUST)]
+    // text on an accent color is Base, in the style guide
+    #[default(BASE)]
     pub list_picked_fg: RatatuiColor,
     #[default(MAUVE)]
     pub list_picked_bg: RatatuiColor,
-    #[default(GREEN)]
+    #[default(BLUE)]
     pub list_ref_branch_fg: RatatuiColor,
     // the checked-out branch
-    #[default(BLUE)]
-    pub list_ref_head_fg: RatatuiColor,
     #[default(GREEN)]
+    pub list_ref_head_fg: RatatuiColor,
+    #[default(BLUE)]
     pub list_ref_remote_branch_fg: RatatuiColor,
     #[default(YELLOW)]
     pub list_ref_tag_fg: RatatuiColor,
@@ -43,12 +45,13 @@ pub struct ColorTheme {
     // the text of commits that are not on the current branch
     #[default(OVERLAY0)]
     pub list_dimmed_fg: RatatuiColor,
-    #[default(CRUST)]
+    // a search match: Text on Teal, here Teal at 30% over Base to keep Text readable
+    #[default(TEXT)]
     pub list_match_fg: RatatuiColor,
-    #[default(YELLOW)]
+    #[default(RatatuiColor::Rgb(0x41, 0x59, 0x60))]
     pub list_match_bg: RatatuiColor,
 
-    #[default(OVERLAY1)]
+    #[default(SUBTEXT0)]
     pub detail_label_fg: RatatuiColor,
     #[default(TEXT)]
     pub detail_name_fg: RatatuiColor,
@@ -60,6 +63,7 @@ pub struct ColorTheme {
     pub detail_hash_fg: RatatuiColor,
     #[default(GREEN)]
     pub detail_file_change_add_fg: RatatuiColor,
+    // yellow like git's, not the style guide's Blue for changed lines
     #[default(YELLOW)]
     pub detail_file_change_modify_fg: RatatuiColor,
     #[default(RED)]
@@ -86,7 +90,7 @@ pub struct ColorTheme {
     #[default(MAUVE)]
     pub help_block_title_fg: RatatuiColor,
 
-    #[default(TEXT)]
+    #[default(ROSEWATER)]
     pub virtual_cursor_fg: RatatuiColor,
     // quieter text: hints, placeholders, line numbers, summaries
     #[default(OVERLAY1)]
@@ -100,14 +104,15 @@ pub struct ColorTheme {
     #[default(RED)]
     pub status_error_fg: RatatuiColor,
 
-    #[default(SURFACE1)]
+    // the borders of the panels without the focus, and the lines of the trees
+    #[default(OVERLAY0)]
     pub divider_fg: RatatuiColor,
 
     // the focused panel: its border, and its title unless panel_title_focused_* say otherwise
     #[default(LAVENDER)]
     pub accent_fg: RatatuiColor,
     // text on the accent color
-    #[default(CRUST)]
+    #[default(BASE)]
     pub accent_text_fg: RatatuiColor,
     // the title of the focused panel: colored text, like lazygit; with a background, a badge
     #[default(LAVENDER)]
@@ -123,14 +128,14 @@ pub struct ColorTheme {
     pub status_bar_bg: RatatuiColor,
 }
 
-// The default colors: Catppuccin Mocha, https://catppuccin.com/palette
+// The default colors: Catppuccin Mocha, https://catppuccin.com/palette, used as its style guide
+// says, https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md
 const TEXT: RatatuiColor = RatatuiColor::Rgb(0xCD, 0xD6, 0xF4);
 const SUBTEXT0: RatatuiColor = RatatuiColor::Rgb(0xA6, 0xAD, 0xC8);
 const OVERLAY1: RatatuiColor = RatatuiColor::Rgb(0x7F, 0x84, 0x9C);
 const OVERLAY0: RatatuiColor = RatatuiColor::Rgb(0x6C, 0x70, 0x86);
-const SURFACE1: RatatuiColor = RatatuiColor::Rgb(0x45, 0x47, 0x5A);
-const SURFACE0: RatatuiColor = RatatuiColor::Rgb(0x31, 0x32, 0x44);
-const CRUST: RatatuiColor = RatatuiColor::Rgb(0x11, 0x11, 0x1B);
+const BASE: RatatuiColor = RatatuiColor::Rgb(0x1E, 0x1E, 0x2E);
+const ROSEWATER: RatatuiColor = RatatuiColor::Rgb(0xF5, 0xE0, 0xDC);
 const LAVENDER: RatatuiColor = RatatuiColor::Rgb(0xB4, 0xBE, 0xFE);
 const BLUE: RatatuiColor = RatatuiColor::Rgb(0x89, 0xB4, 0xFA);
 const MAUVE: RatatuiColor = RatatuiColor::Rgb(0xCB, 0xA6, 0xF7);
