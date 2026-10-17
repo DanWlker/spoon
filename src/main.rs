@@ -80,10 +80,6 @@ struct Args {
     /// Start on the local changes page
     #[arg(long)]
     local_changes: bool,
-
-    /// Start with the sidebar minimized
-    #[arg(long)]
-    minimize_sidebar: bool,
 }
 
 impl Args {
@@ -211,7 +207,6 @@ fn main() -> Result<()> {
     let primary_branch = args.primary_branch.filter(|s| !s.is_empty());
     let launch = app::Launch {
         local_changes: args.local_changes,
-        sidebar_collapsed: args.minimize_sidebar,
         fetch: true,
     };
 

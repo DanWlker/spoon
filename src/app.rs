@@ -77,12 +77,10 @@ pub enum InitialSelection {
     Head,
 }
 
-// How the app starts, from the command line: on the local changes page, with the sidebar shrunk;
-// and fetching the remotes, which the tests leave out, see `fetch_on_launch`.
+// How the app starts, from the command line: on the local changes page; and fetching the remotes, which the tests leave out, see `fetch_on_launch`.
 #[derive(Clone, Copy)]
 pub struct Launch {
     pub local_changes: bool,
-    pub sidebar_collapsed: bool,
     pub fetch: bool,
 }
 
@@ -426,9 +424,6 @@ impl<'a> App<'a> {
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
             None => {
-                if launch.sidebar_collapsed {
-                    app.shell.sidebar_mode = SidebarMode::Collapsed;
-                }
                 if launch.local_changes {
                     app.show_local_changes_page();
                 }
@@ -1097,6 +1092,19 @@ impl App<'_> {
                             path = shorten_path(&path);
                         }
                         left.push(Span::raw(format!("󰉋 {path}")).fg(theme.status_bar_fg));
+                        // the checked-out branch, as the sidebar is on the graph only
+                        let head = match self.repository.head() {
+                            Head::Branch { name } => Some(name.clone()),
+                            Head::Detached { target } => {
+                                Some(format!("detached at {}", target.as_short_hash()))
+                            }
+                            Head::None => None,
+                        };
+                        if let Some(head) = head {
+                            left.push(
+                                Span::raw(format!("   \u{e725} {head}")).fg(theme.list_ref_head_fg),
+                            );
+                        }
                     }
                 }
             }

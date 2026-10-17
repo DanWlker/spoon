@@ -211,7 +211,6 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
 fn launch() -> Launch {
     Launch {
         local_changes: false,
-        sidebar_collapsed: false,
         fetch: false,
     }
 }
@@ -312,18 +311,16 @@ fn draft(app: &App) -> String {
 // The launch options
 
 #[test]
-fn test_launch_on_local_changes_with_the_sidebar_shrunk() {
+fn test_launch_on_local_changes() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let launch = Launch {
         local_changes: true,
-        sidebar_collapsed: true,
         ..launch()
     };
     let mut harness = Harness::new(&path, launch);
     harness.run(vec![check(|app| {
         assert!(matches!(app.view, View::LocalChanges(_)));
-        assert!(app.shell.sidebar_collapsed());
     })]);
 }
 

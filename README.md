@@ -83,7 +83,6 @@ Options:
   -i, --initial-selection <TYPE>  Initial selection of commit [default: latest] [possible values: latest, head]
   -b, --primary-branch <BRANCH>   Primary branch to keep on the leftmost column
       --local-changes             Start on the local changes page
-      --minimize-sidebar          Start with the sidebar minimized
   -h, --help                      Print help
   -V, --version                   Print version
 ```

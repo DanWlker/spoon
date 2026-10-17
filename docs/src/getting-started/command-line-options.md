@@ -88,7 +88,3 @@ When specified, Serie preserves the first-parent commit spine of the specified b
 ## --local-changes
 
 Start on the local changes page instead of the commit graph.
-
-## --minimize-sidebar
-
-Start with the sidebar minimized to its title. Pressing <kbd>0</kbd> brings it back.
