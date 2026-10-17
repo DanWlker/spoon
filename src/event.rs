@@ -8,10 +8,7 @@ use std::{
 };
 
 use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use serde::{
-    de::{self, Deserializer, Visitor},
-    Deserialize,
-};
+use serde::Deserialize;
 
 use crate::{
     browse::LinkTarget,
@@ -317,7 +314,9 @@ pub fn hint(event: UserEvent, description: &str) -> KeyHint {
 }
 
 // The event triggered by user's key input
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Named in the keybind config like `go_to_top`; `focus_panel_1` is parsed by `parse_user_event`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UserEvent {
     ForceQuit,
     Quit,
@@ -344,6 +343,7 @@ pub enum UserEvent {
     RefList,
     Search,
     Filter,
+    #[serde(skip)]
     FocusPanel(usize),
     ResizeLeft,
     ResizeRight,
@@ -407,135 +407,8 @@ pub enum UserEvent {
     FullCopy,
     Ignore,
     CommandLog,
+    #[serde(skip)]
     Unknown,
-}
-
-impl<'de> Deserialize<'de> for UserEvent {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct UserEventVisitor;
-
-        impl<'de> Visitor<'de> for UserEventVisitor {
-            type Value = UserEvent;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string representing a user event")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<UserEvent, E>
-            where
-                E: de::Error,
-            {
-                if let Some(num) = value.strip_prefix("focus_panel_") {
-                    match num.parse::<usize>() {
-                        Ok(n) => Ok(UserEvent::FocusPanel(n)),
-                        Err(_) => {
-                            let msg = format!("Invalid focus_panel_n format: {value}");
-                            Err(de::Error::custom(msg))
-                        }
-                    }
-                } else {
-                    match value {
-                        "force_quit" => Ok(UserEvent::ForceQuit),
-                        "quit" => Ok(UserEvent::Quit),
-                        "help_toggle" => Ok(UserEvent::HelpToggle),
-                        "cancel" => Ok(UserEvent::Cancel),
-                        "close" => Ok(UserEvent::Close),
-                        "navigate_up" => Ok(UserEvent::NavigateUp),
-                        "navigate_down" => Ok(UserEvent::NavigateDown),
-                        "navigate_right" => Ok(UserEvent::NavigateRight),
-                        "navigate_left" => Ok(UserEvent::NavigateLeft),
-                        "select_up" => Ok(UserEvent::SelectUp),
-                        "select_down" => Ok(UserEvent::SelectDown),
-                        "go_to_top" => Ok(UserEvent::GoToTop),
-                        "go_to_bottom" => Ok(UserEvent::GoToBottom),
-                        "scroll_up" => Ok(UserEvent::ScrollUp),
-                        "scroll_down" => Ok(UserEvent::ScrollDown),
-                        "page_up" => Ok(UserEvent::PageUp),
-                        "page_down" => Ok(UserEvent::PageDown),
-                        "half_page_up" => Ok(UserEvent::HalfPageUp),
-                        "half_page_down" => Ok(UserEvent::HalfPageDown),
-                        "go_to_next" => Ok(UserEvent::GoToNext),
-                        "go_to_previous" => Ok(UserEvent::GoToPrevious),
-                        "confirm" => Ok(UserEvent::Confirm),
-                        "ref_list" => Ok(UserEvent::RefList),
-                        "search" => Ok(UserEvent::Search),
-                        "filter" => Ok(UserEvent::Filter),
-                        "search_target_toggle" => Ok(UserEvent::SearchTargetToggle),
-                        "smart_case_toggle" => Ok(UserEvent::SmartCaseToggle),
-                        "fuzzy_toggle" => Ok(UserEvent::FuzzyToggle),
-                        "refresh" => Ok(UserEvent::Refresh),
-                        "resize_left" => Ok(UserEvent::ResizeLeft),
-                        "resize_right" => Ok(UserEvent::ResizeRight),
-                        "resize_up" => Ok(UserEvent::ResizeUp),
-                        "resize_down" => Ok(UserEvent::ResizeDown),
-                        "focus_left" => Ok(UserEvent::FocusLeft),
-                        "focus_right" => Ok(UserEvent::FocusRight),
-                        "focus_up" => Ok(UserEvent::FocusUp),
-                        "focus_down" => Ok(UserEvent::FocusDown),
-                        "keys_toggle" => Ok(UserEvent::KeysToggle),
-                        "short_copy" => Ok(UserEvent::ShortCopy),
-                        "full_copy" => Ok(UserEvent::FullCopy),
-                        "ignore" => Ok(UserEvent::Ignore),
-                        "command_log" => Ok(UserEvent::CommandLog),
-                        "toggle_stage" => Ok(UserEvent::ToggleStage),
-                        "toggle_select" => Ok(UserEvent::ToggleSelect),
-                        "next_picked" => Ok(UserEvent::NextPicked),
-                        "next_file" => Ok(UserEvent::NextFile),
-                        "previous_file" => Ok(UserEvent::PreviousFile),
-                        "next_tab" => Ok(UserEvent::NextTab),
-                        "previous_tab" => Ok(UserEvent::PreviousTab),
-                        "previous_picked" => Ok(UserEvent::PreviousPicked),
-                        "stash" => Ok(UserEvent::Stash),
-                        "commit" => Ok(UserEvent::Commit),
-                        "edit" => Ok(UserEvent::Edit),
-                        "abort" => Ok(UserEvent::Abort),
-                        "toggle_amend" => Ok(UserEvent::ToggleAmend),
-                        "discard" => Ok(UserEvent::Discard),
-                        "dialog_toggle" => Ok(UserEvent::DialogToggle),
-                        "dialog_edit" => Ok(UserEvent::DialogEdit),
-                        "dialog_activate" => Ok(UserEvent::DialogActivate),
-                        "fetch" => Ok(UserEvent::Fetch),
-                        "fetch_all" => Ok(UserEvent::FetchAll),
-                        "pull" => Ok(UserEvent::Pull),
-                        "push" => Ok(UserEvent::Push),
-                        "diff" => Ok(UserEvent::Diff),
-                        "rebase" => Ok(UserEvent::Rebase),
-                        "merge" => Ok(UserEvent::Merge),
-                        "checkout" => Ok(UserEvent::Checkout),
-                        "cherry_pick" => Ok(UserEvent::CherryPick),
-                        "squash" => Ok(UserEvent::Squash),
-                        "revert" => Ok(UserEvent::Revert),
-                        "reset" => Ok(UserEvent::Reset),
-                        "amend_commit" => Ok(UserEvent::AmendCommit),
-                        "drop_commit" => Ok(UserEvent::DropCommit),
-                        "create_tag" => Ok(UserEvent::CreateTag),
-                        "create_branch" => Ok(UserEvent::CreateBranch),
-                        "branch_only" => Ok(UserEvent::BranchOnly),
-                        "create_ref" => Ok(UserEvent::CreateRef),
-                        "delete_ref" => Ok(UserEvent::DeleteRef),
-                        "edit_ref" => Ok(UserEvent::EditRef),
-                        "apply_stash" => Ok(UserEvent::ApplyStash),
-                        "open_in_browser" => Ok(UserEvent::OpenInBrowser),
-                        "dismiss_notifications" => Ok(UserEvent::DismissNotifications),
-                        "toggle_wrap" => Ok(UserEvent::ToggleWrap),
-                        "copy_link" => Ok(UserEvent::CopyLink),
-                        "next_section" => Ok(UserEvent::NextSection),
-                        "previous_section" => Ok(UserEvent::PreviousSection),
-                        "apply_change" => Ok(UserEvent::ApplyChange),
-                        _ => {
-                            let msg = format!("Unknown user event: {value}");
-                            Err(de::Error::custom(msg))
-                        }
-                    }
-                }
-            }
-        }
-
-        deserializer.deserialize_str(UserEventVisitor)
-    }
 }
 
 impl UserEvent {

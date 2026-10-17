@@ -148,15 +148,6 @@ impl<'a> View<'a> {
         }
     }
 
-    // Views with numbered panels take digit keys; elsewhere they are a count prefix.
-    // In the commit list, they open the details on that tab.
-    pub fn has_panels(&self) -> bool {
-        matches!(
-            self,
-            View::List(_) | View::LocalChanges(_) | View::Detail(_)
-        )
-    }
-
     // While typing text or answering a prompt, every key goes to the view as is instead of being mapped to an event.
     pub fn is_capturing_keys(&self) -> bool {
         match self {

@@ -577,18 +577,7 @@ impl App<'_> {
                     }
                 }
 
-                let user_event = self.ctx.keybind.event_in(scope, &key).filter(|ue| {
-                    // digits focus the panels of the page, where it has them
-                    match ue {
-                        UserEvent::FocusPanel(n) => *n == 0 || self.view.has_panels(),
-                        _ => true,
-                    }
-                });
-
-                match user_event {
-                    Some(UserEvent::ForceQuit) => {
-                        self.ec.send(AppEvent::Quit);
-                    }
+                match self.ctx.keybind.event_in(scope, &key) {
                     Some(ue) => self.dispatch(ue, key),
                     None => {
                         if let StatusLine::Input { .. } = self.shell.app_status.status_line {
@@ -1256,6 +1245,10 @@ impl App<'_> {
     // Handles what works on every page (the sidebar, switching pages, fetch, pull and push),
     // else hands the event to the focused sidebar or the page.
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
+        if event == UserEvent::ForceQuit {
+            self.ec.send(AppEvent::Quit);
+            return;
+        }
         // keys typed into the search of the list belong to the view
         let typing = matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if typing {
@@ -1775,7 +1768,8 @@ impl App<'_> {
         let to_local_changes = (result.is_ok() && task.show_local_changes)
             || self.repository.operation_in_progress().is_some();
         // the command may have changed files or stopped on conflicts, even when it failed;
-        // refreshing would interrupt typing, so then it waits for a manual refresh
+        // refreshing would interrupt typing, so then it waits for the refs to be checked once
+        // typing stopped, see `check_refs`
         if let Some(mut context) = self.view.refresh_context().filter(|_| !typing) {
             // the rewritten commit stays selected
             let select = task.select.as_deref().filter(|_| result.is_ok());
@@ -1801,10 +1795,6 @@ impl App<'_> {
             self.ec.send(AppEvent::Refresh(context));
         }
         match result {
-            Ok(_) if typing => self.ec.send(AppEvent::NotifySuccess(format!(
-                "{} (refresh to see the changes)",
-                task.done
-            ))),
             Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }

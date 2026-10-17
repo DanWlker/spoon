@@ -290,8 +290,15 @@ enum KeyBindEntry {
 
 fn parse_user_event(name: &str) -> Result<UserEvent, String> {
     use serde::de::{value::StrDeserializer, IntoDeserializer};
+    if let Some(n) = name.strip_prefix("focus_panel_") {
+        return n
+            .parse()
+            .map(UserEvent::FocusPanel)
+            .map_err(|_| format!("Invalid focus_panel_n format: {name}"));
+    }
     let deserializer: StrDeserializer<serde::de::value::Error> = name.into_deserializer();
-    UserEvent::deserialize(deserializer).map_err(|e| e.to_string())
+    // serde's error lists every event, too long to read
+    UserEvent::deserialize(deserializer).map_err(|_| format!("Unknown user event: {name}"))
 }
 
 impl<'de> Deserialize<'de> for KeyBind {
@@ -461,6 +468,24 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty())
+    }
+
+    #[test]
+    fn test_parse_user_event() {
+        assert_eq!(parse_user_event("go_to_top"), Ok(UserEvent::GoToTop));
+        assert_eq!(
+            parse_user_event("focus_panel_3"),
+            Ok(UserEvent::FocusPanel(3))
+        );
+        let err = parse_user_event("focus_panel_x").unwrap_err();
+        assert_eq!(err, "Invalid focus_panel_n format: focus_panel_x");
+        assert_eq!(
+            parse_user_event("nope"),
+            Err("Unknown user event: nope".into())
+        );
+        // not names of the config
+        assert!(parse_user_event("focus_panel").is_err());
+        assert!(parse_user_event("unknown").is_err());
     }
 
     #[test]
