@@ -257,6 +257,10 @@ impl AppShell {
     pub fn reset_graph_filter(&mut self) {
         self.graph_filter = GraphFilter::All;
     }
+
+    pub fn notify_error(&mut self, message: String) {
+        push_notice(&mut self.notices, Notice::new(true, message));
+    }
 }
 
 #[derive(Debug)]

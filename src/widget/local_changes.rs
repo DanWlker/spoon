@@ -73,9 +73,9 @@ pub struct CommitDraft {
     message_before_amend: Option<(TextArea, TextArea)>,
     // amending the commit a rebase stopped at to edit, turned off when the rebase goes on
     amend_for_edit: bool,
-    // whether git's prepared message was put in the message box for the operation in progress,
-    // see `prepare_message`
-    message_prepared: bool,
+    // git's prepared message put in the message box for the operation in progress, see
+    // `prepare_message`
+    prepared_message: Option<String>,
 }
 
 impl CommitDraft {
@@ -438,7 +438,11 @@ impl<'a> LocalChangesState<'a> {
             body,
             files,
         };
-        self.dialog = Some(GitDialog::commit(preview, self.commit_task()?));
+        // amending a commit a rebase stopped at was warned about when it started
+        let pushed = (amend && !self.editing_commit)
+            .then(|| self.repository.remote_branch_containing("HEAD"))
+            .flatten();
+        self.dialog = Some(GitDialog::commit(preview, self.commit_task()?).pushed(pushed));
         Ok(())
     }
 
@@ -470,24 +474,29 @@ impl<'a> LocalChangesState<'a> {
         let Some(operation) = self.operation else {
             // a squash merge leaves its message without a merge in progress
             match self.repository.squash_message() {
-                Some(message) if !self.draft.message_prepared && self.draft.is_empty() => {
+                Some(message) if self.draft.prepared_message.is_none() && self.draft.is_empty() => {
                     self.draft.set_message(&message);
-                    self.draft.message_prepared = true;
+                    self.draft.prepared_message = Some(self.draft.message());
                 }
                 Some(_) => {}
-                None => self.draft.message_prepared = false,
+                // the operation is over, aborted say: its message goes too, unless it was edited
+                None => {
+                    if self.draft.prepared_message.take() == Some(self.draft.message()) {
+                        self.draft.set_message("");
+                    }
+                }
             }
             return;
         };
         if operation.continues_without_commit()
-            || self.draft.message_prepared
+            || self.draft.prepared_message.is_some()
             || !self.draft.is_empty()
         {
             return;
         }
         if let Some(message) = self.repository.prepared_message() {
             self.draft.set_message(&message);
-            self.draft.message_prepared = true;
+            self.draft.prepared_message = Some(self.draft.message());
         }
     }
 
@@ -3189,6 +3198,16 @@ mod tests {
         confirm_and_run(&mut state)?;
         assert_eq!(state.operation, None);
         assert_eq!(git_stdout(repo_path, &["rev-parse", "HEAD"]), before);
+        // its message goes with it, it would be committed for the next commit
+        assert_eq!(state.draft.message(), "");
+
+        // but not once edited
+        git_stdout(repo_path, &["merge", "feature"]);
+        state.reload();
+        state.draft.set_message("my own");
+        git_stdout(repo_path, &["merge", "--abort"]);
+        state.reload();
+        assert_eq!(state.draft.message(), "my own");
         Ok(())
     }
 

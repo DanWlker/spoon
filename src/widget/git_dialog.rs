@@ -78,7 +78,7 @@ enum DialogKind {
         base: Option<String>,
     },
     CreateBranch,
-    // local branches, with those not merged into HEAD or their upstream, and their upstreams
+    // local branches, with those whose commits are on no other branch, and their upstreams
     // still on their remotes, as (remote, branch), which may be deleted too
     DeleteBranches {
         names: Vec<String>,
@@ -242,6 +242,8 @@ pub struct GitDialog {
     select: Option<String>,
     // the conflicts git would stop at, shown in the warning color
     conflicts: Option<String>,
+    // the remote branch already having the commits it rewrites, see `GitDialog::pushed`
+    pushed: Option<String>,
 }
 
 impl GitDialog {
@@ -258,7 +260,15 @@ impl GitDialog {
             trigger: None,
             select: None,
             conflicts: None,
+            pushed: None,
         }
+    }
+
+    // Warns that rewriting the commits, already on `remote_branch`, means force pushing them.
+    pub fn pushed(mut self, remote_branch: Option<String>) -> Self {
+        self.pushed = remote_branch
+            .map(|b| format!("Already on {b}, pushing the rewrite needs a force push."));
+        self
     }
 
     // Selects the revision once the command rewrote the history, see `GitTask::select`.
@@ -839,7 +849,7 @@ impl GitDialog {
         ))
     }
 
-    // Local branches; `unmerged` are those not merged into HEAD or their upstream, which it warns
+    // Local branches; `unmerged` are those whose commits are on no other branch, which it warns
     // about, as their commits may be lost. `upstreams` (remote, branch) are their upstreams still on
     // their remotes, which a checkbox deletes too.
     pub fn delete_branches(
@@ -881,7 +891,8 @@ impl GitDialog {
             ..Default::default()
         };
         if self.checked(FieldId::Force) {
-            task.commands.extend(delete_on_remotes(upstreams));
+            // the remote first: should it fail, offline say, nothing is deleted yet to retry it
+            task.commands.splice(0..0, delete_on_remotes(upstreams));
             task.remote = true;
             task.done = format!("Deleted {what}, also on the remote");
         }
@@ -1130,7 +1141,8 @@ impl GitDialog {
         if let Some(remote) = remote.filter(|_| self.checked(FieldId::Force)) {
             let mut push = vec!["push".to_string(), remote.to_string(), "--delete".into()];
             push.extend(names.iter().map(|name| format!("refs/tags/{name}")));
-            task.commands.push(push);
+            // the remote first: should it fail, offline say, nothing is deleted yet to retry it
+            task.commands.insert(0, push);
             task.remote = true;
             task.done = format!("Deleted {what}, also from {remote}");
         }
@@ -1621,14 +1633,12 @@ impl GitDialog {
             } => {
                 let unmerged = match (names.len(), unmerged.as_slice()) {
                     (_, []) => None,
-                    (1, _) => {
-                        Some("It isn't merged, its commits on no other branch are lost.".into())
+                    (1, _) => Some("Its commits on no other branch are lost.".into()),
+                    (_, [one]) => {
+                        Some(format!("The commits of {one} on no other branch are lost."))
                     }
-                    (_, [one]) => Some(format!(
-                        "{one} isn't merged, its commits on no other branch are lost."
-                    )),
                     (_, more) => Some(format!(
-                        "{} aren't merged, their commits on no other branch are lost.",
+                        "The commits of {} on no other branch are lost.",
                         more.join(", ")
                     )),
                 };
@@ -1967,6 +1977,7 @@ impl Widget for GitDialogWidget<'_> {
         for warning in dialog
             .conflicts
             .iter()
+            .chain(&dialog.pushed)
             .chain(&warning)
             .flat_map(|w| w.lines())
         {
@@ -2127,6 +2138,25 @@ mod tests {
         assert_eq!(dialog.fields[0].1, "Delete them from fork too");
         let dialog = GitDialog::delete_tags(vec!["v1".into()], None);
         assert!(dialog.fields.is_empty());
+
+        // on the remote first: failing there, offline say, nothing is deleted yet to retry it
+        let commands = |dialog: &GitDialog| -> Vec<String> {
+            let task = dialog.command().unwrap();
+            task.commands.iter().map(|c| c.join(" ")).collect()
+        };
+        let mut dialog = GitDialog::delete_tags(vec!["v1".into()], Some("fork".into()));
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(
+            commands(&dialog),
+            ["push fork --delete refs/tags/v1", "tag -d v1"]
+        );
+        let upstreams = vec![("origin".into(), "a".into())];
+        let mut dialog = GitDialog::delete_branches(vec!["a".into()], vec![], upstreams);
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(
+            commands(&dialog),
+            ["push origin --delete refs/heads/a", "branch -D a"]
+        );
     }
 
     #[test]

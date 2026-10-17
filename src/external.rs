@@ -94,18 +94,47 @@ pub fn exec_interactive(command: &[String]) -> Result<(), String> {
         .status()
         .map_err(|e| format!("Failed to execute {}: {e}", command[0]))?;
     if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} exited with non-zero status: {status}",
-            command[0]
-        ))
+        return Ok(());
     }
+    // the shell's message is gone with the screen drawn again, so its codes are told in words
+    let name = command_name(command);
+    Err(match status.code() {
+        Some(127) => format!("{name}: command not found"),
+        Some(126) => format!("{name}: not executable"),
+        _ => format!("{name} exited with non-zero status: {status}"),
+    })
+}
+
+// What the user knows the command by: the editor of `editor_command`, not the shell running it.
+fn command_name(command: &[String]) -> String {
+    if command[0] != "sh" {
+        return command[0].clone();
+    }
+    let set = |var| std::env::var(var).ok().filter(|v| !v.is_empty());
+    set("VISUAL")
+        .or_else(|| set("EDITOR"))
+        .unwrap_or_else(|| "vi".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_command_not_found() {
+        let missing = ["nosuchcommand-spoon".to_string()];
+        assert!(exec_interactive(&missing)
+            .unwrap_err()
+            .starts_with("Failed to execute"));
+        let sh = |script: &str| ["sh", "-c", script].map(String::from).to_vec();
+        let err = exec_interactive(&sh("exit 127")).unwrap_err();
+        assert!(err.ends_with(": command not found"), "{err}");
+        let err = exec_interactive(&sh("exit 3")).unwrap_err();
+        assert!(
+            err.ends_with("exited with non-zero status: exit status: 3"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn test_editor_and_merge_tool_commands() {

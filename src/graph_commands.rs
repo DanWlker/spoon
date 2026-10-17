@@ -378,12 +378,9 @@ fn squash(
         .map(|h| dialog_commit(repository, h))
         .collect();
     let base = base.map(|h| h.as_str().to_string());
-    Ok(GitDialog::squash(
-        branch,
-        commits,
-        base,
-        rebase_auto_stash(repository),
-    ))
+    // the parent is squashed into too, so it is rewritten as well
+    let pushed = repository.remote_branch_containing(parent.as_str());
+    Ok(GitDialog::squash(branch, commits, base, rebase_auto_stash(repository)).pushed(pushed))
 }
 
 // Drops the commits, rebasing from the parent of the oldest one.
@@ -415,8 +412,12 @@ fn drop_commits(
         let range = format!("{base}..HEAD");
         repository.replay_conflict(base, &[&range], &dropped)
     });
+    let pushed = repository.remote_branch_containing(oldest.as_str());
     let dialog = GitDialog::drop(branch, commits, base, rebase_auto_stash(repository));
-    Ok(dialog.selecting(select).conflicting(conflict, true))
+    Ok(dialog
+        .selecting(select)
+        .conflicting(conflict, true)
+        .pushed(pushed))
 }
 
 // Amends a commit on the local changes page, with its changes and message there: the last one
@@ -445,7 +446,8 @@ fn amend(
         base,
         rebase_auto_stash(repository),
     );
-    Ok(GraphCommand::Dialog(dialog))
+    let pushed = repository.remote_branch_containing(commit.as_str());
+    Ok(GraphCommand::Dialog(dialog.pushed(pushed)))
 }
 
 // The changes between two commits: the checked out commit and the selected (or picked) one,
@@ -791,6 +793,26 @@ mod tests {
         assert_eq!(git(&["log", "--format=%s"]), "c3\nc1\n");
         assert_eq!(git(&["ls-files"]), "f0\nf2\n");
         assert_eq!(git(&["status", "--porcelain"]), " M f0\n");
+    }
+
+    #[test]
+    fn test_rewriting_pushed_commits_warns() {
+        let (dir, git) = rewrite_repo();
+        let path = dir.path();
+        // c1 and c2 pushed, c3 not
+        git(&["update-ref", "refs/remotes/origin/master", "HEAD~1"]);
+        let (repository, hashes) = load(path);
+        let warning = |event, hash: &CommitHash| match command(&repository, event, hash, &[]) {
+            Ok(GraphCommand::Dialog(dialog)) => format!("{dialog:?}").contains(
+                "Some(\"Already on origin/master, pushing the rewrite needs a force push.\")",
+            ),
+            _ => panic!("no popup"),
+        };
+        assert!(!warning(UserEvent::DropCommit, &hashes[0]));
+        assert!(warning(UserEvent::DropCommit, &hashes[1]));
+        assert!(warning(UserEvent::AmendCommit, &hashes[1]));
+        // c3 squashed into c2, which is pushed
+        assert!(warning(UserEvent::Squash, &hashes[0]));
     }
 
     #[test]

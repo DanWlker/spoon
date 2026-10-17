@@ -200,7 +200,7 @@ impl Repository {
         let (stashes, stash_ref_map) = load_stashes(path, mailmap);
         // a graph of some refs leaves the stashes out, they stay in the sidebar
         let stashes = if revisions.is_some() { vec![] } else { stashes };
-        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, revisions);
+        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, revisions)?;
         if commits.is_empty() {
             return Err("no commits in the repository".into());
         }
@@ -522,7 +522,25 @@ impl Repository {
         out.trim().parse().map_err(|e| format!("{e}"))
     }
 
-    // The local branches of `names` merged neither into HEAD nor into their upstream.
+    // A remote branch having the commit, like "origin/main", to warn before rewriting it.
+    pub fn remote_branch_containing(&self, commit: &str) -> Option<String> {
+        let contains = format!("--contains={commit}");
+        let args = [
+            "for-each-ref",
+            &contains,
+            "--format=%(refname)",
+            "refs/remotes",
+        ];
+        let refs = git_output(&self.path, &args).ok()?;
+        // "origin/HEAD" only points at another one
+        refs.lines()
+            .filter(|r| !r.ends_with("/HEAD"))
+            .find_map(|r| r.strip_prefix("refs/remotes/"))
+            .map(String::from)
+    }
+
+    // The local branches of `names` whose last commit is neither in HEAD nor on another branch,
+    // local or remote, but those of `names`, which are deleted with them: their commits are lost.
     pub fn unmerged_branches(&self, names: &[String]) -> Vec<String> {
         // those merged into HEAD, in one call; the full names, a tag may have the same short one
         let args = [
@@ -536,20 +554,24 @@ impl Repository {
             .lines()
             .filter_map(|r| r.strip_prefix("refs/heads/"))
             .collect();
-        let merged_into_upstream = |branch: &str| {
-            let (branch, upstream) = (
-                format!("refs/heads/{branch}"),
-                format!("{branch}@{{upstream}}"),
-            );
-            git_output(
-                &self.path,
-                &["merge-base", "--is-ancestor", &branch, &upstream],
-            )
-            .is_ok()
+        let deleted: FxHashSet<String> = names.iter().map(|n| format!("refs/heads/{n}")).collect();
+        let on_other_branch = |branch: &str| {
+            let contains = format!("--contains=refs/heads/{branch}");
+            let args = [
+                "for-each-ref",
+                &contains,
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/remotes",
+            ];
+            git_output(&self.path, &args)
+                .unwrap_or_default()
+                .lines()
+                .any(|r| !deleted.contains(r))
         };
         names
             .iter()
-            .filter(|name| !merged.contains(name.as_str()) && !merged_into_upstream(name))
+            .filter(|name| !merged.contains(name.as_str()) && !on_other_branch(name))
             .cloned()
             .collect()
     }
@@ -790,6 +812,12 @@ impl Repository {
     // The fingerprint of the refs as loaded, see `refs_snapshot`.
     pub fn refs_snapshot(&self) -> Option<&str> {
         self.refs_snapshot.as_deref()
+    }
+
+    // Takes the refs as they are now as loaded, after reloading failed: else the change that made
+    // it fail would reload again and again.
+    pub fn take_refs_snapshot(&mut self) {
+        self.refs_snapshot = refs_snapshot(&self.path).ok();
     }
 
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
@@ -1143,7 +1171,7 @@ fn load_all_commits(
     max_count: Option<usize>,
     mailmap: bool,
     revisions: Option<&[String]>,
-) -> Vec<Commit> {
+) -> std::result::Result<Vec<Commit>, String> {
     let mut cmd = git_command();
     cmd.arg("log");
 
@@ -1179,12 +1207,14 @@ fn load_all_commits(
     // the revisions are not paths
     cmd.arg("--");
 
-    // an unknown revision only leaves the history empty
+    // a broken ref or a missing object fails it, with git's error
     cmd.current_dir(path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
 
-    let mut process = cmd.spawn().unwrap();
+    let mut process = cmd
+        .spawn()
+        .map_err(|e| format!("failed to run git log: {e}"))?;
 
     let stdout = process.stdout.take().expect("failed to open stdout");
 
@@ -1193,15 +1223,22 @@ fn load_all_commits(
     let mut commits = Vec::new();
 
     for bytes in reader.split(b'\0') {
-        let bytes = bytes.unwrap();
+        let bytes = bytes.map_err(|e| format!("failed to read git log: {e}"))?;
         let record = String::from_utf8_lossy(&bytes);
         let fields: Vec<&str> = record.split('\x1f').collect();
         commits.push(parse_commit(&fields));
     }
 
-    process.wait().unwrap();
-
-    commits
+    // the errors are read once the commits are, they are only a few lines
+    let output = process
+        .wait_with_output()
+        .map_err(|e| format!("failed to run git log: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error = stderr.lines().rfind(|l| !l.is_empty()).unwrap_or_default();
+        return Err(format!("git log failed: {error}"));
+    }
+    Ok(commits)
 }
 
 // The stashes, as commits for the graph and as refs, from one `git stash list`.
@@ -2100,7 +2137,11 @@ fn run_logged(
         use std::io::Write;
         // closed once written, so git can finish
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin.write_all(input.as_bytes()).map_err(command_error)?;
+        match stdin.write_all(input.as_bytes()) {
+            // git stopped before reading it, like on a failing hook: its output says why
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            result => result.map_err(command_error)?,
+        }
     }
     let output = match timeout {
         None => child.wait_with_output().map_err(command_error)?,
@@ -2461,18 +2502,30 @@ mod tests {
         let git = crate::test_support::git::GitRepository::new(path);
         git.init();
         git.commit("init", "2024-01-01");
-        // behind HEAD, ahead of it, and ahead of it but pushed to its upstream (a local branch here)
+        // behind HEAD, ahead of it, and ahead of it but also on another branch
         git_output(path, &["branch", "behind"]).unwrap();
         git.commit("second", "2024-01-02");
         git.checkout_b("ahead");
         git.commit("third", "2024-01-03");
-        git_output(path, &["branch", "pushed"]).unwrap();
-        git_output(path, &["branch", "--set-upstream-to=ahead", "pushed"]).unwrap();
+        git_output(path, &["branch", "copy"]).unwrap();
+        // and ahead of it, only pushed, with no upstream set
+        git.checkout_b("pushed");
+        git.commit("fourth", "2024-01-04");
+        git_output(path, &["update-ref", "refs/remotes/origin/pushed", "HEAD"]).unwrap();
         git.checkout("master");
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
-        let names = ["behind", "ahead", "pushed"].map(String::from);
-        assert_eq!(repository.unmerged_branches(&names), ["ahead"]);
+        let names = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let unmerged = |n: &[&str]| repository.unmerged_branches(&names(n));
+        assert_eq!(
+            unmerged(&["behind", "ahead", "pushed"]),
+            Vec::<String>::new()
+        );
+        git_output(path, &["update-ref", "-d", "refs/remotes/origin/pushed"]).unwrap();
+        assert_eq!(unmerged(&["pushed"]), ["pushed"]);
+        // deleted together, the other branches having them go too
+        let all = ["ahead", "copy", "pushed"];
+        assert_eq!(unmerged(&all), all);
     }
 
     #[test]
@@ -2698,6 +2751,90 @@ mod tests {
         repository.stage_paths(&[":/"]).unwrap();
         let staged = git_output(path, &["diff", "--cached", "--name-only"]).unwrap();
         assert_eq!(staged, "foo1.txt\nimportant.log\n");
+    }
+
+    #[test]
+    fn test_load_says_why_it_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = crate::test_support::git::GitRepository::new(path);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        // a branch to an object that doesn't exist, like after a broken copy of the repository
+        let missing = "1234567890123456789012345678901234567890\n";
+        std::fs::write(path.join(".git/refs/heads/broken"), missing).unwrap();
+        let err = Repository::load(path, SortCommit::Chronological, None, false).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("git log failed: fatal: bad object"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_stash_kept_when_not_reapplied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = |args: &[&str]| git_output(path, args).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(path.join("f"), "1\n").unwrap();
+        git(&["add", "f"]);
+        git(&["commit", "-q", "-m", "c1"]);
+        git(&["checkout", "-q", "-b", "other"]);
+        std::fs::write(path.join("f"), "other\n").unwrap();
+        git(&["commit", "-q", "-am", "c2"]);
+        git(&["checkout", "-q", "main"]);
+        let stashed = |args: &[&str]| GitTask {
+            stash: true,
+            ..GitTask::new(args, "Checking out".into(), "Checked out".into())
+        };
+
+        // the command failing, the changes come back as they were
+        std::fs::write(path.join("f"), "local\n").unwrap();
+        let err = run_task(path, &stashed(&["checkout", "-q", "nowhere"])).unwrap_err();
+        assert!(err.starts_with("git checkout failed:"), "{err}");
+        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), "local\n");
+        assert_eq!(git(&["stash", "list"]), "");
+
+        // reapplying them conflicting, they are kept in the stash, and the user told so
+        let err = run_task(path, &stashed(&["checkout", "-q", "other"])).unwrap_err();
+        assert!(err.starts_with("Checked out, but reapplying the local changes failed (they are kept in the stash):"), "{err}");
+        assert_eq!(
+            git(&["stash", "list", "--format=%s"]),
+            "On main: spoon: Checking out\n"
+        );
+    }
+
+    #[test]
+    fn test_hook_failing_before_reading_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = |args: &[&str]| git_output(path, args).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(path.join("f"), "1\n").unwrap();
+        git(&["add", "f"]);
+        let hook = path.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho 'hook says no' >&2\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // longer than a pipe holds, so writing it fails once git is gone
+        let task = GitTask {
+            input: Some("m".repeat(1 << 20)),
+            ..GitTask::new(
+                &["commit", "--quiet", "--file=-"],
+                String::new(),
+                String::new(),
+            )
+        };
+        let err = run_task(path, &task).unwrap_err();
+        assert_eq!(err, "git commit failed: hook says no");
     }
 
     #[test]

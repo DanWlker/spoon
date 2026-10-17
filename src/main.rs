@@ -228,6 +228,8 @@ fn main() -> Result<()> {
 
     let ec = event::EventController::init();
     let mut refresh = None;
+    // the repository last loaded, shown again when reloading it fails
+    let mut repository = None;
     let mut terminal_guard = None;
     let mut terminal = None;
 
@@ -238,19 +240,28 @@ fn main() -> Result<()> {
         let load = |revisions: Option<&[String]>| {
             git::Repository::load_scoped(Path::new("."), order, max_count, mailmap, revisions)
         };
-        let repository = match load(revisions.as_deref()) {
-            Ok(repository) => repository,
+        let loaded = match load(revisions.as_deref()) {
             // the refs shown may be gone, then all are shown again
             Err(_) if revisions.is_some() => {
                 if let Some((shell, _)) = refresh.as_mut() {
                     shell.reset_graph_filter();
                 }
-                load(None)?
+                load(None)
             }
-            Err(e) => return Err(e),
+            loaded => loaded,
         };
+        match (loaded, refresh.as_mut(), repository.as_mut()) {
+            (Ok(loaded), _, _) => repository = Some(loaded),
+            // a reload failing, like on a broken ref, keeps the app as it was, saying why
+            (Err(e), Some((shell, _)), Some(last)) => {
+                shell.notify_error(e.to_string());
+                last.take_refs_snapshot();
+            }
+            (Err(e), _, _) => return Err(e),
+        }
+        let repository = repository.as_ref().unwrap();
 
-        let graph = graph::calc_graph(&repository, primary_branch.as_deref());
+        let graph = graph::calc_graph(repository, primary_branch.as_deref());
 
         let cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
 
@@ -286,7 +297,7 @@ fn main() -> Result<()> {
         }
 
         let mut app = App::new(
-            &repository,
+            repository,
             graph_image_manager,
             initial_selection,
             launch,
