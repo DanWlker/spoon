@@ -144,6 +144,11 @@ pub struct CommitChangesState<'a> {
 }
 
 impl<'a> CommitChangesState<'a> {
+    #[cfg(test)]
+    pub fn paths(&self) -> Vec<&str> {
+        self.files.iter().map(|f| f.path.as_str()).collect()
+    }
+
     // The path of the selected file or directory, relative to the top of the repository.
     // The selected path, and whether it is a directory.
     pub fn selected_entry(&self) -> Option<(&str, bool)> {

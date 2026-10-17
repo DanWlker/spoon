@@ -359,7 +359,7 @@ impl<'de> Deserialize<'de> for KeyBind {
 
 // A key like "ctrl-x" or "H" (shift-h), see `crokey::parse`. Keys pressed together are not
 // supported, only one after another, see `parse_sequence`.
-fn parse_key_event(raw: &str) -> Result<KeyEvent, String> {
+pub fn parse_key_event(raw: &str) -> Result<KeyEvent, String> {
     let key = crokey::parse(&raw.replace(' ', ""))
         .map_err(|e| e.to_string())?
         .normalized();

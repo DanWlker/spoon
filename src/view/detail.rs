@@ -274,6 +274,12 @@ impl<'a> DetailView<'a> {
         self.compare.is_some() || self.parked_compare.is_some()
     }
 
+    // The files changed in the changes tab, or in the comparison.
+    #[cfg(test)]
+    pub fn changed_paths(&self) -> Vec<&str> {
+        self.changes_state.paths()
+    }
+
     // Whether the comparison is shown.
     fn shows_compare(&self) -> bool {
         self.compare.is_some()

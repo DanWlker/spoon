@@ -24,7 +24,10 @@ mod mailmap_tests;
 #[cfg(test)]
 mod test_support;
 
-use std::{path::Path, rc::Rc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
@@ -209,9 +212,24 @@ fn main() -> Result<()> {
     let launch = app::Launch {
         local_changes: args.local_changes,
         sidebar_collapsed: args.minimize_sidebar,
+        fetch: true,
     };
 
-    let graph_color_set = color::GraphColorSet::new(&graph_config.color);
+    let loader = Loader {
+        path: PathBuf::from("."),
+        order,
+        max_count,
+        mailmap,
+        primary_branch,
+        graph_width,
+        graph_style,
+        graph_antialias,
+        graph_image_width_mode,
+        graph_color_set: color::GraphColorSet::new(&graph_config.color),
+        image_protocol,
+        initial_selection,
+        launch,
+    };
 
     let ctx = Rc::new(app::AppContext {
         keybind,
@@ -234,48 +252,8 @@ fn main() -> Result<()> {
     let mut terminal = None;
 
     let ret = loop {
-        let revisions = refresh
-            .as_ref()
-            .and_then(|(shell, _): &(app::AppShell, _)| shell.graph_revisions());
-        let load = |revisions: Option<&[String]>| {
-            git::Repository::load_scoped(Path::new("."), order, max_count, mailmap, revisions)
-        };
-        let loaded = match load(revisions.as_deref()) {
-            // the refs shown may be gone, then all are shown again
-            Err(_) if revisions.is_some() => {
-                if let Some((shell, _)) = refresh.as_mut() {
-                    shell.reset_graph_filter();
-                }
-                load(None)
-            }
-            loaded => loaded,
-        };
-        match (loaded, refresh.as_mut(), repository.as_mut()) {
-            (Ok(loaded), _, _) => repository = Some(loaded),
-            // a reload failing, like on a broken ref, keeps the app as it was, saying why
-            (Err(e), Some((shell, _)), Some(last)) => {
-                shell.notify_error(e.to_string());
-                last.take_refs_snapshot();
-            }
-            (Err(e), _, _) => return Err(e),
-        }
+        loader.load(&mut refresh, &mut repository)?;
         let repository = repository.as_ref().unwrap();
-
-        let graph = graph::calc_graph(repository, primary_branch.as_deref());
-
-        let cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
-
-        let image_params =
-            graph::ImageParams::new(&graph_color_set, cell_width_type, graph_antialias)
-                .fit_cell(protocol::cell_pixels());
-        let graph_image_manager = GraphImageManager::new(
-            &graph,
-            image_params,
-            cell_width_type,
-            graph_style,
-            graph_image_width_mode,
-            image_protocol,
-        );
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
@@ -296,32 +274,120 @@ fn main() -> Result<()> {
             ));
         }
 
-        let mut app = App::new(
-            repository,
-            graph_image_manager,
-            initial_selection,
-            launch,
-            ctx.clone(),
-            &ec,
-            refresh,
-        );
-
-        match app.run(terminal.as_mut().unwrap()) {
-            Ok(Ret::Quit) => {
-                break Ok(());
-            }
-            Ok(Ret::Refresh(context)) => {
-                refresh = Some((app.into_shell(), context));
-                continue;
-            }
-            Err(e) => {
-                break Err(e);
-            }
+        let terminal = terminal.as_mut().unwrap();
+        let size = ratatui::crossterm::terminal::size()?;
+        let ran = loader.with_app(repository, size, &ctx, &ec, refresh.take(), |mut app| {
+            app.run(terminal).map(|ret| match ret {
+                Ret::Quit => None,
+                Ret::Refresh(context) => Some((app.into_shell(), context)),
+            })
+        });
+        match ran {
+            Ok(Ok(None)) => break Ok(()),
+            Ok(Ok(next)) => refresh = next,
+            Ok(Err(e)) => break Err(e.into()),
+            Err(e) => break Err(e),
         }
     };
 
     drop(terminal_guard);
-    ret.map_err(Into::into)
+    ret
+}
+
+// The app as it was before the repository was reloaded: its shell, and what its view showed.
+type Refresh = Option<(app::AppShell, Box<view::RefreshViewContext>)>;
+
+// What the repository and its graph are loaded with, the same on each reload; the tests load
+// with it too, see `tests/app.rs`.
+struct Loader {
+    path: PathBuf,
+    order: git::SortCommit,
+    max_count: Option<usize>,
+    mailmap: bool,
+    primary_branch: Option<String>,
+    graph_width: Option<GraphWidthType>,
+    graph_style: graph::GraphStyle,
+    graph_antialias: bool,
+    graph_image_width_mode: graph::GraphImageWidthMode,
+    graph_color_set: color::GraphColorSet,
+    image_protocol: protocol::ImageProtocol,
+    initial_selection: app::InitialSelection,
+    launch: app::Launch,
+}
+
+impl Loader {
+    // Loads the repository into `repository`, with the history the app shown before the reload
+    // (`refresh`) shows. Reloading failing, like on a broken ref, keeps the one loaded before,
+    // the app saying why.
+    fn load(&self, refresh: &mut Refresh, repository: &mut Option<git::Repository>) -> Result<()> {
+        let revisions = refresh
+            .as_ref()
+            .and_then(|(shell, _)| shell.graph_revisions());
+        let load = |revisions: Option<&[String]>| {
+            git::Repository::load_scoped(
+                &self.path,
+                self.order,
+                self.max_count,
+                self.mailmap,
+                revisions,
+            )
+        };
+        let loaded = match load(revisions.as_deref()) {
+            // the refs shown may be gone, then all are shown again
+            Err(_) if revisions.is_some() => {
+                if let Some((shell, _)) = refresh.as_mut() {
+                    shell.reset_graph_filter();
+                }
+                load(None)
+            }
+            loaded => loaded,
+        };
+        match (loaded, refresh.as_mut(), repository.as_mut()) {
+            (Ok(loaded), _, _) => *repository = Some(loaded),
+            (Err(e), Some((shell, _)), Some(last)) => {
+                shell.notify_error(e.to_string());
+                last.take_refs_snapshot();
+            }
+            (Err(e), _, _) => return Err(e),
+        }
+        Ok(())
+    }
+
+    // Runs `run` on the app of `repository`, its graph laid out for a terminal of `size`
+    // (columns, rows), as it was before when reloaded (`refresh`).
+    fn with_app<R>(
+        &self,
+        repository: &git::Repository,
+        size: (u16, u16),
+        ctx: &Rc<app::AppContext>,
+        ec: &event::EventController,
+        refresh: Refresh,
+        run: impl FnOnce(App) -> R,
+    ) -> Result<R> {
+        let graph = graph::calc_graph(repository, self.primary_branch.as_deref());
+        let cell_width_type = check::decide_cell_width_type(&graph, size, self.graph_width)?;
+        let image_params =
+            graph::ImageParams::new(&self.graph_color_set, cell_width_type, self.graph_antialias)
+                .fit_cell(protocol::cell_pixels());
+        let graph_image_manager = GraphImageManager::new(
+            &graph,
+            image_params,
+            cell_width_type,
+            self.graph_style,
+            self.graph_image_width_mode,
+            self.image_protocol,
+        );
+        let app = App::new(
+            repository,
+            graph_image_manager,
+            self.initial_selection,
+            self.launch,
+            ctx.clone(),
+            ec,
+            refresh,
+        );
+        Ok(run(app))
+    }
 }
 
 // Gives the terminal back however the app ends: quitting, an error while reloading, or a panic

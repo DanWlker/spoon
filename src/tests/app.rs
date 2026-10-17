@@ -1,0 +1,823 @@
+// Tests of the whole app, run as `main` runs it but without a terminal: the keys and the changes
+// made to the repository meanwhile are the steps of a script, see `Harness::run`.
+
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::{Duration, Instant},
+};
+
+use ratatui::{
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    layout::Rect,
+};
+
+use super::{App, AppContext, AppEvent, InitialSelection, Launch, Ret};
+use crate::{
+    color::GraphColorSet,
+    config::GraphColorConfig,
+    event::EventController,
+    git::{refs_snapshot, FilesSnapshot, SortCommit},
+    graph::{GraphImageWidthMode, GraphStyle},
+    keybind::parse_key_event,
+    protocol::ImageProtocol,
+    test_support::{git::git, ui::test_ctx},
+    view::View,
+    Loader, Refresh,
+};
+
+// The terminal the app is laid out in, (columns, rows).
+const SIZE: (u16, u16) = (160, 40);
+// The longest a git command run in the background, or a condition waited for, may take.
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+enum Step {
+    // a key, named as in the keybind config: "j", "shift-d", "esc", "ctrl-c"
+    Key(KeyEvent),
+    // something done outside the app, like in another terminal
+    Outside(Box<dyn FnOnce(&Path)>),
+    // the refs and the local changes checked, as the refresher does every few seconds
+    Tick,
+    // waits until the repository is so, like once a fetch in the background is done
+    WaitFor(Box<dyn Fn(&Path) -> bool>),
+    Check(Box<dyn FnOnce(&App)>),
+}
+
+// The keys of `keys`, separated by spaces.
+fn keys(keys: &str) -> Vec<Step> {
+    keys.split(' ')
+        .map(|key| Step::Key(parse_key_event(key).unwrap()))
+        .collect()
+}
+
+// The keys typing `text`.
+fn typing(text: &str) -> Vec<Step> {
+    text.chars()
+        .map(|c| Step::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)))
+        .collect()
+}
+
+fn outside(f: impl FnOnce(&Path) + 'static) -> Vec<Step> {
+    vec![Step::Outside(Box::new(f))]
+}
+
+// A git command run outside the app.
+fn outside_git(args: &'static [&'static str]) -> Vec<Step> {
+    outside(move |path| {
+        git(path, args);
+    })
+}
+
+fn wait_for(f: impl Fn(&Path) -> bool + 'static) -> Vec<Step> {
+    vec![Step::WaitFor(Box::new(f))]
+}
+
+fn check(f: impl FnOnce(&App) + 'static) -> Vec<Step> {
+    vec![Step::Check(Box::new(f))]
+}
+
+fn tick() -> Vec<Step> {
+    vec![Step::Tick]
+}
+
+struct Harness {
+    path: PathBuf,
+    loader: Loader,
+    ctx: Rc<AppContext>,
+    ec: EventController,
+    // how many times the repository was loaded, the first time included
+    loads: usize,
+    quit: bool,
+}
+
+impl Harness {
+    fn new(path: &Path, launch: Launch) -> Self {
+        let loader = Loader {
+            path: path.to_path_buf(),
+            order: SortCommit::Chronological,
+            max_count: None,
+            mailmap: false,
+            primary_branch: None,
+            graph_width: None,
+            graph_style: GraphStyle::Rounded,
+            graph_antialias: false,
+            graph_image_width_mode: GraphImageWidthMode::Compact,
+            graph_color_set: GraphColorSet::new(&GraphColorConfig::default()),
+            image_protocol: ImageProtocol::Kitty,
+            initial_selection: InitialSelection::Latest,
+            launch,
+        };
+        Harness {
+            path: path.to_path_buf(),
+            loader,
+            ctx: test_ctx(),
+            ec: EventController::without_terminal(),
+            loads: 0,
+            quit: false,
+        }
+    }
+
+    // Starts the app and runs the steps on it, one after another; after each, the events it sent,
+    // the git command it runs in the background and the reloads are handled, as the app would
+    // before the next key.
+    fn run(&mut self, steps: Vec<Vec<Step>>) {
+        let mut steps = steps.into_iter().flatten();
+        let mut refresh: Refresh = None;
+        let mut repository = None;
+        let (path, ctx, ec, quit) = (&self.path, &self.ctx, &self.ec, &mut self.quit);
+        loop {
+            self.loader.load(&mut refresh, &mut repository).unwrap();
+            self.loads += 1;
+            let loaded = repository.as_ref().unwrap();
+            // what the app was before reloading, None once done
+            let next = self
+                .loader
+                .with_app(loaded, SIZE, ctx, ec, refresh.take(), |mut app| loop {
+                    if let Some(ret) = settle(&mut app, ec, ctx) {
+                        return match ret {
+                            Ret::Quit => {
+                                *quit = true;
+                                None
+                            }
+                            Ret::Refresh(context) => Some((app.into_shell(), context)),
+                        };
+                    }
+                    take_step(steps.next()?, &mut app, path, ec);
+                })
+                .unwrap();
+            match next {
+                None => return,
+                next => refresh = next,
+            }
+        }
+    }
+}
+
+// Handles the events sent meanwhile, waiting for the git command running in the background;
+// returns what ends or reloads the app.
+fn settle(app: &mut App, ec: &EventController, ctx: &AppContext) -> Option<Ret> {
+    loop {
+        app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
+        let event = if ctx.running_task.borrow().is_some() {
+            ec.recv_timeout(TIMEOUT)
+                .expect("the git command running to finish")
+        } else {
+            ec.try_recv()?
+        };
+        if let Some(ret) = app.handle_event(event).unwrap() {
+            return Some(ret);
+        }
+    }
+}
+
+fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
+    match step {
+        Step::Key(key) => ec.send(AppEvent::Key(key)),
+        Step::Outside(f) => f(path),
+        Step::Tick => {
+            ec.send(AppEvent::RefsSnapshot(refs_snapshot(path).unwrap()));
+            let git_dir = app.repository.git_dir();
+            ec.send(AppEvent::FilesTick(FilesSnapshot::load(path, git_dir)));
+        }
+        Step::WaitFor(f) => {
+            let started = Instant::now();
+            while !f(path) {
+                assert!(started.elapsed() < TIMEOUT, "waited too long");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Step::Check(f) => f(app),
+    }
+}
+
+fn launch() -> Launch {
+    Launch {
+        local_changes: false,
+        sidebar_collapsed: false,
+        fetch: false,
+    }
+}
+
+// A repository at `dir/work`: f.txt changed on master after the branch feat, which changes it too.
+fn repository(dir: &Path) -> PathBuf {
+    let path = dir.join("work");
+    std::fs::create_dir(&path).unwrap();
+    let run = |args: &[&str]| {
+        git(&path, args);
+    };
+    run(&["init", "-q", "-b", "master"]);
+    run(&["config", "user.name", "t"]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    let commit = |file: &str, content: &str, message: &str| {
+        std::fs::write(path.join(file), content).unwrap();
+        git(&path, &["add", file]);
+        git(&path, &["commit", "-q", "-m", message]);
+    };
+    commit("f.txt", "a\nb\nc\n", "c1");
+    run(&["checkout", "-q", "-b", "feat"]);
+    commit("f.txt", "a\nFEAT\nc\n", "feat1");
+    run(&["checkout", "-q", "master"]);
+    commit("f.txt", "a\nMASTER\nc\n", "c2");
+    path
+}
+
+// `repository` pushed to `dir/remote.git` as origin, master and feat tracking their branches there.
+fn with_remote(dir: &Path) -> PathBuf {
+    let path = repository(dir);
+    git(dir, &["init", "-q", "--bare", "remote.git"]);
+    let remote = dir.join("remote.git");
+    git(
+        &path,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&path, &["push", "-q", "-u", "origin", "master", "feat"]);
+    path
+}
+
+// A commit made on `branch` of the remote, as pushed from another clone, adding `file`.
+fn pushed_elsewhere(dir: &Path, branch: &str, file: &str) {
+    let other = dir.join("other");
+    if !other.exists() {
+        git(dir, &["clone", "-q", "remote.git", "other"]);
+        git(&other, &["config", "user.name", "o"]);
+        git(&other, &["config", "user.email", "o@o"]);
+        git(&other, &["config", "commit.gpgsign", "false"]);
+    }
+    git(&other, &["checkout", "-q", branch]);
+    std::fs::write(other.join(file), "x\n").unwrap();
+    git(&other, &["add", file]);
+    git(&other, &["commit", "-q", "-m", file]);
+    git(&other, &["push", "-q", "origin", branch]);
+}
+
+fn notices(app: &App) -> Vec<String> {
+    app.shell
+        .notices
+        .iter()
+        .map(|n| n.message.clone())
+        .collect()
+}
+
+fn assert_notice(app: &App, part: &str) {
+    let notices = notices(app);
+    assert!(
+        notices.iter().any(|n| n.contains(part)),
+        "no notice saying {part:?} in {notices:?}"
+    );
+}
+
+// What the commit list's title says the graph shows, besides all the history.
+fn graph_note(app: &App) -> Option<String> {
+    app.shell.graph_filter_note(app.repository)
+}
+
+// The files the comparison shows, None without one.
+fn compared(app: &App) -> Option<Vec<String>> {
+    match &app.view {
+        View::Detail(view) if view.is_comparing() => {
+            Some(view.changed_paths().into_iter().map(String::from).collect())
+        }
+        _ => None,
+    }
+}
+
+fn draft(app: &App) -> String {
+    match &app.view {
+        View::LocalChanges(view) => view.context().commit_draft_message(),
+        _ => panic!("not on the local changes page"),
+    }
+}
+
+// The launch options
+
+#[test]
+fn test_launch_on_local_changes_with_the_sidebar_shrunk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let launch = Launch {
+        local_changes: true,
+        sidebar_collapsed: true,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![check(|app| {
+        assert!(matches!(app.view, View::LocalChanges(_)));
+        assert!(app.shell.sidebar_collapsed);
+    })]);
+}
+
+// The fetch on launch
+
+#[test]
+fn test_launch_fetch_shows_what_it_fetched() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    pushed_elsewhere(dir.path(), "master", "new.txt");
+    let fetched =
+        |path: &Path| git(path, &["log", "-1", "--format=%s", "origin/master"]) == "new.txt\n";
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            fetch: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        wait_for(fetched),
+        // the refs moved, the app reloads
+        tick(),
+        check(|app| {
+            let head = app.repository.resolve("origin/master").unwrap();
+            assert!(app.repository.commit(&head).is_some());
+            assert!(notices(app).is_empty());
+        }),
+    ]);
+    assert_eq!(harness.loads, 2);
+}
+
+#[test]
+fn test_launch_fetch_bringing_nothing_reloads_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let fetched = |path: &Path| path.join(".git/FETCH_HEAD").exists();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            fetch: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![wait_for(fetched), tick(), tick()]);
+    assert_eq!(harness.loads, 1);
+}
+
+#[test]
+fn test_launch_fetch_holds_no_command_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    // a remote slow to answer
+    git(
+        &path,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            "sleep 2; git-upload-pack",
+        ],
+    );
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            fetch: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys("f"),
+        check(|app| {
+            assert!(app.shell.dialog.is_some(), "{:?}", notices(app));
+            assert!(app.ctx.running_task.borrow().is_none());
+        }),
+    ]);
+}
+
+#[test]
+fn test_launch_fetch_failing_says_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    git(&path, &["remote", "set-url", "origin", "/nowhere"]);
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            fetch: true,
+            ..launch()
+        },
+    );
+    // nothing tells when it is done: given the time a failing fetch takes
+    harness.run(vec![
+        outside(|_| std::thread::sleep(Duration::from_secs(1))),
+        tick(),
+        check(|app| assert!(notices(app).is_empty())),
+    ]);
+}
+
+// The reloads for changes made outside the app
+
+#[test]
+fn test_reload_waits_for_the_popup_to_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("f"),
+        outside_git(&["update-ref", "refs/remotes/origin/elsewhere", "HEAD"]),
+        tick(),
+        check(|app| assert!(app.shell.dialog.is_some())),
+        keys("esc"),
+        tick(),
+        check(|app| assert!(app.repository.resolve("origin/elsewhere").is_some())),
+    ]);
+    assert_eq!(harness.loads, 2);
+}
+
+#[test]
+fn test_reload_failing_keeps_the_app_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let launch = Launch {
+        local_changes: true,
+        ..launch()
+    };
+    let broken = |path: &Path| path.join(".git/refs/heads/broken");
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        keys("3"),
+        typing("keep me"),
+        keys("esc"),
+        // a branch to an object that doesn't exist
+        outside(move |path| {
+            std::fs::write(broken(path), "1234567890123456789012345678901234567890\n").unwrap()
+        }),
+        tick(),
+        check(|app| {
+            assert_notice(app, "git log failed: fatal: bad object");
+            assert_eq!(draft(app), "keep me");
+        }),
+        // not again until the refs change
+        tick(),
+        outside(move |path| std::fs::remove_file(broken(path)).unwrap()),
+        tick(),
+        check(|app| assert_eq!(draft(app), "keep me")),
+    ]);
+    // the first, the failing one, and once fixed
+    assert_eq!(harness.loads, 3);
+}
+
+// The keys of the whole app
+
+#[test]
+fn test_ctrl_c_quits() {
+    for steps in ["ctrl-c", "/ ctrl-c", "tab ctrl-c"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        let mut harness = Harness::new(&path, launch());
+        harness.run(vec![keys(steps)]);
+        assert!(harness.quit, "{steps}");
+    }
+}
+
+// Comparing refs diffed from the sidebar, and commits diffed in the graph
+
+// Diffs feat with HEAD from the sidebar.
+fn compare_feat() -> Vec<Step> {
+    let mut steps = keys("0 j shift-d");
+    steps.extend(check(|app| {
+        assert_eq!(graph_note(app).as_deref(), Some("master ↔ feat"));
+        assert_eq!(compared(app), Some(vec!["f.txt".to_string()]));
+    }));
+    steps
+}
+
+#[test]
+fn test_compare_follows_the_reloads_until_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        compare_feat(),
+        keys("shift-r"),
+        check(|app| assert_eq!(compared(app), Some(vec!["f.txt".to_string()]))),
+        // feat moved in another terminal, the comparison follows it
+        outside(|path| {
+            git(path, &["checkout", "-q", "feat"]);
+            std::fs::write(path.join("new.txt"), "x\n").unwrap();
+            git(path, &["add", "new.txt"]);
+            git(path, &["commit", "-q", "-m", "feat2"]);
+            git(path, &["checkout", "-q", "master"]);
+        }),
+        tick(),
+        check(|app| {
+            let paths = vec!["f.txt".to_string(), "new.txt".to_string()];
+            assert_eq!(compared(app), Some(paths));
+        }),
+        keys("esc"),
+        check(|app| {
+            assert_eq!(compared(app), None);
+            assert_eq!(graph_note(app), None);
+        }),
+    ]);
+}
+
+#[test]
+fn test_compare_of_a_ref_gone_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        compare_feat(),
+        outside_git(&["branch", "-q", "-D", "feat"]),
+        tick(),
+        check(|app| {
+            assert_notice(app, "Cannot diff master and feat, one of them is gone");
+            assert_eq!(compared(app), None);
+            assert_eq!(graph_note(app), None);
+        }),
+    ]);
+}
+
+#[test]
+fn test_compare_ends_on_the_local_changes_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        compare_feat(),
+        keys("tab"),
+        check(|app| {
+            assert!(matches!(app.view, View::LocalChanges(_)));
+            assert_eq!(graph_note(app), None);
+        }),
+        keys("tab"),
+        check(|app| assert_eq!(graph_note(app), None)),
+    ]);
+}
+
+#[test]
+fn test_compare_gives_the_branch_only_graph_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("shift-l"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
+        compare_feat(),
+        keys("esc"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
+    ]);
+}
+
+#[test]
+fn test_diff_of_commits_stays_open_on_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // c1, the first, diffed with HEAD
+        keys("shift-g shift-d"),
+        check(|app| assert_eq!(compared(app), Some(vec!["f.txt".to_string()]))),
+        keys("shift-r"),
+        check(|app| assert_eq!(compared(app), Some(vec!["f.txt".to_string()]))),
+        keys("esc"),
+        check(|app| assert_eq!(compared(app), None)),
+    ]);
+}
+
+#[test]
+fn test_compare_follows_a_ref_the_launch_fetch_moves() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    pushed_elsewhere(dir.path(), "feat", "fetched.txt");
+    // slow to answer, so the comparison is open before the fetch is done
+    git(
+        &path,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            "sleep 2; git-upload-pack",
+        ],
+    );
+    let fetched =
+        |path: &Path| git(path, &["log", "-1", "--format=%s", "origin/feat"]) == "fetched.txt\n";
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            fetch: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        // origin/feat, diffed with HEAD
+        keys("0 ] j l j shift-d"),
+        check(|app| {
+            assert_eq!(graph_note(app).as_deref(), Some("master ↔ origin/feat"));
+            assert_eq!(compared(app), Some(vec!["f.txt".to_string()]));
+        }),
+        wait_for(fetched),
+        tick(),
+        check(|app| {
+            assert_eq!(graph_note(app).as_deref(), Some("master ↔ origin/feat"));
+            let paths = vec!["f.txt".to_string(), "fetched.txt".to_string()];
+            assert_eq!(compared(app), Some(paths));
+        }),
+    ]);
+}
+
+// Git commands failing
+
+// With a commit on master here, and another there.
+fn diverged(dir: &Path) -> PathBuf {
+    let path = with_remote(dir);
+    pushed_elsewhere(dir, "master", "theirs.txt");
+    std::fs::write(path.join("f.txt"), "a\nOURS\nc\n").unwrap();
+    git(&path, &["commit", "-q", "-am", "ours"]);
+    git(&path, &["fetch", "-q"]);
+    path
+}
+
+#[test]
+fn test_push_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = diverged(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("shift-p enter"),
+        check(|app| assert_notice(app, "git push failed: ! [rejected]")),
+    ]);
+}
+
+#[test]
+fn test_pull_conflicting_then_aborted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = diverged(dir.path());
+    // theirs changes f.txt too
+    pushed_elsewhere(dir.path(), "master", "f.txt");
+    git(&path, &["fetch", "-q"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("p enter"),
+        check(|app| {
+            assert_notice(app, "git pull failed: CONFLICT");
+            assert!(matches!(app.view, View::LocalChanges(_)));
+            assert!(app.repository.operation_in_progress().is_some());
+            assert!(
+                draft(app).starts_with("Merge branch 'master'"),
+                "{}",
+                draft(app)
+            );
+        }),
+        keys("shift-c enter"),
+        check(|app| {
+            assert!(app.repository.operation_in_progress().is_none());
+            // the merge's message went with it
+            assert_eq!(draft(app), "");
+        }),
+    ]);
+}
+
+#[test]
+fn test_stage_while_the_index_is_locked() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    std::fs::write(path.join(".git/index.lock"), "").unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            local_changes: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys("space"),
+        check(|app| assert_notice(app, "index.lock': File exists")),
+    ]);
+}
+
+#[test]
+fn test_commit_refused_by_a_hook_keeps_the_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let hook = path.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\necho 'hook says no' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            local_changes: true,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys("space 3"),
+        typing("my message"),
+        keys("esc c enter"),
+        check(|app| {
+            assert_notice(app, "git commit failed: hook says no");
+            assert_eq!(draft(app), "my message");
+        }),
+    ]);
+}
+
+#[test]
+fn test_checkout_refused_over_local_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // c1, the first commit
+        keys("shift-g c enter"),
+        check(|app| {
+            assert_notice(app, "would be overwritten by checkout");
+            assert!(app.repository.current_branch().as_deref() == Some("master"));
+        }),
+    ]);
+}
+
+#[test]
+fn test_revert_conflicting_then_aborted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let head = git(&path, &["rev-parse", "HEAD"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // c1 made f.txt, which c2 changed since
+        keys("shift-g u enter"),
+        check(|app| {
+            assert_notice(app, "git revert failed: CONFLICT");
+            assert!(matches!(app.view, View::LocalChanges(_)));
+        }),
+        keys("shift-c enter"),
+        check(|app| {
+            assert!(app.repository.operation_in_progress().is_none());
+            assert_eq!(draft(app), "");
+        }),
+    ]);
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn test_squash_off_the_branch_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let mut steps = vec![keys("/")];
+    steps.push(typing("feat1"));
+    steps.push(keys("enter esc s"));
+    steps.push(check(|app| {
+        assert_notice(app, "is not on master, check it out first")
+    }));
+    harness.run(steps);
+}
+
+// The sidebar
+
+#[test]
+fn test_delete_tag_also_on_an_unreachable_remote_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    git(&path, &["tag", "v1"]);
+    git(&path, &["push", "-q", "origin", "v1"]);
+    git(&path, &["remote", "set-url", "origin", "/nowhere"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("0 ] ] j"),
+        check(|app| {
+            let selection = app.shell.sidebar.selection();
+            assert_eq!(format!("{selection:?}"), r#"Ref(Tags, "v1")"#);
+        }),
+        // also from origin
+        keys("d v enter"),
+        check(|app| assert_notice(app, "git push failed")),
+    ]);
+    assert_eq!(git(&path, &["tag"]), "v1\n");
+}
+
+#[test]
+fn test_edit_branch_to_an_unknown_upstream_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let mut steps = vec![keys("0 j e")];
+    // renamed, and set to an upstream that doesn't exist
+    steps.push(typing("x"));
+    steps.push(keys("esc j e"));
+    steps.push(keys("ctrl-u"));
+    steps.push(typing("origin/nope"));
+    steps.push(keys("esc enter"));
+    steps.push(check(|app| {
+        assert_notice(app, "origin/nope is no remote branch, fetch it first")
+    }));
+    harness.run(steps);
+    // nothing was done
+    assert_eq!(git(&path, &["branch", "--list", "feat*"]), "  feat\n");
+}
+
+#[test]
+fn test_add_remote_fetching_nothing_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let mut steps = vec![keys("0 ] j a")];
+    steps.push(typing("bad"));
+    steps.push(keys("esc j e"));
+    steps.push(typing("/nonexistent/repo.git"));
+    steps.push(keys("esc enter"));
+    steps.push(check(|app| assert_notice(app, "git fetch failed")));
+    harness.run(steps);
+    // added, to edit or remove it
+    assert_eq!(git(&path, &["remote"]), "bad\norigin\n");
+}

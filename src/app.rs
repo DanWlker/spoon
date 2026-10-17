@@ -77,11 +77,13 @@ pub enum InitialSelection {
     Head,
 }
 
-// How the app starts, from the command line: on the local changes page, with the sidebar shrunk.
+// How the app starts, from the command line: on the local changes page, with the sidebar shrunk;
+// and fetching the remotes, which the tests leave out, see `fetch_on_launch`.
 #[derive(Clone, Copy)]
 pub struct Launch {
     pub local_changes: bool,
     pub sidebar_collapsed: bool,
+    pub fetch: bool,
 }
 
 // The longest the fetch on launch runs, for a remote that never answers; long enough for a big
@@ -417,7 +419,7 @@ impl<'a> App<'a> {
                     // start on the graph, as Tab from the local changes page shows it
                     app.shell.sidebar.select_branches();
                 }
-                if !repository.remotes().is_empty() {
+                if launch.fetch && !repository.remotes().is_empty() {
                     app.fetch_on_launch();
                 }
             }
@@ -460,7 +462,7 @@ impl App<'_> {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
-            self.prepare_render(terminal)?;
+            self.prepare_render(terminal.size()?.into());
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
@@ -727,14 +729,13 @@ impl App<'_> {
         Ok(None)
     }
 
-    fn prepare_render(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
-        let area: Rect = terminal.size()?.into();
+    // Lays the page out in the screen's `area` before handling the next events and drawing.
+    fn prepare_render(&mut self, area: Rect) {
         let [view_area, _] = split_app_areas(area);
         let [_, view_area] = self.split_sidebar(view_area);
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
-        Ok(())
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
@@ -2289,6 +2290,10 @@ fn selected_commit_details(
     let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
     (commit, changes, refs)
 }
+
+#[cfg(test)]
+#[path = "tests/app.rs"]
+mod app_tests;
 
 #[cfg(test)]
 mod tests {

@@ -183,6 +183,19 @@ impl EventController {
         controller
     }
 
+    // Without reading the terminal, the tests sending the keys themselves, see `tests/app.rs`.
+    #[cfg(test)]
+    pub fn without_terminal() -> Self {
+        let (tx, rx) = mpsc::channel();
+        EventController {
+            tx: Sender { tx },
+            rx: Receiver { rx },
+            stop: Arc::new(AtomicBool::new(false)),
+            handle: Arc::new(Mutex::new(None)),
+            poke: Mutex::new(None),
+        }
+    }
+
     pub fn start(&self) {
         self.stop.store(false, Ordering::Relaxed);
         let stop = self.stop.clone();

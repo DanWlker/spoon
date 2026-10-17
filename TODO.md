@@ -13,4 +13,3 @@ TODO:
    ensuring null cannot happen in the first place. the best guard is to ensure that state is impossible in the first place, check the
    ones that you wrote compared to master and find any such enhancements
 1. regen demo.gif and the images
-1. what was not checked? Not checked: I didn't look at the rendering code beyond its size and branch counts, or the test files.

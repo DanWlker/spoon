@@ -1,15 +1,14 @@
-use ratatui::crossterm::terminal;
-
 use crate::{
     graph::{CellWidthType, Graph},
     GraphWidthType, Result,
 };
 
+// `size` is the terminal's (columns, rows).
 pub fn decide_cell_width_type(
     graph: &Graph,
+    (w, h): (u16, u16),
     cell_width_type: Option<GraphWidthType>,
 ) -> Result<CellWidthType> {
-    let (w, h) = terminal::size()?;
     decide_cell_width_type_from(graph.max_pos_x, w as usize, h as usize, cell_width_type)
 }
 
