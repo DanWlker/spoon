@@ -130,10 +130,6 @@ impl Scope {
             Scope::Dialog => "dialog",
         }
     }
-
-    fn from_name(name: &str) -> Option<Scope> {
-        Scope::ALL.into_iter().find(|scope| scope.name() == name)
-    }
 }
 
 // The keys of each scope: single keys, and sequences of keys pressed one after another (written
@@ -330,7 +326,9 @@ impl<'de> Deserialize<'de> for KeyBind {
                     vec![(user_event.home_scope(), user_event, keys)]
                 }
                 KeyBindEntry::Scope(table) => {
-                    let scope = Scope::from_name(&name)
+                    let scope = Scope::ALL
+                        .into_iter()
+                        .find(|scope| scope.name() == name)
                         .ok_or_else(|| error(format!("Unknown keybind scope: {name}")))?;
                     table
                         .into_iter()

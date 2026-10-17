@@ -896,7 +896,11 @@ impl Repository {
     // Runs a git command changing the repository, unless one runs in the background, see `set_busy`.
     fn run(&self, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
         self.check_idle()?;
-        run_git(&self.path, args, stdin)
+        run_logged(
+            git_command().args(args).current_dir(&self.path),
+            args,
+            stdin,
+        )
     }
 
     // An error while a git command runs in the background, see `set_busy`.
@@ -2199,10 +2203,6 @@ fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, 
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git {} failed: {}", args[0], stderr.trim()))
     }
-}
-
-fn run_git(path: &Path, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
-    run_logged(git_command().args(args).current_dir(path), args, stdin)
 }
 
 // A git command the app ran that changes the repository, for the command log. Reads, like

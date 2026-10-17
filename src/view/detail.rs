@@ -131,7 +131,11 @@ impl<'a> DetailView<'a> {
             return typing_hints(false);
         }
         let picked = self.as_list_state().picked_commit_hashes().len();
-        if self.list_focused && self.is_searching_list() {
+        let searching = matches!(
+            self.as_list_state().search_state(),
+            SearchState::Searching { .. }
+        );
+        if self.list_focused && searching {
             return typing_hints(true);
         }
         if self.list_focused {
@@ -256,13 +260,6 @@ impl<'a> DetailView<'a> {
             DetailFocus::Pane => Scope::DetailsPane,
             DetailFocus::Info | DetailFocus::Files => Scope::Details,
         }
-    }
-
-    fn is_searching_list(&self) -> bool {
-        matches!(
-            self.as_list_state().search_state(),
-            SearchState::Searching { .. }
-        )
     }
 
     // Whether the files of the changes or files tab have the focus, with the diff or preview

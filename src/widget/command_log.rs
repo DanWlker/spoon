@@ -67,12 +67,6 @@ impl CommandLogState {
         let entry = self.entries.get(self.selected)?;
         Some(format!("{}\n{}", entry.command, entry.output))
     }
-
-    fn selected_output(&self) -> &str {
-        self.entries
-            .get(self.selected)
-            .map_or("", |entry| entry.output.as_str())
-    }
 }
 
 pub struct CommandLog<'a> {
@@ -149,7 +143,10 @@ impl<'a> CommandLog<'a> {
             false,
             theme,
         );
-        let output = state.selected_output();
+        let output = state
+            .entries
+            .get(state.selected)
+            .map_or("", |entry| entry.output.as_str());
         let lines: Vec<Line> = if output.is_empty() && !state.entries.is_empty() {
             vec![placeholder("No output", theme)]
         } else {

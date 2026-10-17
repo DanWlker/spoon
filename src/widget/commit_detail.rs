@@ -58,26 +58,19 @@ impl StatefulWidget for CommitDetail<'_> {
         label_lines = label_lines.into_iter().skip(state.offset).collect();
         value_lines = value_lines.into_iter().skip(state.offset).collect();
 
-        self.render_labels_paragraph(label_lines, labels_area, buf);
-        self.render_value_paragraph(value_lines, value_area, buf);
+        let style = Style::default().fg(self.ctx.color_theme.fg);
+        Paragraph::new(label_lines)
+            .style(style)
+            .block(Block::default().padding(Padding::left(1)))
+            .render(labels_area, buf);
+        Paragraph::new(value_lines)
+            .style(style)
+            .block(Block::default().padding(Padding::horizontal(1)))
+            .render(value_area, buf);
     }
 }
 
 impl CommitDetail<'_> {
-    fn render_labels_paragraph(&self, lines: Vec<Line>, area: Rect, buf: &mut Buffer) {
-        let paragraph = Paragraph::new(lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(Block::default().padding(Padding::left(1)));
-        paragraph.render(area, buf);
-    }
-
-    fn render_value_paragraph(&self, lines: Vec<Line>, area: Rect, buf: &mut Buffer) {
-        let paragraph = Paragraph::new(lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(Block::default().padding(Padding::new(1, 1, 0, 0)));
-        paragraph.render(area, buf);
-    }
-
     fn contents(&self, area: Rect) -> (Vec<Line<'_>>, Vec<Line<'_>>) {
         let mut label_lines: Vec<Line> = Vec::new();
         let mut value_lines: Vec<Line> = Vec::new();

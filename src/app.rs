@@ -500,7 +500,8 @@ impl App<'_> {
                 }
 
                 if self.shell.command_log.is_some() {
-                    self.handle_command_log_key(key);
+                    let event = self.ctx.keybind.event_in(Scope::Global, &key);
+                    self.handle_command_log_event(event);
                     return Ok(None);
                 }
                 if self.shell.dialog.is_some() {
@@ -627,13 +628,17 @@ impl App<'_> {
                 self.open_detail(tab);
             }
             AppEvent::CloseDetail => {
-                self.close_detail();
+                if let View::Detail(_) = self.view {
+                    self.show_list();
+                }
             }
             AppEvent::OpenUserCommand(n) => {
                 self.open_user_command(n);
             }
             AppEvent::CloseUserCommand => {
-                self.close_user_command();
+                if let View::UserCommand(_) = self.view {
+                    self.show_list();
+                }
             }
             AppEvent::RunExternal(command) => {
                 self.run_external(&command);
@@ -657,10 +662,10 @@ impl App<'_> {
             // only redraws
             AppEvent::SpinnerTick => {}
             AppEvent::OpenHelp => {
-                self.open_help();
+                self.shell.help = Some(HelpView::new(self.ctx.clone(), self.ec.sender()));
             }
             AppEvent::CloseHelp => {
-                self.close_help();
+                self.shell.help = None;
             }
             AppEvent::SelectOlderCommit => {
                 self.select_older_commit();
@@ -688,29 +693,37 @@ impl App<'_> {
                 cursor_position,
                 metadata,
             } => {
-                self.update_status_input(message, cursor_position, metadata);
+                self.shell.app_status.status_line = StatusLine::Input {
+                    message,
+                    cursor_position,
+                    metadata,
+                };
             }
             AppEvent::UpdateStatusTransient(msg) => {
-                self.update_status_transient(msg);
+                self.shell.app_status.status_line = StatusLine::Transient(msg);
             }
             AppEvent::UpdateSearchResult {
                 message,
                 options,
                 matched,
             } => {
-                self.update_search_result(message, options, matched);
+                self.shell.app_status.status_line = StatusLine::SearchResult {
+                    message,
+                    options,
+                    matched,
+                };
             }
             AppEvent::NotifyInfo(msg) => {
-                self.info_notification(msg);
+                self.shell.app_status.status_line = StatusLine::NotificationInfo(msg);
             }
             AppEvent::NotifySuccess(msg) => {
-                self.success_notification(msg);
+                self.shell.app_status.status_line = StatusLine::NotificationSuccess(msg);
             }
             AppEvent::NotifyWarn(msg) => {
                 self.warn_notification(msg);
             }
             AppEvent::NotifyError(msg) => {
-                self.error_notification(msg);
+                push_notice(&mut self.shell.notices, Notice::new(true, msg));
             }
         }
         Ok(None)
@@ -807,11 +820,6 @@ impl App<'_> {
     }
 
     // Moves in the command log, scrolls the output of the selected command, copies it, or closes.
-    fn handle_command_log_key(&mut self, key: KeyEvent) {
-        let event = self.ctx.keybind.event_in(Scope::Global, &key);
-        self.handle_command_log_event(event);
-    }
-
     fn handle_command_log_event(&mut self, event: Option<UserEvent>) {
         let Some(state) = self.shell.command_log.as_mut() else {
             return;
@@ -1216,23 +1224,21 @@ impl App<'_> {
         }
     }
 
-    fn close_detail(&mut self) {
-        if let View::Detail(_) = self.view {
-            self.show_list();
-        }
-    }
-
     fn open_user_command(&mut self, user_command_number: usize) {
         match extract_user_command_by_number(user_command_number, &self.ctx).map(|c| &c.r#type) {
             Ok(UserCommandType::Inline) => {
                 self.open_user_command_inline(user_command_number);
             }
             Ok(UserCommandType::Silent) => {
-                self.open_user_command_silent(user_command_number);
+                let result = self.with_user_command(user_command_number, exec_user_command);
+                self.after_user_command(user_command_number, result.map(|r| r.map(|_| ())));
                 self.shell.app_status.pending_clear = PendingClear::Screen;
             }
             Ok(UserCommandType::Suspend) => {
-                self.open_user_command_suspend(user_command_number);
+                let result = self.with_user_command(user_command_number, |params| {
+                    self.suspended(|| exec_user_command_suspend(params))
+                });
+                self.after_user_command(user_command_number, result);
                 self.shell.app_status.pending_clear = PendingClear::Screen;
             }
             Err(err) => {
@@ -1259,18 +1265,6 @@ impl App<'_> {
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
             None => {}
         }
-    }
-
-    fn open_user_command_silent(&mut self, user_command_number: usize) {
-        let result = self.with_user_command(user_command_number, exec_user_command);
-        self.after_user_command(user_command_number, result.map(|r| r.map(|_| ())));
-    }
-
-    fn open_user_command_suspend(&mut self, user_command_number: usize) {
-        let result = self.with_user_command(user_command_number, |params| {
-            self.suspended(|| exec_user_command_suspend(params))
-        });
-        self.after_user_command(user_command_number, result);
     }
 
     // Runs `run` with the parameters of user command `number` on the selected commit, and the
@@ -1320,12 +1314,6 @@ impl App<'_> {
         let result = run();
         self.ec.resume();
         result
-    }
-
-    fn close_user_command(&mut self) {
-        if let View::UserCommand(_) = self.view {
-            self.show_list();
-        }
     }
 
     fn run_external(&mut self, command: &[String]) {
@@ -2246,14 +2234,6 @@ impl App<'_> {
         }
     }
 
-    fn open_help(&mut self) {
-        self.shell.help = Some(HelpView::new(self.ctx.clone(), self.ec.sender()));
-    }
-
-    fn close_help(&mut self) {
-        self.shell.help = None;
-    }
-
     fn select_older_commit(&mut self) {
         if let View::Detail(ref mut view) = self.view {
             view.select_older_commit();
@@ -2297,40 +2277,8 @@ impl App<'_> {
         self.shell.app_status.status_line = StatusLine::None;
     }
 
-    fn update_status_input(&mut self, message: String, cursor_position: u16, metadata: String) {
-        self.shell.app_status.status_line = StatusLine::Input {
-            message,
-            cursor_position,
-            metadata,
-        };
-    }
-
-    fn update_status_transient(&mut self, msg: String) {
-        self.shell.app_status.status_line = StatusLine::Transient(msg);
-    }
-
-    fn update_search_result(&mut self, message: String, options: String, matched: bool) {
-        self.shell.app_status.status_line = StatusLine::SearchResult {
-            message,
-            options,
-            matched,
-        };
-    }
-
-    fn info_notification(&mut self, msg: String) {
-        self.shell.app_status.status_line = StatusLine::NotificationInfo(msg);
-    }
-
-    fn success_notification(&mut self, msg: String) {
-        self.shell.app_status.status_line = StatusLine::NotificationSuccess(msg);
-    }
-
     fn warn_notification(&mut self, message: String) {
         push_notice(&mut self.shell.notices, Notice::new(false, message));
-    }
-
-    fn error_notification(&mut self, message: String) {
-        push_notice(&mut self.shell.notices, Notice::new(true, message));
     }
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull

@@ -726,7 +726,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Loads the changes again, after amending turned on or off changed the staged section.
     fn reload_staged(&mut self) {
-        self.changes = self.load_changes();
+        self.changes = self.with_amend(self.repository.local_changes());
         let tree = file_tree(&self.changes.staged);
         self.sections[1].tree.set_tree(tree);
     }
@@ -1062,8 +1062,20 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(());
             }
             Focus::Conflict => return Ok(()),
-            Focus::Lines => self.toggle_stage_line(),
-            Focus::Hunks => self.toggle_stage_hunk(),
+            Focus::Lines => {
+                let reverse = self.section == LocalChangesSection::Staged;
+                match self.cursor.line_patch(&self.diff, reverse) {
+                    Some(patch) => self.repository.apply_patch(&patch, reverse, true),
+                    None => Ok(()),
+                }
+            }
+            Focus::Hunks => match self.cursor.selected_hunk(&self.diff) {
+                Some(hunk) => {
+                    let reverse = self.section == LocalChangesSection::Staged;
+                    self.repository.apply_patch(&hunk.patch(), reverse, true)
+                }
+                None => Ok(()),
+            },
             Focus::Files => {
                 let result = self.toggle_stage_row();
                 if result.is_ok() {
@@ -1075,22 +1087,6 @@ impl<'a> LocalChangesState<'a> {
         // reload even on failure, since git may have changed part of the index
         self.reload();
         result
-    }
-
-    fn toggle_stage_hunk(&self) -> Result<(), String> {
-        let Some(hunk) = self.cursor.selected_hunk(&self.diff) else {
-            return Ok(());
-        };
-        let reverse = self.section == LocalChangesSection::Staged;
-        self.repository.apply_patch(&hunk.patch(), reverse, true)
-    }
-
-    fn toggle_stage_line(&self) -> Result<(), String> {
-        let reverse = self.section == LocalChangesSection::Staged;
-        let Some(patch) = self.cursor.line_patch(&self.diff, reverse) else {
-            return Ok(());
-        };
-        self.repository.apply_patch(&patch, reverse, true)
     }
 
     fn toggle_stage_row(&self) -> Result<(), String> {
@@ -1171,10 +1167,6 @@ impl<'a> LocalChangesState<'a> {
                 self.focus = Focus::Lines;
             }
         }
-    }
-
-    fn load_changes(&self) -> LocalChanges {
-        self.with_amend(self.repository.local_changes())
     }
 
     // While amending, the staged section shows the changes of HEAD too, see `amend_base`.
@@ -1349,11 +1341,6 @@ impl<'a> LocalChangesState<'a> {
         if self.selected_path() != before || self.diff.raw.is_empty() {
             self.load_diff();
         }
-    }
-
-    // The search and filter, for the title of `section`.
-    fn query_indicator(&self, section: LocalChangesSection) -> Option<String> {
-        self.query_of(section).indicator()
     }
 
     pub fn expand(&mut self) {
@@ -1608,7 +1595,7 @@ impl LocalChangesPanel<'_> {
         if !picked.is_empty() {
             extras.push(format!("{} picked", picked.len()));
         }
-        extras.extend(state.query_indicator(section));
+        extras.extend(state.query_of(section).indicator());
         let label = format!("[{number}] {name} ({})", files.len());
         let inner = render_panel(
             buf,
@@ -2772,7 +2759,8 @@ mod tests {
         assert!(state.diff.raw.contains("+a"));
         assert_eq!(
             state
-                .query_indicator(LocalChangesSection::Unstaged)
+                .query_of(LocalChangesSection::Unstaged)
+                .indicator()
                 .as_deref(),
             Some("/app")
         );
@@ -2803,7 +2791,10 @@ mod tests {
         assert!(visible(&state).is_empty());
         state.focus_section(LocalChangesSection::Staged);
         assert_eq!(visible(&state).len(), 6);
-        assert_eq!(state.query_indicator(LocalChangesSection::Staged), None);
+        assert_eq!(
+            state.query_of(LocalChangesSection::Staged).indicator(),
+            None
+        );
 
         // n and N step through matches, wrapping around
         type_query(&mut state, QueryKind::Search, "list");
