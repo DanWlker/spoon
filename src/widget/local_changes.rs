@@ -14,7 +14,7 @@ use crate::{
     app::AppContext,
     event::{KeyHint, UserEvent},
     git::{
-        ConflictSide, FilesSnapshot, GitTask, Head, LocalChangeFile, LocalChangeStatus,
+        AfterTask, ConflictSide, FilesSnapshot, GitTask, Head, LocalChangeFile, LocalChangeStatus,
         LocalChanges, Operation, Repository,
     },
     layout::{fit_size, Direction, Panel},
@@ -52,6 +52,16 @@ enum ConflictItem {
 }
 
 // An interactive program for the view to run in place of the app.
+// What the state asks the app for, once the event is handled: a git command run in the
+// background (like continuing a rebase), a popup confirming one (like a commit), or an editor
+// or merge tool run in place of the app.
+#[derive(Debug)]
+pub enum Request {
+    Task(GitTask),
+    Dialog(GitDialog),
+    External(ExternalRequest),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalRequest {
     // an absolute path
@@ -66,32 +76,44 @@ pub struct CommitDraft {
     // the first line of the message, and the rest after a blank line
     summary: TextArea,
     description: TextArea,
-    // set while amending: the parent of HEAD, which the staged section is compared to instead of HEAD,
-    // so it shows the changes of the commit being amended together with what is staged
-    amend_base: Option<String>,
-    // the message typed before amending, restored when amending is turned off
-    message_before_amend: Option<(TextArea, TextArea)>,
-    // amending the commit a rebase stopped at to edit, turned off when the rebase goes on
-    amend_for_edit: bool,
+    amend: Option<Amend>,
     // git's prepared message put in the message box for the operation in progress, see
     // `prepare_message`
     prepared_message: Option<String>,
 }
 
+// Amending the commit after `base`, the parent of HEAD: the staged section is compared to it
+// instead of HEAD, so it shows the changes of the commit being amended together with what is staged.
+#[derive(Debug, Clone)]
+struct Amend {
+    base: String,
+    // the message typed before amending, restored when amending is turned off
+    message_before: (TextArea, TextArea),
+    // the commit a rebase stopped at to edit, turned off when the rebase goes on
+    for_edit: bool,
+}
+
 impl CommitDraft {
     // Amends the commit after `base`, its `message` in place of the typed one.
-    fn start_amend(&mut self, base: String, message: &str) {
-        self.amend_base = Some(base);
-        let typed = (self.summary.clone(), self.description.clone());
-        self.message_before_amend = Some(typed);
+    fn start_amend(&mut self, base: String, message: &str, for_edit: bool) {
+        let message_before = (self.summary.clone(), self.description.clone());
+        self.amend = Some(Amend {
+            base,
+            message_before,
+            for_edit,
+        });
         self.set_message(message);
     }
 
     // Stops amending, the typed message back.
     fn stop_amend(&mut self) {
-        self.amend_base = None;
-        self.amend_for_edit = false;
-        (self.summary, self.description) = self.message_before_amend.take().unwrap_or_default();
+        if let Some(amend) = self.amend.take() {
+            (self.summary, self.description) = amend.message_before;
+        }
+    }
+
+    fn amend_base(&self) -> Option<&str> {
+        self.amend.as_ref().map(|amend| amend.base.as_str())
     }
 
     // The summary, then the description after a blank line.
@@ -225,19 +247,15 @@ pub struct LocalChangesState<'a> {
     commit_field: CommitField,
     // a rebase stopped to edit a commit, which committing amends before going on
     editing_commit: bool,
-    // a git command for the app to run in the background, see `take_task`
-    task: Option<GitTask>,
+    // what the view is to ask the app for once the event is handled, see `take_request`
+    request: Option<Request>,
     // the cursor moved to another row, whose diff loads once used, see `move_cursor`
     diff_stale: bool,
     // the fingerprint of the files as loaded, see `reload_if_changed`
     files_stamp: u64,
-    // a popup confirming a git command for the view to open, like a commit, see `take_dialog`
-    dialog: Option<GitDialog>,
     // the two sides of the conflicted file under the cursor, shown instead of its diff
     conflict: Option<ConflictView>,
     conflict_item: ConflictItem,
-    // an editor or merge tool for the view to run, see `take_external_request`
-    external_request: Option<ExternalRequest>,
     // a rebase, merge, cherry-pick or revert stopped and waits to be finished (or aborted)
     operation: Option<Operation>,
 }
@@ -272,18 +290,16 @@ impl<'a> LocalChangesState<'a> {
             draft: CommitDraft::default(),
             commit_field: CommitField::Summary,
             editing_commit: false,
-            task: None,
+            request: None,
             diff_stale: false,
             files_stamp,
-            dialog: None,
             conflict: None,
             conflict_item: ConflictItem::Existing,
-            external_request: None,
             operation: repository.operation_in_progress(),
         };
         if let Some(snapshot) = snapshot {
             state.draft = *snapshot.commit_draft;
-            if state.draft.amend_base.is_some() {
+            if state.draft.amend.is_some() {
                 // the staged section shows the last commit too
                 state.reload_staged();
             }
@@ -371,7 +387,7 @@ impl<'a> LocalChangesState<'a> {
     pub fn commit_or_continue(&mut self) -> Result<(), String> {
         if let Some(operation) = self.continuing_operation() {
             let name = operation.name();
-            self.task = Some(GitTask {
+            self.request = Some(Request::Task(GitTask {
                 commands: self
                     .repository
                     .continue_args(operation)
@@ -380,7 +396,7 @@ impl<'a> LocalChangesState<'a> {
                 running: format!("Continuing the {name}"),
                 done: format!("Continued the {name}"),
                 ..Default::default()
-            });
+            }));
             return Ok(());
         }
         if self.draft.summary.text().trim().is_empty() {
@@ -400,7 +416,7 @@ impl<'a> LocalChangesState<'a> {
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
     fn request_commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let amend = self.draft.amend_base.is_some();
+        let amend = self.draft.amend.is_some();
         let (action, branch) = if self.editing_commit {
             // HEAD is the commit being edited, on no branch while rebasing
             let head = self
@@ -442,7 +458,8 @@ impl<'a> LocalChangesState<'a> {
         let pushed = (amend && !self.editing_commit)
             .then(|| self.repository.remote_branch_containing("HEAD"))
             .flatten();
-        self.dialog = Some(GitDialog::commit(preview, self.commit_task()?).pushed(pushed));
+        let dialog = GitDialog::commit(preview, self.commit_task()?).pushed(pushed);
+        self.request = Some(Request::Dialog(dialog));
         Ok(())
     }
 
@@ -451,7 +468,7 @@ impl<'a> LocalChangesState<'a> {
         if self.draft.summary.text().trim().is_empty() {
             return Err("The commit summary is empty".into());
         }
-        let amend = self.draft.amend_base.is_some();
+        let amend = self.draft.amend.is_some();
         // a merge can be committed without changes, when its resolution keeps one side
         if !amend && self.changes.staged.is_empty() && self.operation.is_none() {
             return Err("Nothing staged to commit".into());
@@ -464,7 +481,7 @@ impl<'a> LocalChangesState<'a> {
         let Some(operation) = self.operation else {
             return Err("No rebase, merge, cherry-pick or revert in progress".into());
         };
-        self.dialog = Some(GitDialog::abort(operation.name()));
+        self.request = Some(Request::Dialog(GitDialog::abort(operation.name())));
         Ok(())
     }
 
@@ -512,7 +529,7 @@ impl<'a> LocalChangesState<'a> {
     // clears the message once the commit is made.
     fn commit_task(&self) -> Result<GitTask, String> {
         self.check_commit()?;
-        let amend = self.draft.amend_base.is_some();
+        let amend = self.draft.amend.is_some();
         // the message is read from stdin so no editor is opened
         let mut commit = vec!["commit".to_string(), "--quiet".into(), "--file=-".into()];
         if amend {
@@ -535,14 +552,41 @@ impl<'a> LocalChangesState<'a> {
         })
     }
 
-    // The git command for the app to run in the background, like continuing a rebase.
-    pub fn take_task(&mut self) -> Option<GitTask> {
-        self.task.take()
+    // What the view is to ask the app for, once the event is handled.
+    pub fn take_request(&mut self) -> Option<Request> {
+        self.request.take()
     }
 
-    // The popup for the app to open, confirming a git command like a commit.
+    #[cfg(test)]
+    fn take_task(&mut self) -> Option<GitTask> {
+        match self.request.take() {
+            Some(Request::Task(task)) => Some(task),
+            other => std::mem::replace(&mut self.request, other).and(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn dialog(&self) -> Option<&GitDialog> {
+        match &self.request {
+            Some(Request::Dialog(dialog)) => Some(dialog),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn dialog_mut(&mut self) -> Option<&mut GitDialog> {
+        match &mut self.request {
+            Some(Request::Dialog(dialog)) => Some(dialog),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
     pub fn take_dialog(&mut self) -> Option<GitDialog> {
-        self.dialog.take()
+        match self.request.take() {
+            Some(Request::Dialog(dialog)) => Some(dialog),
+            other => std::mem::replace(&mut self.request, other).and(None),
+        }
     }
 
     // Runs the git command asked for as the app does, see `App::finish_task`, then reloads.
@@ -625,7 +669,7 @@ impl<'a> LocalChangesState<'a> {
             paths.extend(targets.iter().filter_map(|f| f.orig_path.clone()));
             (picked_files_label(targets.len()), paths)
         };
-        self.dialog = Some(GitDialog::stash(target, paths));
+        self.request = Some(Request::Dialog(GitDialog::stash(target, paths)));
         Ok(())
     }
 
@@ -654,7 +698,8 @@ impl<'a> LocalChangesState<'a> {
         let Some(task) = self.discard_task()? else {
             return Ok(());
         };
-        self.dialog = Some(GitDialog::discard(format!("Discard {target} {path}"), task));
+        let dialog = GitDialog::discard(format!("Discard {target} {path}"), task);
+        self.request = Some(Request::Dialog(dialog));
         Ok(())
     }
 
@@ -667,7 +712,11 @@ impl<'a> LocalChangesState<'a> {
             running: "Discarding changes".into(),
             done: "Discarded changes".into(),
             // in the diff, the page stays on it
-            keeps_view: self.is_diff_focused(),
+            after: if self.is_diff_focused() {
+                AfterTask::KeepView
+            } else {
+                AfterTask::Reload
+            },
             ..Default::default()
         };
         if self.is_diff_focused() {
@@ -709,16 +758,16 @@ impl<'a> LocalChangesState<'a> {
         if self.editing_commit {
             return Err("The commit being edited is amended; C aborts the rebase".into());
         }
-        if let Some(operation) = self.operation.filter(|_| self.draft.amend_base.is_none()) {
+        if let Some(operation) = self.operation.filter(|_| self.draft.amend.is_none()) {
             // HEAD is the commit before the operation, amending it would mix the two up
             return Err(format!("Cannot amend during a {}", operation.name()));
         }
-        if self.draft.amend_base.is_some() {
+        if self.draft.amend.is_some() {
             self.draft.stop_amend();
         } else {
             let base = self.repository.amend_base()?;
             let message = self.repository.head_commit_message()?;
-            self.draft.start_amend(base, &message);
+            self.draft.start_amend(base, &message, false);
         }
         self.reload();
         Ok(())
@@ -726,7 +775,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Turns amending on, if it isn't, focusing the commit section with the message of the commit.
     pub fn start_amend(&mut self) -> Result<(), String> {
-        if self.draft.amend_base.is_none() {
+        if self.draft.amend.is_none() {
             self.toggle_amend()?;
         }
         self.focus_commit();
@@ -745,19 +794,18 @@ impl<'a> LocalChangesState<'a> {
     fn sync_edit_stop(&mut self) {
         self.editing_commit =
             self.operation == Some(Operation::Rebase) && self.repository.rebase_stopped_to_edit();
-        let changed = if self.editing_commit && self.draft.amend_base.is_none() {
+        let changed = if self.editing_commit && self.draft.amend.is_none() {
             match (
                 self.repository.amend_base(),
                 self.repository.head_commit_message(),
             ) {
                 (Ok(base), Ok(message)) => {
-                    self.draft.start_amend(base, &message);
-                    self.draft.amend_for_edit = true;
+                    self.draft.start_amend(base, &message, true);
                     true
                 }
                 _ => false,
             }
-        } else if !self.editing_commit && self.draft.amend_for_edit {
+        } else if !self.editing_commit && self.draft.amend.as_ref().is_some_and(|a| a.for_edit) {
             self.draft.stop_amend();
             true
         } else {
@@ -784,7 +832,7 @@ impl<'a> LocalChangesState<'a> {
         if !path.exists() {
             return Err(format!("{} does not exist in the working tree", file.path));
         }
-        self.external_request = Some(ExternalRequest::Editor(path));
+        self.request = Some(Request::External(ExternalRequest::Editor(path)));
         Ok(())
     }
 
@@ -805,13 +853,13 @@ impl<'a> LocalChangesState<'a> {
             .is_some_and(Operation::continues_without_commit)
         {
             "continue"
-        } else if self.draft.amend_base.is_some() {
+        } else if self.draft.amend.is_some() {
             "amend"
         } else {
             "commit"
         };
         // amending is not available while an operation is in progress, aborting is
-        let amend_or_abort = match (self.operation, self.draft.amend_base.is_some()) {
+        let amend_or_abort = match (self.operation, self.draft.amend.is_some()) {
             (Some(_), _) => h(&[Abort], "abort"),
             (None, true) => h(&[ToggleAmend], "stop amending"),
             (None, false) => h(&[ToggleAmend], "amend"),
@@ -894,8 +942,12 @@ impl<'a> LocalChangesState<'a> {
         self.repository.path()
     }
 
-    pub fn take_external_request(&mut self) -> Option<ExternalRequest> {
-        self.external_request.take()
+    #[cfg(test)]
+    fn take_external_request(&mut self) -> Option<ExternalRequest> {
+        match self.request.take() {
+            Some(Request::External(request)) => Some(request),
+            other => std::mem::replace(&mut self.request, other).and(None),
+        }
     }
 
     pub fn is_conflict_focused(&self) -> bool {
@@ -924,12 +976,12 @@ impl<'a> LocalChangesState<'a> {
             ConflictItem::Existing => ConflictSide::Ours,
             ConflictItem::Incoming => ConflictSide::Theirs,
             ConflictItem::MergeTool => {
-                self.external_request = Some(ExternalRequest::MergeTool(path));
+                self.request = Some(Request::External(ExternalRequest::MergeTool(path)));
                 return Ok(());
             }
             ConflictItem::Editor => {
-                self.external_request =
-                    Some(ExternalRequest::Editor(self.repository.path().join(path)));
+                let path = self.repository.path().join(path);
+                self.request = Some(Request::External(ExternalRequest::Editor(path)));
                 return Ok(());
             }
         };
@@ -1118,7 +1170,7 @@ impl<'a> LocalChangesState<'a> {
             LocalChangesSection::Unstaged => self.repository.stage_paths(&paths),
             LocalChangesSection::Staged => self
                 .repository
-                .unstage_paths(&paths, self.draft.amend_base.as_deref()),
+                .unstage_paths(&paths, self.draft.amend_base()),
         }
     }
 
@@ -1178,9 +1230,9 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // While amending, the staged section shows the changes of HEAD too, see `amend_base`.
+    // While amending, the staged section shows the changes of HEAD too, see `Amend`.
     fn with_amend(&self, mut changes: LocalChanges) -> LocalChanges {
-        if let Some(base) = &self.draft.amend_base {
+        if let Some(base) = self.draft.amend_base() {
             changes.staged = self.repository.staged_changes_against(base);
         }
         changes
@@ -1452,7 +1504,7 @@ impl<'a> LocalChangesState<'a> {
     // The diff of the picked files, else of the selected row.
     fn diff_text(&self) -> String {
         let staged = self.section == LocalChangesSection::Staged;
-        let base = self.draft.amend_base.as_deref();
+        let base = self.draft.amend_base();
         if self.diff_of_picked {
             // untracked files are only shown by diffing each against /dev/null
             let targets = self.target_files();
@@ -1598,7 +1650,7 @@ impl LocalChangesPanel<'_> {
         let active = state.section == section;
         let focused = active && self.focused && state.focus_on_files();
         let mut extras = vec![];
-        if section == LocalChangesSection::Staged && state.draft.amend_base.is_some() {
+        if section == LocalChangesSection::Staged && state.draft.amend.is_some() {
             extras.push("amending".to_string());
         }
         if !picked.is_empty() {
@@ -1708,7 +1760,7 @@ impl LocalChangesPanel<'_> {
         let focused = self.focused && state.is_commit_focused();
         // amending and rebasing have no controls of their own, the title shows them
         let mut title = panel_title("[3] Commit", "", focused, theme).spans;
-        if state.draft.amend_base.is_some() {
+        if state.draft.amend.is_some() {
             title.push(Span::raw(" · amending ").fg(theme.status_warn_fg));
         }
         if let Some(operation) = state.operation {
@@ -1905,7 +1957,7 @@ mod tests {
     // The git command of the popup asked for, to run as confirming it does, see `run_task`.
     fn confirm(state: &mut LocalChangesState) -> Result<(), String> {
         let dialog = state.take_dialog().expect("a popup asking to confirm");
-        state.task = Some(dialog.command()?);
+        state.request = Some(Request::Task(dialog.command()?));
         Ok(())
     }
 
@@ -1916,13 +1968,13 @@ mod tests {
     }
 
     fn commit(state: &mut LocalChangesState) -> Result<(), String> {
-        state.task = Some(state.commit_task()?);
+        state.request = Some(Request::Task(state.commit_task()?));
         Ok(())
     }
 
     // The question of the popup asked for.
     fn prompt(state: &LocalChangesState) -> Option<String> {
-        state.dialog.as_ref()?.intro().first().cloned()
+        state.dialog()?.intro().first().cloned()
     }
 
     fn select_row(state: &mut LocalChangesState, path: &str) {
@@ -2507,11 +2559,7 @@ mod tests {
         state.back();
         state.draft.set_message("typed");
         state.enter()?;
-        assert!(state
-            .dialog
-            .as_ref()
-            .and_then(GitDialog::commit_preview)
-            .is_some());
+        assert!(state.dialog().and_then(GitDialog::commit_preview).is_some());
         state.take_dialog();
         assert!(state.is_commit_focused());
         state.back();
@@ -2519,7 +2567,7 @@ mod tests {
         // c with a message asks to confirm the commit, showing it
         state.draft.set_message("first change\n\nbody");
         state.commit_or_continue()?;
-        let Some(preview) = state.dialog.as_ref().and_then(GitDialog::commit_preview) else {
+        let Some(preview) = state.dialog().and_then(GitDialog::commit_preview) else {
             panic!("no commit to confirm");
         };
         assert_eq!(
@@ -2554,7 +2602,7 @@ mod tests {
             git_stdout(repo_path, &["show", "--name-only", "--format=", "HEAD"]),
             "a.txt\nb.txt"
         );
-        assert!(state.draft.amend_base.is_none());
+        assert!(state.draft.amend.is_none());
 
         Ok(())
     }
@@ -2614,7 +2662,7 @@ mod tests {
         state.reload();
         state.focus_section(LocalChangesSection::Staged);
         state.request_discard()?;
-        assert!(state.dialog.is_none());
+        assert!(state.dialog().is_none());
 
         Ok(())
     }
@@ -2936,7 +2984,7 @@ mod tests {
         state.toggle_pick();
         state.start_stash()?;
         assert_eq!(prompt(&state), Some("Stash 1 picked file".into()));
-        let dialog = state.dialog.as_mut().unwrap();
+        let dialog = state.dialog_mut().unwrap();
         for c in "only a".chars() {
             dialog.handle_key(None, key(KeyCode::Char(c)));
         }

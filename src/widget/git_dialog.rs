@@ -13,8 +13,8 @@ use crate::{
     color::ColorTheme,
     event::{AppEvent, KeyHint, UserEvent},
     git::{
-        parse_git_bool, stash_args, todo_action, BranchStatus, Conflict, GitTask, RemoteInfo,
-        MAX_CONFLICT_STEPS,
+        parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, Conflict, GitTask,
+        RemoteInfo, MAX_CONFLICT_STEPS,
     },
     widget::style::{change_span, focused_title, render_popup},
 };
@@ -607,7 +607,11 @@ impl GitDialog {
             _ => description.to_string(),
         };
         Ok(GitTask {
-            show_local_changes: self.choice(FieldId::MergeType) >= 3,
+            after: if self.choice(FieldId::MergeType) >= 3 {
+                AfterTask::LocalChanges
+            } else {
+                AfterTask::Reload
+            },
             ..GitTask::new(&args, description.replace("Merged", "Merging"), done)
         })
     }
@@ -672,7 +676,11 @@ impl GitDialog {
             running: format!("Cherry-picking {n}"),
             done: format!("Cherry-picked {n}"),
             uses_picks: true,
-            show_local_changes: !self.checked(FieldId::Commit),
+            after: if self.checked(FieldId::Commit) {
+                AfterTask::Reload
+            } else {
+                AfterTask::LocalChanges
+            },
             ..Default::default()
         })
     }
@@ -740,7 +748,11 @@ impl GitDialog {
             running: format!("Reverting {n}"),
             done: format!("Reverted {n}"),
             uses_picks: true,
-            show_local_changes: !self.checked(FieldId::Commit),
+            after: if self.checked(FieldId::Commit) {
+                AfterTask::Reload
+            } else {
+                AfterTask::LocalChanges
+            },
             ..Default::default()
         })
     }
@@ -773,7 +785,7 @@ impl GitDialog {
         Ok(GitTask {
             running: format!("Stopping at {short}"),
             done: format!("Editing {short}, commit to amend it and go on"),
-            show_local_changes: true,
+            after: AfterTask::LocalChanges,
             ..GitTask::rebase_todo(base, auto_stash, &todo)
         })
     }
@@ -1188,7 +1200,7 @@ impl GitDialog {
             (format!("Applying {name}"), format!("Applied {name}"))
         };
         Ok(GitTask {
-            show_local_changes: true,
+            after: AfterTask::LocalChanges,
             ..GitTask::new(&args, running, done)
         })
     }
@@ -1561,11 +1573,11 @@ impl GitDialog {
     }
 
     pub fn command(&self) -> Result<GitTask, String> {
-        let task = self.kind_command()?;
-        Ok(GitTask {
-            select: self.select.clone(),
-            ..task
-        })
+        let mut task = self.kind_command()?;
+        if let Some(revision) = &self.select {
+            task.after = AfterTask::Select(revision.clone());
+        }
+        Ok(task)
     }
 
     // The git commands of the popup, built by the command of each kind next to its constructor.

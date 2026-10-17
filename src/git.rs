@@ -1914,20 +1914,29 @@ pub struct GitTask {
     pub done: String,
     // made of the picked commits, which are cleared once it is done
     pub uses_picks: bool,
-    // leaves changes to commit, so the local changes page is shown once it is done
-    pub show_local_changes: bool,
-    // the commit to select once it is done, like "HEAD~2", as rewriting the history changes its hash
-    pub select: Option<String>,
+    pub after: AfterTask,
     // the local branch it pushes or pulls, shown beside it in the sidebar while it runs, like lazygit
     pub branch_status: Option<BranchStatus>,
     // what the first command reads, like the message of a commit
     pub input: Option<String>,
     // said when it fails instead of git's error, which may tell little
     pub failed: Option<String>,
-    // changes only the working tree, so the page stays as it is instead of being reloaded
-    pub keeps_view: bool,
     // stopped once it runs longer, like a fetch from a remote that never answers
     pub timeout: Option<Duration>,
+}
+
+// What the app shows once a git command is done.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum AfterTask {
+    // the repository reloaded, the page as it was
+    #[default]
+    Reload,
+    // and this commit selected, like "HEAD~2", as rewriting the history changes its hash
+    Select(String),
+    // the local changes page, it left changes to commit
+    LocalChanges,
+    // only the working tree changed, the page stays as it is instead of being reloaded
+    KeepView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

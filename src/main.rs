@@ -252,8 +252,7 @@ fn main() -> Result<()> {
     let mut terminal = None;
 
     let ret = loop {
-        loader.load(&mut refresh, &mut repository)?;
-        let repository = repository.as_ref().unwrap();
+        let repository = loader.load(&mut refresh, &mut repository)?;
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
@@ -319,7 +318,11 @@ impl Loader {
     // Loads the repository into `repository`, with the history the app shown before the reload
     // (`refresh`) shows. Reloading failing, like on a broken ref, keeps the one loaded before,
     // the app saying why.
-    fn load(&self, refresh: &mut Refresh, repository: &mut Option<git::Repository>) -> Result<()> {
+    fn load<'r>(
+        &self,
+        refresh: &mut Refresh,
+        repository: &'r mut Option<git::Repository>,
+    ) -> Result<&'r git::Repository> {
         let revisions = refresh
             .as_ref()
             .and_then(|(shell, _)| shell.graph_revisions());
@@ -342,15 +345,15 @@ impl Loader {
             }
             loaded => loaded,
         };
-        match (loaded, refresh.as_mut(), repository.as_mut()) {
-            (Ok(loaded), _, _) => *repository = Some(loaded),
-            (Err(e), Some((shell, _)), Some(last)) => {
+        match (loaded, refresh.as_mut(), repository.take()) {
+            (Ok(loaded), _, _) => Ok(repository.insert(loaded)),
+            (Err(e), Some((shell, _)), Some(mut last)) => {
                 shell.notify_error(e.to_string());
                 last.take_refs_snapshot();
+                Ok(repository.insert(last))
             }
-            (Err(e), _, _) => return Err(e),
+            (Err(e), _, _) => Err(e),
         }
-        Ok(())
     }
 
     // Runs `run` on the app of `repository`, its graph laid out for a terminal of `size`

@@ -382,7 +382,8 @@ impl<'a> CommitChangesState<'a> {
 // The contents of the file selected in the files tab.
 #[derive(Debug)]
 enum FilePreview {
-    Text(Vec<String>),
+    // the lines of a file, `focused` while the selection moves in them
+    Text { lines: Vec<String>, focused: bool },
     Binary,
     Directory,
     Error(String),
@@ -403,8 +404,6 @@ pub struct CommitFilesState<'a> {
     // the tree of the previously shown commit, whose expanded directories and selection are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
-    // the selected line of the preview while it has the focus, and its scroll
-    preview_focused: bool,
     cursor: DiffCursor,
     // the line the search last matched, where the next one starts from
     search_row: Option<usize>,
@@ -428,7 +427,6 @@ impl<'a> CommitFilesState<'a> {
             tree: None,
             previous_tree: None,
             preview: None,
-            preview_focused: false,
             cursor: DiffCursor::default(),
             search_row: None,
         }
@@ -508,29 +506,38 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn is_preview_focused(&self) -> bool {
-        self.preview_focused
+        matches!(self.preview, Some(FilePreview::Text { focused: true, .. }))
     }
 
     fn text_lines(&self) -> Option<&[String]> {
         match &self.preview {
-            Some(FilePreview::Text(lines)) if !lines.is_empty() => Some(lines),
+            Some(FilePreview::Text { lines, .. }) if !lines.is_empty() => Some(lines),
+            _ => None,
+        }
+    }
+
+    // Whether the preview has the focus, which only a file with text can.
+    fn preview_focus(&mut self) -> Option<&mut bool> {
+        match &mut self.preview {
+            Some(FilePreview::Text { lines, focused }) if !lines.is_empty() => Some(focused),
             _ => None,
         }
     }
 
     // Moves the focus into the preview of a file, on the first line shown; false when it has no text.
     pub fn enter(&mut self) -> bool {
-        if self.preview_focused || self.text_lines().is_none() {
-            return self.preview_focused;
+        let Some(focused) = self.preview_focus() else {
+            return false;
+        };
+        if !std::mem::replace(focused, true) {
+            self.cursor.line = self.cursor.scroll.offset;
         }
-        self.preview_focused = true;
-        self.cursor.line = self.cursor.scroll.offset;
         true
     }
 
     // Moves the focus back to the files; false when it is there.
     pub fn back(&mut self) -> bool {
-        std::mem::take(&mut self.preview_focused)
+        self.preview_focus().is_some_and(std::mem::take)
     }
 
     pub fn step(&mut self, step: Step) {
@@ -554,7 +561,7 @@ impl<'a> CommitFilesState<'a> {
 
     // The selected line of the preview, to copy.
     pub fn selected_text(&self) -> Option<String> {
-        let lines = self.text_lines().filter(|_| self.preview_focused)?;
+        let lines = self.text_lines().filter(|_| self.is_preview_focused())?;
         lines.get(self.cursor.line).cloned()
     }
 
@@ -581,14 +588,15 @@ impl<'a> CommitFilesState<'a> {
         let Some(line) = found else {
             return false;
         };
-        self.preview_focused = true;
+        if let Some(focused) = self.preview_focus() {
+            *focused = true;
+        }
         self.select_line(line);
         self.search_row = Some(line);
         true
     }
 
     fn load_preview(&mut self) {
-        self.preview_focused = false;
         self.cursor.reset();
         self.search_row = None;
         let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
@@ -606,12 +614,13 @@ impl<'a> CommitFilesState<'a> {
             // the same heuristic as git: a NUL byte near the start means binary
             Ok(bytes) if bytes.iter().take(8000).any(|b| *b == 0) => FilePreview::Binary,
             // as in the file, to copy; tabs are expanded when shown
-            Ok(bytes) => FilePreview::Text(
-                String::from_utf8_lossy(&bytes)
+            Ok(bytes) => FilePreview::Text {
+                lines: String::from_utf8_lossy(&bytes)
                     .lines()
                     .map(String::from)
                     .collect(),
-            ),
+                focused: false,
+            },
             Err(err) => FilePreview::Error(err),
         };
         self.preview = Some(preview);
@@ -721,7 +730,7 @@ impl CommitTab {
 
         if let Some(tree) = &state.tree {
             // a commit always has files, they can only be filtered out
-            let focused = !state.preview_focused;
+            let focused = !state.is_preview_focused();
             let offset = render_tree(
                 buf,
                 tree_area,
@@ -738,7 +747,7 @@ impl CommitTab {
 
         let dim = |text: String| vec![placeholder(text, theme)];
         let lines = match &state.preview {
-            Some(FilePreview::Text(lines)) => {
+            Some(FilePreview::Text { lines, .. }) => {
                 // only the visible lines are built, files can be long
                 let width = lines.len().to_string().len();
                 let range = state
@@ -750,7 +759,7 @@ impl CommitTab {
                 let focused = self.focused;
                 render_scrollbar(buf, border, lines.len(), range.start, focused, theme);
                 let highlight_style = Style::default().bg(theme.list_selected_bg);
-                let selected = if state.preview_focused {
+                let selected = if state.is_preview_focused() {
                     state.cursor.line..state.cursor.line + 1
                 } else {
                     0..0
@@ -913,7 +922,7 @@ mod tests {
         state.update_tree(FileTreeState::select_next);
         assert_eq!(selected(state.tree.as_ref().unwrap()), "src/a.rs");
         assert!(
-            matches!(&state.preview, Some(FilePreview::Text(lines)) if lines == &["a", "changed"])
+            matches!(&state.preview, Some(FilePreview::Text { lines, .. }) if lines == &["a", "changed"])
         );
         state.update_tree(FileTreeState::select_last);
         assert!(matches!(state.preview, Some(FilePreview::Binary)));
@@ -930,7 +939,7 @@ mod tests {
             vec!["src", "src/a.rs", "README", "image.bin"]
         );
         assert_eq!(selected(tree), "src/a.rs");
-        assert!(matches!(&state.preview, Some(FilePreview::Text(lines)) if lines == &["a"]));
+        assert!(matches!(&state.preview, Some(FilePreview::Text { lines, .. }) if lines == &["a"]));
 
         Ok(())
     }

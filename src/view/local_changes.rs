@@ -14,7 +14,7 @@ use crate::{
         commit_list::CommitListState,
         local_changes::{
             ExternalRequest, LocalChangesPanel, LocalChangesSection, LocalChangesSnapshot,
-            LocalChangesState,
+            LocalChangesState, Request,
         },
         tree_query::QueryKind,
     },
@@ -22,7 +22,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct LocalChangesView<'a> {
-    commit_list_state: Option<CommitListState<'a>>,
+    commit_list_state: CommitListState<'a>,
     local_changes_state: LocalChangesState<'a>,
     // the last key's event, the repeats of a key moving the cursor loading no diff
     last_event: Option<UserEvent>,
@@ -39,7 +39,7 @@ impl<'a> LocalChangesView<'a> {
         tx: Sender,
     ) -> LocalChangesView<'a> {
         LocalChangesView {
-            commit_list_state: Some(commit_list_state),
+            commit_list_state,
             local_changes_state,
             last_event: None,
             ctx,
@@ -59,14 +59,13 @@ impl<'a> LocalChangesView<'a> {
         }
         self.last_event = Some(event);
         self.handle_event_inner(event, key);
-        self.run_external_request();
-        // continuing a rebase runs in the background, the app refreshing once it is done
-        if let Some(task) = self.local_changes_state.take_task() {
-            self.tx.send(AppEvent::StartTask(task));
-        }
-        // a commit, discard, stash or abort asks first
-        if let Some(dialog) = self.local_changes_state.take_dialog() {
-            self.tx.send(AppEvent::OpenDialog(Box::new(dialog)));
+        match self.local_changes_state.take_request() {
+            // continuing a rebase runs in the background, the app refreshing once it is done
+            Some(Request::Task(task)) => self.tx.send(AppEvent::StartTask(task)),
+            // a commit, discard, stash or abort asks first
+            Some(Request::Dialog(dialog)) => self.tx.send(AppEvent::OpenDialog(Box::new(dialog))),
+            Some(Request::External(request)) => self.run_external(request),
+            None => {}
         }
     }
 
@@ -283,12 +282,12 @@ impl<'a> LocalChangesView<'a> {
 }
 
 impl<'a> LocalChangesView<'a> {
-    pub fn take_list_state(&mut self) -> CommitListState<'a> {
-        self.commit_list_state.take().unwrap()
+    pub fn into_list_state(self) -> CommitListState<'a> {
+        self.commit_list_state
     }
 
     fn as_list_state(&self) -> &CommitListState<'a> {
-        self.commit_list_state.as_ref().unwrap()
+        &self.commit_list_state
     }
 
     // Turns amending on, with the message of the last commit in the commit section.
@@ -310,10 +309,7 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // Runs the editor or merge tool the state asked for, in place of the app.
-    fn run_external_request(&mut self) {
-        let Some(request) = self.local_changes_state.take_external_request() else {
-            return;
-        };
+    fn run_external(&mut self, request: ExternalRequest) {
         let command = match request {
             ExternalRequest::Editor(path) => editor_command(&path),
             ExternalRequest::MergeTool(path) => {

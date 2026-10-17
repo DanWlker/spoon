@@ -10,7 +10,7 @@ use crate::{
     app::AppContext,
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
-    git::{Commit, CommitHash, FileChange, GitTask, Ref, Repository},
+    git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     keybind::Scope,
     layout::{fit_size, Direction, Panel},
     view::{
@@ -47,9 +47,19 @@ pub enum DetailFocus {
     Pane,
 }
 
+// Two commits compared: only their changes are shown, under the comparison's title; or set aside,
+// with them, while the details of a commit in it are shown.
+#[derive(Debug, Default)]
+enum Comparing<'a> {
+    #[default]
+    No,
+    Shown(Compare),
+    Parked(Compare, Box<CommitChangesState<'a>>),
+}
+
 #[derive(Debug)]
 pub struct DetailView<'a> {
-    commit_list_state: Option<CommitListState<'a>>,
+    commit_list_state: CommitListState<'a>,
     commit_detail_state: ScrollState,
     tab: DetailTab,
     changes_state: CommitChangesState<'a>,
@@ -63,10 +73,7 @@ pub struct DetailView<'a> {
     commit: Commit,
     changes: Vec<FileChange>,
     refs: Vec<Ref>,
-    // comparing two commits: only their changes are shown, under its title
-    compare: Option<Compare>,
-    // the comparison, set aside while the details of a commit in it are shown
-    parked_compare: Option<(Compare, CommitChangesState<'a>)>,
+    compare: Comparing<'a>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
     list_focused: bool,
     // the selection moved to another commit, whose details load once used, see `load_selected`
@@ -91,7 +98,7 @@ impl<'a> DetailView<'a> {
     ) -> DetailView<'a> {
         let hash = commit.commit_hash.clone();
         DetailView {
-            commit_list_state: Some(commit_list_state),
+            commit_list_state,
             commit_detail_state: ScrollState::default(),
             tab: DetailTab::default(),
             changes_state: CommitChangesState::new(repository, hash.clone(), &changes),
@@ -102,8 +109,7 @@ impl<'a> DetailView<'a> {
             commit,
             changes,
             refs,
-            compare: None,
-            parked_compare: None,
+            compare: Comparing::No,
             list_focused: false,
             stale: false,
             last_event: None,
@@ -118,7 +124,7 @@ impl<'a> DetailView<'a> {
         let repository = self.repository;
         let changes = repository.diff_summary_between(&base, &target);
         self.changes_state = CommitChangesState::between(repository, Some(base), target, &changes);
-        self.compare = Some(compare);
+        self.compare = Comparing::Shown(compare);
         self.show_tab(DetailTab::Changes);
     }
 
@@ -155,7 +161,7 @@ impl<'a> DetailView<'a> {
                 });
             }
             hints.insert(0, hint(UserEvent::Confirm, "details"));
-            if self.parked_compare.is_some() {
+            if self.compare_parked() {
                 hints.insert(0, hint(UserEvent::Cancel, "back to diff"));
             } else if self.is_comparing() {
                 hints.insert(0, hint(UserEvent::Cancel, "close diff"));
@@ -184,7 +190,7 @@ impl<'a> DetailView<'a> {
                 hint(UserEvent::Cancel, "back"),
             ];
         }
-        if self.parked_compare.is_some() {
+        if self.compare_parked() {
             hints.push(hint(UserEvent::Cancel, "back to diff"));
         } else if self.is_comparing() {
             hints.push(hint(UserEvent::Cancel, "close diff"));
@@ -198,7 +204,7 @@ impl<'a> DetailView<'a> {
             DetailTab::Files => hints.push(hint(UserEvent::Confirm, "select lines")),
             DetailTab::Info => {}
         }
-        if self.compare.is_none() {
+        if !self.shows_compare() {
             hints.push((
                 vec![UserEvent::NextTab, UserEvent::PreviousTab],
                 "tab".into(),
@@ -271,7 +277,7 @@ impl<'a> DetailView<'a> {
     // Whether two commits are compared, also while the details of a commit in the comparison
     // are shown over it.
     pub fn is_comparing(&self) -> bool {
-        self.compare.is_some() || self.parked_compare.is_some()
+        !matches!(self.compare, Comparing::No)
     }
 
     // The files changed in the changes tab, or in the comparison.
@@ -282,29 +288,36 @@ impl<'a> DetailView<'a> {
 
     // Whether the comparison is shown.
     fn shows_compare(&self) -> bool {
-        self.compare.is_some()
+        matches!(self.compare, Comparing::Shown(_))
+    }
+
+    // Whether the comparison is set aside for the details of a commit in it.
+    fn compare_parked(&self) -> bool {
+        matches!(self.compare, Comparing::Parked(..))
     }
 
     // Shows the details of the selected commit over the comparison, which comes back with Esc.
     fn park_compare(&mut self) {
-        let Some(compare) = self.compare.take() else {
-            return;
+        let compare = match std::mem::take(&mut self.compare) {
+            Comparing::Shown(compare) => compare,
+            other => return self.compare = other,
         };
         let changes = std::mem::replace(
             &mut self.changes_state,
             CommitChangesState::new(self.repository, self.commit.commit_hash.clone(), &[]),
         );
-        self.parked_compare = Some((compare, changes));
+        self.compare = Comparing::Parked(compare, Box::new(changes));
         self.update_selected_commit(|_| {});
         self.show_tab(DetailTab::Info);
     }
 
     fn unpark_compare(&mut self) {
-        let Some((compare, changes)) = self.parked_compare.take() else {
-            return;
+        let (compare, changes) = match std::mem::take(&mut self.compare) {
+            Comparing::Parked(compare, changes) => (compare, changes),
+            other => return self.compare = other,
         };
-        self.compare = Some(compare);
-        self.changes_state = changes;
+        self.compare = Comparing::Shown(compare);
+        self.changes_state = *changes;
         self.tab = DetailTab::Changes;
         self.list_focused = true;
         self.load_tab();
@@ -381,12 +394,12 @@ impl<'a> DetailView<'a> {
         // diff or preview, Esc goes back to the files first
         if let UserEvent::Cancel | UserEvent::Close = event {
             // back from the details of a commit to the comparison
-            if self.list_focused && self.parked_compare.is_some() {
+            if self.list_focused && self.compare_parked() {
                 self.unpark_compare();
                 return;
             }
             let picked = !self.as_list_state().picked_commit_hashes().is_empty();
-            if !self.is_pane_focused() && picked && self.parked_compare.is_none() {
+            if !self.is_pane_focused() && picked && !self.compare_parked() {
                 self.clear_picks();
                 // the diff of the picked commits goes with them
                 if self.is_comparing() {
@@ -485,9 +498,7 @@ impl<'a> DetailView<'a> {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
             }
-            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close
-                if self.parked_compare.is_some() =>
-            {
+            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close if self.compare_parked() => {
                 self.unpark_compare();
             }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
@@ -552,7 +563,7 @@ impl<'a> DetailView<'a> {
         let detail_area = panel_area;
         match &self.compare {
             // the panel 2, like the tabs
-            Some(compare) => render_compare_title(
+            Comparing::Shown(compare) => render_compare_title(
                 &format!("[2] {}", compare.title),
                 focused,
                 indicator,
@@ -560,7 +571,7 @@ impl<'a> DetailView<'a> {
                 detail_area,
                 f.buffer_mut(),
             ),
-            None => render_tab_titles(
+            _ => render_tab_titles(
                 self.tab,
                 focused,
                 indicator,
@@ -712,7 +723,7 @@ impl<'a> DetailView<'a> {
             failed: Some(format!(
                 "The {what} doesn't apply to the working tree, the file differs there"
             )),
-            keeps_view: true,
+            after: AfterTask::KeepView,
             ..Default::default()
         };
         self.tx.send(AppEvent::StartTask(task));
@@ -899,16 +910,16 @@ impl<'a> DetailView<'a> {
         self.tx.send(status_input(typed, String::new()));
     }
 
-    pub fn take_list_state(&mut self) -> CommitListState<'a> {
-        self.commit_list_state.take().unwrap()
+    pub fn into_list_state(self) -> CommitListState<'a> {
+        self.commit_list_state
     }
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
-        self.commit_list_state.as_mut().unwrap()
+        &mut self.commit_list_state
     }
 
     pub fn as_list_state(&self) -> &CommitListState<'a> {
-        self.commit_list_state.as_ref().unwrap()
+        &self.commit_list_state
     }
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
@@ -983,10 +994,10 @@ impl<'a> DetailView<'a> {
     pub fn refresh_context(&self) -> RefreshViewContext {
         let list_context = ListRefreshViewContext::from(self.as_list_state());
         // also while the details of a commit in it are shown over it
-        let compare = self
-            .compare
-            .clone()
-            .or_else(|| self.parked_compare.as_ref().map(|(c, _)| c.clone()));
+        let compare = match &self.compare {
+            Comparing::No => None,
+            Comparing::Shown(compare) | Comparing::Parked(compare, _) => Some(compare.clone()),
+        };
         RefreshViewContext::Detail {
             list_context,
             tab: self.tab,

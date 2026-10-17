@@ -134,9 +134,8 @@ impl Harness {
         let mut repository = None;
         let (path, ctx, ec, quit) = (&self.path, &self.ctx, &self.ec, &mut self.quit);
         loop {
-            self.loader.load(&mut refresh, &mut repository).unwrap();
+            let loaded = self.loader.load(&mut refresh, &mut repository).unwrap();
             self.loads += 1;
-            let loaded = repository.as_ref().unwrap();
             // what the app was before reloading, None once done
             let next = self
                 .loader
@@ -314,8 +313,65 @@ fn test_launch_on_local_changes_with_the_sidebar_shrunk() {
     let mut harness = Harness::new(&path, launch);
     harness.run(vec![check(|app| {
         assert!(matches!(app.view, View::LocalChanges(_)));
-        assert!(app.shell.sidebar_collapsed);
+        assert!(app.shell.sidebar_collapsed());
     })]);
+}
+
+#[test]
+fn test_sidebar_focused_shrunk_and_grown_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let mode = |focused, collapsed| {
+        check(move |app: &App| {
+            assert_eq!(app.shell.sidebar_focused(), focused);
+            assert_eq!(app.shell.sidebar_collapsed(), collapsed);
+        })
+    };
+    harness.run(vec![
+        mode(false, false),
+        keys("0"),
+        mode(true, false),
+        // again, it shrinks and the page has the focus
+        keys("0"),
+        mode(false, true),
+        keys("0"),
+        mode(true, false),
+        keys("1"),
+        mode(false, false),
+    ]);
+}
+
+#[test]
+fn test_help_and_command_log_cover_the_app_one_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let overlay = |expected: &'static str| {
+        check(move |app: &App| {
+            let shown = match &app.shell.overlay {
+                None => "none",
+                Some(super::Overlay::Help(_)) => "help",
+                Some(super::Overlay::CommandLog(_)) => "log",
+            };
+            assert_eq!(shown, expected);
+        })
+    };
+    harness.run(vec![
+        keys("f1"),
+        overlay("help"),
+        // the help takes the keys
+        keys("@"),
+        overlay("help"),
+        keys("esc"),
+        overlay("none"),
+        keys("@"),
+        overlay("log"),
+        keys("f1"),
+        overlay("log"),
+        keys("esc"),
+        overlay("none"),
+    ]);
 }
 
 // The fetch on launch

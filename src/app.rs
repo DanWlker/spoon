@@ -28,8 +28,8 @@ use crate::{
     event::{hint, AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        moves_head_command, run_task, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
-        Ref, Repository,
+        moves_head_command, run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
+        GitTask, Head, Ref, Repository,
     },
     graph::GraphImageManager,
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -175,18 +175,13 @@ struct AppStatus {
 pub struct AppShell {
     // the refs on the left, always shown beside the page (but the help)
     sidebar: RefListState,
-    sidebar_focused: bool,
-    // shrunk to its title, by pressing its number again
-    sidebar_collapsed: bool,
+    sidebar_mode: SidebarMode,
     // the local changes page while the graph is shown, to come back to it as it was
     parked_local_changes: Option<LocalChangesRefreshViewContext>,
     // the tab of the commit details while the local changes page is shown, to reopen them
     parked_detail_tab: Option<DetailTab>,
     // the popup confirming a git command, over any view
-    dialog: Option<GitDialog>,
-    // when the popup shows, while it waits for the key opening it to be pressed again, which
-    // runs the command right away, see `QUICK_RUN_DELAY`
-    dialog_reveal: Option<Instant>,
+    dialog: Option<Popup>,
     // what the last frame showed, None before the first
     last_frame: Option<FrameLayout>,
     app_status: AppStatus,
@@ -197,10 +192,8 @@ pub struct AppShell {
     graph_filter: GraphFilter,
     // the keys of the focused panel shown in a popup, see `UserEvent::KeysToggle`
     keys_popup: bool,
-    // the git commands run, over everything, see `UserEvent::CommandLog`
-    command_log: Option<CommandLogState>,
-    // the keys of the whole app, over the page and the sidebar, see `UserEvent::HelpToggle`
-    help: Option<HelpView>,
+    // the help or the command log, over the page and the sidebar
+    overlay: Option<Overlay>,
     // errors and warnings at the top right, until dismissed
     notices: Vec<Notice>,
     // HEAD while committing the message of the local changes page, see `finish_task`
@@ -209,6 +202,22 @@ pub struct AppShell {
     operation_shown: bool,
     // quit was asked while a git command ran, the app quits once it finishes
     quit_after_task: bool,
+}
+
+// What covers the page and the sidebar, taking the keys: the keys of the whole app (see
+// `UserEvent::HelpToggle`), or the git commands run (see `UserEvent::CommandLog`), over everything.
+#[derive(Debug)]
+enum Overlay {
+    Help(HelpView),
+    CommandLog(CommandLogState),
+}
+
+// A popup confirming a git command; `reveal` is when it shows, while it waits for the key opening
+// it to be pressed again, which runs the command right away, see `QUICK_RUN_DELAY`.
+#[derive(Debug)]
+struct Popup {
+    dialog: GitDialog,
+    reveal: Option<Instant>,
 }
 
 // The history the graph shows, its commits only are loaded.
@@ -233,7 +242,24 @@ struct RefCompare {
     target: String,
 }
 
+// The sidebar beside the page: shown, focused, or shrunk to its title by pressing its number again
+// while focused, which the focus leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarMode {
+    Shown,
+    Focused,
+    Collapsed,
+}
+
 impl AppShell {
+    fn sidebar_focused(&self) -> bool {
+        self.sidebar_mode == SidebarMode::Focused
+    }
+
+    fn sidebar_collapsed(&self) -> bool {
+        self.sidebar_mode == SidebarMode::Collapsed
+    }
+
     // The revisions whose history the graph shows, None for all.
     pub fn graph_revisions(&self) -> Option<Vec<String>> {
         match &self.graph_filter {
@@ -365,19 +391,16 @@ impl<'a> App<'a> {
                     sidebar.set_head(repository.head());
                     sidebar
                 },
-                sidebar_focused: false,
-                sidebar_collapsed: false,
+                sidebar_mode: SidebarMode::Shown,
                 parked_local_changes: None,
                 parked_detail_tab: None,
                 dialog: None,
-                dialog_reveal: None,
                 last_frame: None,
                 app_status: AppStatus::default(),
                 refs_snapshot: loaded_refs,
                 graph_filter: GraphFilter::All,
                 keys_popup: false,
-                command_log: None,
-                help: None,
+                overlay: None,
                 notices: Vec::new(),
                 head_before_commit: None,
                 operation_shown: false,
@@ -411,7 +434,9 @@ impl<'a> App<'a> {
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
             None => {
-                app.shell.sidebar_collapsed = launch.sidebar_collapsed;
+                if launch.sidebar_collapsed {
+                    app.shell.sidebar_mode = SidebarMode::Collapsed;
+                }
                 if launch.local_changes {
                     app.show_local_changes_page();
                     app.shell.sidebar.select_local_changes();
@@ -427,6 +452,11 @@ impl<'a> App<'a> {
         app.end_stale_ref_compare();
 
         app
+    }
+
+    // Takes the page out, leaving none until the next one, built on its commit list, replaces it.
+    fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
+        std::mem::take(&mut self.view).into_list_state()
     }
 
     // Shows `view` in place of the page; once the comparison of refs diffed from the sidebar is
@@ -468,7 +498,8 @@ impl App<'_> {
             io::stdout().sync_update(|_| self.draw(terminal))??;
             // woken up to show the popup waiting for a second press, or to drop expired notices
             let expiry = self.shell.notices.iter().map(|n| n.until).min();
-            let event = match self.shell.dialog_reveal.into_iter().chain(expiry).min() {
+            let reveal = self.shell.dialog.as_ref().and_then(|popup| popup.reveal);
+            let event = match reveal.into_iter().chain(expiry).min() {
                 Some(at) => match self
                     .ec
                     .recv_timeout(at.saturating_duration_since(Instant::now()))
@@ -513,7 +544,7 @@ impl App<'_> {
                     }
                 }
 
-                if self.shell.command_log.is_some() {
+                if matches!(self.shell.overlay, Some(Overlay::CommandLog(_))) {
                     let event = self.ctx.keybind.event_in(Scope::Global, &key);
                     self.handle_command_log_event(event);
                     return Ok(None);
@@ -522,10 +553,11 @@ impl App<'_> {
                     self.handle_dialog_key(key);
                     return Ok(None);
                 }
-                if self.shell.help.is_some() {
+                if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
                     let event = self.ctx.keybind.event_in(Scope::Global, &key);
-                    if let (false, Some(event), Some(help)) =
-                        (self.force_quit(&key), event, self.shell.help.as_mut())
+                    let quit = self.force_quit(&key);
+                    if let (false, Some(event), Some(Overlay::Help(help))) =
+                        (quit, event, self.shell.overlay.as_mut())
                     {
                         help.handle_event(event);
                     }
@@ -657,10 +689,13 @@ impl App<'_> {
             // only redraws
             AppEvent::SpinnerTick => {}
             AppEvent::OpenHelp => {
-                self.shell.help = Some(HelpView::new(self.ctx.clone(), self.ec.sender()));
+                let help = HelpView::new(self.ctx.clone(), self.ec.sender());
+                self.shell.overlay = Some(Overlay::Help(help));
             }
             AppEvent::CloseHelp => {
-                self.shell.help = None;
+                if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
+                    self.shell.overlay = None;
+                }
             }
             AppEvent::SelectOlderCommit => {
                 self.select_older_commit();
@@ -760,7 +795,7 @@ impl App<'_> {
 
     // The keys of what has the focus: the popup, the sidebar or the view.
     fn local_hints(&self) -> Vec<KeyHint> {
-        if self.shell.command_log.is_some() {
+        if matches!(self.shell.overlay, Some(Overlay::CommandLog(_))) {
             vec![
                 (
                     vec![UserEvent::NavigateDown, UserEvent::NavigateUp],
@@ -775,9 +810,9 @@ impl App<'_> {
             ]
         } else if let Some(dialog) = self.visible_dialog() {
             dialog.key_hints()
-        } else if self.shell.help.is_some() {
+        } else if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
             vec![hint(UserEvent::Cancel, "close")]
-        } else if self.shell.sidebar_focused {
+        } else if self.shell.sidebar_focused() {
             self.sidebar_hints()
         } else {
             self.view.key_hints()
@@ -814,13 +849,13 @@ impl App<'_> {
 
     // Moves in the command log, scrolls the output of the selected command, copies it, or closes.
     fn handle_command_log_event(&mut self, event: Option<UserEvent>) {
-        let Some(state) = self.shell.command_log.as_mut() else {
+        let Some(Overlay::CommandLog(state)) = self.shell.overlay.as_mut() else {
             return;
         };
         match event {
             Some(UserEvent::ForceQuit | UserEvent::Quit) => self.ec.send(AppEvent::Quit),
             Some(UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog) => {
-                self.shell.command_log = None
+                self.shell.overlay = None
             }
             Some(UserEvent::NavigateDown | UserEvent::SelectDown) => state.select_next(),
             Some(UserEvent::NavigateUp | UserEvent::SelectUp) => state.select_prev(),
@@ -839,10 +874,7 @@ impl App<'_> {
     // Whether the keys go to a popup, typed text or the help, which take only their own: then
     // these are in the status bar, else those of the whole app, the others in the keys popup.
     fn keys_are_local(&self) -> bool {
-        self.visible_dialog().is_some()
-            || self.shell.command_log.is_some()
-            || self.is_typing()
-            || self.shell.help.is_some()
+        self.visible_dialog().is_some() || self.shell.overlay.is_some() || self.is_typing()
     }
 
     // Whether text is being typed or a prompt answered, in the view or the status bar.
@@ -854,13 +886,15 @@ impl App<'_> {
         } else {
             UserEvent::NavigateUp
         };
-        if self.shell.command_log.is_some() {
-            self.handle_command_log_event(Some(event));
-        } else if let Some(help) = self.shell.help.as_mut() {
-            help.handle_event(event);
-        } else if self.shell.dialog.is_none() && !self.is_typing() {
-            let code = if down { KeyCode::Down } else { KeyCode::Up };
-            self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
+        let idle = self.shell.dialog.is_none() && !self.is_typing();
+        match self.shell.overlay.as_mut() {
+            Some(Overlay::CommandLog(_)) => self.handle_command_log_event(Some(event)),
+            Some(Overlay::Help(help)) => help.handle_event(event),
+            None if idle => {
+                let code = if down { KeyCode::Down } else { KeyCode::Up };
+                self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
+            }
+            None => {}
         }
     }
 
@@ -911,7 +945,7 @@ impl App<'_> {
     fn frame_clear(&mut self) -> PendingClear {
         let layout = FrameLayout {
             view: self.view.kind(),
-            sidebar_collapsed: self.shell.sidebar_collapsed,
+            sidebar_collapsed: self.shell.sidebar_collapsed(),
             panels: self.ctx.layout.borrow().version(),
         };
         let clear = match self.shell.last_frame.replace(layout) {
@@ -961,7 +995,7 @@ impl App<'_> {
         let [sidebar_area, view_area] = self.split_sidebar(app_area);
         // the panels place their borders to drag as they are drawn
         self.ctx.layout.borrow_mut().clear_borders();
-        if !self.shell.sidebar_collapsed {
+        if !self.shell.sidebar_collapsed() {
             self.ctx
                 .layout
                 .borrow_mut()
@@ -978,12 +1012,13 @@ impl App<'_> {
         // views are replaced while switching pages, they take the focus as they are drawn
         let sidebar = RefList::new(
             self.ctx.clone(),
-            self.shell.sidebar_focused,
-            self.shell.sidebar_collapsed,
+            self.shell.sidebar_focused(),
+            self.shell.sidebar_collapsed(),
         );
         f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
-        self.view.render(f, view_area, !self.shell.sidebar_focused);
-        if let Some(help) = self.shell.help.as_mut() {
+        self.view
+            .render(f, view_area, !self.shell.sidebar_focused());
+        if let Some(Overlay::Help(help)) = self.shell.overlay.as_mut() {
             f.render_widget(Clear, app_area);
             f.render_widget(base, app_area);
             help.render(f, app_area);
@@ -995,7 +1030,7 @@ impl App<'_> {
         if let Some(dialog) = self.visible_dialog() {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), app_area);
         }
-        if let Some(state) = self.shell.command_log.as_mut() {
+        if let Some(Overlay::CommandLog(state)) = self.shell.overlay.as_mut() {
             let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
             CommandLog::new(&self.ctx.color_theme, scrolloff).render(
                 app_area,
@@ -1028,8 +1063,10 @@ impl App<'_> {
             .fg(theme.status_bar_fg)
             .bg(theme.status_bar_bg);
         let (page, color) = match &self.view {
-            _ if self.shell.help.is_some() => ("HELP", theme.highlight_fg),
-            _ if self.shell.sidebar_focused => ("REFS", theme.status_warn_fg),
+            _ if matches!(self.shell.overlay, Some(Overlay::Help(_))) => {
+                ("HELP", theme.highlight_fg)
+            }
+            _ if self.shell.sidebar_focused() => ("REFS", theme.status_warn_fg),
             View::LocalChanges(_) => ("CHANGES", theme.status_success_fg),
             _ => ("GRAPH", theme.accent_fg),
         };
@@ -1150,7 +1187,7 @@ impl App<'_> {
 impl App<'_> {
     // The sidebar on the left and the page.
     fn split_sidebar(&self, area: Rect) -> [Rect; 2] {
-        let width = if self.shell.sidebar_collapsed {
+        let width = if self.shell.sidebar_collapsed() {
             COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
             // leave the page some room on narrow terminals, unless resized
@@ -1198,7 +1235,7 @@ impl App<'_> {
         if !matches!(self.view, View::List(_)) {
             return;
         }
-        let Some(commit_list_state) = self.view.take_list_state() else {
+        let Some(commit_list_state) = self.take_list_state() else {
             return;
         };
         let (commit, changes, refs) = selected_commit_details(self.repository, &commit_list_state);
@@ -1251,7 +1288,7 @@ impl App<'_> {
             return;
         }
         // on the sidebar, they work on its selected ref, see `handle_sidebar_event`
-        if event.home_scope() == Scope::Graph && !self.shell.sidebar_focused {
+        if event.home_scope() == Scope::Graph && !self.shell.sidebar_focused() {
             self.handle_graph_event(event);
             return;
         }
@@ -1269,7 +1306,7 @@ impl App<'_> {
                 return;
             }
             UserEvent::CommandLog => {
-                self.shell.command_log = Some(CommandLogState::new());
+                self.shell.overlay = Some(Overlay::CommandLog(CommandLogState::new()));
                 return;
             }
             UserEvent::DismissNotifications => {
@@ -1282,11 +1319,10 @@ impl App<'_> {
             }
             UserEvent::FocusPanel(0) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
-                if self.shell.sidebar_focused && !self.shell.sidebar_collapsed {
-                    self.shell.sidebar_collapsed = true;
-                    self.set_sidebar_focused(false);
+                if self.shell.sidebar_mode == SidebarMode::Focused {
+                    self.shell.sidebar_mode = SidebarMode::Collapsed;
                 } else {
-                    self.focus_sidebar();
+                    self.set_sidebar_focused(true);
                 }
                 return;
             }
@@ -1296,7 +1332,7 @@ impl App<'_> {
             }
             _ => {}
         }
-        if self.shell.sidebar_focused {
+        if self.shell.sidebar_focused() {
             self.handle_sidebar_event(event, key);
         } else {
             self.view.handle_event(event, key);
@@ -1402,7 +1438,7 @@ impl App<'_> {
 
     // The scope of the keys, where the focus is, see `Scope`.
     fn current_scope(&self) -> Scope {
-        if self.shell.sidebar_focused {
+        if self.shell.sidebar_focused() {
             return Scope::Sidebar;
         }
         match &self.view {
@@ -1469,10 +1505,13 @@ impl App<'_> {
         ref_command_applies(self.repository, event, &selection, picked)
     }
 
+    // Focuses the sidebar, growing it back when shrunk, or gives the focus back to the page.
     fn set_sidebar_focused(&mut self, focused: bool) {
-        self.shell.sidebar_focused = focused;
         if focused {
+            self.shell.sidebar_mode = SidebarMode::Focused;
             self.view.blur();
+        } else if self.shell.sidebar_mode == SidebarMode::Focused {
+            self.shell.sidebar_mode = SidebarMode::Shown;
         }
     }
 
@@ -1510,7 +1549,7 @@ impl App<'_> {
 
     // Shows the commit list alone, from a view showing it; returns whether it did.
     fn show_list(&mut self) -> bool {
-        let Some(commit_list_state) = self.view.take_list_state() else {
+        let Some(commit_list_state) = self.take_list_state() else {
             return false;
         };
         self.replace_view(View::of_list(
@@ -1530,7 +1569,7 @@ impl App<'_> {
             }
             _ => {}
         }
-        let Some(commit_list_state) = self.view.take_list_state() else {
+        let Some(commit_list_state) = self.take_list_state() else {
             return;
         };
         // as it was when left, or before a refresh
@@ -1588,8 +1627,8 @@ impl App<'_> {
         };
         self.open_dialog(GitDialog::remote(action, self.repository.remote_info()));
         // pressing the key again quickly runs the command without showing the popup
-        if self.shell.dialog.is_some() {
-            self.shell.dialog_reveal = Some(Instant::now() + QUICK_RUN_DELAY);
+        if let Some(popup) = self.shell.dialog.as_mut() {
+            popup.reveal = Some(Instant::now() + QUICK_RUN_DELAY);
         }
         true
     }
@@ -1606,7 +1645,10 @@ impl App<'_> {
                     .command()
                     .is_ok_and(|task| self.blocked_by_operation(&task)) => {}
             Ok(dialog) => {
-                self.shell.dialog = Some(dialog);
+                self.shell.dialog = Some(Popup {
+                    dialog,
+                    reveal: None,
+                });
             }
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
@@ -1616,7 +1658,7 @@ impl App<'_> {
         if self.force_quit(&key) {
             return;
         }
-        let Some(dialog) = self.shell.dialog.as_mut() else {
+        let Some(Popup { dialog, .. }) = self.shell.dialog.as_mut() else {
             return;
         };
         // the key that opened the popup runs it, in the part of the app it belongs to
@@ -1640,7 +1682,9 @@ impl App<'_> {
             }
         }
         // any other key shows the popup it acts on
-        self.shell.dialog_reveal = None;
+        if let Some(popup) = self.shell.dialog.as_mut() {
+            popup.reveal = None;
+        }
     }
 
     // Quits for the force-quit key, which works even where the keys are typed, like in a
@@ -1655,15 +1699,14 @@ impl App<'_> {
 
     // What waited until `now`: the popup waiting for a second press shows, the notices go.
     fn expire(&mut self, now: Instant) {
-        if self.shell.dialog_reveal.is_some_and(|at| at <= now) {
-            self.shell.dialog_reveal = None;
+        if let Some(popup) = self.shell.dialog.as_mut() {
+            popup.reveal = popup.reveal.filter(|at| *at > now);
         }
         self.shell.notices.retain(|n| n.until > now);
     }
 
     fn close_dialog(&mut self) {
         self.shell.dialog = None;
-        self.shell.dialog_reveal = None;
     }
 
     // The popup, once it shows.
@@ -1671,7 +1714,8 @@ impl App<'_> {
         self.shell
             .dialog
             .as_ref()
-            .filter(|_| self.shell.dialog_reveal.is_none())
+            .filter(|popup| popup.reveal.is_none())
+            .map(|popup| &popup.dialog)
     }
 
     // Fetches all remotes in the background like lazygit, without taking the place of the git
@@ -1752,7 +1796,7 @@ impl App<'_> {
             }
         }
         // only the working tree changed, the page stays as it is
-        if task.keeps_view {
+        if task.after == AfterTask::KeepView {
             self.ec.send(AppEvent::LocalChangesChanged);
             match result {
                 Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
@@ -1765,14 +1809,17 @@ impl App<'_> {
             self.view.clear_picked_commits();
         }
         // what is left to resolve or commit is on the local changes page
-        let to_local_changes = (result.is_ok() && task.show_local_changes)
+        let to_local_changes = (result.is_ok() && task.after == AfterTask::LocalChanges)
             || self.repository.operation_in_progress().is_some();
         // the command may have changed files or stopped on conflicts, even when it failed;
         // refreshing would interrupt typing, so then it waits for the refs to be checked once
         // typing stopped, see `check_refs`
         if let Some(mut context) = self.view.refresh_context().filter(|_| !typing) {
             // the rewritten commit stays selected
-            let select = task.select.as_deref().filter(|_| result.is_ok());
+            let select = match &task.after {
+                AfterTask::Select(revision) if result.is_ok() => Some(revision.as_str()),
+                _ => None,
+            };
             if let Some(hash) = select.and_then(|revision| self.repository.resolve(revision)) {
                 let list_context = context.list_context_mut();
                 list_context.commit_hash = hash.as_str().to_string();
@@ -1888,9 +1935,9 @@ impl App<'_> {
             Direction::Up => (false, -1),
             Direction::Down => (false, 1),
         };
-        let sidebar = (!self.shell.sidebar_collapsed).then_some(Panel::Sidebar);
+        let sidebar = (!self.shell.sidebar_collapsed()).then_some(Panel::Sidebar);
         let panel = match &self.view {
-            _ if self.shell.sidebar_focused => sidebar.filter(|_| vertical),
+            _ if self.shell.sidebar_focused() => sidebar.filter(|_| vertical),
             View::Detail(view) if vertical && view.shows_tree() => Some(Panel::DetailTree),
             View::Detail(_) if !vertical => Some(Panel::Details),
             View::LocalChanges(_) if vertical => Some(Panel::Files),
@@ -1906,19 +1953,13 @@ impl App<'_> {
     // Moves the focus to the panel that way: the sidebar on the left of the page, the page on its
     // right, else between the panels of the page.
     fn move_focus(&mut self, direction: Direction) {
-        if self.shell.sidebar_focused {
+        if self.shell.sidebar_focused() {
             if direction == Direction::Right {
                 self.set_sidebar_focused(false);
             }
         } else if !self.view.move_focus(direction) && direction == Direction::Left {
-            self.focus_sidebar();
+            self.set_sidebar_focused(true);
         }
-    }
-
-    // Focuses the sidebar, growing it back when shrunk.
-    fn focus_sidebar(&mut self) {
-        self.shell.sidebar_collapsed = false;
-        self.set_sidebar_focused(true);
     }
 
     // Whether a diff of two commits or refs is open, also under the details of one of its commits.
@@ -2108,7 +2149,7 @@ impl App<'_> {
                 None => return,
             },
         };
-        let Some(commit_list_state) = self.view.take_list_state() else {
+        let Some(commit_list_state) = self.take_list_state() else {
             return;
         };
         let (commit, changes) = self.repository.commit_detail(&shown);

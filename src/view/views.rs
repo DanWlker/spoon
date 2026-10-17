@@ -26,7 +26,8 @@ pub enum ViewKind {
 #[derive(Debug, Default)]
 pub enum View<'a> {
     #[default]
-    Default, // dummy variant to make #[default] work
+    // none, while the page is taken out to build the next one on its commit list
+    Default,
     List(Box<ListView<'a>>),
     Detail(Box<DetailView<'a>>),
     LocalChanges(Box<LocalChangesView<'a>>),
@@ -134,9 +135,14 @@ impl<'a> View<'a> {
         }
     }
 
-    // Takes the commit list out of a view showing it, to build the next view on it.
-    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
-        on_page!(self, view => Some(view.take_list_state()), None)
+    // The commit list of a view showing it, to build the next view on it.
+    pub fn into_list_state(self) -> Option<CommitListState<'a>> {
+        match self {
+            View::Default => None,
+            View::List(view) => Some(view.into_list_state()),
+            View::Detail(view) => Some(view.into_list_state()),
+            View::LocalChanges(view) => Some(view.into_list_state()),
+        }
     }
 
     // The commit list of a view showing the commit graph.

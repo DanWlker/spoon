@@ -487,7 +487,7 @@ fn compare(
 mod tests {
     use super::*;
     use crate::{
-        git::{GitTask, SortCommit},
+        git::{AfterTask, GitTask, SortCommit},
         test_support::git::GitRepository,
     };
 
@@ -789,7 +789,7 @@ mod tests {
             command(&repository, UserEvent::DropCommit, &hashes[1], &[]),
             "",
         );
-        assert_eq!(task.select.as_deref(), Some("HEAD~0"));
+        assert_eq!(task.after, AfterTask::Select("HEAD~0".into()));
         assert_eq!(git(&["log", "--format=%s"]), "c3\nc1\n");
         assert_eq!(git(&["ls-files"]), "f0\nf2\n");
         assert_eq!(git(&["status", "--porcelain"]), " M f0\n");
@@ -881,7 +881,7 @@ mod tests {
             command(&repository, UserEvent::DropCommit, &hashes[1], &picked),
             "",
         );
-        assert_eq!(task.select.as_deref(), Some("HEAD~0"));
+        assert_eq!(task.after, AfterTask::Select("HEAD~0".into()));
         assert_eq!(git(&["log", "--format=%s"]), "c2\n");
         assert_eq!(git(&["ls-files"]), "f1\n");
     }

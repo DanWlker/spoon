@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct ListView<'a> {
-    commit_list_state: Option<CommitListState<'a>>,
+    commit_list_state: CommitListState<'a>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -34,7 +34,7 @@ impl<'a> ListView<'a> {
         tx: Sender,
     ) -> ListView<'a> {
         ListView {
-            commit_list_state: Some(commit_list_state),
+            commit_list_state,
             ctx,
             tx,
         }
@@ -121,12 +121,12 @@ impl<'a> ListView<'a> {
 }
 
 impl<'a> ListView<'a> {
-    pub fn take_list_state(&mut self) -> CommitListState<'a> {
-        self.commit_list_state.take().unwrap()
+    pub fn into_list_state(self) -> CommitListState<'a> {
+        self.commit_list_state
     }
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
-        self.commit_list_state.as_mut().unwrap()
+        &mut self.commit_list_state
     }
 
     pub fn clear_picks(&mut self) {
@@ -138,7 +138,7 @@ impl<'a> ListView<'a> {
     }
 
     pub fn as_list_state(&self) -> &CommitListState<'a> {
-        self.commit_list_state.as_ref().unwrap()
+        &self.commit_list_state
     }
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
