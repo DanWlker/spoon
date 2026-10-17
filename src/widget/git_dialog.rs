@@ -18,7 +18,7 @@ use crate::{
         FileChange, GitTask, NamedRef, RemoteInfo, MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
-    widget::style::{change_span, choice_arrows, focused_title, render_popup},
+    widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +231,8 @@ enum Field {
     // any text, or one of the options with left/right
     Text { input: Input, options: Vec<String> },
     Check(bool),
+    // a value that can't change, like the commit a branch starts from
+    Fixed(String),
 }
 
 #[derive(Debug)]
@@ -882,20 +884,34 @@ impl GitDialog {
         })
     }
 
-    // A branch starting at `from`, or one of `others` chosen instead (none from a commit).
-    pub fn create_branch(from: StartPoint, others: Vec<StartPoint>) -> Self {
-        let mut starts = vec![from];
-        starts.extend(
-            others
-                .into_iter()
-                .filter(|other| *other != starts[0])
-                .collect::<Vec<_>>(),
-        );
+    // A branch at a commit of the graph, which nothing else can be chosen instead of.
+    pub fn create_branch_at(commit: CommitHash) -> Self {
+        let from = StartPoint::Commit(commit);
+        let field = Field::Fixed(from.label());
+        Self::create_branch(vec![from], field)
+    }
+
+    // A branch from a ref of the sidebar, or one of the local `branches` chosen instead.
+    pub fn create_branch_from(from: NamedRef, branches: Vec<String>) -> Self {
+        let others: Vec<NamedRef> = branches
+            .into_iter()
+            .map(NamedRef::Branch)
+            .filter(|branch| *branch != from)
+            .collect();
+        let starts: Vec<StartPoint> = std::iter::once(from)
+            .chain(others)
+            .map(StartPoint::Ref)
+            .collect();
         let options = starts.iter().map(StartPoint::label).collect();
+        Self::create_branch(starts, Field::Choice { options, index: 0 })
+    }
+
+    // `from` is the field choosing among `starts`.
+    fn create_branch(starts: Vec<StartPoint>, from: Field) -> Self {
         let kind = DialogKind::CreateBranch { starts };
         let mut dialog = Self::with(" New branch ", "create", vec![], kind);
         dialog.push_text(FieldId::Name, "Name", "", vec![]);
-        dialog.push_choice(FieldId::From, "From", options, "");
+        dialog.fields.push((FieldId::From, "From".into(), from));
         dialog.push_check(FieldId::Checkout, "Check it out", true);
         dialog.editing = true;
         dialog
@@ -1172,8 +1188,10 @@ impl GitDialog {
         let mut dialog = Self::with(" New tag ", "create", vec![], DialogKind::CreateTag { at });
         dialog.push_text(FieldId::Name, "Name", "", vec![]);
         dialog.push_text(FieldId::Message, "Message", "", vec![]);
-        // where the cursor is, the only option
-        dialog.push_choice(FieldId::At, "At", vec![label], "");
+        // where the cursor is, nothing else to choose
+        dialog
+            .fields
+            .push((FieldId::At, "At".into(), Field::Fixed(label)));
         dialog.editing = true;
         dialog
     }
@@ -1481,6 +1499,7 @@ impl GitDialog {
         match self.field(id) {
             Some(Field::Choice { options, index }) => options[*index].clone(),
             Some(Field::Text { input, .. }) => input.value().trim().to_string(),
+            Some(Field::Fixed(value)) => value.clone(),
             _ => panic!("the popup has no text or choice field {id:?}"),
         }
     }
@@ -1489,6 +1508,8 @@ impl GitDialog {
     fn choice(&self, id: FieldId) -> usize {
         match self.field(id) {
             Some(Field::Choice { index, .. }) => *index,
+            // the only value
+            Some(Field::Fixed(_)) => 0,
             _ => panic!("the popup has no choice field {id:?}"),
         }
     }
@@ -1726,7 +1747,7 @@ impl GitDialog {
             // a single option is fixed, like where a branch starts from a commit
             Some((_, _, Field::Choice { options, .. })) => options.len() > 1,
             Some((_, _, Field::Text { options, .. })) => !options.is_empty(),
-            None => false,
+            Some((_, _, Field::Fixed(_))) | None => false,
         }
     }
 
@@ -1794,6 +1815,7 @@ impl GitDialog {
                 *input = Input::new(options[next].clone());
             }
             Field::Check(checked) => *checked = !*checked,
+            Field::Fixed(_) => {}
         }
         // the fields that follow the one changed
         let action = match &self.kind {
@@ -2226,6 +2248,17 @@ impl Widget for GitDialogWidget<'_> {
                         Span::raw(note).fg(theme.highlight_fg),
                     ])
                 }
+                // no arrows, there is nothing to choose
+                Field::Fixed(value) => {
+                    let [left, right] = no_choice_arrows();
+                    Line::from(vec![
+                        bar,
+                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
+                        left,
+                        Span::raw(value.clone()).fg(theme.fg).bold(),
+                        right,
+                    ])
+                }
                 Field::Check(checked) => {
                     if !checks_started && i > 0 {
                         lines.push(Line::raw(""));
@@ -2483,6 +2516,35 @@ mod tests {
     }
 
     #[test]
+    fn test_fixed_values_have_no_arrows() {
+        use crate::test_support::ui::{find_row, row_text, test_ctx};
+        let ctx = test_ctx();
+        let draw = |dialog: &GitDialog| {
+            let area = Rect::new(0, 0, 100, 20);
+            let mut buf = Buffer::empty(area);
+            GitDialogWidget::new(dialog, &ctx).render(area, &mut buf);
+            buf
+        };
+        // from a commit of the graph, or a tag where the cursor is: nothing else to choose
+        let commit = || "a".repeat(40).as_str().into();
+        for (dialog, label) in [
+            (GitDialog::create_branch_at(commit()), "From"),
+            (GitDialog::create_tag(StartPoint::Commit(commit())), "At"),
+        ] {
+            let buf = draw(&dialog);
+            let row = row_text(&buf, find_row(&buf, label));
+            assert!(!row.contains('‹') && !row.contains('›'), "{row}");
+            assert!(row.contains("aaaaaaa"), "{row}");
+        }
+        // from a branch of the sidebar the start can be chosen, even when it's the only branch
+        let main = || NamedRef::Branch("main".into());
+        let buf = draw(&GitDialog::create_branch_from(main(), vec!["dev".into()]));
+        assert!(row_text(&buf, find_row(&buf, "From")).contains("‹ main ›"));
+        let buf = draw(&GitDialog::create_branch_from(main(), vec!["main".into()]));
+        assert!(row_text(&buf, find_row(&buf, "From")).contains("‹ main ›"));
+    }
+
+    #[test]
     fn test_enter_goes_to_empty_required_fields() {
         let mut dialog = GitDialog::create_tag(StartPoint::Ref(NamedRef::Branch("main".into())));
         let enter = key(KeyCode::Enter);
@@ -2553,8 +2615,7 @@ mod tests {
     #[test]
     fn test_bad_names_and_upstreams_are_refused() {
         // `git branch -D feature` would delete feature
-        let mut dialog =
-            GitDialog::create_branch(StartPoint::Ref(NamedRef::Branch("feature".into())), vec![]);
+        let mut dialog = GitDialog::create_branch_from(NamedRef::Branch("feature".into()), vec![]);
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('D')));
         assert!(dialog.command().unwrap().is_err());
@@ -2583,11 +2644,10 @@ mod tests {
         let task = dialog.command().unwrap().unwrap();
         assert_eq!(task.commands, [["branch", "-m", "topic", "topic2"]]);
         // from a commit, or a tag at it, where the cursor is
-        let dialog =
-            GitDialog::create_branch(StartPoint::Commit("a".repeat(40).as_str().into()), vec![]);
-        assert!(matches!(&dialog.fields[1].2, Field::Choice { options, .. } if options.len() == 1));
+        let dialog = GitDialog::create_branch_at("a".repeat(40).as_str().into());
+        assert!(matches!(&dialog.fields[1].2, Field::Fixed(_)));
         let dialog = GitDialog::create_tag(StartPoint::Commit("a".repeat(40).as_str().into()));
-        assert!(matches!(&dialog.fields[2].2, Field::Choice { options, .. } if options.len() == 1));
+        assert!(matches!(&dialog.fields[2].2, Field::Fixed(_)));
         let mut dialog = GitDialog::create_tag(StartPoint::Ref(NamedRef::Tag("v1".into())));
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('d')));

@@ -65,6 +65,11 @@ pub fn choice_arrows(left: bool, right: bool, theme: &ColorTheme) -> [Span<'stat
     [Span::raw("‹ ").fg(fg(left)), Span::raw(" ›").fg(fg(right))]
 }
 
+// In place of `choice_arrows` for a value with nothing else to choose, lined up with the choices.
+pub fn no_choice_arrows() -> [Span<'static>; 2] {
+    [Span::raw("  "), Span::raw("")]
+}
+
 // The marker of a folder or section that opens: nvim-tree's chevrons (Nerd Font, Octicons).
 pub fn fold_marker(open: bool) -> &'static str {
     if open {

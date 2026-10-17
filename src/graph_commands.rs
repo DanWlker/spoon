@@ -111,9 +111,7 @@ pub fn graph_command(
             single("Tag").map(|_| GitDialog::create_tag(StartPoint::Commit(selected.clone())))
         }
         UserEvent::CreateBranch => {
-            // from the commit, nothing else
-            single("Branch")
-                .map(|_| GitDialog::create_branch(StartPoint::Commit(selected.clone()), vec![]))
+            single("Branch").map(|_| GitDialog::create_branch_at(selected.clone()))
         }
         _ => return None,
     };
@@ -190,7 +188,7 @@ pub fn ref_graph_command(
             GitDialog::checkout(targets)
         }),
         // from the name, so a branch made from a remote branch tracks it
-        UserEvent::CreateBranch => Ok(create_branch(repository, StartPoint::Ref(selected.clone()))),
+        UserEvent::CreateBranch => Ok(create_branch(repository, selected.clone())),
         UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Ref(selected.clone()))),
         _ => return graph_command(repository, event, target, vec![]),
     };
@@ -198,7 +196,7 @@ pub fn ref_graph_command(
 }
 
 // A new branch from `from`, or another local branch chosen instead.
-fn create_branch(repository: &Repository, from: StartPoint) -> GitDialog {
+fn create_branch(repository: &Repository, from: NamedRef) -> GitDialog {
     let mut branches: Vec<String> = repository
         .all_refs()
         .into_iter()
@@ -206,11 +204,7 @@ fn create_branch(repository: &Repository, from: StartPoint) -> GitDialog {
         .map(|r| r.name().to_string())
         .collect();
     branches.sort();
-    let others = branches
-        .into_iter()
-        .map(|branch| StartPoint::Ref(NamedRef::Branch(branch)))
-        .collect();
-    GitDialog::create_branch(from, others)
+    GitDialog::create_branch_from(from, branches)
 }
 
 // The commit as a line in a popup: its short hash and subject.

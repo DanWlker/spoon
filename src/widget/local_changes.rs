@@ -959,7 +959,8 @@ impl<'a> LocalChangesState<'a> {
             "amend",
             "Amend the last commit, or stop amending",
         )
-        .when(|v| v.operation.is_none())
+        // during an operation only stopping, see `toggle_amend`; a commit being edited stays amended
+        .when(|v| !v.editing_commit && (v.operation.is_none() || v.draft.amend.is_some()))
         .short(|v| {
             if v.draft.amend.is_some() {
                 "stop amending"
@@ -2674,6 +2675,11 @@ mod tests {
         assert_eq!(paths(&state.changes.staged), vec!["a.txt", "c.txt"]);
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt"]);
 
+        // an operation starting meanwhile leaves A to stop amending, not to start it
+        state.operation = Some(Operation::Merge);
+        assert!(state.keys().takes(UserEvent::ToggleAmend));
+        state.operation = None;
+
         // the draft survives a refresh
         let reloaded = LocalChangesState::restore(&repository, Some(state.snapshot()));
         assert_eq!(paths(&reloaded.changes.staged), vec!["a.txt", "c.txt"]);
@@ -2681,6 +2687,9 @@ mod tests {
         // turning amend off restores the staged section and the typed message
         state.toggle_amend()?;
         assert_eq!(state.draft.message(), "draft");
+        state.operation = Some(Operation::Merge);
+        assert!(!state.keys().takes(UserEvent::ToggleAmend));
+        state.operation = None;
         assert_eq!(paths(&state.changes.staged), vec!["b.txt", "c.txt"]);
         assert_eq!(state.changes.staged[0].status, LocalChangeStatus::Deleted);
 
