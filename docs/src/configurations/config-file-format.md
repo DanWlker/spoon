@@ -270,7 +270,7 @@ The clipboard command to use for copy operations.
 - a remote branch, a tag or a remote in the sidebar: its page
 - a file in the Changes or Files tab of the details: the file at that commit; from the diff or the file beside it, at the selected hunk or line (`#L5-L9`), where the host's links can point at lines. A line only removed has no line in the file at that commit, so it opens the file.
 
-The remote is the one of the branch (a local branch's upstream), else the upstream remote of the current branch, else `origin`, else the first. Its URL (`git@host:owner/repo.git`, `https://…`, `ssh://…`) becomes `https://host/owner/repo`. A commit not pushed yet opens a page that doesn't exist.
+The remote is the one of the branch (a remote branch's, or a local branch's upstream). Otherwise, with several remotes, the popup chooses one, starting at the upstream remote of the current branch, else `origin`, else the first; remotes not on a web host, like a path, are left out. Its URL (`git@host:owner/repo.git`, `https://…`, `ssh://…`) becomes `https://host/owner/repo`. A commit not pushed yet opens a page that doesn't exist.
 
 #### `core.browser.services`
 

@@ -10,6 +10,7 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
+    graph_commands::dialog_commit,
     keybind::Scope,
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
@@ -29,6 +30,7 @@ use crate::{
         },
         diff::{Step, CONVERTED_DIFF},
         file_tree::FileTreeState,
+        git_dialog::GitDialog,
         style::{panel_block, ScrollState},
         tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
@@ -224,6 +226,9 @@ impl<'a> DetailView<'a> {
                 hint(UserEvent::CopyLink, "copy link"),
             ]),
             DetailTab::Changes | DetailTab::Files => {
+                if self.reset_file_change().is_some() {
+                    hints.push(hint(UserEvent::ResetFile, "reset file"));
+                }
                 hints.extend([
                     hint(UserEvent::Search, "search"),
                     hint(UserEvent::Filter, "filter"),
@@ -445,6 +450,13 @@ impl<'a> DetailView<'a> {
             return;
         }
 
+        if let (UserEvent::ResetFile, Some(change)) = (event, self.reset_file_change()) {
+            let commit = dialog_commit(self.repository, &self.commit.commit_hash);
+            let dialog = GitDialog::reset_file(commit, change.clone());
+            self.tx.send(AppEvent::OpenDialog(Box::new(dialog)));
+            return;
+        }
+
         // the file selected in the tree: its blame, on the line selected in its diff or preview, or
         // its timeline
         if let (UserEvent::Blame | UserEvent::Timeline, false) = (event, self.list_focused) {
@@ -578,6 +590,7 @@ impl<'a> DetailView<'a> {
                     &self.changes,
                     &self.refs,
                     self.repository.head(),
+                    self.repository.branch_tracking(),
                     self.ctx.clone(),
                 );
                 f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
@@ -643,6 +656,23 @@ impl<'a> DetailView<'a> {
     }
 
     // The path selected in the file tree of the tab, and whether it is a directory.
+    // The change of the file selected in the changes tab of a commit, which `u` resets; none in a
+    // comparison, having no commit to reset it before or at.
+    fn reset_file_change(&self) -> Option<&FileChange> {
+        if self.list_focused || self.tab != DetailTab::Changes || self.shows_compare() {
+            return None;
+        }
+        let (path, false) = self.selected_entry()? else {
+            return None;
+        };
+        self.changes.iter().find(|change| match change {
+            FileChange::Move { to, .. } => to == path,
+            FileChange::Add { path: p }
+            | FileChange::Modify { path: p }
+            | FileChange::Delete { path: p } => p == path,
+        })
+    }
+
     fn selected_entry(&self) -> Option<(&str, bool)> {
         match self.tab {
             DetailTab::Info => None,

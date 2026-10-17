@@ -67,6 +67,8 @@ next_tab = ["]"]
 previous_tab = ["["]
 # apply the selected hunk or line of a commit's diff to the working tree, in the changes tab
 apply_change = ["space"]
+# reset the selected file of the changes tab to how it was at the commit or before it, after confirming
+reset_file = ["u"]
 # stash local changes, or only the selected files
 stash = ["s"]
 # commit (or amend), or continue the rebase in progress
@@ -115,7 +117,7 @@ branch_only = ["shift-l"]
 open_in_browser = ["o"]
 copy_link = ["shift-o"]
 
-# the refs sidebar: create a remote (on a remote, or on the remotes header while there are none), delete the selected branch
+# the refs sidebar: create a remote (on a remote or the remotes header), delete the selected branch
 # or tag or drop the selected stash, rename a branch or change its upstream, apply a stash
 create_ref = ["a"]
 delete_ref = ["d"]

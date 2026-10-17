@@ -15,6 +15,7 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{CommitHash, FileRevision, Repository},
+    layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
         commit_event, commit_hints, copy_selection, file_link, moving_hints, query_status,
@@ -149,8 +150,6 @@ impl BlameView {
                 QueryChange::None => self.tx.send(AppEvent::CloseOverlay),
                 _ => self.update_query_status(),
             },
-            UserEvent::FocusPanel(0) => self.focus = BlameFocus::Revision,
-            UserEvent::FocusPanel(1) if !body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateLeft if body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateRight if body => self.focus = BlameFocus::Text,
             UserEvent::NavigateDown if !body => self.focus = BlameFocus::Commit,
@@ -282,6 +281,19 @@ impl BlameView {
 
     // The keys working where the focus is, the most useful first: the status bar shows as many as
     // fit, the keys popup all.
+    // Alt and the arrow keys: up to the commit shown, down to the lines, left and right between
+    // the commits and the text of the lines.
+    pub fn move_focus(&mut self, direction: Direction) {
+        use BlameFocus::*;
+        self.focus = match (self.focus, direction) {
+            (Revision, Direction::Down) => Commit,
+            (Commit | Text, Direction::Up) => Revision,
+            (Text, Direction::Left) => Commit,
+            (Commit, Direction::Right) => Text,
+            (focus, _) => focus,
+        };
+    }
+
     pub fn key_hints(&self) -> Vec<KeyHint> {
         use UserEvent::*;
         if self.query.is_editing() {
@@ -317,11 +329,7 @@ impl BlameView {
                 (vec![GoToNext, GoToPrevious], "next/previous match".into()),
             ]);
         }
-        hints.extend([
-            (vec![FocusPanel(0), FocusPanel(1)], "focus panel".into()),
-            hint(ToggleWrap, "wrap"),
-            hint(Cancel, "close"),
-        ]);
+        hints.extend([hint(ToggleWrap, "wrap"), hint(Cancel, "close")]);
         hints
     }
 
@@ -336,7 +344,7 @@ impl BlameView {
         let (count, revision) = (self.history.len(), &self.history[self.index]);
         let position = format!("{}/{count}", count - self.index);
         let block =
-            panel_block(focused, theme).title(panel_title("[0] Commit", &position, focused, theme));
+            panel_block(focused, theme).title(panel_title("Commit", &position, focused, theme));
         // [ and ] step from anywhere
         let [left, right] = choice_arrows(self.index + 1 < count, self.index > 0, theme);
         let mut spans = vec![left];
@@ -349,24 +357,27 @@ impl BlameView {
 
         // the lines, each run of lines of a commit headed by it
         let focused = !focused;
-        let block = panel_block(focused, theme).title(panel_title(
-            "[1] Blame",
-            &revision.path,
-            focused,
-            theme,
-        ));
+        let block =
+            panel_block(focused, theme).title(panel_title("Blame", &revision.path, focused, theme));
         let inner = block.inner(body);
         block.render(body, buf);
         let author_width = self.author_width;
-        let gutter_width = (7 + 1 + author_width + 1 + self.date_width) as u16;
-        let [gutter, divider, text_area] = Layout::horizontal([
-            Constraint::Length(gutter_width.min(inner.width / 2)),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .areas(inner);
-        for y in divider.top()..divider.bottom() {
-            buf.set_string(divider.x, y, "│", Style::default().fg(theme.divider_fg));
+        // the commits with the line after them, resizable; both keep some room
+        let default = (7 + 1 + author_width + 1 + self.date_width + 1) as u16;
+        let width = ctx.layout.borrow().size(Panel::BlameCommits, default);
+        let width = fit_size(width, inner.width, 8, 10);
+        let [commits_area, text_area] =
+            Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(inner);
+        ctx.layout
+            .borrow_mut()
+            .place(Panel::BlameCommits, commits_area, Edge::Right);
+        let gutter = Rect {
+            width: commits_area.width - 1,
+            ..commits_area
+        };
+        for y in commits_area.top()..commits_area.bottom() {
+            let x = commits_area.right() - 1;
+            buf.set_string(x, y, "│", Style::default().fg(theme.divider_fg));
         }
         // the search highlighted where it applies, in the text or the commits
         let search_in = |focus| self.query.search().filter(|_| self.focus == focus);
@@ -498,12 +509,17 @@ mod tests {
         assert_eq!(view.focus, BlameFocus::Revision);
         press(&mut view, UserEvent::NavigateDown);
         assert_eq!(view.focus, BlameFocus::Commit);
-        press(&mut view, UserEvent::FocusPanel(0));
-        press(&mut view, UserEvent::FocusPanel(1));
+        // alt and the arrows move about, left and right in the lines
+        view.move_focus(Direction::Right);
+        assert_eq!(view.focus, BlameFocus::Text);
+        view.move_focus(Direction::Left);
+        view.move_focus(Direction::Up);
+        assert_eq!(view.focus, BlameFocus::Revision);
+        view.move_focus(Direction::Down);
         assert_eq!(view.focus, BlameFocus::Commit);
 
         // left and right on the commit shown step through the history too
-        press(&mut view, UserEvent::FocusPanel(0));
+        view.move_focus(Direction::Up);
         press(&mut view, UserEvent::NavigateLeft);
         assert_eq!(shown(&view).0, c2);
         press(&mut view, UserEvent::NavigateRight);

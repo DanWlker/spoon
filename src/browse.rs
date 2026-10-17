@@ -14,7 +14,6 @@ pub enum LinkTarget {
     Commit(String),
     // a local branch: its page, or a new pull request from it, on the remote of its upstream
     Branch(String),
-    PullRequest(String),
     // "origin/main"
     RemoteBranch(String),
     Tag(String),
@@ -126,80 +125,105 @@ enum Page {
     },
 }
 
-// The links of `target` to choose from, with what they show: a local branch's page and a new pull
-// request from it, else the one link.
+// A link to choose from: the remote it is on, what it shows ("Branch") and its URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageLink {
+    pub remote: String,
+    pub page: String,
+    pub url: String,
+}
+
+// The links of `target` to choose from, on the web host of each remote it may be on: a local
+// branch's page and a new pull request from it, else the one page. A remote not on a web host, like
+// a path, is left out, failing only when none is.
 pub fn links(
     repository: &Repository,
     services: &FxHashMap<String, Forge>,
     target: &LinkTarget,
-) -> Result<Vec<(String, String)>, String> {
-    let link = |target: &LinkTarget| link(repository, services, target);
-    match target {
-        LinkTarget::Branch(branch) => Ok(vec![
-            ("Branch".into(), link(target)?),
-            (
-                "Pull request".into(),
-                link(&LinkTarget::PullRequest(branch.clone()))?,
-            ),
-        ]),
-        _ => Ok(vec![("Link".into(), link(target)?)]),
-    }
-}
-
-// The link of `target`, on the web host of the remote it belongs to.
-fn link(
-    repository: &Repository,
-    services: &FxHashMap<String, Forge>,
-    target: &LinkTarget,
-) -> Result<String, String> {
+) -> Result<Vec<PageLink>, String> {
     let info = repository.remote_info();
-    // the upstream remote of the branch, else origin, else the first
-    let remote_of = |branch: Option<&str>| {
-        branch
+    // the upstream remote of the branch, else origin, else the first; then the others
+    let remotes_of = |branch: Option<&str>| -> Result<Vec<String>, String> {
+        let first = branch
             .and_then(|b| info.upstreams.get(b))
-            .map(|(remote, _)| remote.clone())
-            .or_else(|| info.remotes.iter().find(|r| *r == "origin").cloned())
-            .or_else(|| info.remotes.first().cloned())
-            .ok_or_else(|| "There is no remote to link to".to_string())
+            .map(|(remote, _)| remote)
+            .or_else(|| info.remotes.iter().find(|r| *r == "origin"))
+            .or_else(|| info.remotes.first())
+            .ok_or_else(|| "There is no remote to link to".to_string())?;
+        let others = info.remotes.iter().filter(|r| *r != first);
+        Ok(std::iter::once(first).chain(others).cloned().collect())
     };
     let current = info.current_branch.as_deref();
-    let (remote, page) = match target {
-        LinkTarget::Commit(hash) => (remote_of(current)?, Page::Commit(hash.clone())),
+    let (remotes, pages) = match target {
+        LinkTarget::Commit(hash) => (
+            remotes_of(current)?,
+            vec![("Commit", Page::Commit(hash.clone()))],
+        ),
         LinkTarget::File {
             commit,
             path,
             lines,
         } => (
-            remote_of(current)?,
-            Page::File {
-                commit: commit.clone(),
-                path: path.clone(),
-                lines: *lines,
-            },
+            remotes_of(current)?,
+            vec![(
+                "File",
+                Page::File {
+                    commit: commit.clone(),
+                    path: path.clone(),
+                    lines: *lines,
+                },
+            )],
         ),
-        LinkTarget::Tag(tag) => (remote_of(current)?, Page::Tag(tag.clone())),
-        LinkTarget::Remote(remote) => (remote.clone(), Page::Repo),
+        LinkTarget::Tag(tag) => (remotes_of(current)?, vec![("Tag", Page::Tag(tag.clone()))]),
+        LinkTarget::Remote(remote) => (vec![remote.clone()], vec![("Repository", Page::Repo)]),
         LinkTarget::RemoteBranch(name) => {
             let (remote, branch) = split_remote_branch(&info.remotes, name)
                 .ok_or_else(|| format!("{name} is on no remote"))?;
-            (remote.to_string(), Page::Branch(branch.to_string()))
+            (
+                vec![remote.to_string()],
+                vec![("Branch", Page::Branch(branch.to_string()))],
+            )
         }
         // its upstream branch, else a branch of the same name
-        LinkTarget::Branch(branch) | LinkTarget::PullRequest(branch) => {
-            let (remote, name) = match info.upstreams.get(branch) {
-                Some((remote, upstream)) => (remote.clone(), upstream.clone()),
-                None => (remote_of(None)?, branch.clone()),
+        LinkTarget::Branch(branch) => {
+            let (remotes, name) = match info.upstreams.get(branch) {
+                Some((remote, upstream)) => (vec![remote.clone()], upstream.clone()),
+                None => (remotes_of(None)?, branch.clone()),
             };
-            match target {
-                LinkTarget::Branch(_) => (remote, Page::Branch(name)),
-                _ => (remote, Page::PullRequest(name)),
-            }
+            let pages = vec![
+                ("Branch", Page::Branch(name.clone())),
+                ("Pull request", Page::PullRequest(name)),
+            ];
+            (remotes, pages)
         }
     };
-    let url = repository
-        .remote_url(&remote)
-        .ok_or_else(|| format!("The remote {remote} has no URL"))?;
-    web_link(&url, services, &page)
+    let mut links = vec![];
+    let mut error = None;
+    for remote in remotes {
+        let made: Result<Vec<PageLink>, String> = pages
+            .iter()
+            .map(|(label, page)| {
+                let url = repository
+                    .remote_url(&remote)
+                    .ok_or_else(|| format!("The remote {remote} has no URL"))?;
+                Ok(PageLink {
+                    remote: remote.clone(),
+                    page: label.to_string(),
+                    url: web_link(&url, services, page)?,
+                })
+            })
+            .collect();
+        match made {
+            Ok(made) => links.extend(made),
+            Err(err) => {
+                error.get_or_insert(err);
+            }
+        }
+    }
+    match error {
+        Some(err) if links.is_empty() => Err(err),
+        _ => Ok(links),
+    }
 }
 
 fn web_link(url: &str, services: &FxHashMap<String, Forge>, page: &Page) -> Result<String, String> {

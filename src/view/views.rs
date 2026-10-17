@@ -6,7 +6,7 @@ use crate::{
     app::AppContext,
     event::{KeyHint, Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
-    layout::Direction,
+    layout::{Direction, Panel},
     view::{
         detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
     },
@@ -98,6 +98,18 @@ impl<'a> View<'a> {
             View::Detail(view) => view.move_focus(direction),
             View::LocalChanges(view) => view.move_focus(direction),
             _ => false,
+        }
+    }
+
+    // The panel ctrl and the arrow keys resize, by its width when `vertical` (moving a border left
+    // or right), else by its height; none when the page has no such border there.
+    pub fn resizable_panel(&self, vertical: bool) -> Option<Panel> {
+        match self {
+            View::Detail(view) if vertical && view.shows_tree() => Some(Panel::DetailTree),
+            View::Detail(_) if !vertical => Some(Panel::Details),
+            View::LocalChanges(_) if vertical => Some(Panel::Files),
+            View::LocalChanges(view) => Some(view.height_panel()),
+            _ => None,
         }
     }
 

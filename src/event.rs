@@ -444,6 +444,7 @@ pub enum UserEvent {
     NextSection,
     PreviousSection,
     ApplyChange,
+    ResetFile,
     SearchTargetToggle,
     SmartCaseToggle,
     FuzzyToggle,
@@ -485,7 +486,10 @@ impl UserEvent {
             | UserEvent::ApplyStash
             | UserEvent::NextSection
             | UserEvent::PreviousSection => Scope::Sidebar,
-            UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ApplyChange => Scope::Details,
+            UserEvent::NextTab
+            | UserEvent::PreviousTab
+            | UserEvent::ApplyChange
+            | UserEvent::ResetFile => Scope::Details,
             UserEvent::OlderCommit | UserEvent::NewerCommit => Scope::FileHistory,
             UserEvent::ToggleStage
             | UserEvent::Stash

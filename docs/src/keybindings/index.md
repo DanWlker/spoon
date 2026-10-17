@@ -16,7 +16,7 @@ The default key bindings can be overridden.
 | <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
 | <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
 | <kbd>0</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_0` |
-| <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> | Move the border beside the focused panel: the sidebar's, or the one between the files and the diff | `resize_left` `resize_right` |
+| <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> | Move the border beside the focused panel: the sidebar's, the one between the files and the diff, or after the commits of the blame and the timeline | `resize_left` `resize_right` |
 | <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
 | <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> <kbd>Alt-h</kbd> <kbd>Alt-l</kbd> <kbd>Alt-k</kbd> <kbd>Alt-j</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
 | <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
@@ -41,7 +41,7 @@ With the mouse captured, the terminal selects text while Shift is held.
 - Pull: the remote and the branch to pull, whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, whether to force push (`--force-with-lease`), and whether to skip the pre-push hook (`--no-verify`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branches cycle through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types a branch name (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name or a URL) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
@@ -139,6 +139,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs); search the diff while it has the focus | `search` `filter` |
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `apply_change` |
+| <kbd>u</kbd>                         | Reset the selected file to how it was at the commit or before it, in the working tree and the index, after confirming (changes tab) | `reset_file` |
 | <kbd>o/O</kbd>                       | Open the commit, or the selected file at it, on the web host; from the diff or the file, at the selected hunk or line; copy its link | `open_in_browser` `copy_link` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 | <kbd>B</kbd>                         | Blame the selected file (see below), from the selected line of its diff or preview | `blame` |
@@ -220,7 +221,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy ref name    | `short_copy`                     |
 | <kbd>o/O</kbd>                                     | Open the branch (or a new pull request from it, chosen in the popup), the remote branch, tag or remote on the web host; copy its link | `open_in_browser` `copy_link` |
-| <kbd>a</kbd>                                       | New remote (on a remote; on the remotes header while there are none) | `create_ref` |
+| <kbd>a</kbd>                                       | New remote (on a remote or the remotes header) | `create_ref` |
 | <kbd>b</kbd>                                       | New branch from the selected branch, remote branch or tag | `create_branch` |
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
@@ -233,7 +234,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 The commands on the refs ask first, in a popup:
 
 - <kbd>b</kbd>: a new branch from the selected branch, remote branch or tag (nothing on the other rows), checking it out or not. The start can be typed, or chosen among the branches with <kbd>v</kbd>.
-- <kbd>a</kbd> on a remote (like `origin`, under the remotes), or on the remotes header while there are none: a new remote, with its name and URL, fetched once added.
+- <kbd>a</kbd> on a remote (like `origin`, under the remotes), or on the remotes header: a new remote, with its name and URL, fetched once added.
 - <kbd>t</kbd>: a new tag at the selected branch, remote branch or tag (nothing on the other rows), annotated when it has a message. Where it goes can be typed.
 - <kbd>v</kbd> picks refs, all of one kind: branches, remote branches, tags or stashes (picking another kind warns; <kbd>Esc</kbd> clears the picks first). The title of the sidebar shows how many are picked. <kbd>d</kbd> then deletes (or drops) all of them in one popup, and <kbd>D</kbd> diffs the two picked refs.
 - <kbd>D</kbd> diffs two refs: the two picked ones (the first picked is the base), else the current branch and the picked or selected one. The changes between them open in the details, like <kbd>D</kbd> on the graph, and the commit graph shows only the history of the two (its title says which); closing the comparison shows all of it again.
@@ -258,7 +259,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Back from lines to hunks, from hunks to files<br>Back from the commit section to files<br>Clear the picked files, then the search, then the filter | `close` `cancel` |
 | <kbd>1</kbd> <kbd>2</kbd>            | Focus unstaged/staged files                                  | `focus_panel_1` `focus_panel_2` |
 | <kbd>3</kbd>                         | Focus the commit message, typing it when it is empty          | `focus_panel_3`                 |
-| <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Commit, like <kbd>c</kbd>, in the commit section | `confirm`    |
+| <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Commit, like <kbd>c</kbd>, in the commit section or on an empty unstaged section<br>Go to the unstaged section from an empty staged one | `confirm`    |
 | <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert, after confirming; or continue a rebase | `commit` |
 | <kbd>e</kbd>                         | Open the file in `$VISUAL` or `$EDITOR`<br>Type the message, in the commit section | `edit`  |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
@@ -285,7 +286,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
-<kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
+<kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section, or on an empty unstaged section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
 While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, the files that conflicted listed in the description, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
 Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
@@ -298,12 +299,13 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 #### Blame
 
-<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **[0] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **[1] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
+<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the search, then close                                 | `close` `cancel`                |
-| <kbd>0</kbd> <kbd>1</kbd>            | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too) | `focus_panel_0` `focus_panel_1` |
+| <kbd>Alt-Up/Down</kbd>               | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_up` `focus_down` |
+| <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit of the line on the graph, closing the blame | `confirm`                      |
@@ -322,7 +324,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Clear the search, back out of the lines and hunks, then close | `close` `cancel`               |
-| <kbd>0</kbd> <kbd>1</kbd>            | Focus the commits/the diff                                   | `focus_panel_0` `focus_panel_1` |
+| <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_0` `focus_panel_1` `focus_left` `focus_right` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Into the diff (its hunks)/back out of it                     | `navigate_right` `navigate_left` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
@@ -332,7 +334,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the commits (by hash, date or subject), or the diff while it has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
 
-In both windows, <kbd>,</kbd> dismisses the notices and <kbd>w</kbd> wraps long lines, as everywhere. The scroll keys scroll the diff from the commits too. A commit whose diff has no hunk, like a rename, puts the focus back on the commits.
+In both windows, <kbd>,</kbd> dismisses the notices, <kbd>w</kbd> wraps long lines and <kbd>Ctrl-Left/Right</kbd> move the border after the commits, as everywhere. The scroll keys scroll the diff from the commits too. A commit whose diff has no hunk, like a rename, puts the focus back on the commits.
 
 #### Help
 

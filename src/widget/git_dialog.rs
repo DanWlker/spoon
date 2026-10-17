@@ -10,11 +10,12 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
+    browse::PageLink,
     color::ColorTheme,
     event::{AppEvent, KeyHint, UserEvent},
     git::{
-        parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, Conflict, GitTask,
-        RemoteInfo, MAX_CONFLICT_STEPS,
+        parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, Conflict, FileChange,
+        GitTask, RemoteInfo, MAX_CONFLICT_STEPS,
     },
     widget::style::{change_span, choice_arrows, focused_title, render_popup},
 };
@@ -68,6 +69,11 @@ enum DialogKind {
         commit: DialogCommit,
         branch: String,
     },
+    // a file as `change` changed it in `commit`
+    ResetFile {
+        commit: DialogCommit,
+        change: Box<FileChange>,
+    },
     // `base` is where the rebase starts, None from the root
     Edit {
         commit: DialogCommit,
@@ -116,9 +122,9 @@ enum DialogKind {
     DropStashes {
         names: Vec<String>,
     },
-    // links to open in the browser, or to copy, with what they show
+    // links to open in the browser, or to copy
     OpenLink {
-        links: Vec<(String, String)>,
+        links: Vec<PageLink>,
         copy: bool,
     },
     // a command made beforehand, like discarding changes, and what it loses
@@ -169,6 +175,7 @@ enum FieldId {
     Commit,
     AppendOrigin,
     ResetMode,
+    FileState,
     Messages,
     Name,
     From,
@@ -213,6 +220,8 @@ const MERGE_TYPES: [&str; 5] = [
 const LOCAL_CHANGES_OPTIONS: [&str; 3] = ["Keep", "Stash and reapply", "Discard"];
 
 const SQUASH_MESSAGES: [&str; 2] = ["Combine the messages", "Keep the parent's message (fixup)"];
+
+const FILE_STATES: [&str; 2] = ["At the commit", "Before the commit"];
 
 const RESET_MODES: [&str; 3] = [
     "Mixed: keep the changes, unstaged",
@@ -1235,16 +1244,31 @@ impl GitDialog {
     }
 
     // Confirms opening a link in the browser, choosing it when there are several; or which to copy.
-    pub fn open_link(links: Vec<(String, String)>, copy: bool) -> Self {
+    pub fn open_link(links: Vec<PageLink>, copy: bool) -> Self {
         let (title, verb, trigger) = if copy {
             (" Copy link ", "copy", UserEvent::CopyLink)
         } else {
             (" Open in browser ", "open", UserEvent::OpenInBrowser)
         };
-        let labels: Vec<String> = links.iter().map(|(label, _)| label.clone()).collect();
+        // each remote and page once, in their order
+        let unique = |values: Vec<&String>| {
+            values
+                .into_iter()
+                .fold(vec![], |mut unique: Vec<String>, value| {
+                    if !unique.contains(value) {
+                        unique.push(value.clone());
+                    }
+                    unique
+                })
+        };
+        let remotes = unique(links.iter().map(|link| &link.remote).collect());
+        let pages = unique(links.iter().map(|link| &link.page).collect());
         let mut dialog = Self::with(title, verb, vec![], DialogKind::OpenLink { links, copy });
-        if labels.len() > 1 {
-            dialog.push_choice(FieldId::Link, "Page", labels, "");
+        if remotes.len() > 1 {
+            dialog.push_choice(FieldId::Remote, "Remote", remotes, "");
+        }
+        if pages.len() > 1 {
+            dialog.push_choice(FieldId::Link, "Page", pages, "");
         }
         dialog.trigger = Some(trigger);
         dialog
@@ -1270,6 +1294,77 @@ impl GitDialog {
             format!("Resetting {branch} to {short}"),
             format!("Reset {branch} to {short}"),
         ))
+    }
+
+    // Resets a file `commit` changed, in the index and the working tree, to how the commit left it
+    // or how it was before it.
+    pub fn reset_file(commit: DialogCommit, change: FileChange) -> Self {
+        let path = match &change {
+            FileChange::Add { path }
+            | FileChange::Modify { path }
+            | FileChange::Delete { path } => path,
+            FileChange::Move { to, .. } => to,
+        };
+        let intro = vec![format!("Reset {path} to"), format!("  {}", commit.line)];
+        let kind = DialogKind::ResetFile {
+            commit,
+            change: Box::new(change),
+        };
+        let mut dialog = Self::with(" Reset file ", "reset", intro, kind);
+        let states = FILE_STATES.map(String::from).to_vec();
+        dialog.push_choice(FieldId::FileState, "State", states, "");
+        dialog
+    }
+
+    fn reset_file_command(
+        &self,
+        commit: &DialogCommit,
+        change: &FileChange,
+    ) -> Result<GitTask, String> {
+        use FileChange::*;
+        let before = self.choice(FieldId::FileState) == 1;
+        // the path the file has then, and the one it doesn't, removed: before the commit added
+        // it, after it deleted it, and either name of a renamed file
+        let (present, absent) = match (change, before) {
+            (Modify { path }, _) | (Add { path }, false) | (Delete { path }, true) => {
+                (Some(path), None)
+            }
+            (Add { path }, true) | (Delete { path }, false) => (None, Some(path)),
+            (Move { from, to }, false) => (Some(to), Some(from)),
+            (Move { from, to }, true) => (Some(from), Some(to)),
+        };
+        let source = if before {
+            format!("{}^", commit.hash)
+        } else {
+            commit.hash.clone()
+        };
+        let mut commands: Vec<Vec<String>> = vec![];
+        if let Some(path) = absent {
+            let args = ["rm", "-q", "-f", "--ignore-unmatch", "--", path];
+            commands.push(args.map(String::from).to_vec());
+        }
+        if let Some(path) = present {
+            let args = [
+                "restore",
+                "--source",
+                &source,
+                "--staged",
+                "--worktree",
+                "--",
+                path,
+            ];
+            commands.push(args.map(String::from).to_vec());
+        }
+        let name = present.or(absent).cloned().unwrap_or_default();
+        let at = if before { "before" } else { "at" };
+        let short = shorten_hash(&commit.hash);
+        Ok(GitTask {
+            commands,
+            running: format!("Resetting {name}"),
+            done: format!("Reset {name} to {at} {short}"),
+            after: AfterTask::KeepView,
+            ..Default::default()
+        })
     }
 
     fn info(&self) -> &RemoteInfo {
@@ -1409,7 +1504,12 @@ impl GitDialog {
     pub fn handle_key(&mut self, event: Option<UserEvent>, key: KeyEvent) -> DialogOutcome {
         if self.editing {
             match key.code {
-                KeyCode::Enter | KeyCode::Esc => self.editing = false,
+                // on to the next required field still empty, if any
+                KeyCode::Enter => match self.missing_field() {
+                    Some(index) => self.selected = index,
+                    None => self.editing = false,
+                },
+                KeyCode::Esc => self.editing = false,
                 _ => {
                     if let Field::Text { input, .. } = &mut self.fields[self.selected].2 {
                         input.handle_event(&Event::Key(key));
@@ -1460,9 +1560,30 @@ impl GitDialog {
                 }
                 DialogOutcome::None
             }
-            Some(UserEvent::Confirm) => self.run(),
+            // a required field still empty is typed into first
+            Some(UserEvent::Confirm) => match self.missing_field() {
+                Some(index) => {
+                    self.selected = index;
+                    self.editing = true;
+                    DialogOutcome::None
+                }
+                None => self.run(),
+            },
             _ => DialogOutcome::None,
         }
+    }
+
+    // The next required text field (a name or a URL) still empty, after the selected one.
+    fn missing_field(&self) -> Option<usize> {
+        let len = self.fields.len();
+        (1..=len)
+            .map(|step| (self.selected + step) % len)
+            .find(|&index| match &self.fields[index] {
+                (FieldId::Name | FieldId::Url, _, Field::Text { input, .. }) => {
+                    input.value().trim().is_empty()
+                }
+                _ => false,
+            })
     }
 
     // The keys of the selected field and the popup, for the status bar.
@@ -1471,7 +1592,14 @@ impl GitDialog {
         let h =
             |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
         if self.editing {
-            return vec![h(&[Confirm, Cancel], "done typing")];
+            return match self.missing_field() {
+                Some(index) if index != self.selected => {
+                    vec![h(&[Confirm], "next"), h(&[Cancel], "done typing")]
+                }
+                // this one is required, enter stays in it
+                Some(_) => vec![h(&[Cancel], "done typing")],
+                None => vec![h(&[Confirm, Cancel], "done typing")],
+            };
         }
         let mut hints = vec![];
         // space toggles the field when it can, else types into it
@@ -1509,19 +1637,28 @@ impl GitDialog {
 
     fn run(&self) -> DialogOutcome {
         let event = match &self.kind {
-            DialogKind::OpenLink { links, copy } => {
-                let (_, url) = &links[self.choice(FieldId::Link)];
-                AppEvent::OpenUrl {
-                    url: url.clone(),
-                    copy: *copy,
-                }
-            }
+            DialogKind::OpenLink { links, copy } => AppEvent::OpenUrl {
+                url: self.chosen_link(links).url.clone(),
+                copy: *copy,
+            },
             _ => match self.command() {
                 Ok(task) => AppEvent::StartTask(task),
                 Err(err) => return DialogOutcome::Error(err),
             },
         };
         DialogOutcome::Send(Box::new(event))
+    }
+
+    // The link on the remote and the page chosen, either the only one when it has no field.
+    fn chosen_link<'l>(&self, links: &'l [PageLink]) -> &'l PageLink {
+        let (remote, page) = (self.value(FieldId::Remote), self.value(FieldId::Link));
+        links
+            .iter()
+            .find(|link| {
+                (remote.is_empty() || link.remote == remote)
+                    && (page.is_empty() || link.page == page)
+            })
+            .unwrap_or(&links[0])
     }
 
     // Changes the selected field to its next or previous option, or toggles it.
@@ -1623,6 +1760,7 @@ impl GitDialog {
             DialogKind::DropStashes { names } => self.drop_stashes_command(names),
             DialogKind::Revert { commits } => self.revert_command(commits),
             DialogKind::Reset { commit, branch } => self.reset_command(commit, branch),
+            DialogKind::ResetFile { commit, change } => self.reset_file_command(commit, change),
         }
     }
 
@@ -1638,6 +1776,7 @@ impl GitDialog {
             DialogKind::Remote(RemoteAction::Push, _) if self.checked(FieldId::Force) => {
                 Some("Commits only on the remote branch are lost.")
             }
+            DialogKind::ResetFile { .. } => Some("Its local changes are lost."),
             DialogKind::Squash { .. } => Some("The commits after them are rewritten too."),
             DialogKind::Drop { .. } => {
                 Some("Their changes are lost, and the commits after them are rewritten.")
@@ -1687,14 +1826,14 @@ impl GitDialog {
     // The git commands it will run, under the fields.
     fn summary(&self) -> String {
         if let DialogKind::OpenLink { links, .. } = &self.kind {
-            return links[self.choice(FieldId::Link)].1.clone();
+            return self.chosen_link(links).url.clone();
         }
         let task = match self.command() {
             Ok(task) => task,
             Err(err) => return err,
         };
         let git = |args: &[String]| {
-            let args: Vec<&str> = args.iter().map(|a| shorten_hash(a)).collect();
+            let args: Vec<_> = args.iter().map(|a| shorten_hash(a)).collect();
             format!("git {}", args.join(" "))
         };
         // with those run after it
@@ -1865,11 +2004,14 @@ fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line
 }
 
 // A full commit hash is shown short.
-fn shorten_hash(arg: &str) -> &str {
-    if arg.len() == 40 && arg.chars().all(|c| c.is_ascii_hexdigit()) {
-        &arg[..7]
-    } else {
-        arg
+// A full hash shortened, also before a suffix like "^"; other arguments as they are.
+fn shorten_hash(arg: &str) -> std::borrow::Cow<'_, str> {
+    let is_hash = |hash: &str| hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit());
+    match arg.get(..40) {
+        Some(hash) if is_hash(hash) && !arg[40..].starts_with(|c: char| c.is_ascii_hexdigit()) => {
+            format!("{}{}", &arg[..7], &arg[40..]).into()
+        }
+        _ => arg.into(),
     }
 }
 
@@ -1899,12 +2041,12 @@ impl Widget for GitDialogWidget<'_> {
         let dim = Style::default().fg(theme.muted_fg);
         // the keys are in the status bar
 
-        let mut lines = vec![];
+        // the intro, the fields and the summary, a blank line around each one there is
+        let mut lines = vec![Line::raw("")];
         if let DialogKind::Commit { preview, .. } = &dialog.kind {
-            lines.push(Line::raw(""));
             lines.extend(commit_preview_lines(preview, theme));
-        } else if !dialog.intro.is_empty() {
             lines.push(Line::raw(""));
+        } else if !dialog.intro.is_empty() {
             for (i, line) in dialog.intro.iter().enumerate() {
                 // the heading stands out from the commits under it
                 lines.push(if i == 0 {
@@ -1913,8 +2055,8 @@ impl Widget for GitDialogWidget<'_> {
                     Line::raw(line.clone()).fg(theme.fg)
                 });
             }
+            lines.push(Line::raw(""));
         }
-        lines.push(Line::raw(""));
         let mut cursor = None;
         let mut checks_started = false;
         for (i, (_, label, field)) in dialog.fields.iter().enumerate() {
@@ -1993,7 +2135,9 @@ impl Widget for GitDialogWidget<'_> {
             };
             lines.push(line);
         }
-        lines.push(Line::raw(""));
+        if !dialog.fields.is_empty() {
+            lines.push(Line::raw(""));
+        }
         // a line for each
         let warning = dialog.warning();
         for warning in dialog
@@ -2010,10 +2154,16 @@ impl Widget for GitDialogWidget<'_> {
             );
         }
         // wrapped at spaces, a link or a command can be longer than the popup is wide
-        for part in textwrap::wrap(&dialog.summary(), MAX_CONTENT_WIDTH) {
+        for part in textwrap::wrap(&dialog.summary(), MAX_CONTENT_WIDTH)
+            .into_iter()
+            .filter(|part| !part.is_empty())
+        {
             lines.push(Line::raw(part.into_owned()).patch_style(dim).italic());
         }
-        lines.push(Line::raw(""));
+        // after the warnings and the summary, when there are any
+        if lines.last().is_some_and(|line| line.width() > 0) {
+            lines.push(Line::raw(""));
+        }
 
         let title = focused_title(dialog.title, theme);
         let widths = (MIN_CONTENT_WIDTH, MAX_CONTENT_WIDTH);
@@ -2066,6 +2216,15 @@ mod tests {
             GitDialog::delete_branches(vec!["a".into(), "b".into()], vec!["a".into()], vec![]),
             GitDialog::commit(preview, GitTask::default()),
             GitDialog::remote(RemoteAction::Push, info()).unwrap(),
+            GitDialog::create_tag("HEAD"),
+            GitDialog::open_link(
+                vec![PageLink {
+                    remote: "origin".into(),
+                    page: "Commit".into(),
+                    url: "https://h/c".into(),
+                }],
+                false,
+            ),
         ];
         for dialog in &dialogs {
             let area = Rect::new(0, 0, 100, 30);
@@ -2074,6 +2233,17 @@ mod tests {
             let rect = popup_rect(&buf);
             assert_popup_frame(&buf, rect, theme.accent_fg);
             assert_fills_bg(&buf, rect, &theme, &[]);
+            // one blank line between the parts, and around them
+            let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+            let blank = |y| (inner.left()..inner.right()).all(|x| buf[(x, y)].symbol() == " ");
+            assert!(
+                blank(inner.top()) && blank(inner.bottom() - 1),
+                "{}",
+                dialog.title
+            );
+            for y in inner.top()..inner.bottom() - 1 {
+                assert!(!(blank(y) && blank(y + 1)), "{}", dialog.title);
+            }
             for y in rect.top()..rect.bottom() {
                 for x in rect.left()..rect.right() {
                     if buf[(x, y)].symbol() == "▌" {
@@ -2142,6 +2312,88 @@ mod tests {
             hash: n.to_string().repeat(40),
             line: format!("{n} subject"),
         }
+    }
+
+    #[test]
+    fn test_reset_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "t"]);
+        git(path, &["config", "user.email", "t@t"]);
+        git(path, &["config", "commit.gpgsign", "false"]);
+        let write = |name: &str, text: &str| std::fs::write(path.join(name), text).unwrap();
+        write("a", "1\n");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-q", "-m", "root"]);
+        write("a", "2\n");
+        write("n", "x\n");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-q", "-m", "c1"]);
+        git(path, &["mv", "n", "m"]);
+        git(path, &["commit", "-q", "-m", "c2"]);
+        git(path, &["rm", "-q", "a"]);
+        git(path, &["commit", "-q", "-m", "c3"]);
+        write("m", "y\n");
+        git(path, &["commit", "-q", "-am", "c4"]);
+
+        // the files there are, with their content, after resetting `change` of the commit `back`
+        // from HEAD, at it or before it
+        let reset = |back: usize, change: FileChange, before: bool| -> String {
+            let hash = git(path, &["rev-parse", &format!("HEAD~{back}")]);
+            let commit = DialogCommit {
+                hash: hash.trim().into(),
+                line: String::new(),
+            };
+            let mut dialog = GitDialog::reset_file(commit, change);
+            if before {
+                press(&mut dialog, UserEvent::NavigateRight);
+            }
+            crate::git::run_task(path, &dialog.command().unwrap()).unwrap();
+            let status = git(path, &["status", "--porcelain"]);
+            git(path, &["reset", "-q", "--hard"]);
+            status
+        };
+        let path_of = |p: &str| p.to_string();
+        use FileChange::*;
+        assert_eq!(reset(3, Modify { path: path_of("a") }, true), "A  a\n");
+        // added by c1, before it: already gone
+        assert_eq!(reset(3, Add { path: path_of("n") }, true), "");
+        let renamed = || Move {
+            from: path_of("n"),
+            to: path_of("m"),
+        };
+        assert_eq!(reset(2, renamed(), false), "M  m\n");
+        assert_eq!(reset(2, renamed(), true), "D  m\nA  n\n");
+        // deleted by c3, at it: already gone; before it, back
+        assert_eq!(reset(1, Delete { path: path_of("a") }, false), "");
+        assert_eq!(reset(1, Delete { path: path_of("a") }, true), "A  a\n");
+        // the root has no parent: what it added goes
+        assert_eq!(reset(4, Add { path: path_of("m") }, true), "D  m\n");
+    }
+
+    #[test]
+    fn test_enter_goes_to_empty_required_fields() {
+        let mut dialog = GitDialog::create_tag("HEAD");
+        let enter = key(KeyCode::Enter);
+        // the name, still empty, stays typed into
+        dialog.handle_key(Some(UserEvent::Confirm), enter);
+        assert_eq!((dialog.selected, dialog.editing), (0, true));
+        dialog.handle_key(None, key(KeyCode::Char('v')));
+        // the message is optional, so typing is done
+        dialog.handle_key(Some(UserEvent::Confirm), enter);
+        assert_eq!((dialog.selected, dialog.editing), (0, false));
+        assert_eq!(args(&dialog), "tag v HEAD");
+
+        // enter on the popup goes to the empty URL instead of failing
+        let mut dialog = GitDialog::add_remote();
+        dialog.handle_key(None, key(KeyCode::Char('o')));
+        dialog.handle_key(Some(UserEvent::Confirm), key(KeyCode::Esc));
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Confirm),
+            DialogOutcome::None
+        ));
+        assert_eq!((dialog.selected, dialog.editing), (1, true));
     }
 
     #[test]
@@ -2273,23 +2525,41 @@ mod tests {
 
     #[test]
     fn test_open_link() {
+        let link = |remote: &str, page: &str, url: &str| PageLink {
+            remote: remote.into(),
+            page: page.into(),
+            url: url.into(),
+        };
         let links = vec![
-            ("Branch".to_string(), "https://h/o/r/tree/b".to_string()),
-            (
-                "Pull request".to_string(),
-                "https://h/o/r/compare/b".to_string(),
-            ),
+            link("origin", "Branch", "https://h/o/r/tree/b"),
+            link("origin", "Pull request", "https://h/o/r/compare/b"),
         ];
         // the branch first, the pull request chosen with the toggle; o again opens it
         let mut dialog = GitDialog::open_link(links, false);
+        assert_eq!(dialog.fields.len(), 1);
         assert_eq!(dialog.summary(), "https://h/o/r/tree/b");
         press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
             opened(press(&mut dialog, UserEvent::OpenInBrowser)),
             ("https://h/o/r/compare/b".into(), false)
         );
+        // the remote chosen first, then the page on it
+        let links = vec![
+            link("origin", "Branch", "https://h/o/r/tree/b"),
+            link("origin", "Pull request", "https://h/o/r/compare/b"),
+            link("up", "Branch", "https://h/u/r/tree/b"),
+            link("up", "Pull request", "https://h/u/r/compare/b"),
+        ];
+        let mut dialog = GitDialog::open_link(links, true);
+        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::DialogToggle);
+        assert_eq!(
+            opened(press(&mut dialog, UserEvent::Confirm)),
+            ("https://h/u/r/compare/b".into(), true)
+        );
         // one link, to confirm
-        let mut dialog = GitDialog::open_link(vec![("Link".into(), "https://h/x".into())], false);
+        let mut dialog = GitDialog::open_link(vec![link("origin", "Commit", "https://h/x")], false);
         assert!(dialog.fields.is_empty());
         assert_eq!(
             opened(press(&mut dialog, UserEvent::Confirm)),

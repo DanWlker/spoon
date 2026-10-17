@@ -32,8 +32,12 @@ use crate::{
 };
 
 pub const ELLIPSIS: &str = "...";
-// before a branch whose upstream is on the same commit, a cloud
+// before the labels of refs (Nerd Font): a branch whose upstream is on the same commit, a remote
+// branch, a tag and a stash; a plain branch has none
 const UPSTREAM_ICON: &str = "\u{f0160}";
+const REMOTE_BRANCH_ICON: &str = "\u{f015f}";
+const TAG_ICON: &str = "\u{f04f9}";
+const STASH_ICON: &str = "\u{f01c}";
 
 #[derive(Debug)]
 pub struct CommitInfo<'a> {
@@ -168,7 +172,7 @@ impl SearchMatch {
 }
 
 #[derive(Debug, Default, Clone)]
-struct SearchMatchPosition {
+pub struct SearchMatchPosition {
     matched_indices: Vec<usize>,
 }
 
@@ -1148,14 +1152,14 @@ impl CommitList<'_> {
     }
 }
 
-// The refs at the commit as labels tinted with their colors: branches, remote branches, tags and
-// stashes.
-fn refs_spans<'a>(
-    commit_info: &'a CommitInfo,
-    refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
+// The refs at the commit as labels tinted with their colors, each with its icon: branches, remote
+// branches, tags and stashes. The commit list and the details show them alike.
+pub fn refs_spans(
+    commit_info: &CommitInfo,
+    refs_matches: &FxHashMap<String, SearchMatchPosition>,
     head: &Head,
-    color_theme: &'a ColorTheme,
-) -> Vec<Span<'a>> {
+    color_theme: &ColorTheme,
+) -> Vec<Span<'static>> {
     let mut spans = vec![];
     if matches!(head, Head::Detached { target } if *target == commit_info.commit.commit_hash) {
         spans.push(Span::styled(
@@ -1173,12 +1177,14 @@ fn refs_spans<'a>(
         let style = ref_label_style(ref_color(r, head_branch, color_theme));
         let fg = style.fg.unwrap_or_default();
         let bg = style.bg.unwrap_or_default();
-        let prefix = if matches!(r, Ref::Branch { .. }) && commit_info.with_upstream.contains(&name)
-        {
-            format!(" {UPSTREAM_ICON} ")
-        } else {
-            " ".into()
+        let icon = match r {
+            Ref::Branch { .. } if commit_info.with_upstream.contains(&name) => Some(UPSTREAM_ICON),
+            Ref::Branch { .. } => None,
+            Ref::RemoteBranch { .. } => Some(REMOTE_BRANCH_ICON),
+            Ref::Tag { .. } => Some(TAG_ICON),
+            Ref::Stash { .. } => Some(STASH_ICON),
         };
+        let prefix = icon.map_or(" ".into(), |icon| format!(" {icon} "));
         let label = format!("{prefix}{name} ");
         let label_spans = match refs_matches.get(name) {
             // the match positions are of the name, the label has the prefix before it
@@ -1489,7 +1495,7 @@ mod tests {
         // another remote's branch isn't its upstream
         assert_eq!(
             label,
-            format!(" {UPSTREAM_ICON} master   fork/master   feat  ")
+            format!(" {UPSTREAM_ICON} master   {REMOTE_BRANCH_ICON} fork/master   feat  ")
         );
     }
 

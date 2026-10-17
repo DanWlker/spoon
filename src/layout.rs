@@ -20,6 +20,10 @@ pub enum Panel {
     Unstaged,
     // the height of the commit message on the local changes page
     Commit,
+    // the width of the commits beside the lines in the blame, with the line between them
+    BlameCommits,
+    // the width of the commits beside the diff in the timeline
+    TimelineCommits,
 }
 
 // A panel's `size` within `total`, at least `min`, leaving `keep` for the panel beside it when

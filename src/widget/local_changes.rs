@@ -898,18 +898,26 @@ impl<'a> LocalChangesState<'a> {
                 hints
             }
             Focus::Files => {
+                let empty = self.files().is_empty();
                 let mut hints = vec![h(&[ToggleStage], stage)];
-                if self.conflict.is_some() && self.picked().is_empty() {
-                    hints.push(h(&[Confirm], "resolve"));
-                } else {
-                    hints.push(h(&[Confirm], "hunks"));
+                // on the empty unstaged files enter commits, see `enter`
+                if empty && !unstaged {
+                    hints.push(h(&[Confirm], "unstaged"));
+                } else if !empty {
+                    let resolve = self.conflict.is_some() && self.picked().is_empty();
+                    hints.push(h(&[Confirm], if resolve { "resolve" } else { "hunks" }));
                 }
                 hints.push(h(&[ToggleSelect], "pick"));
                 if unstaged {
                     hints.push(h(&[Discard], "discard"));
                 }
+                let commit_keys: &[UserEvent] = if empty && unstaged {
+                    &[Confirm, Commit]
+                } else {
+                    &[Commit]
+                };
                 hints.extend([
-                    h(&[Commit], commit),
+                    h(commit_keys, commit),
                     amend_or_abort,
                     h(&[Stash], "stash"),
                     h(&[Edit], "edit"),
@@ -1011,6 +1019,15 @@ impl<'a> LocalChangesState<'a> {
                 self.focus = Focus::Conflict;
                 self.conflict_item = ConflictItem::Existing;
             }
+            // nothing here to open: on from the unstaged files to committing, from the staged
+            // ones back to the unstaged, as nothing staged commits nothing
+            Focus::Files if self.files().is_empty() => match self.section {
+                LocalChangesSection::Unstaged => {
+                    self.focus_commit();
+                    self.commit_or_continue()?;
+                }
+                LocalChangesSection::Staged => self.focus_section(LocalChangesSection::Unstaged),
+            },
             Focus::Files => {
                 // with picked rows, the diff shows all their files to stage hunks and lines from
                 if !self.picked().is_empty() {
@@ -2596,6 +2613,27 @@ mod tests {
         assert!(state.is_editing());
         state.back();
         state.draft.set_message("typed");
+        state.enter()?;
+        assert!(state.dialog().and_then(GitDialog::commit_preview).is_some());
+        state.take_dialog();
+        assert!(state.is_commit_focused());
+        state.back();
+
+        // enter on the empty unstaged files goes on to committing too
+        state.focus_section(LocalChangesSection::Unstaged);
+        state.enter()?;
+        assert!(state.dialog().and_then(GitDialog::commit_preview).is_some());
+        state.take_dialog();
+        state.back();
+        // and on the empty staged ones back to the unstaged
+        git_stdout(repo_path, &["reset", "-q"]);
+        state.reload();
+        state.focus_section(LocalChangesSection::Staged);
+        state.enter()?;
+        assert_eq!(state.section, LocalChangesSection::Unstaged);
+        // which, empty, still commits
+        git.add(&["a.txt"]);
+        state.reload();
         state.enter()?;
         assert!(state.dialog().and_then(GitDialog::commit_preview).is_some());
         state.take_dialog();

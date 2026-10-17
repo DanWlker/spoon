@@ -268,6 +268,22 @@ impl FileWindow {
         }
     }
 
+    // See `View::resizable_panel`.
+    fn resizable_panel(&self, vertical: bool) -> Option<Panel> {
+        match self {
+            FileWindow::Blame(_) if vertical => Some(Panel::BlameCommits),
+            FileWindow::Timeline(_) if vertical => Some(Panel::TimelineCommits),
+            _ => None,
+        }
+    }
+
+    fn move_focus(&mut self, direction: Direction) {
+        match self {
+            FileWindow::Blame(blame) => blame.move_focus(direction),
+            FileWindow::Timeline(timeline) => timeline.move_focus(direction),
+        }
+    }
+
     fn render(&mut self, f: &mut Frame, area: Rect) {
         match self {
             FileWindow::Blame(blame) => blame.render(f, area),
@@ -1447,6 +1463,14 @@ impl App<'_> {
                 UserEvent::KeysToggle => self.shell.keys_popup = !self.shell.keys_popup,
                 UserEvent::DismissNotifications => self.shell.notices.clear(),
                 UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
+                UserEvent::ResizeLeft => self.move_border(Direction::Left),
+                UserEvent::ResizeRight => self.move_border(Direction::Right),
+                UserEvent::ResizeUp => self.move_border(Direction::Up),
+                UserEvent::ResizeDown => self.move_border(Direction::Down),
+                UserEvent::FocusLeft => self.move_focus(Direction::Left),
+                UserEvent::FocusRight => self.move_focus(Direction::Right),
+                UserEvent::FocusUp => self.move_focus(Direction::Up),
+                UserEvent::FocusDown => self.move_focus(Direction::Down),
                 _ => window.handle_event(event, key, self.repository),
             }
             return;
@@ -2142,15 +2166,12 @@ impl App<'_> {
             Direction::Up => (false, -1),
             Direction::Down => (false, 1),
         };
-        let sidebar = (!self.shell.sidebar_collapsed()).then_some(Panel::Sidebar);
-        let panel = match &self.view {
-            _ if self.shell.sidebar_focused() => sidebar.filter(|_| vertical),
-            View::Detail(view) if vertical && view.shows_tree() => Some(Panel::DetailTree),
-            View::Detail(_) if !vertical => Some(Panel::Details),
-            View::LocalChanges(_) if vertical => Some(Panel::Files),
-            View::LocalChanges(view) => Some(view.height_panel()),
-            _ if vertical => sidebar,
-            _ => None,
+        let sidebar = (!self.shell.sidebar_collapsed() && vertical).then_some(Panel::Sidebar);
+        // the window over everything, else the sidebar or the page with the focus
+        let panel = match &self.shell.overlay {
+            Some(Overlay::File(window)) => window.resizable_panel(vertical),
+            _ if self.shell.sidebar_focused() => sidebar,
+            _ => self.view.resizable_panel(vertical).or(sidebar),
         };
         if let Some(panel) = panel {
             self.ctx.layout.borrow_mut().move_border(panel, step);
@@ -2160,7 +2181,9 @@ impl App<'_> {
     // Moves the focus to the panel that way: the sidebar on the left of the page, the page on its
     // right, else between the panels of the page.
     fn move_focus(&mut self, direction: Direction) {
-        if self.shell.sidebar_focused() {
+        if let Some(Overlay::File(window)) = self.shell.overlay.as_mut() {
+            window.move_focus(direction);
+        } else if self.shell.sidebar_focused() {
             if direction == Direction::Right {
                 self.set_sidebar_focused(false);
             }
@@ -2425,7 +2448,7 @@ impl App<'_> {
     fn open_link(&mut self, target: &LinkTarget, copy: bool) {
         let services = &self.ctx.core_config.browser.services;
         match browse::links(self.repository, services, target) {
-            Ok(mut links) if copy && links.len() == 1 => self.open_url(links.remove(0).1, true),
+            Ok(mut links) if copy && links.len() == 1 => self.open_url(links.remove(0).url, true),
             Ok(links) => self.open_dialog(Ok(GitDialog::open_link(links, copy))),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }

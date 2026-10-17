@@ -209,6 +209,7 @@ fn build_lines(
         (vec![UserEvent::Search], "Search files (changes, files); the diff while it has the focus".into()),
         (vec![UserEvent::Confirm], "Changes: focus the diff, select hunks, then lines".into()),
         (vec![UserEvent::ApplyChange], "Apply the selected hunk or line to the working tree".into()),
+        (vec![UserEvent::ResetFile], "Reset the selected file to the commit or before it".into()),
         (vec![UserEvent::Filter], "Filter files (changes, files)".into()),
         (vec![UserEvent::GoToNext, UserEvent::GoToPrevious], "Go to next/previous search match".into()),
         (vec![UserEvent::NavigateDown], "Scroll down".into()),
@@ -300,8 +301,8 @@ fn build_lines(
     
     let blame_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Clear the search, then close".into()),
-        (vec![UserEvent::FocusPanel(0)], "Focus the commit shown (also up from the first line)".into()),
-        (vec![UserEvent::FocusPanel(1)], "Focus the lines".into()),
+        (vec![UserEvent::FocusUp, UserEvent::FocusDown], "Focus the commit shown (also up from the first line)/the lines".into()),
+        (vec![UserEvent::FocusLeft, UserEvent::FocusRight], "Focus the commits/the text of the lines".into()),
         (vec![UserEvent::NavigateLeft, UserEvent::NavigateRight], "Act on the commit or the text of the line; on the commit shown, older/newer commit".into()),
         (vec![UserEvent::OlderCommit, UserEvent::NewerCommit], "Blame as of the older/newer commit changing the file".into()),
         (vec![UserEvent::Confirm], "Select the commit of the line on the graph".into()),
@@ -315,7 +316,7 @@ fn build_lines(
 
     let timeline_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Clear the search, back out of the diff, then close".into()),
-        (vec![UserEvent::FocusPanel(0), UserEvent::FocusPanel(1)], "Focus the commits/the diff".into()),
+        (vec![UserEvent::FocusPanel(0), UserEvent::FocusPanel(1), UserEvent::FocusLeft, UserEvent::FocusRight], "Focus the commits/the diff".into()),
         (vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "Into the diff/back out of it".into()),
         (vec![UserEvent::OlderCommit, UserEvent::NewerCommit], "Select the older/newer commit, from the diff too".into()),
         (vec![UserEvent::Confirm], "Select the commit on the graph; in the diff, select lines".into()),

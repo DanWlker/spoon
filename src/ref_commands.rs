@@ -130,12 +130,11 @@ pub fn ref_command(
 }
 
 // Whether a remote is added on the selected row: a remote, like removing one, or the remotes
-// header while there are none, to add the first.
+// header.
 fn adds_remote(repository: &Repository, selection: &RefSelection) -> bool {
-    let remotes = repository.remotes();
     match selection {
-        RefSelection::Folder(RefSection::Remotes, name) => remotes.contains(name),
-        RefSelection::Section(RefSection::Remotes) => remotes.is_empty(),
+        RefSelection::Folder(RefSection::Remotes, name) => repository.remotes().contains(name),
+        RefSelection::Section(RefSection::Remotes) => true,
         _ => false,
     }
 }
@@ -559,10 +558,9 @@ mod tests {
             "main\n"
         );
 
-        // a remote, added on the remotes and fetched
+        // a remote, added on the remotes and fetched; enter goes on to the empty URL
         let mut keys = typed("other");
-        keys.extend([Err(UserEvent::Confirm), Err(UserEvent::NavigateDown)]);
-        keys.push(Err(UserEvent::DialogEdit));
+        keys.push(Err(UserEvent::Confirm));
         keys.extend(typed(remote_dir.path().to_str().unwrap()));
         run(
             path,
@@ -609,14 +607,14 @@ mod tests {
                 "{event:?}"
             );
         }
-        // a remote is added on a remote, like it is removed; the header only adds the first
+        // a remote is added on a remote, like it is removed, or on the header
         assert!(!applies(UserEvent::CreateRef, main(), &none));
         assert!(applies(
             UserEvent::CreateRef,
             RefSelection::Folder(Remotes, "other".into()),
             &none
         ));
-        assert!(!applies(
+        assert!(applies(
             UserEvent::CreateRef,
             RefSelection::Section(Remotes),
             &none

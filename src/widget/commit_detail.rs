@@ -8,12 +8,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph, StatefulWidget, Widget},
 };
+use rustc_hash::FxHashMap;
 
 use crate::{
     app::AppContext,
-    git::{Commit, FileChange, Head, Ref},
+    git::{Commit, FileChange, Head, Ref, Tracking},
     widget::{
-        commit_list::{ref_color, ref_label_style},
+        commit_list::{refs_spans, CommitInfo},
         style::{change_span, divider, ScrollState},
     },
 };
@@ -23,6 +24,7 @@ pub struct CommitDetail<'a> {
     changes: &'a Vec<FileChange>,
     refs: &'a Vec<Ref>,
     head: &'a Head,
+    tracking: &'a FxHashMap<String, Tracking>,
     ctx: Rc<AppContext>,
 }
 
@@ -32,6 +34,7 @@ impl<'a> CommitDetail<'a> {
         changes: &'a Vec<FileChange>,
         refs: &'a Vec<Ref>,
         head: &'a Head,
+        tracking: &'a FxHashMap<String, Tracking>,
         ctx: Rc<AppContext>,
     ) -> Self {
         Self {
@@ -39,6 +42,7 @@ impl<'a> CommitDetail<'a> {
             changes,
             refs,
             head,
+            tracking,
             ctx,
         }
     }
@@ -93,7 +97,7 @@ impl CommitDetail<'_> {
             value_lines.push(self.parents_line());
         }
 
-        if has_refs(self.refs) || self.detached_here() {
+        if !self.refs.is_empty() || self.detached_here() {
             label_lines.push(Line::from("     Refs: ").fg(self.ctx.color_theme.detail_label_fg));
             value_lines.push(self.refs_line());
         }
@@ -174,27 +178,16 @@ impl CommitDetail<'_> {
         Line::from(spans)
     }
 
-    // Labels like those of the commit list.
+    // The labels of the commit list.
     fn refs_line(&self) -> Line<'_> {
-        let theme = &self.ctx.color_theme;
-        let head_branch = match self.head {
-            Head::Branch { name } => Some(name.as_str()),
-            _ => None,
-        };
-        let mut spans = Vec::new();
-        if self.detached_here() {
-            spans.push(Span::styled(
-                " HEAD ",
-                ref_label_style(theme.list_ref_head_fg),
-            ));
-            spans.push(Span::raw(" "));
-        }
-        for r in self.refs.iter().filter(|r| !matches!(r, Ref::Stash { .. })) {
-            let style = ref_label_style(ref_color(r, head_branch, theme));
-            spans.push(Span::styled(format!(" {} ", r.name()), style));
-            spans.push(Span::raw(" "));
-        }
-        Line::from(spans)
+        let info = CommitInfo::new(self.commit, self.refs.iter().collect(), self.tracking, true);
+        let matches = FxHashMap::default();
+        Line::from(refs_spans(
+            &info,
+            &matches,
+            self.head,
+            &self.ctx.color_theme,
+        ))
     }
 
     fn detached_here(&self) -> bool {
@@ -253,11 +246,67 @@ fn has_parent(commit: &Commit) -> bool {
     !commit.parent_commit_hashes.is_empty()
 }
 
-fn has_refs(refs: &[Ref]) -> bool {
-    refs.iter().any(|r| {
-        matches!(
-            r,
-            Ref::Branch { .. } | Ref::RemoteBranch { .. } | Ref::Tag { .. }
-        )
-    })
+#[cfg(test)]
+mod tests {
+    use ratatui::style::Color;
+
+    use super::*;
+    use crate::test_support::ui::{column_of, find_row, row_text, test_ctx};
+
+    #[test]
+    fn test_refs_look_like_the_commit_list() {
+        let commit = Commit::default();
+        let target = commit.commit_hash.clone();
+        let refs = vec![
+            Ref::Branch {
+                name: "main".into(),
+                target: target.clone(),
+            },
+            Ref::RemoteBranch {
+                name: "fork/main".into(),
+                target: target.clone(),
+            },
+            Ref::Tag {
+                name: "v1".into(),
+                target: target.clone(),
+            },
+            Ref::Stash {
+                name: "stash@{0}".into(),
+                message: "wip".into(),
+                target,
+            },
+        ];
+        let tracking = FxHashMap::default();
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 100, 20);
+        let mut detail = Buffer::empty(area);
+        CommitDetail::new(&commit, &vec![], &refs, &Head::None, &tracking, ctx.clone()).render(
+            area,
+            &mut detail,
+            &mut ScrollState::default(),
+        );
+
+        // the labels as the commit list draws them, cell for cell
+        let info = CommitInfo::new(&commit, refs.iter().collect(), &tracking, true);
+        let spans = refs_spans(&info, &FxHashMap::default(), &Head::None, &ctx.color_theme);
+        let mut list = Buffer::empty(Rect::new(0, 0, 100, 1));
+        Line::from(spans).render(list.area, &mut list);
+        let width = list
+            .content()
+            .iter()
+            .rposition(|c| c.symbol() != " ")
+            .unwrap() as u16
+            + 1;
+        let y = find_row(&detail, "v1");
+        let x = column_of(&detail, y, &row_text(&list, 0)[..6]);
+        for i in 0..width {
+            let (shown, expected) = (&detail[(x + i, y)], &list[(i, 0)]);
+            // the text color of a blank between labels shows nowhere
+            if expected.symbol() == " " && expected.bg == Color::Reset {
+                assert_eq!(shown.bg, Color::Reset, "column {i}");
+            } else {
+                assert_eq!(shown, expected, "column {i}");
+            }
+        }
+    }
 }

@@ -20,6 +20,7 @@ use crate::{
     git::{refs_snapshot, FilesSnapshot, SortCommit},
     graph::{GraphImageWidthMode, GraphStyle},
     keybind::parse_key_event,
+    layout::Panel,
     protocol::ImageProtocol,
     test_support::{git::git, ui::test_ctx},
     view::View,
@@ -47,6 +48,8 @@ enum Step {
     WaitFor(Box<dyn Fn(&Path) -> bool>),
     // time passing without a key, for what the app shows after a while
     Sleep(Duration),
+    // a frame drawn, placing the borders that ctrl and the arrow keys move
+    Draw,
     Check(Box<dyn FnOnce(&App)>),
 }
 
@@ -86,6 +89,10 @@ fn wait_for(f: impl Fn(&Path) -> bool + 'static) -> Vec<Step> {
 
 fn check(f: impl FnOnce(&App) + 'static) -> Vec<Step> {
     vec![Step::Check(Box::new(f))]
+}
+
+fn draw() -> Vec<Step> {
+    vec![Step::Draw]
 }
 
 fn sleep(millis: u64) -> Vec<Step> {
@@ -214,6 +221,12 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
             }
         }
         Step::Sleep(duration) => std::thread::sleep(duration),
+        Step::Draw => {
+            let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let keys = app.keys_popup_keys();
+            terminal.draw(|f| app.render(f, &keys)).unwrap();
+        }
         Step::Check(f) => f(app),
     }
 }
@@ -954,7 +967,7 @@ fn test_search_options_toggled_in_any_search() {
 }
 
 #[test]
-fn test_keys_over_everything_work_over_the_blame() {
+fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
@@ -969,6 +982,25 @@ fn test_keys_over_everything_work_over_the_blame() {
         check(|app| {
             assert!(notices(app).is_empty());
             assert!(app.ctx.wrap.get());
+        }),
+        // the commits resized, the focus moved up to the commit shown, like on the pages
+        draw(),
+        keys("ctrl-right"),
+        check(|app| assert_ne!(app.ctx.layout.borrow().size(Panel::BlameCommits, 0), 0)),
+        keys("alt-up shift-h"),
+        check(|app| {
+            let shown: Vec<String> = app.keys_popup_keys().into_iter().map(|(_, d)| d).collect();
+            assert!(shown.iter().any(|d| d == "to the lines"), "{shown:?}");
+        }),
+        // and in the timeline, into the diff
+        keys("shift-h esc esc shift-t"),
+        draw(),
+        keys("ctrl-left alt-right shift-h"),
+        overlay("timeline"),
+        check(|app| {
+            assert_ne!(app.ctx.layout.borrow().size(Panel::TimelineCommits, 0), 0);
+            let shown: Vec<String> = app.keys_popup_keys().into_iter().map(|(_, d)| d).collect();
+            assert!(shown.iter().any(|d| d == "select lines"), "{shown:?}");
         }),
     ]);
 }

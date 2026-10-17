@@ -207,7 +207,7 @@ fn create_branch(repository: &Repository, from: &str) -> GitDialog {
 }
 
 // The commit as a line in a popup: its short hash and subject.
-fn dialog_commit(repository: &Repository, hash: &CommitHash) -> DialogCommit {
+pub fn dialog_commit(repository: &Repository, hash: &CommitHash) -> DialogCommit {
     let subject = repository
         .commit(hash)
         .map(|c| c.subject.clone())

@@ -85,7 +85,7 @@ An event written in `[keybind]` is bound in its own scope:
 the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) in `graph`;
 those of the refs (`create_ref`, `delete_ref`, `edit_ref`, `apply_stash`) in `sidebar`;
 those of the local changes page (`toggle_stage`, `stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) in `local_changes`;
-`next_tab`, `previous_tab` and `apply_change` in `details`;
+`next_tab`, `previous_tab`, `apply_change` and `reset_file` in `details`;
 `dialog_toggle`, `dialog_edit` and `dialog_activate` in `dialog`;
 and the others in `global`, working everywhere.
 So <kbd>d</kbd> is `drop_commit` on the commit list, `delete_ref` on the sidebar (which overrides the graph's key) and `discard` on the local changes page.

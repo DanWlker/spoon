@@ -12,6 +12,7 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{CommitHash, FileRevision, Repository},
+    layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
         commit_event, commit_hints, copy_selection, file_link, moving_hints, query_status,
@@ -241,6 +242,17 @@ impl TimelineView {
 
     // The keys working where the focus is, the most useful first: the status bar shows as many as
     // fit, the keys popup all.
+    // Alt and the arrow keys: right into the diff, left back to the commits.
+    pub fn move_focus(&mut self, direction: Direction) {
+        match direction {
+            Direction::Right if !self.pane.is_focused() => {
+                self.pane.enter();
+            }
+            Direction::Left => while self.pane.back() {},
+            _ => {}
+        }
+    }
+
     pub fn key_hints(&self) -> Vec<KeyHint> {
         use UserEvent::*;
         if self.query.is_editing() {
@@ -281,8 +293,17 @@ impl TimelineView {
         let ctx = self.ctx.clone();
         let theme = &ctx.color_theme;
         let buf = f.buffer_mut();
+        // the commits beside the diff, resizable; both keep some room
+        let width = ctx
+            .layout
+            .borrow()
+            .size(Panel::TimelineCommits, area.width * 35 / 100);
+        let width = fit_size(width, area.width, 20, 20);
         let [list_area, diff_area] =
-            Layout::horizontal([Constraint::Percentage(35), Constraint::Min(0)]).areas(area);
+            Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
+        ctx.layout
+            .borrow_mut()
+            .place(Panel::TimelineCommits, list_area, Edge::Right);
 
         // the commits, the selected one with the bar
         let focused = !self.pane.is_focused();
