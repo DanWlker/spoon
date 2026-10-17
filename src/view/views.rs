@@ -130,37 +130,32 @@ pub enum View<'a> {
     LocalChanges(Box<LocalChangesView<'a>>),
 }
 
+// Calls the same method on whichever page is shown, `default` without one.
+macro_rules! on_page {
+    ($view:expr, $page:ident => $call:expr, $default:expr) => {
+        match $view {
+            View::Default => $default,
+            View::List($page) => $call,
+            View::Detail($page) => $call,
+            View::UserCommand($page) => $call,
+            View::LocalChanges($page) => $call,
+        }
+    };
+}
+
 impl<'a> View<'a> {
     pub fn handle_event(&mut self, event: UserEvent, key_event: KeyEvent) {
-        match self {
-            View::Default => {}
-            View::List(view) => view.handle_event(event, key_event),
-            View::Detail(view) => view.handle_event(event, key_event),
-            View::UserCommand(view) => view.handle_event(event, key_event),
-            View::LocalChanges(view) => view.handle_event(event, key_event),
-        }
+        on_page!(self, view => view.handle_event(event, key_event), {})
     }
 
     // `focused` is false while another panel, like the refs sidebar, has the focus;
     // the page shows its selection dimmed then.
     pub fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
-        match self {
-            View::Default => {}
-            View::List(view) => view.render(f, area, focused),
-            View::Detail(view) => view.render(f, area, focused),
-            View::UserCommand(view) => view.render(f, area),
-            View::LocalChanges(view) => view.render(f, area, focused),
-        }
+        on_page!(self, view => view.render(f, area, focused), {})
     }
 
     pub fn update_layout(&mut self, area: Rect) {
-        match self {
-            View::Default => {}
-            View::List(view) => view.update_layout(area),
-            View::Detail(view) => view.update_layout(area),
-            View::UserCommand(view) => view.update_layout(area),
-            View::LocalChanges(view) => view.update_layout(),
-        }
+        on_page!(self, view => view.update_layout(area), {})
     }
 
     pub fn prepare_graph_uploads(&mut self) {
@@ -184,13 +179,7 @@ impl<'a> View<'a> {
     }
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        match self {
-            View::Default => Vec::new(),
-            View::List(view) => view.graph_image_ids_sorted(),
-            View::Detail(view) => view.graph_image_ids_sorted(),
-            View::UserCommand(view) => view.graph_image_ids_sorted(),
-            View::LocalChanges(view) => view.graph_image_ids_sorted(),
-        }
+        on_page!(self, view => view.graph_image_ids_sorted(), Vec::new())
     }
 
     // The keys of what has the focus in the view, for the status bar; not the ones moving around.
@@ -251,13 +240,7 @@ impl<'a> View<'a> {
 
     // Takes the commit list out of a view showing it, to build the next view on it.
     pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
-        match self {
-            View::List(view) => Some(view.take_list_state()),
-            View::Detail(view) => Some(view.take_list_state()),
-            View::UserCommand(view) => Some(view.take_list_state()),
-            View::LocalChanges(view) => Some(view.take_list_state()),
-            View::Default => None,
-        }
+        on_page!(self, view => Some(view.take_list_state()), None)
     }
 
     // The commit list of a view showing the commit graph.
@@ -347,24 +330,12 @@ impl<'a> View<'a> {
     }
 
     pub fn refresh(&mut self) {
-        match self {
-            View::Default => {}
-            View::List(view) => view.refresh(),
-            View::Detail(view) => view.refresh(),
-            View::UserCommand(view) => view.refresh(),
-            View::LocalChanges(view) => view.refresh(),
-        }
+        on_page!(self, view => view.refresh(), {})
     }
 
     // What to show again once the repository is reloaded, None for views without the commit list.
     pub fn refresh_context(&self) -> Option<RefreshViewContext> {
-        match self {
-            View::List(view) => Some(view.refresh_context()),
-            View::Detail(view) => Some(view.refresh_context()),
-            View::UserCommand(view) => Some(view.refresh_context()),
-            View::LocalChanges(view) => Some(view.refresh_context()),
-            View::Default => None,
-        }
+        on_page!(self, view => Some(view.refresh_context()), None)
     }
 }
 

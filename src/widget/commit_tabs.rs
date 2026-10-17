@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
+    widgets::{Block, Borders, Padding, Paragraph, Widget},
 };
 
 use crate::{
@@ -20,8 +20,8 @@ use crate::{
             diff_line_count, diff_lines, parse_diff, render_diff_lines, render_visual_rows,
             visual_rows, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
-        file_tree::{keeps, FileTree, FileTreeState, SearchDirection},
-        tree_query::{find_around, highlight_match, match_range, render_tree},
+        file_tree::{render_tree, FileTree, FileTreeState},
+        tree_query::{find_around, highlight_match, keeps, match_range, SearchDirection},
     },
 };
 
@@ -629,38 +629,33 @@ fn apply_changes(paths: &mut BTreeSet<String>, changes: &[FileChange], forward: 
     changed
 }
 
-pub struct CommitChanges<'a> {
+// The changes or the files tab of the details: a file tree beside the diff or the preview.
+pub struct CommitTab {
     ctx: Rc<AppContext>,
     // highlighted in the names
     search: Option<String>,
-    // highlighted in the diff
-    diff_search: Option<String>,
+    // highlighted in the diff or the preview
+    pane_search: Option<String>,
     // the panel has the focus, its border the accent's color
     focused: bool,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl CommitChanges<'_> {
+impl CommitTab {
     pub fn new(
         ctx: Rc<AppContext>,
         search: Option<&str>,
-        diff_search: Option<&str>,
+        pane_search: Option<&str>,
         focused: bool,
     ) -> Self {
         Self {
             ctx,
             search: search.map(String::from),
-            diff_search: diff_search.map(String::from),
+            pane_search: pane_search.map(String::from),
             focused,
-            _marker: std::marker::PhantomData,
         }
     }
-}
 
-impl<'a> StatefulWidget for CommitChanges<'a> {
-    type State = CommitChangesState<'a>;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    pub fn render_changes(self, area: Rect, buf: &mut Buffer, state: &mut CommitChangesState) {
         let theme = &self.ctx.color_theme;
         let [tree_area, diff_area] = split_tree_and_side(&self.ctx, area, buf);
 
@@ -695,7 +690,7 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
             ChangesFocus::Files => 0..0,
             focus => state.cursor.highlighted(diff, focus == ChangesFocus::Lines),
         };
-        if let Some(query) = &self.diff_search {
+        if let Some(query) = &self.pane_search {
             for line in lines.iter_mut() {
                 highlight_match(line, query, theme);
             }
@@ -703,40 +698,8 @@ impl<'a> StatefulWidget for CommitChanges<'a> {
         let wrap = self.ctx.wrap.get();
         render_diff_lines(lines, range, highlighted, wrap, theme, diff_area, buf);
     }
-}
 
-pub struct CommitFiles<'a> {
-    ctx: Rc<AppContext>,
-    // highlighted in the names
-    search: Option<String>,
-    // highlighted in the preview
-    preview_search: Option<String>,
-    // the panel has the focus, its border the accent's color
-    focused: bool,
-    _marker: std::marker::PhantomData<&'a ()>,
-}
-
-impl CommitFiles<'_> {
-    pub fn new(
-        ctx: Rc<AppContext>,
-        search: Option<&str>,
-        preview_search: Option<&str>,
-        focused: bool,
-    ) -> Self {
-        Self {
-            ctx,
-            search: search.map(String::from),
-            preview_search: preview_search.map(String::from),
-            focused,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<'a> StatefulWidget for CommitFiles<'a> {
-    type State = CommitFilesState<'a>;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    pub fn render_files(self, area: Rect, buf: &mut Buffer, state: &mut CommitFilesState) {
         let theme = &self.ctx.color_theme;
         let [tree_area, preview_area] = split_tree_and_side(&self.ctx, area, buf);
 
@@ -785,7 +748,7 @@ impl<'a> StatefulWidget for CommitFiles<'a> {
                                 Span::raw(format!("{:>width$} ", i + 1)).fg(theme.muted_fg),
                                 Span::raw(line.replace('\t', "    ")),
                             ]);
-                            if let Some(query) = &self.preview_search {
+                            if let Some(query) = &self.pane_search {
                                 highlight_match(&mut line, query, theme);
                             }
                             if selected.contains(&i) {

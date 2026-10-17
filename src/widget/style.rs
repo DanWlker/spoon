@@ -1,6 +1,8 @@
 // The looks shared by the panels, after Charm's tools (lipgloss, huh, bubbles): the title of the
 // focused panel as a badge, key hints, and a mark beside the selected row.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
@@ -10,6 +12,18 @@ use ratatui::{
 };
 
 use crate::{color::ColorTheme, event::UserEvent};
+
+// How often the spinner of a running task turns, see `spinner`.
+pub const SPINNER_RATE: Duration = Duration::from_millis(180);
+
+// lazygit's spinner, by the clock, so each frame drawn while a task runs shows where it is.
+pub fn spinner() -> &'static str {
+    const FRAMES: [&str; 4] = ["●∙∙", "∙●∙", "∙∙●", "∙●∙"];
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    FRAMES[(now.as_millis() / SPINNER_RATE.as_millis()) as usize % FRAMES.len()]
+}
 
 // The title of a panel, like "[1] Unstaged (3)": a badge while it has the focus.
 // `extra`, like "· 2 picked", follows it.

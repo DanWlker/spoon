@@ -19,9 +19,8 @@ use crate::{
     color::ColorTheme,
     git::Repository,
     widget::{
-        file_tree::SearchDirection,
         style::{divider, mark_selected_bar, placeholder, ScrollState},
-        tree_query::{find_around, match_range, patch_range},
+        tree_query::{find_around, match_range, patch_range, SearchDirection},
     },
 };
 

@@ -11,15 +11,14 @@ use semver::Version;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{spinner, AppContext},
+    app::AppContext,
     git::{split_remote_branch, CommitHash, Head, Ref},
     widget::{
-        file_tree::tree_guides,
+        file_tree::{keep_guide_color, tree_guides},
         style::{
             divider, fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
-            render_panel_scrollbar, scroll_to,
+            render_panel_scrollbar, scroll_to, spinner,
         },
-        tree_query::keep_guide_color,
     },
 };
 

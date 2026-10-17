@@ -1,23 +1,15 @@
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::{
-    buffer::Buffer,
     crossterm::event::{Event, KeyCode, KeyEvent},
-    layout::Rect,
-    style::{Modifier, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
 };
 use std::sync::LazyLock;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
-    app::AppContext,
     color::ColorTheme,
     search::{case_insensitive, shared_fuzzy, shared_smart_case},
-    widget::{
-        file_tree::{keeps, FileTreeRow, FileTreeState, SearchDirection},
-        style::{change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder},
-    },
 };
 
 // Searching (`/`) and filtering (`?`) a file tree by path.
@@ -165,6 +157,10 @@ pub fn path_matches(path: &str, query: &str) -> bool {
     path_matches_with(path, query, shared_fuzzy(), shared_smart_case())
 }
 
+pub fn keeps(filter: Option<&str>, path: &str) -> bool {
+    filter.is_none_or(|f| path_matches(path, f))
+}
+
 fn path_matches_with(path: &str, query: &str, fuzzy: bool, smart_case: bool) -> bool {
     if fuzzy {
         path_matcher(smart_case).fuzzy_match(path, query).is_some()
@@ -188,6 +184,14 @@ pub fn match_range(text: &str, query: &str) -> Option<std::ops::Range<usize>> {
         lower.find(&query.to_lowercase())?
     };
     Some(start..start + query.len())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchDirection {
+    // the selected row if it matches, else the next match
+    Current,
+    Next,
+    Previous,
 }
 
 // The row of the `count` matching, in `direction` around from `start` (the row of the last match,
@@ -253,119 +257,6 @@ pub fn patch_range(line: &mut Line<'_>, range: std::ops::Range<usize>, style: St
     line.spans.extend(spans);
 }
 
-// The row of a directory in a file tree: after its `guide` (see `tree_guides`), open or closed,
-// its name in the directory color with the match of `search` highlighted.
-pub fn dir_line(
-    row: &FileTreeRow,
-    guide: &str,
-    open: bool,
-    search: Option<&str>,
-    theme: &ColorTheme,
-) -> Line<'static> {
-    let mut spans = vec![guide_span(guide, theme), fold_marker(open).into()];
-    spans.extend(
-        highlighted_name(&row.name, search, theme)
-            .into_iter()
-            .map(|span| match span.style.fg {
-                Some(_) => span,
-                None => span.fg(theme.file_tree_dir_fg),
-            }),
-    );
-    Line::from(spans)
-}
-
-// The indent markers of a row, in the color of the dividers.
-pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
-    Span::raw(guide.to_string()).fg(theme.divider_fg)
-}
-
-// Draws the rows of `tree` in `area`, like every file tree: the directories open or closed, the
-// files with their change letter from `symbol` (by their index) when they have one, the match of
-// `search` highlighted; the `picked` rows and, with `cursor` (whether the tree has the focus), the
-// selected one highlighted across the row, the lines of the tree keeping their color; `empty`
-// when there is no row. Returns the first row shown, for the scrollbar.
-#[allow(clippy::too_many_arguments)]
-pub fn render_tree(
-    buf: &mut Buffer,
-    area: Rect,
-    tree: &FileTreeState,
-    symbol: impl Fn(usize) -> Option<&'static str>,
-    search: Option<&str>,
-    picked: impl Fn(&str) -> bool,
-    cursor: Option<bool>,
-    empty: &str,
-    ctx: &AppContext,
-) -> usize {
-    let theme = &ctx.color_theme;
-    let rows = tree.rows();
-    if rows.is_empty() {
-        Paragraph::new(placeholder(empty, theme)).render(area, buf);
-        return 0;
-    }
-    let height = area.height as usize;
-    // no room for a row, like in a very short terminal
-    if height == 0 {
-        return 0;
-    }
-    let offset = tree.scroll(height, ctx.ui_config.common.scrolloff as usize);
-    let lines: Vec<Line> = rows
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(height)
-        .map(|(index, row)| {
-            let guide = tree.guide(index);
-            let Some(file) = row.file_index else {
-                return dir_line(row, guide, tree.is_open(&row.path), search, theme);
-            };
-            let mut spans = vec![guide_span(guide, theme)];
-            if let Some(symbol) = symbol(file) {
-                spans.extend([change_span(symbol, theme), Span::raw(" ")]);
-            }
-            spans.extend(highlighted_name(&row.name, search, theme));
-            Line::from(spans)
-        })
-        .collect();
-    Paragraph::new(lines).fg(theme.fg).render(area, buf);
-
-    for (y, row) in (area.top()..area.bottom()).zip(rows.iter().skip(offset)) {
-        if picked(&row.path) {
-            mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);
-        }
-    }
-    if let Some(focused) = cursor {
-        let y = area.y + (tree.cursor() - offset) as u16;
-        mark_selected_row(buf, area, y, focused, theme);
-    }
-    unhighlight_guides(buf, area, tree, offset, theme);
-    offset
-}
-
-// Gives the indent markers at the start of the rows `area` shows from `offset` their own color
-// back, over the highlight of the selected and picked rows.
-pub fn unhighlight_guides(
-    buf: &mut Buffer,
-    area: Rect,
-    tree: &FileTreeState,
-    offset: usize,
-    theme: &ColorTheme,
-) {
-    for (y, index) in (area.top()..area.bottom()).zip(offset..tree.rows().len()) {
-        keep_guide_color(buf, area, y, tree.guide(index), theme);
-    }
-}
-
-// Gives the indent markers of the row at `y` of `area` their color back, see `unhighlight_guides`.
-pub fn keep_guide_color(buf: &mut Buffer, area: Rect, y: u16, guide: &str, theme: &ColorTheme) {
-    // the background of a highlight stays, the whole row shows selected
-    let style = Style::new()
-        .fg(theme.divider_fg)
-        .remove_modifier(Modifier::BOLD);
-    // the markers are one column each
-    let width = (guide.chars().count() as u16).min(area.width);
-    buf.set_style(Rect::new(area.x, y, width, 1), style);
-}
-
 // The spans of a file or directory name, with the match of `search` highlighted.
 pub fn highlighted_name(
     name: &str,
@@ -416,103 +307,6 @@ fn name_match_ranges(name: &str, query: &str, fuzzy: bool) -> Vec<std::ops::Rang
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        test_support::ui::{
-            assert_guides_keep_color, assert_only_bg_changed, assert_row_bg, row_text,
-        },
-        widget::file_tree::FileTree,
-    };
-
-    // Draws `tree` in 20 columns and `height` rows, from column 1, the change letter "M" on each
-    // file and `picked` highlighted.
-    fn draw_tree(tree: &FileTreeState, height: u16, focused: bool, picked: &str) -> Buffer {
-        let ctx = crate::test_support::ui::test_ctx();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 23, height));
-        let area = Rect::new(1, 0, 20, height);
-        let symbol = |_| Some("M");
-        let is_picked = |path: &str| path == picked;
-        render_tree(
-            &mut buf,
-            area,
-            tree,
-            symbol,
-            None,
-            is_picked,
-            Some(focused),
-            "",
-            &ctx,
-        );
-        buf
-    }
-
-    #[test]
-    fn test_tree_rows_look_like_the_other_lists() {
-        let theme = ColorTheme::default();
-        let mut tree = FileTreeState::new(FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]), true);
-        for focused in [true, false] {
-            tree.select_path("z.rs");
-            let plain = draw_tree(&tree, 5, focused, "");
-            tree.select_path("a/x.rs");
-            let selected = draw_tree(&tree, 5, focused, "");
-            // the change letter and the lines keep their colors
-            let row = Rect::new(1, 1, 20, 1);
-            assert_row_bg(&selected, row, theme.list_selected_bg);
-            assert_only_bg_changed(&plain, &selected, row);
-            assert_guides_keep_color(&selected, row, &theme);
-        }
-        // a picked row: across it too
-        let buf = draw_tree(&tree, 5, true, "a/y.rs");
-        let row = Rect::new(1, 2, 20, 1);
-        assert_row_bg(&buf, row, theme.list_picked_bg);
-        assert_guides_keep_color(&buf, row, &theme);
-    }
-
-    #[test]
-    fn test_tiny_trees_with_scrolloff() {
-        // a scrolloff larger than the tree is tall: drawn without a crash, the cursor shown
-        let mut ui_config = crate::config::UiConfig::default();
-        ui_config.common.scrolloff = 5;
-        let ctx = crate::test_support::ui::test_ctx_of(ColorTheme::default(), ui_config);
-        let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
-        let mut tree = FileTreeState::new(FileTree::new(paths.iter().map(String::as_str)), true);
-        for height in 0..4 {
-            for index in 0..10 {
-                tree.select_index(index);
-                let mut buf = Buffer::empty(Rect::new(0, 0, 23, height.max(1)));
-                let area = Rect::new(1, 0, 20, height);
-                let offset = render_tree(
-                    &mut buf,
-                    area,
-                    &tree,
-                    |_| None,
-                    None,
-                    |_| false,
-                    Some(true),
-                    "",
-                    &ctx,
-                );
-                if height > 0 {
-                    assert!((offset..offset + height as usize).contains(&index));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_tree_scrolls_like_the_other_lists() {
-        let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
-        let mut tree = FileTreeState::new(FileTree::new(paths.iter().map(String::as_str)), true);
-        let top = |tree: &FileTreeState| row_text(&draw_tree(tree, 4, true, ""), 0);
-        // down past the bottom: the view follows the cursor
-        tree.select_index(5);
-        assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));
-        // up within the view: the view stays
-        tree.select_index(3);
-        assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));
-        // up past the top: it follows again
-        tree.select_index(0);
-        assert!(top(&tree).contains("f0.rs"), "{}", top(&tree));
-    }
 
     fn type_str(query: &mut TreeQuery, text: &str) {
         for c in text.chars() {

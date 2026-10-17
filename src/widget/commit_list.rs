@@ -25,12 +25,11 @@ use crate::{
     protocol::PreparedImage,
     search::{case_insensitive, SearchOptions, SearchTarget},
     widget::{
-        file_tree::SearchDirection,
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
             scroll_to,
         },
-        tree_query::find_around,
+        tree_query::{find_around, SearchDirection},
     },
 };
 

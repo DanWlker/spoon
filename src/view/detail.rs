@@ -23,13 +23,13 @@ use crate::{
             commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
         },
         commit_tabs::{
-            render_compare_title, render_tab_titles, CommitChanges, CommitChangesState,
-            CommitFiles, CommitFilesState, DetailTab,
+            render_compare_title, render_tab_titles, CommitChangesState, CommitFilesState,
+            CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
-        file_tree::{FileTreeState, SearchDirection},
+        file_tree::FileTreeState,
         style::{panel_block, ScrollState},
-        tree_query::{QueryChange, QueryKind, TreeQuery},
+        tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
 
@@ -531,16 +531,20 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => {
                 let search = self.changes_query.search();
                 let diff_search = self.pane_query.search();
-                let commit_changes =
-                    CommitChanges::new(self.ctx.clone(), search, diff_search, focused);
-                f.render_stateful_widget(commit_changes, detail_area, &mut self.changes_state);
+                CommitTab::new(self.ctx.clone(), search, diff_search, focused).render_changes(
+                    detail_area,
+                    f.buffer_mut(),
+                    &mut self.changes_state,
+                );
             }
             DetailTab::Files => {
                 let search = self.files_query.search();
                 let preview_search = self.pane_query.search();
-                let commit_files =
-                    CommitFiles::new(self.ctx.clone(), search, preview_search, focused);
-                f.render_stateful_widget(commit_files, detail_area, &mut self.files_state);
+                CommitTab::new(self.ctx.clone(), search, preview_search, focused).render_files(
+                    detail_area,
+                    f.buffer_mut(),
+                    &mut self.files_state,
+                );
             }
         }
         let indicator = self.query().and_then(TreeQuery::indicator);

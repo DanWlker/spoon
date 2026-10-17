@@ -3,7 +3,7 @@ use std::{
     io::{self, Write},
     rc::Rc,
     sync::mpsc::RecvTimeoutError,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use ratatui::{
@@ -54,7 +54,7 @@ use crate::{
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, DETACHED_HEAD},
-        style::key_hints,
+        style::{key_hints, spinner, SPINNER_RATE},
     },
 };
 
@@ -130,18 +130,6 @@ impl AppContext {
 
 // The longest the events waiting are handled for before drawing, see `App::run`.
 const MAX_BATCH: Duration = Duration::from_millis(100);
-
-// How often the spinner of a running task turns, see `spinner`.
-pub const SPINNER_RATE: Duration = Duration::from_millis(180);
-
-// lazygit's spinner, by the clock, so each frame drawn while a task runs shows where it is.
-pub fn spinner() -> &'static str {
-    const FRAMES: [&str; 4] = ["●∙∙", "∙●∙", "∙∙●", "∙●∙"];
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    FRAMES[(now.as_millis() / SPINNER_RATE.as_millis()) as usize % FRAMES.len()]
-}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PendingClear {

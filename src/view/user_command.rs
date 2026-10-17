@@ -103,7 +103,8 @@ impl<'a> UserCommandView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    // The output has the focus whether or not the page has it, like a popup.
+    pub fn render(&mut self, f: &mut Frame, area: Rect, _focused: bool) {
         let [list_area, user_command_area] = self.split_areas(area);
 
         let ctx = self.ctx.clone();

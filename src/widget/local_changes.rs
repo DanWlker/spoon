@@ -24,16 +24,14 @@ use crate::{
             diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
             ParsedDiff, Step, CONVERTED_DIFF,
         },
-        file_tree::{
-            find_next, path_contains, FileTree, FileTreeRow, FileTreeState, SearchDirection,
-        },
+        file_tree::{find_next, path_contains, render_tree, FileTree, FileTreeRow, FileTreeState},
         git_dialog::{CommitPreview, GitDialog},
         style::{
             badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
             render_panel_scrollbar, tree_panel_width,
         },
         text_area::TextArea,
-        tree_query::{highlight_match, render_tree, QueryChange, QueryKind, TreeQuery},
+        tree_query::{highlight_match, QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
 
