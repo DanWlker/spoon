@@ -353,6 +353,27 @@ fn test_sidebar_focused_shrunk_and_grown_back() {
 }
 
 #[test]
+fn test_sidebar_only_beside_the_graph() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let focused =
+        |focused| check(move |app: &App| assert_eq!(app.shell.sidebar_focused(), focused));
+    harness.run(vec![
+        keys("0"),
+        focused(true),
+        // the local changes page takes the focus from it, and has none to give it
+        keys("tab"),
+        check(|app| assert!(matches!(app.view, View::LocalChanges(_)))),
+        focused(false),
+        keys("0 alt-h"),
+        focused(false),
+        keys("tab 0"),
+        focused(true),
+    ]);
+}
+
+#[test]
 fn test_help_and_command_log_cover_the_app_one_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

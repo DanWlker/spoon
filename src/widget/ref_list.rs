@@ -16,13 +16,12 @@ use crate::{
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
-            divider, fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
+            fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
             render_panel_scrollbar, scroll_to, spinner,
         },
     },
 };
 
-const TREE_LOCAL_CHANGES_ROOT_IDENT: &str = "__local_changes__";
 const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
 const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
 // the row of a detached HEAD in the branches, see `RefListState::set_head`
@@ -35,7 +34,7 @@ const TREE_REMOTE_ROOT_TEXT: &str = "Remotes";
 const TREE_TAG_ROOT_TEXT: &str = "Tags";
 const TREE_STASH_ROOT_TEXT: &str = "Stashes";
 
-// The sections of the sidebar under the local changes.
+// The sections of the sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefSection {
     Branches,
@@ -100,7 +99,6 @@ impl RefPicks {
 // What is selected in the sidebar, for its commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefSelection {
-    LocalChanges,
     // a section
     Section(RefSection),
     // a folder in a section, by its path: a remote ("origin"), or a prefix of names ("feature")
@@ -128,11 +126,11 @@ pub struct RefListState {
 
 impl RefListState {
     // `remotes` are the names of the remotes, the folders of their branches.
-    pub fn new(refs: &[&Ref], remotes: &[String], local_change_count: usize) -> Self {
-        let selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
+    pub fn new(refs: &[&Ref], remotes: &[String]) -> Self {
+        let selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
         let opened = HashSet::from([vec![TREE_BRANCH_ROOT_IDENT.into()]]);
         let mut state = Self {
-            roots: build_ref_tree_nodes(refs, remotes, local_change_count),
+            roots: build_ref_tree_nodes(refs, remotes),
             visible_rows: Vec::new(),
             selected,
             opened,
@@ -211,25 +209,19 @@ impl RefListState {
 
     pub fn select_next(&mut self) {
         let last = self.visible_rows.len().saturating_sub(1);
-        let mut next = self
+        let next = self
             .selected_index()
             .map_or(0, |index| index.saturating_add(1))
             .min(last);
-        if self.visible_rows[next].separator {
-            next = (next + 1).min(last);
-        }
         self.select_visible_index(next);
     }
 
     pub fn select_prev(&mut self) {
-        let mut prev = self
+        let prev = self
             .selected_index()
             .map_or(self.visible_rows.len().saturating_sub(1), |index| {
                 index.saturating_sub(1)
             });
-        if self.visible_rows[prev].separator {
-            prev = prev.saturating_sub(1);
-        }
         self.select_visible_index(prev);
     }
 
@@ -281,19 +273,10 @@ impl RefListState {
     }
 
     pub fn selected_ref_name(&self) -> Option<String> {
-        if self.is_local_changes_selected() {
-            None
-        } else {
-            self.selected.last().cloned()
-        }
+        self.selected.last().cloned()
     }
 
-    pub fn select_branches(&mut self) {
-        self.open_section(TREE_BRANCH_ROOT_IDENT.into());
-    }
-
-    // Selects and opens the section after (or before) the selected one, round; from the local
-    // changes the first (or last).
+    // Selects and opens the section after (or before) the selected one, round.
     pub fn select_section(&mut self, forward: bool) {
         let sections: Vec<&String> = self
             .roots
@@ -324,28 +307,9 @@ impl RefListState {
         self.scroll_to_selection = true;
     }
 
-    pub fn select_local_changes(&mut self) {
-        self.selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
-        self.scroll_to_selection = true;
-    }
-
-    // Keeps the count in the name of the local changes row up to date.
-    pub fn set_local_change_count(&mut self, count: usize) {
-        let name = local_changes_name(count);
-        if let Some(root) = self.roots.first_mut() {
-            if root.name != name {
-                root.name.clone_from(&name);
-                if let Some(row) = self.visible_rows.first_mut() {
-                    row.name = name;
-                }
-            }
-        }
-    }
-
     pub fn selection(&self) -> RefSelection {
-        let Some(section) = RefSection::of_root(&self.selected[0]) else {
-            return RefSelection::LocalChanges;
-        };
+        // the selection is never empty, see `reset_tree_status`
+        let section = RefSection::of_root(&self.selected[0]).unwrap_or(RefSection::Branches);
         let is_ref = self.selected.len() > 1
             && self
                 .visible_rows
@@ -358,19 +322,9 @@ impl RefListState {
         }
     }
 
-    pub fn is_local_changes_selected(&self) -> bool {
-        self.selected.len() == 1 && self.selected[0] == TREE_LOCAL_CHANGES_ROOT_IDENT
-    }
-
     // Shows the refs of the reloaded repository, keeping the selection, the opened nodes and the
     // picked refs still there.
-    pub fn set_refs(
-        &mut self,
-        refs: &[&Ref],
-        remotes: &[String],
-        local_change_count: usize,
-        head: &Head,
-    ) {
+    pub fn set_refs(&mut self, refs: &[&Ref], remotes: &[String], head: &Head) {
         let (selected, opened) = self.current_tree_status();
         let offset = self.offset;
         let mut picked = std::mem::take(&mut self.picked);
@@ -387,7 +341,7 @@ impl RefListState {
                 .map(|r| r.name().to_string())
                 .collect();
         }
-        *self = Self::new(refs, remotes, local_change_count);
+        *self = Self::new(refs, remotes);
         // the row of a detached HEAD, before the selection looks for it
         self.set_head(head);
         self.reset_tree_status(selected, opened);
@@ -419,7 +373,7 @@ impl RefListState {
             self.selected.pop();
         }
         if self.selected.is_empty() {
-            self.selected = vec![TREE_LOCAL_CHANGES_ROOT_IDENT.into()];
+            self.selected = vec![TREE_BRANCH_ROOT_IDENT.into()];
         }
         self.scroll_to_selection = true;
     }
@@ -431,7 +385,7 @@ impl RefListState {
     }
 
     fn select_visible_index(&mut self, index: usize) {
-        if let Some(row) = self.visible_rows.get(index).filter(|row| !row.separator) {
+        if let Some(row) = self.visible_rows.get(index) {
             self.selected.clone_from(&row.identifier);
             self.scroll_to_selection = true;
         }
@@ -451,7 +405,6 @@ struct VisibleRefRow {
     has_children: bool,
     // a section, a folder or a remote, even without children
     folder: bool,
-    separator: bool,
 }
 
 fn collect_visible_rows(
@@ -469,19 +422,7 @@ fn collect_visible_rows(
             depth: parent.len(),
             has_children: !node.children.is_empty(),
             folder: node.folder || !node.children.is_empty(),
-            separator: false,
         });
-        if parent.is_empty() && node.identifier == TREE_LOCAL_CHANGES_ROOT_IDENT {
-            // divides the working tree from the refs, and is skipped when moving the selection
-            rows.push(VisibleRefRow {
-                identifier: Vec::new(),
-                name: String::new(),
-                depth: 0,
-                has_children: false,
-                folder: false,
-                separator: true,
-            });
-        }
         if opened.contains(&identifier) {
             collect_visible_rows(&node.children, opened, &identifier, rows);
         }
@@ -561,7 +502,7 @@ impl StatefulWidget for RefList {
             let head = row.depth > 0
                 && row.identifier[0] == TREE_BRANCH_ROOT_IDENT
                 && state.head_branch.as_deref() == row.identifier.last().map(String::as_str);
-            (row.depth, row.separator || row.has_children || head)
+            (row.depth, row.has_children || head)
         }));
         for ((line, row), guide) in state
             .visible_rows
@@ -572,11 +513,6 @@ impl StatefulWidget for RefList {
             .zip(guides.iter().skip(state.offset))
         {
             let y = inner.y + line as u16;
-            if row.separator {
-                let width = inner.width as usize;
-                buf.set_span(inner.x, y, &divider(width, theme), inner.width);
-                continue;
-            }
             // the checked-out branch, like `git branch`
             let head = row.depth > 0
                 && row.identifier[0] == TREE_BRANCH_ROOT_IDENT
@@ -667,11 +603,7 @@ impl StatefulWidget for RefList {
     }
 }
 
-fn build_ref_tree_nodes(
-    refs: &[&Ref],
-    remotes: &[String],
-    local_change_count: usize,
-) -> Vec<RefTreeNode> {
+fn build_ref_tree_nodes(refs: &[&Ref], remotes: &[String]) -> Vec<RefTreeNode> {
     let mut branch_refs = Vec::new();
     let mut remote_refs = Vec::new();
     let mut tag_refs = Vec::new();
@@ -697,11 +629,6 @@ fn build_ref_tree_nodes(
 
     vec![
         RefTreeNode::new(
-            TREE_LOCAL_CHANGES_ROOT_IDENT.into(),
-            local_changes_name(local_change_count),
-            Vec::new(),
-        ),
-        RefTreeNode::new(
             TREE_BRANCH_ROOT_IDENT.into(),
             TREE_BRANCH_ROOT_TEXT.into(),
             branch_nodes,
@@ -722,10 +649,6 @@ fn build_ref_tree_nodes(
             stash_nodes,
         ),
     ]
-}
-
-fn local_changes_name(count: usize) -> String {
-    format!("Local Changes ({count})")
 }
 
 #[derive(Debug)]
@@ -928,8 +851,7 @@ mod tests {
             target: "a".repeat(40).as_str().into(),
         };
         let (one, two, main) = (branch("feature/one"), branch("feature/two"), branch("main"));
-        let mut state = RefListState::new(&[&one, &two, &main], &[], 0);
-        state.select_branches();
+        let mut state = RefListState::new(&[&one, &two, &main], &[]);
         select(&mut state, "feature");
         state.open_node();
         let theme = ColorTheme::default();
@@ -969,8 +891,7 @@ mod tests {
         };
         let (a, b) = (branch("a"), branch("b"));
         let refs = [&a, &b, &tag];
-        let mut state = RefListState::new(&refs, &[], 0);
-        state.select_branches();
+        let mut state = RefListState::new(&refs, &[]);
         state.select_next();
         state.toggle_pick().unwrap();
         state.select_next();
@@ -983,7 +904,7 @@ mod tests {
         );
         assert!(state.toggle_pick().unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
-        state.set_refs(&[&a, &tag], &[], 0, &Head::None);
+        state.set_refs(&[&a, &tag], &[], &Head::None);
         assert_eq!(state.picked().names, ["a"]);
         state.clear_picks();
         state.toggle_pick().unwrap();
@@ -997,7 +918,7 @@ mod tests {
             name: "main".into(),
             target: target.clone(),
         };
-        let mut state = RefListState::new(&[&branch], &[], 0);
+        let mut state = RefListState::new(&[&branch], &[]);
         state.set_head(&Head::Branch {
             name: "main".into(),
         });
@@ -1009,12 +930,11 @@ mod tests {
         let head = Head::Detached { target };
         state.set_head(&head);
         assert!(names(&state).contains(&"HEAD (detached at aaaaaaa)".to_string()));
-        state.select_branches();
         state.select_next();
         let selection = RefSelection::Ref(RefSection::Branches, DETACHED_HEAD.into());
         assert_eq!(state.selection(), selection);
         // and stays selected through a reload
-        state.set_refs(&[&branch], &[], 0, &head);
+        state.set_refs(&[&branch], &[], &head);
         assert_eq!(state.selection(), selection);
     }
 
@@ -1025,14 +945,14 @@ mod tests {
             message: String::new(),
             target: c.to_string().repeat(40).as_str().into(),
         };
-        let mut state = RefListState::new(&[&stash(0, 'a')], &[], 0);
+        let mut state = RefListState::new(&[&stash(0, 'a')], &[]);
         state.reset_tree_status(
             vec![TREE_STASH_ROOT_IDENT.into(), "stash@{0}".into()],
             vec![vec![TREE_STASH_ROOT_IDENT.into()]],
         );
         state.toggle_pick().unwrap();
         // a new stash takes stash@{0}, the picked one is stash@{1} now
-        state.set_refs(&[&stash(0, 'b'), &stash(1, 'a')], &[], 0, &Head::None);
+        state.set_refs(&[&stash(0, 'b'), &stash(1, 'a')], &[], &Head::None);
         assert_eq!(state.picked().names, ["stash@{1}"]);
     }
 
@@ -1083,7 +1003,7 @@ mod tests {
         );
 
         // a remote not fetched yet is still a folder, to edit or remove it
-        let mut state = RefListState::new(&[], &["new".to_string()], 0);
+        let mut state = RefListState::new(&[], &["new".to_string()]);
         while !matches!(
             state.selection(),
             RefSelection::Section(RefSection::Remotes)
@@ -1100,7 +1020,7 @@ mod tests {
 
     #[test]
     fn test_select_section() {
-        let mut state = RefListState::new(&[], &["origin".to_string()], 0);
+        let mut state = RefListState::new(&[], &["origin".to_string()]);
         let section = |state: &RefListState| match state.selection() {
             RefSelection::Section(section) => Some(section),
             _ => None,

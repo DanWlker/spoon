@@ -16,7 +16,7 @@ Spoon is a terminal UI for everyday git work: staging, committing, branching, re
 
 - **Local changes**: stage and unstage files, directories, hunks or single lines; commit, amend, stash, discard, or add to `.gitignore`. Diffs highlight the words that changed within a line.
 - **Commit graph**: checkout, merge, rebase, cherry-pick, squash, drop, revert, reset, or amend an older commit, all from the graph. Each command asks first in a popup showing the git command it runs.
-- **Refs sidebar**: branches, remotes, tags and stashes, to create, rename, delete, diff or apply. <kbd>]</kbd> and <kbd>[</kbd> jump between sections.
+- **Refs sidebar**, beside the commit graph: branches, remotes, tags and stashes, to create, rename, delete, diff or apply. <kbd>]</kbd> and <kbd>[</kbd> jump between sections.
 - **Fetch, pull and push** run in the background, with a spinner beside the branch.
 - **Conflicts**: resolve them with your merge tool or editor, then continue or abort the merge, rebase, cherry-pick or revert.
 - **Open in browser**: open commits, branches, pull requests, tags and files (at the selected lines) on GitHub, GitLab, Bitbucket or Gitea/Forgejo.
@@ -63,7 +63,7 @@ $ cd <your git repository>
 $ spoon
 ```
 
-It opens on the commit graph; <kbd>Tab</kbd> switches to the local changes page and back.
+It opens on the commit graph; <kbd>Tab</kbd> switches to the local changes page and back. The bar at the top shows which page is open, and how many local changes there are.
 
 ### Options
 

@@ -152,7 +152,7 @@ In the changes tab (and a diff of two commits), <kbd>Enter</kbd> moves the focus
 
 - <kbd>/</kbd> searches its text (ignoring case unless the query has an uppercase letter), selecting the changed line matched, else its hunk; <kbd>n/N</kbd> go to the next/previous match.
 - <kbd>y</kbd> copies the selected line as in the file, or the selected hunk as a diff.
-- <kbd>Space</kbd> applies the selected hunk or line to the working tree (`git apply`), when it applies there; the count of the local changes in the sidebar follows.
+- <kbd>Space</kbd> applies the selected hunk or line to the working tree (`git apply`), when it applies there; the count of the local changes in the page bar follows.
 
 While the diff or the preview has the focus, only its own keys work there: the keys of the files beside it (<kbd>Y</kbd>, <kbd>?</kbd>, <kbd>h/l</kbd>, <kbd>J/K</kbd> to the next commit) do nothing. The same goes for the diff of the local changes page, where <kbd>/</kbd> searches the diff and <kbd>y</kbd> copies the line or hunk too, and <kbd>v</kbd>, <kbd>]v</kbd> <kbd>[v</kbd>, <kbd>?</kbd>, <kbd>Y</kbd>, <kbd>h/l</kbd> do nothing. The commands of the page still work, like committing or the commands of the commit graph.
 
@@ -182,7 +182,7 @@ The app is suspended while the editor or merge tool runs, and refreshed after.
 
 Like lazygit, the app picks up changes made elsewhere, in an editor or another terminal:
 
-- every 10 seconds, the local changes are reloaded: the local changes page keeps its selection, and elsewhere the count in the sidebar follows.
+- every 10 seconds, the local changes are reloaded: the local changes page keeps its selection, and elsewhere the count in the page bar follows.
 - every 2 seconds, it checks where the local branches and `HEAD` point; when they changed (a commit, a checkout or a rebase from another terminal), everything is reloaded, like <kbd>R</kbd>.
 - when the terminal gets the focus back, both are checked right away.
 
@@ -236,7 +236,7 @@ The commands on the refs ask first, in a popup:
 
 The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page shows what is selected:
 `Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.
-<kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file).
+<kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file). The bar at the top shows the page open and the count of local changes; the sidebar is on the commit graph only.
 
 In the commit graph, <kbd>1</kbd> focuses the commit list and <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> open the details of the selected commit on the info / changes / files tab.
 Coming back to the commit graph from the local changes page (<kbd>Tab</kbd>), the details open again as they were, with the focus on the commit list.

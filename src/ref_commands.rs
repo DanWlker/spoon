@@ -387,7 +387,7 @@ mod tests {
             let repository =
                 Repository::load(path, SortCommit::Chronological, None, false).unwrap();
             // the picked refs, whatever is selected
-            let selection = RefSelection::LocalChanges;
+            let selection = RefSelection::Section(RefSection::Branches);
             let dialog = ref_command(&repository, UserEvent::DeleteRef, &selection, &picked)
                 .unwrap()
                 .unwrap();
@@ -417,7 +417,7 @@ mod tests {
         let refused = ref_command(
             &repository,
             UserEvent::DeleteRef,
-            &RefSelection::LocalChanges,
+            &RefSelection::Section(Branches),
             &picked,
         );
         assert!(refused.unwrap().unwrap_err().contains("checked out"));

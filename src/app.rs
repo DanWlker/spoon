@@ -185,7 +185,7 @@ struct AppStatus {
 // the sidebar, the focus, the pages not shown, the popup and the status line.
 #[derive(Debug)]
 pub struct AppShell {
-    // the refs on the left, always shown beside the page (but the help)
+    // the refs on the left, beside the graph
     sidebar: RefListState,
     sidebar_mode: SidebarMode,
     // the local changes page while the graph is shown, to come back to it as it was
@@ -370,23 +370,18 @@ impl<'a> App<'a> {
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
 
         let refs = repository.all_refs();
-        let local_change_count = repository.loaded_local_change_count();
         let loaded_refs = repository.refs_snapshot().map(String::from);
         let mut shell = match shell {
             Some(mut shell) => {
-                shell.sidebar.set_refs(
-                    &refs,
-                    repository.remotes(),
-                    local_change_count,
-                    repository.head(),
-                );
+                shell
+                    .sidebar
+                    .set_refs(&refs, repository.remotes(), repository.head());
                 shell.refs_snapshot = loaded_refs;
                 shell
             }
             None => AppShell {
                 sidebar: {
-                    let mut sidebar =
-                        RefListState::new(&refs, repository.remotes(), local_change_count);
+                    let mut sidebar = RefListState::new(&refs, repository.remotes());
                     sidebar.set_head(repository.head());
                     sidebar
                 },
@@ -436,10 +431,6 @@ impl<'a> App<'a> {
                 }
                 if launch.local_changes {
                     app.show_local_changes_page();
-                    app.shell.sidebar.select_local_changes();
-                } else {
-                    // start on the graph, as Tab from the local changes page shows it
-                    app.shell.sidebar.select_branches();
                 }
                 if launch.fetch && !repository.remotes().is_empty() {
                     app.fetch_on_launch();
@@ -751,7 +742,7 @@ impl App<'_> {
 
     // Lays the page out in the screen's `area` before handling the next events and drawing.
     fn prepare_render(&mut self, area: Rect) {
-        let [view_area, _] = split_app_areas(area);
+        let [_, view_area, _] = split_app_areas(area);
         let [_, view_area] = self.split_sidebar(view_area);
         self.update_state(view_area);
         self.view.update_layout(view_area);
@@ -981,11 +972,12 @@ impl App<'_> {
             .bg(self.ctx.color_theme.bg);
         f.render_widget(base.clone(), f.area());
 
-        let [app_area, status_line_area] = split_app_areas(f.area());
+        let [page_bar_area, app_area, status_line_area] = split_app_areas(f.area());
+        self.render_page_bar(f, page_bar_area);
         let [sidebar_area, view_area] = self.split_sidebar(app_area);
         // the panels place their borders to drag as they are drawn
         self.ctx.layout.borrow_mut().clear_borders();
-        if !self.shell.sidebar_collapsed() {
+        if self.sidebar_shown() && !self.shell.sidebar_collapsed() {
             self.ctx
                 .layout
                 .borrow_mut()
@@ -994,14 +986,11 @@ impl App<'_> {
 
         self.update_state(view_area);
 
-        if let View::LocalChanges(view) = &self.view {
-            self.shell
-                .sidebar
-                .set_local_change_count(view.local_change_count());
-        }
         // views are replaced while switching pages, they take the focus as they are drawn
-        let sidebar = RefList::new(self.ctx.clone(), self.shell.sidebar_mode);
-        f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
+        if self.sidebar_shown() {
+            let sidebar = RefList::new(self.ctx.clone(), self.shell.sidebar_mode);
+            f.render_stateful_widget(sidebar, sidebar_area, &mut self.shell.sidebar);
+        }
         self.view
             .render(f, view_area, !self.shell.sidebar_focused());
         if let Some(Overlay::Help(help)) = self.shell.overlay.as_mut() {
@@ -1040,30 +1029,51 @@ impl App<'_> {
 }
 
 impl App<'_> {
-    // A bar after a neovim statusline: the page as a rounded pill like a mode, then the message,
-    // or what runs in the background, or the repository; on the right the keys of what has the
-    // focus and the position in the commit list.
+    // The pages at the top, the one shown as a pill; the local changes with their count.
+    fn render_page_bar(&self, f: &mut Frame, area: Rect) {
+        let theme = &self.ctx.color_theme;
+        let count = match &self.view {
+            View::LocalChanges(view) => view.local_change_count(),
+            _ => self.repository.loaded_local_change_count(),
+        };
+        let on_local_changes = !self.sidebar_shown();
+        let pages = [
+            (
+                format!("Local Changes ({count})"),
+                on_local_changes,
+                theme.status_success_fg,
+            ),
+            (
+                "Commit Graph".to_string(),
+                !on_local_changes,
+                theme.accent_fg,
+            ),
+        ];
+        let mut spans = vec![Span::raw(" ")];
+        for (name, shown, color) in pages {
+            if shown {
+                spans.extend([
+                    Span::raw("\u{e0b6}").fg(color),
+                    Span::raw(name).fg(theme.accent_text_fg).bg(color).bold(),
+                    Span::raw("\u{e0b4}").fg(color),
+                ]);
+            } else {
+                spans.push(Span::raw(format!(" {name} ")).fg(theme.muted_fg));
+            }
+            spans.push(Span::raw("  "));
+        }
+        f.render_widget(Line::from(spans), area);
+    }
+
+    // A bar after a neovim statusline: the message, or what runs in the background, or the
+    // repository; on the right the keys of what has the focus and the position in the commit list.
+    // The page is in the page bar.
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let theme = &self.ctx.color_theme;
         let bar = Style::default()
             .fg(theme.status_bar_fg)
             .bg(theme.status_bar_bg);
-        let (page, color) = match &self.view {
-            _ if matches!(self.shell.overlay, Some(Overlay::Help(_))) => {
-                ("HELP", theme.highlight_fg)
-            }
-            _ if self.shell.sidebar_focused() => ("REFS", theme.status_warn_fg),
-            View::LocalChanges(_) => ("CHANGES", theme.status_success_fg),
-            _ => ("GRAPH", theme.accent_fg),
-        };
-        // the first letter only on narrow terminals, like the mode
-        let page = if area.width < 115 { &page[..1] } else { page };
-        let mut left = vec![
-            Span::raw(" \u{e0b6}").fg(color),
-            Span::raw(page).fg(theme.accent_text_fg).bg(color).bold(),
-            Span::raw("\u{e0b4}").fg(color),
-            Span::raw("   "),
-        ];
+        let mut left = vec![Span::raw(" ")];
         let left_width: usize = left.iter().map(Span::width).sum();
         let mut right = vec![];
 
@@ -1172,9 +1182,16 @@ impl App<'_> {
 }
 
 impl App<'_> {
+    // The sidebar is on the graph only, beside the commits or their details.
+    fn sidebar_shown(&self) -> bool {
+        !matches!(self.view, View::LocalChanges(_))
+    }
+
     // The sidebar on the left and the page.
     fn split_sidebar(&self, area: Rect) -> [Rect; 2] {
-        let width = if self.shell.sidebar_collapsed() {
+        let width = if !self.sidebar_shown() {
+            0
+        } else if self.shell.sidebar_collapsed() {
             COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
             // leave the page some room on narrow terminals, unless resized
@@ -1189,8 +1206,14 @@ impl App<'_> {
 // " [0] " and the border on its right
 const COLLAPSED_SIDEBAR_WIDTH: u16 = 7;
 
-fn split_app_areas(area: Rect) -> [Rect; 2] {
-    Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area)
+// The page bar, the app, and the status bar.
+fn split_app_areas(area: Rect) -> [Rect; 3] {
+    Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area)
 }
 
 fn clear_fullscreen<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Error> {
@@ -1494,6 +1517,9 @@ impl App<'_> {
 
     // Focuses the sidebar, growing it back when shrunk, or gives the focus back to the page.
     fn set_sidebar_focused(&mut self, focused: bool) {
+        if focused && !self.sidebar_shown() {
+            return;
+        }
         if focused {
             self.shell.sidebar_mode = SidebarMode::Focused;
             self.view.blur();
@@ -1502,23 +1528,15 @@ impl App<'_> {
         }
     }
 
-    // Shows the page of the selected row: local changes, or the graph at the selected ref.
+    // Shows the selected ref on the graph; the commit details stay open, showing its commit.
     fn show_sidebar_selection(&mut self) {
-        if self.shell.sidebar.is_local_changes_selected() {
-            self.show_local_changes_page();
-        } else {
-            // the commit details stay open, showing the commit of the ref
-            if !matches!(self.view, View::Detail(_)) {
-                self.show_graph_page();
-            }
-            let Some(name) = self.shell.sidebar.selected_ref_name() else {
-                return;
-            };
-            match &mut self.view {
-                View::List(view) => view.select_ref(&name),
-                View::Detail(view) => view.select_ref(&name),
-                _ => {}
-            }
+        let Some(name) = self.shell.sidebar.selected_ref_name() else {
+            return;
+        };
+        match &mut self.view {
+            View::List(view) => view.select_ref(&name),
+            View::Detail(view) => view.select_ref(&name),
+            _ => {}
         }
     }
 
@@ -1526,10 +1544,8 @@ impl App<'_> {
     fn switch_page(&mut self) {
         if matches!(self.view, View::LocalChanges(_)) {
             self.show_graph_page();
-            self.shell.sidebar.select_branches();
         } else {
             self.show_local_changes_page();
-            self.shell.sidebar.select_local_changes();
         }
         self.set_sidebar_focused(false);
     }
@@ -1830,7 +1846,6 @@ impl App<'_> {
                     list_context: context.list_context().clone(),
                     local_changes_context: snapshot,
                 };
-                self.shell.sidebar.select_local_changes();
                 self.set_sidebar_focused(false);
             }
             self.ec.send(AppEvent::Refresh(context));
@@ -2092,14 +2107,13 @@ impl App<'_> {
     }
 
     // Reloads the local changes, made outside the app too: the page showing them, else their
-    // count in the sidebar.
+    // count in the page bar.
     fn reload_files(&mut self, files: FilesSnapshot) {
         self.shell.operation_shown = self.repository.operation_in_progress().is_some();
         match &mut self.view {
             View::LocalChanges(view) => view.reload_files(files),
             _ => {
-                let count = self.repository.set_local_changes(files.changes);
-                self.shell.sidebar.set_local_change_count(count);
+                self.repository.set_local_changes(files.changes);
             }
         }
     }
@@ -2107,7 +2121,6 @@ impl App<'_> {
     // Shows the local changes page with the last commit being amended.
     fn amend_on_local_changes(&mut self) {
         self.show_local_changes_page();
-        self.shell.sidebar.select_local_changes();
         self.set_sidebar_focused(false);
         if let View::LocalChanges(view) = &mut self.view {
             if let Err(err) = view.start_amend() {
