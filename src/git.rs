@@ -2,9 +2,9 @@ use std::ffi::OsStr;
 use std::{
     collections::VecDeque,
     hash::Hash,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Output, Stdio},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -900,6 +900,7 @@ impl Repository {
             git_command().args(args).current_dir(&self.path),
             args,
             stdin,
+            None,
         )
     }
 
@@ -1836,9 +1837,10 @@ fn load_branch_tracking(path: &Path) -> FxHashMap<String, (usize, usize)> {
         .collect()
 }
 
-// A fingerprint of the local branches, HEAD and the stashes, which changes when they are changed
-// from outside the app, like lazygit's `RefsSnapshot`: where each branch points, the branch
-// checked out or the commit when detached, and every stash, as the sidebar drops them by position.
+// A fingerprint of the branches, remote branches, tags, HEAD and the stashes, which changes when
+// they are changed from outside the app, like lazygit's `RefsSnapshot`: where each ref points
+// (a fetch in the background moves the remote ones), the branch checked out or the commit when
+// detached, and every stash, as the sidebar drops them by position.
 pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
     let refs = git_output(
         path,
@@ -1846,6 +1848,8 @@ pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
             "for-each-ref",
             "--format=%(objectname) %(refname)",
             "refs/heads",
+            "refs/remotes",
+            "refs/tags",
         ],
     )?;
     let head = git_output(path, &["symbolic-ref", "-q", "HEAD"])
@@ -1884,6 +1888,8 @@ pub struct GitTask {
     pub failed: Option<String>,
     // changes only the working tree, so the page stays as it is instead of being reloaded
     pub keeps_view: bool,
+    // stopped once it runs longer, like a fetch from a remote that never answers
+    pub timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2063,7 +2069,7 @@ fn run_task_step(
             cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         }
     }
-    run_logged(&mut cmd, args, input)
+    run_logged(&mut cmd, args, input, task.timeout)
 }
 
 // Runs `cmd`, git with `args`, writing `input` to it, and logs it in the command log; the error
@@ -2072,6 +2078,7 @@ fn run_logged(
     cmd: &mut Command,
     args: &[impl AsRef<str>],
     input: Option<&str>,
+    timeout: Option<Duration>,
 ) -> std::result::Result<(), String> {
     let name = args.first().map_or("", |a| a.as_ref());
     let command_error = |e: std::io::Error| {
@@ -2095,7 +2102,17 @@ fn run_logged(
         let mut stdin = child.stdin.take().expect("stdin is piped");
         stdin.write_all(input.as_bytes()).map_err(command_error)?;
     }
-    let output = child.wait_with_output().map_err(command_error)?;
+    let output = match timeout {
+        None => child.wait_with_output().map_err(command_error)?,
+        Some(timeout) => match wait_with_timeout(child, timeout).map_err(command_error)? {
+            Some(output) => output,
+            None => {
+                let error = format!("git {name} timed out after {}s", timeout.as_secs());
+                log_command(args, false, &error, started);
+                return Err(error);
+            }
+        },
+    };
     // git reports progress and results of many commands on stderr
     let text = format!(
         "{}{}",
@@ -2115,6 +2132,43 @@ fn run_logged(
         .or_else(|| lines().rfind(|line| !line.is_empty()))
         .unwrap_or_default();
     Err(format!("git {name} failed: {error}"))
+}
+
+// Like `Child::wait_with_output`, but stops the command once `timeout` passed, None then.
+fn wait_with_timeout(mut child: Child, timeout: Duration) -> std::io::Result<Option<Output>> {
+    // read meanwhile, a command filling a pipe would wait for it to be read
+    fn read(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = vec![];
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let stdout = read(child.stdout.take());
+    let stderr = read(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            // SIGTERM, not `Child::kill`'s SIGKILL: git then removes its lock files and the pack it
+            // was receiving, which would otherwise make the next fetch fail
+            let _ = Command::new("kill").arg(child.id().to_string()).status();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    Ok(Some(Output {
+        status,
+        stdout,
+        stderr,
+    }))
 }
 
 // The command stashing the changes of `paths` (all changes when empty), including untracked files.
@@ -3026,6 +3080,56 @@ mod tests {
             "git@github.com:a/b.git"
         );
         assert_eq!(hide_password("https://host/a@b"), "https://host/a@b");
+    }
+
+    #[test]
+    fn test_launch_fetch_moves_snapshot_and_times_out() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("remote.git");
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        git_output(dir.path(), &["init", "-q", "--bare", "remote.git"]).unwrap();
+        let repo = GitRepository::new(&work);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        let url = remote.to_str().unwrap();
+        git_output(&work, &["remote", "add", "origin", url]).unwrap();
+        git_output(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]).unwrap();
+        let fetch = |timeout| GitTask {
+            remote: true,
+            timeout,
+            ..GitTask::new(&["fetch", "--all"], String::new(), String::new())
+        };
+
+        // a branch made on the remote shows in the fingerprint once fetched, which reloads the app
+        let head = git_output(&work, &["rev-parse", "HEAD"]).unwrap();
+        let other = [
+            "--git-dir",
+            url,
+            "update-ref",
+            "refs/heads/other",
+            head.trim(),
+        ];
+        git_output(dir.path(), &other).unwrap();
+        let before = refs_snapshot(&work).unwrap();
+        run_task(&work, &fetch(None)).unwrap();
+        assert_ne!(refs_snapshot(&work).unwrap(), before);
+
+        // a remote that doesn't answer is given up on, and leaves nothing in the way of the next fetch
+        let slow = [
+            "config",
+            "remote.origin.uploadpack",
+            "sleep 5; git-upload-pack",
+        ];
+        git_output(&work, &slow).unwrap();
+        let started = Instant::now();
+        let err = run_task(&work, &fetch(Some(Duration::from_millis(300)))).unwrap_err();
+        assert_eq!(err, "git fetch timed out after 0s");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        git_output(&work, &["config", "--unset", "remote.origin.uploadpack"]).unwrap();
+        run_task(&work, &fetch(None)).unwrap();
     }
 
     #[test]

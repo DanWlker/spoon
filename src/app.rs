@@ -84,6 +84,10 @@ pub struct Launch {
     pub sidebar_collapsed: bool,
 }
 
+// The longest the fetch on launch runs, for a remote that never answers; long enough for a big
+// first fetch over a slow link, which would otherwise start over on each launch.
+const LAUNCH_FETCH_TIMEOUT: Duration = Duration::from_secs(300);
+
 // How long the fetch, pull and push popups wait for their key to be pressed again before showing,
 // as a double press runs the command right away.
 const QUICK_RUN_DELAY: Duration = Duration::from_millis(200);
@@ -726,15 +730,6 @@ impl App<'_> {
             }
             AppEvent::NotifyWarn(msg) => {
                 self.warn_notification(msg);
-            }
-            // the remote branches show once reloaded; when paused, the next reload shows them
-            AppEvent::LaunchFetched(Ok(())) => {
-                if !self.refresh_paused() {
-                    self.view.refresh();
-                }
-            }
-            AppEvent::LaunchFetched(Err(err)) => {
-                self.ec.send(AppEvent::NotifyError(err));
             }
             AppEvent::NotifyError(msg) => {
                 push_notice(&mut self.shell.notices, Notice::new(true, msg));
@@ -1683,14 +1678,16 @@ impl App<'_> {
     }
 
     // Fetches all remotes in the background like lazygit, without taking the place of the git
-    // command running, so the commands of the user are not held back by it.
+    // command running, so the commands of the user are not held back by it. Nothing is said when
+    // it fails, offline say, but in the command log; the remote branches it moved show once the
+    // refs are next checked, see `check_refs`.
     fn fetch_on_launch(&self) {
         let path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        std::thread::spawn(move || {
-            let result = run_task(&path, &fetch_all_task());
-            tx.send(AppEvent::LaunchFetched(result));
-        });
+        let task = GitTask {
+            timeout: Some(LAUNCH_FETCH_TIMEOUT),
+            ..fetch_all_task()
+        };
+        std::thread::spawn(move || run_task(&path, &task));
     }
 
     // Runs the git command in the background; the app is told when it finishes.

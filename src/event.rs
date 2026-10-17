@@ -53,8 +53,6 @@ pub enum AppEvent {
         task: GitTask,
         result: Result<(), String>,
     },
-    // the fetch of all remotes on launch finished, see `App::fetch_on_launch`
-    LaunchFetched(Result<(), String>),
     OpenHelp,
     CloseHelp,
     SelectNewerCommit,
