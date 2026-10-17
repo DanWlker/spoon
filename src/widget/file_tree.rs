@@ -19,7 +19,7 @@ use crate::{
         style::{
             change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder, scroll_to,
         },
-        tree_query::{find_around, highlighted_name, path_matches, SearchDirection},
+        tree_query::{find_around, highlighted_text, path_matches, SearchDirection},
     },
 };
 
@@ -531,12 +531,19 @@ pub fn dir_line(
 ) -> Line<'static> {
     let mut spans = vec![guide_span(guide, theme), fold_marker(open).into()];
     spans.extend(
-        highlighted_name(&row.name, search, options, theme)
-            .into_iter()
-            .map(|span| match span.style.fg {
-                Some(_) => span,
-                None => span.fg(theme.file_tree_dir_fg),
-            }),
+        highlighted_text(
+            &row.name,
+            row.name.len(),
+            Style::default(),
+            search,
+            options,
+            theme,
+        )
+        .into_iter()
+        .map(|span| match span.style.fg {
+            Some(_) => span,
+            None => span.fg(theme.file_tree_dir_fg),
+        }),
     );
     Line::from(spans)
 }
@@ -590,7 +597,14 @@ pub fn render_tree(
             if let Some(symbol) = symbol(file) {
                 spans.extend([change_span(symbol, theme), Span::raw(" ")]);
             }
-            spans.extend(highlighted_name(&row.name, search, options, theme));
+            spans.extend(highlighted_text(
+                &row.name,
+                row.name.len(),
+                Style::default(),
+                search,
+                options,
+                theme,
+            ));
             Line::from(spans)
         })
         .collect();

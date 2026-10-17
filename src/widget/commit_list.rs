@@ -1,6 +1,5 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
-use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use laurier::highlight::highlight_matched_text;
 use ratatui::{
     buffer::Buffer,
@@ -12,7 +11,6 @@ use ratatui::{
     Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::sync::LazyLock;
 use tui_input::{backend::crossterm::EventHandler, Input, InputRequest};
 
 use crate::{
@@ -23,18 +21,15 @@ use crate::{
     git::{Commit, CommitHash, Head, Ref, Tracking},
     graph::{Fold, GraphImageManager},
     protocol::PreparedImage,
-    search::{case_insensitive, SearchOptions, SearchTarget},
+    search::{SearchOptions, SearchTarget},
     widget::{
         style::{
             half_page_jump, mark_selected_bar, panel_block, panel_title, picked_style,
             render_panel_scrollbar, scroll_to,
         },
-        tree_query::{find_around, SearchDirection},
+        tree_query::{find_around, match_ranges, SearchDirection},
     },
 };
-
-static FUZZY_MATCHER: LazyLock<SkimMatcherV2> =
-    LazyLock::new(|| SkimMatcherV2::default().respect_case());
 
 const ELLIPSIS: &str = "...";
 // before a branch whose upstream is on the same commit, a cloud
@@ -183,55 +178,24 @@ impl SearchMatchPosition {
     }
 }
 
+// What the search matches in the fields of a commit, see `match_ranges`.
 struct SearchMatcher {
     query: String,
-    // smart case with a lowercase query: both sides lowercased
-    lowercase: bool,
-    fuzzy: bool,
+    options: SearchOptions,
 }
 
 impl SearchMatcher {
     fn new(query: &str, options: SearchOptions) -> Self {
-        let lowercase = case_insensitive(options.smart_case, query);
-        let query = if lowercase {
-            query.to_lowercase()
-        } else {
-            query.into()
-        };
         Self {
-            query,
-            lowercase,
-            fuzzy: options.fuzzy,
+            query: query.into(),
+            options,
         }
     }
 
     fn matched_position(&self, s: &str) -> Option<SearchMatchPosition> {
-        if self.fuzzy {
-            let result = if self.lowercase {
-                FUZZY_MATCHER.fuzzy_indices(&s.to_lowercase(), &self.query)
-            } else {
-                FUZZY_MATCHER.fuzzy_indices(s, &self.query)
-            };
-            // the matcher counts chars, the highlight bytes
-            result
-                .map(|(_, indices)| {
-                    s.char_indices()
-                        .enumerate()
-                        .filter(|(i, _)| indices.binary_search(i).is_ok())
-                        .flat_map(|(_, (b, c))| b..b + c.len_utf8())
-                        .collect()
-                })
-                .map(SearchMatchPosition::new)
-        } else {
-            let result = if self.lowercase {
-                s.to_lowercase().find(&self.query)
-            } else {
-                s.find(&self.query)
-            };
-            result
-                .map(|p| (p..(p + self.query.len())).collect())
-                .map(SearchMatchPosition::new)
-        }
+        let ranges = match_ranges(s, &self.query, self.options);
+        (!ranges.is_empty())
+            .then(|| SearchMatchPosition::new(ranges.into_iter().flatten().collect()))
     }
 }
 
@@ -245,7 +209,8 @@ pub struct CommitListState<'a> {
     ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
 
     search_state: SearchState,
-    search_options: SearchOptions,
+    // the app's, see `AppContext::search_options`
+    search_options: Rc<Cell<SearchOptions>>,
     search_input: Input,
     search_matches: Vec<SearchMatch>,
 
@@ -268,7 +233,7 @@ impl<'a> CommitListState<'a> {
         graph_image_manager: GraphImageManager<'a>,
         graph_cell_width: u16,
         ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
-        search_options: SearchOptions,
+        search_options: Rc<Cell<SearchOptions>>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
         let total = commits.len();
@@ -596,11 +561,11 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn search_options(&self) -> SearchOptions {
-        self.search_options
+        self.search_options.get()
     }
 
     pub fn restore_search_options(&mut self, options: SearchOptions) {
-        self.search_options = options;
+        self.search_options.set(options);
     }
 
     pub fn start_search(&mut self) {
@@ -701,17 +666,23 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn toggle_smart_case(&mut self) {
-        self.search_options.smart_case = !self.search_options.smart_case;
+        let mut options = self.search_options.get();
+        options.smart_case = !options.smart_case;
+        self.search_options.set(options);
         self.update_search_after_options_change();
     }
 
     pub fn toggle_fuzzy(&mut self) {
-        self.search_options.fuzzy = !self.search_options.fuzzy;
+        let mut options = self.search_options.get();
+        options.fuzzy = !options.fuzzy;
+        self.search_options.set(options);
         self.update_search_after_options_change();
     }
 
     pub fn toggle_search_target(&mut self) {
-        self.search_options.target = self.search_options.target.next();
+        let mut options = self.search_options.get();
+        options.target = options.target.next();
+        self.search_options.set(options);
         self.update_search_after_options_change();
     }
 
@@ -754,7 +725,8 @@ impl<'a> CommitListState<'a> {
             self.search_state.update_match_index(0);
             return;
         }
-        let matcher = SearchMatcher::new(self.search_input.value(), self.search_options);
+        let options = self.search_options.get();
+        let matcher = SearchMatcher::new(self.search_input.value(), options);
         let mut match_index = 1;
         for (i, commit_info) in self.commits.iter().enumerate() {
             let m = &mut self.search_matches[i];
@@ -762,7 +734,7 @@ impl<'a> CommitListState<'a> {
                 commit_info.commit,
                 commit_info.refs.as_slice(),
                 &matcher,
-                self.search_options.target,
+                options.target,
             );
             if m.matched() {
                 m.match_index = match_index;
@@ -1464,7 +1436,7 @@ mod tests {
             graph_image_manager,
             0,
             FxHashMap::default(),
-            SearchOptions::default(),
+            Default::default(),
             0,
         );
         state.reset_height(subjects.len());
@@ -2158,27 +2130,37 @@ mod tests {
         with_commit_list_state(&["fix"], |state| {
             state.toggle_smart_case();
             assert_eq!(
-                state.search_options().status_string(),
+                state
+                    .search_options()
+                    .status_string(crate::search::SearchKind::Commits),
                 "[all] [smart-case] [substring]"
             );
             state.toggle_smart_case();
             assert_eq!(
-                state.search_options().status_string(),
+                state
+                    .search_options()
+                    .status_string(crate::search::SearchKind::Commits),
                 "[all] [case-sensitive] [substring]"
             );
             state.toggle_fuzzy();
             assert_eq!(
-                state.search_options().status_string(),
+                state
+                    .search_options()
+                    .status_string(crate::search::SearchKind::Commits),
                 "[all] [case-sensitive] [fuzzy]"
             );
             state.toggle_fuzzy();
             assert_eq!(
-                state.search_options().status_string(),
+                state
+                    .search_options()
+                    .status_string(crate::search::SearchKind::Commits),
                 "[all] [case-sensitive] [substring]"
             );
             state.toggle_search_target();
             assert_eq!(
-                state.search_options().status_string(),
+                state
+                    .search_options()
+                    .status_string(crate::search::SearchKind::Commits),
                 "[subject] [case-sensitive] [substring]"
             );
         });

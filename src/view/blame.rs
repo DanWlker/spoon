@@ -16,14 +16,15 @@ use crate::{
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{BlameCommit, CommitHash, FileRevision, Repository},
-    view::{commit_event, copy_selection, status_input},
+    search::SearchKind,
+    view::{commit_event, copy_selection, query_status, toggle_search_option, typing_hints},
     widget::{
         commit_list::format_date,
         diff::Step,
         file_text::FileText,
         style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
         tree_query::{
-            find_around, highlighted_text, match_range, QueryChange, QueryKind, SearchDirection,
+            find_around, highlighted_text, match_ranges, QueryChange, QueryKind, SearchDirection,
             TreeQuery,
         },
     },
@@ -132,7 +133,8 @@ impl BlameView {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         if self.query.is_editing() {
-            if self.query.handle_key(key) == QueryChange::Search {
+            let toggled = toggle_search_option(&self.ctx, &key, self.query_kind());
+            if toggled || self.query.handle_key(key) == QueryChange::Search {
                 self.search(SearchDirection::Current);
             }
             self.update_query_status();
@@ -269,7 +271,7 @@ impl BlameView {
                         && texts
                             .iter()
                             .flatten()
-                            .any(|text| match_range(text, &search, options).is_some())
+                            .any(|text| !match_ranges(text, &search, options).is_empty())
                 });
                 if let Some(line) = found {
                     self.text.select_line(line);
@@ -287,13 +289,25 @@ impl BlameView {
 
     fn update_query_status(&self) {
         let typed = self.query.status_input();
-        self.tx.send(status_input(typed, String::new()));
+        self.tx
+            .send(query_status(&self.ctx, typed, self.query_kind()));
+    }
+
+    // The text or the diff is searched as text, the commits by name.
+    fn query_kind(&self) -> SearchKind {
+        match self.focus {
+            BlameFocus::Text => SearchKind::Text,
+            _ => SearchKind::Names,
+        }
     }
 
     // The keys working where the focus is, the most useful first: the status bar shows as many as
     // fit, the keys popup all.
     pub fn key_hints(&self) -> Vec<KeyHint> {
         use UserEvent::*;
+        if self.query.is_editing() {
+            return typing_hints(self.query_kind());
+        }
         // on the commit shown, left and right step too
         let mut steps = vec![OlderCommit, NewerCommit];
         if self.focus == BlameFocus::Revision {
@@ -438,8 +452,7 @@ impl BlameView {
             let text = |text: &str, shown: usize, fg| {
                 highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)
             };
-            let hash = commit.as_str();
-            let mut spans = text(hash, 7, theme.list_hash_fg);
+            let mut spans = text(commit.as_str(), 7, theme.list_hash_fg);
             spans.push(Span::raw(" "));
             spans.extend(text(&author, author.len(), theme.list_name_fg));
             spans.push(Span::raw(" "));
@@ -693,5 +706,18 @@ mod tests {
             timeline.handle_event(UserEvent::Unknown, key, &repository);
         }
         assert_eq!(draw(&mut |f| timeline.render(f, f.area())), "thing");
+
+        // fuzzily, as the commit list and the file trees search
+        let fuzzy = crate::search::SearchOptions {
+            fuzzy: true,
+            ..ctx.search_options.get()
+        };
+        ctx.search_options.set(fuzzy);
+        timeline.handle_event(UserEvent::Cancel, key, &repository);
+        timeline.handle_event(UserEvent::Search, key, &repository);
+        for key in typed("ftg") {
+            timeline.handle_event(UserEvent::Unknown, key, &repository);
+        }
+        assert_eq!(draw(&mut |f| timeline.render(f, f.area())), "ftg");
     }
 }

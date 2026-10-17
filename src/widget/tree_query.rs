@@ -49,6 +49,15 @@ impl TreeQuery {
         self.editing.is_some()
     }
 
+    // What applying the query being typed again changes, once its options are.
+    pub fn editing_change(&self) -> QueryChange {
+        match self.editing {
+            Some((QueryKind::Search, _)) => QueryChange::Search,
+            Some((QueryKind::Filter, _)) => QueryChange::Filter,
+            None => QueryChange::None,
+        }
+    }
+
     // Enter keeps the query, Esc clears it; other keys edit it, which applies it right away.
     pub fn handle_key(&mut self, key: KeyEvent) -> QueryChange {
         let Some((kind, input)) = self.editing.as_mut() else {
@@ -146,37 +155,38 @@ fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
     }
 }
 
-// Whether `path` matches `query`, searching as the commit list does: fuzzily or as a substring,
-// smart case or case-sensitive.
+// Whether `path` matches `query`, see `match_ranges`.
 pub fn path_matches(path: &str, query: &str, options: SearchOptions) -> bool {
-    if options.fuzzy {
-        path_matcher(options.smart_case)
-            .fuzzy_match(path, query)
-            .is_some()
-    } else if case_insensitive(options.smart_case, query) {
-        path.to_lowercase().contains(&query.to_lowercase())
-    } else {
-        path.contains(query)
-    }
+    !match_ranges(path, query, options).is_empty()
 }
 
-// The byte range of the first match of `query` in `text`, to highlight it.
+// The byte range of the first occurrence of `query` in `text`, smart case or case-sensitive; the
+// search of text, like diffs and files, which isn't fuzzy.
 pub fn match_range(
     text: &str,
     query: &str,
     options: SearchOptions,
 ) -> Option<std::ops::Range<usize>> {
-    let start = if !case_insensitive(options.smart_case, query) {
-        text.find(query)?
-    } else {
-        // lowercasing can change byte lengths, so only use the result when it does not
-        let lower = text.to_lowercase();
-        if lower.len() != text.len() {
-            return None;
+    if !case_insensitive(options.smart_case, query) {
+        let start = text.find(query)?;
+        return Some(start..start + query.len());
+    }
+    // lowercasing can change byte lengths: each char lowercased, with where it is in `text`
+    let mut lower = String::new();
+    let mut origins = Vec::new();
+    for (at, c) in text.char_indices() {
+        for l in c.to_lowercase() {
+            origins.push((lower.len(), at));
+            lower.push(l);
         }
-        lower.find(&query.to_lowercase())?
+    }
+    let start = lower.find(&query.to_lowercase())?;
+    let end = start + query.to_lowercase().len();
+    let origin = |i: usize| {
+        let found = origins.iter().find(|(from, _)| *from >= i);
+        found.map_or(text.len(), |(_, at)| *at)
     };
-    Some(start..start + query.len())
+    Some(origin(start)..origin(end))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,8 +242,8 @@ pub fn match_style(theme: &ColorTheme) -> Style {
         .bg(theme.list_match_bg)
 }
 
-// `shown`, the start of `text` (all of it, or a short hash), in `style`, with the match of `search`
-// in `text` highlighted where it is shown.
+// `shown`, the start of `text` (all of it, or a short hash), in `style`, with what `search` matches
+// in `text`, see `match_ranges`, highlighted where it is shown.
 pub fn highlighted_text(
     text: &str,
     shown: usize,
@@ -243,19 +253,18 @@ pub fn highlighted_text(
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
     let shown = &text[..shown];
-    let range = search.and_then(|query| match_range(text, query, options));
-    let Some(range) = range.filter(|r| r.start < shown.len()) else {
-        return vec![Span::styled(shown.to_string(), style)];
-    };
-    let end = range.end.min(shown.len());
-    vec![
-        Span::styled(shown[..range.start].to_string(), style),
-        Span::styled(
-            shown[range.start..end].to_string(),
-            style.patch(match_style(theme)),
-        ),
-        Span::styled(shown[end..].to_string(), style),
-    ]
+    let ranges = search.map_or(vec![], |query| match_ranges(text, query, options));
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for range in ranges.into_iter().filter(|r| r.start < shown.len()) {
+        let end = range.end.min(shown.len());
+        spans.push(Span::styled(shown[at..range.start].to_string(), style));
+        let matched = style.patch(match_style(theme));
+        spans.push(Span::styled(shown[range.start..end].to_string(), matched));
+        at = end;
+    }
+    spans.push(Span::styled(shown[at..].to_string(), style));
+    spans
 }
 
 // Patches `style` onto the bytes `range` of the text after the first span, a line number.
@@ -285,36 +294,16 @@ pub fn patch_range(line: &mut Line<'_>, range: std::ops::Range<usize>, style: St
     line.spans.extend(spans);
 }
 
-// The spans of a file or directory name, with the match of `search` highlighted.
-pub fn highlighted_name(
-    name: &str,
-    search: Option<&str>,
-    options: SearchOptions,
-    theme: &ColorTheme,
-) -> Vec<Span<'static>> {
-    let ranges = search.map_or(vec![], |query| name_match_ranges(name, query, options));
-    let mut spans = Vec::new();
-    let mut at = 0;
-    for range in ranges {
-        spans.push(Span::raw(name[at..range.start].to_string()));
-        spans.push(Span::styled(
-            name[range.clone()].to_string(),
-            match_style(theme),
-        ));
-        at = range.end;
-    }
-    spans.push(Span::raw(name[at..].to_string()));
-    spans
-}
-
-// The byte ranges of `name` matching `query`: the letters a fuzzy match picks, joined where they
-// follow each other, or the substring. None when only the rest of the path matches.
-fn name_match_ranges(
+// The byte ranges of `name` matching `query`, as every search of names matches: the commit list,
+// the file trees and the commits of the blame and the timeline. The letters a fuzzy match picks,
+// joined where they follow each other, or the substring; smart case or case-sensitive.
+pub fn match_ranges(
     name: &str,
     query: &str,
     options: SearchOptions,
 ) -> Vec<std::ops::Range<usize>> {
-    if !options.fuzzy {
+    // nothing typed matches everything, as a substring does
+    if !options.fuzzy || query.is_empty() {
         return match_range(name, query, options).into_iter().collect();
     }
     let matcher = path_matcher(options.smart_case);
@@ -342,6 +331,19 @@ mod tests {
         for c in text.chars() {
             query.handle_key(KeyEvent::from(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn test_match_range_where_lowercase_changes_lengths() {
+        let smart = SearchOptions {
+            smart_case: true,
+            ..Default::default()
+        };
+        // İ lowercases to two chars, three bytes
+        assert_eq!(match_range("İx Foo", "foo", smart), Some(4..7));
+        assert_eq!(match_range("İx Foo", "i̇x", smart), Some(0..3));
+        assert_eq!(match_range("İx Foo", "Foo", smart), Some(4..7));
+        assert_eq!(match_range("İx Foo", "FOO", smart), None);
     }
 
     #[test]
@@ -412,8 +414,8 @@ mod tests {
             fuzzy: true,
             ..Default::default()
         };
-        assert_eq!(name_match_ranges("dïff.rs", "dïrs", fuzzy), [0..3, 6..8]);
+        assert_eq!(match_ranges("dïff.rs", "dïrs", fuzzy), [0..3, 6..8]);
         // only the rest of the path matched
-        assert!(name_match_ranges("diff.rs", "src", fuzzy).is_empty());
+        assert!(match_ranges("diff.rs", "src", fuzzy).is_empty());
     }
 }

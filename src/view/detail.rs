@@ -13,9 +13,10 @@ use crate::{
     git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     keybind::Scope,
     layout::{fit_size, Direction, Edge, Panel},
+    search::SearchKind,
     view::{
-        commit_event, copy_path, copy_selection, graph_hints, handle_search_event, status_input,
-        typing_hints, Compare, ListRefreshViewContext, RefreshViewContext,
+        commit_event, copy_path, copy_selection, graph_hints, handle_search_event, query_status,
+        toggle_search_option, typing_hints, Compare, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -134,7 +135,7 @@ impl<'a> DetailView<'a> {
 
     pub fn key_hints(&self) -> Vec<KeyHint> {
         if self.is_typing_query() {
-            return typing_hints(false);
+            return typing_hints(self.query_kind());
         }
         let picked = self.as_list_state().picked_commit_hashes().len();
         let searching = matches!(
@@ -142,7 +143,7 @@ impl<'a> DetailView<'a> {
             SearchState::Searching { .. }
         );
         if self.list_focused && searching {
-            return typing_hints(true);
+            return typing_hints(SearchKind::Commits);
         }
         if self.list_focused {
             let mut hints = graph_hints(picked);
@@ -178,17 +179,22 @@ impl<'a> DetailView<'a> {
             hints.extend([
                 hint(UserEvent::ApplyChange, "apply to working tree"),
                 hint(UserEvent::ShortCopy, &format!("copy {what}")),
+            ]);
+            hints.extend(Self::file_hints());
+            hints.extend([
                 hint(UserEvent::Search, "search"),
                 hint(UserEvent::Cancel, "back"),
             ]);
             return hints;
         }
         if self.is_pane_focused() {
-            return vec![
-                hint(UserEvent::ShortCopy, "copy line"),
+            let mut hints = vec![hint(UserEvent::ShortCopy, "copy line")];
+            hints.extend(Self::file_hints());
+            hints.extend([
                 hint(UserEvent::Search, "search"),
                 hint(UserEvent::Cancel, "back"),
-            ];
+            ]);
+            return hints;
         }
         if self.compare_parked() {
             hints.push(hint(UserEvent::Cancel, "back to diff"));
@@ -212,13 +218,20 @@ impl<'a> DetailView<'a> {
         }
         let copy = vec![UserEvent::ShortCopy, UserEvent::FullCopy];
         match self.tab {
-            DetailTab::Info => hints.push((copy, "copy hash".into())),
-            DetailTab::Changes | DetailTab::Files => hints.extend([
-                hint(UserEvent::Search, "search"),
-                hint(UserEvent::Filter, "filter"),
-                (copy, "copy path".into()),
-                hint(UserEvent::Ignore, "ignore"),
+            DetailTab::Info => hints.extend([
+                (copy, "copy hash".into()),
+                hint(UserEvent::OpenInBrowser, "open in browser"),
+                hint(UserEvent::CopyLink, "copy link"),
             ]),
+            DetailTab::Changes | DetailTab::Files => {
+                hints.extend([
+                    hint(UserEvent::Search, "search"),
+                    hint(UserEvent::Filter, "filter"),
+                    (copy, "copy path".into()),
+                    hint(UserEvent::Ignore, "ignore"),
+                ]);
+                hints.extend(Self::file_hints());
+            }
         }
         hints
     }
@@ -361,8 +374,12 @@ impl<'a> DetailView<'a> {
         self.last_event = Some(event);
         // typing a search or filter, keys arrive unmapped, see App::run
         if self.is_typing_query() {
+            let (ctx, kind) = (self.ctx.clone(), self.query_kind());
             if let Some(query) = self.query_mut() {
-                let change = query.handle_key(key);
+                let change = match toggle_search_option(&ctx, &key, kind) {
+                    true => query.editing_change(),
+                    false => query.handle_key(key),
+                };
                 self.apply_query_change(change);
             }
             self.update_query_status();
@@ -372,8 +389,7 @@ impl<'a> DetailView<'a> {
         if self.list_focused {
             let before = self.as_list_state().selected_commit_hash().clone();
             let tx = self.tx.clone();
-            let ctx = self.ctx.clone();
-            if handle_search_event(self.as_mut_list_state(), &ctx, &tx, event, key) {
+            if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
                 if *self.as_list_state().selected_commit_hash() != before {
                     self.update_selected_commit(|_| {});
                 }
@@ -641,6 +657,17 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => self.changes_state.selected_entry(),
             DetailTab::Files => self.files_state.selected_entry(),
         }
+    }
+
+    // The keys on the selected file of a commit, from its tree, diff or preview: its page on the web
+    // host, at the selected lines, its blame and its timeline.
+    fn file_hints() -> [KeyHint; 4] {
+        [
+            hint(UserEvent::OpenInBrowser, "open in browser"),
+            hint(UserEvent::CopyLink, "copy link"),
+            hint(UserEvent::Blame, "blame"),
+            hint(UserEvent::Timeline, "timeline"),
+        ]
     }
 
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
@@ -947,7 +974,17 @@ impl<'a> DetailView<'a> {
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
         let typed = self.query().and_then(TreeQuery::status_input);
-        self.tx.send(status_input(typed, String::new()));
+        self.tx
+            .send(query_status(&self.ctx, typed, self.query_kind()));
+    }
+
+    // The diff or preview is searched as text, the file trees by name.
+    fn query_kind(&self) -> SearchKind {
+        if self.is_pane_focused() {
+            SearchKind::Text
+        } else {
+            SearchKind::Names
+        }
     }
 
     pub fn into_list_state(self) -> CommitListState<'a> {

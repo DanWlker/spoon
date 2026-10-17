@@ -6,6 +6,7 @@ use crate::{
     app::AppContext,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::CommitHash,
+    search::SearchKind,
     view::{
         commit_event, graph_hints, status_input, typing_hints, ListRefreshViewContext,
         RefreshViewContext,
@@ -41,8 +42,7 @@ impl<'a> ListView<'a> {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         let tx = self.tx.clone();
-        let ctx = self.ctx.clone();
-        if handle_search_event(self.as_mut_list_state(), &ctx, &tx, event, key) {
+        if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
             return;
         }
         match event {
@@ -99,7 +99,7 @@ impl<'a> ListView<'a> {
     pub fn key_hints(&self) -> Vec<KeyHint> {
         let state = self.as_list_state();
         if let SearchState::Searching { .. } = state.search_state() {
-            return typing_hints(true);
+            return typing_hints(SearchKind::Commits);
         }
         let mut hints = vec![hint(UserEvent::Confirm, "details")];
         hints.extend(graph_hints(state.picked_commit_hashes().len()));
@@ -174,7 +174,6 @@ impl<'a> ListView<'a> {
             search_options,
             search_context,
         } = list_context;
-        self.ctx.search_options.set(*search_options);
         let list_state = self.as_mut_list_state();
         list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
         list_state.restore_search_options(*search_options);
@@ -195,7 +194,6 @@ impl<'a> ListView<'a> {
 // options, going through the matches and clearing it. Returns whether the event was one of these.
 pub fn handle_search_event(
     state: &mut CommitListState,
-    ctx: &AppContext,
     tx: &Sender,
     event: UserEvent,
     key: KeyEvent,
@@ -215,12 +213,10 @@ pub fn handle_search_event(
         }
         (SearchState::Searching { .. }, UserEvent::SmartCaseToggle) => {
             state.toggle_smart_case();
-            ctx.search_options.set(state.search_options());
             update_search_status(state, tx);
         }
         (SearchState::Searching { .. }, UserEvent::FuzzyToggle) => {
             state.toggle_fuzzy();
-            ctx.search_options.set(state.search_options());
             update_search_status(state, tx);
         }
         (SearchState::Searching { .. }, _) => {
@@ -237,12 +233,10 @@ pub fn handle_search_event(
         }
         (_, UserEvent::SmartCaseToggle) => {
             state.toggle_smart_case();
-            ctx.search_options.set(state.search_options());
             update_search_options_message(state, tx);
         }
         (_, UserEvent::FuzzyToggle) => {
             state.toggle_fuzzy();
-            ctx.search_options.set(state.search_options());
             update_search_options_message(state, tx);
         }
         (SearchState::Applied { .. }, UserEvent::GoToNext) => {
@@ -267,7 +261,10 @@ fn update_search_status(state: &CommitListState, tx: &Sender) {
     if let SearchState::Searching { .. } = state.search_state() {
         let cursor = state.search_query_cursor_position();
         let typed = state.search_query_string().map(|query| (query, cursor));
-        tx.send(status_input(typed, state.search_options().status_string()));
+        tx.send(status_input(
+            typed,
+            state.search_options().status_string(SearchKind::Commits),
+        ));
     }
 }
 
@@ -275,7 +272,7 @@ fn update_search_options_message(state: &CommitListState, tx: &Sender) {
     if let SearchState::Applied { .. } = state.search_state() {
         update_matched_message(state, tx);
     } else {
-        let options = state.search_options().status_string();
+        let options = state.search_options().status_string(SearchKind::Commits);
         tx.send(AppEvent::UpdateStatusTransient(format!(
             "Search: {options}"
         )));
@@ -286,7 +283,7 @@ fn update_matched_message(state: &CommitListState, tx: &Sender) {
     if let Some((msg, matched)) = state.matched_query_string() {
         tx.send(AppEvent::UpdateSearchResult {
             message: msg,
-            options: state.search_options().status_string(),
+            options: state.search_options().status_string(SearchKind::Commits),
             matched,
         });
     } else {

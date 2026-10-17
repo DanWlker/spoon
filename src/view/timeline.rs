@@ -14,7 +14,11 @@ use crate::{
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, Sender, UserEvent},
     git::{CommitHash, FileRevision, Repository},
-    view::{blame::moving_hints, commit_event, copy_selection, revision_matches, status_input},
+    search::SearchKind,
+    view::{
+        blame::moving_hints, commit_event, copy_selection, query_status, revision_matches,
+        toggle_search_option, typing_hints,
+    },
     widget::{
         commit_list::format_date,
         diff::{parse_diff, Step},
@@ -111,7 +115,8 @@ impl TimelineView {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         if self.query.is_editing() {
-            if self.query.handle_key(key) == QueryChange::Search {
+            let toggled = toggle_search_option(&self.ctx, &key, self.query_kind());
+            if toggled || self.query.handle_key(key) == QueryChange::Search {
                 self.search(SearchDirection::Current, repository);
             }
             self.update_query_status();
@@ -237,13 +242,26 @@ impl TimelineView {
 
     fn update_query_status(&self) {
         let typed = self.query.status_input();
-        self.tx.send(status_input(typed, String::new()));
+        self.tx
+            .send(query_status(&self.ctx, typed, self.query_kind()));
+    }
+
+    // The text or the diff is searched as text, the commits by name.
+    fn query_kind(&self) -> SearchKind {
+        if self.pane.is_focused() {
+            SearchKind::Text
+        } else {
+            SearchKind::Names
+        }
     }
 
     // The keys working where the focus is, the most useful first: the status bar shows as many as
     // fit, the keys popup all.
     pub fn key_hints(&self) -> Vec<KeyHint> {
         use UserEvent::*;
+        if self.query.is_editing() {
+            return typing_hints(self.query_kind());
+        }
         let mut hints = vec![(vec![OlderCommit, NewerCommit], "older/newer commit".into())];
         if self.pane.is_focused() {
             hints.extend([

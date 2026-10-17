@@ -18,7 +18,7 @@ use crate::{
         LocalChangeStatus, LocalChanges, Operation, Repository,
     },
     layout::{fit_size, Direction, Edge, Panel},
-    search::SearchOptions,
+    search::{SearchKind, SearchOptions},
     widget::{
         conflict::ConflictView,
         diff::{
@@ -848,7 +848,7 @@ impl<'a> LocalChangesState<'a> {
         let h =
             |events: &[UserEvent], description: &str| (events.to_vec(), description.to_string());
         if self.is_typing_query() {
-            return crate::view::typing_hints(false);
+            return crate::view::typing_hints(self.query_kind());
         }
         let unstaged = self.section == LocalChangesSection::Unstaged;
         let stage = if unstaged { "stage" } else { "unstage" };
@@ -913,6 +913,8 @@ impl<'a> LocalChangesState<'a> {
                     amend_or_abort,
                     h(&[Stash], "stash"),
                     h(&[Edit], "edit"),
+                    h(&[Blame], "blame"),
+                    h(&[Timeline], "timeline"),
                     h(&[Search], "search"),
                     h(&[Filter], "filter"),
                     h(&[ShortCopy, FullCopy], "copy path"),
@@ -1275,6 +1277,25 @@ impl<'a> LocalChangesState<'a> {
         self.diff_query
             .status_input()
             .or_else(|| self.query().status_input())
+    }
+
+    // The diff is searched as text, the files by name.
+    pub fn query_kind(&self) -> SearchKind {
+        if self.diff_query.is_editing() {
+            SearchKind::Text
+        } else {
+            SearchKind::Names
+        }
+    }
+
+    // Applies the query being typed again, with other options.
+    pub fn reapply_query(&mut self, options: SearchOptions) {
+        if self.diff_query.is_editing() {
+            self.search_diff(SearchDirection::Current, options);
+        } else {
+            let change = self.query().editing_change();
+            self.apply_query_change(change, options);
+        }
     }
 
     pub fn handle_query_key(&mut self, key: KeyEvent, options: SearchOptions) {

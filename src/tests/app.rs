@@ -410,6 +410,38 @@ fn overlay(expected: &'static str) -> Vec<Step> {
     })
 }
 
+// The page bar, as text.
+fn page_bar(app: &App) -> String {
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(SIZE.0, 1)).unwrap();
+    let frame = terminal.draw(|f| app.render_page_bar(f, f.area())).unwrap();
+    frame.buffer.content.iter().map(|c| c.symbol()).collect()
+}
+
+#[test]
+fn test_page_bar_names_the_window_over_the_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let named = |name: &'static str| {
+        check(move |app| {
+            let bar = page_bar(app);
+            assert!(bar.contains(name), "no {name:?} in {bar:?}");
+        })
+    };
+    harness.run(vec![
+        keys("f1"),
+        named("Help"),
+        keys("esc @"),
+        named("Command Log"),
+        keys("esc 4 shift-b"),
+        named("Blame"),
+        named("f.txt"),
+        keys("esc shift-t"),
+        named("Timeline"),
+    ]);
+}
+
 #[test]
 fn test_help_and_command_log_cover_the_app_one_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
@@ -881,6 +913,43 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
         keys("/"),
         popup_has(&[]),
         check(|app| assert!(app.keys_popup_keys().is_empty())),
+        // over the command log, not the help, which lists every key
+        keys("esc esc @"),
+        popup_has(&["move", "copy", "close"]),
+        keys("esc f1"),
+        check(|app| assert!(app.keys_popup_keys().is_empty())),
+    ]);
+}
+
+#[test]
+fn test_search_options_toggled_in_any_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    // toggled or not from the config's
+    let options = |smart_case: bool, fuzzy: bool| {
+        check(move |app| {
+            let options = app.ctx.search_options.get();
+            let config = &app.ctx.core_config.search;
+            let toggled = (
+                options.smart_case != config.smart_case,
+                options.fuzzy != config.fuzzy,
+            );
+            assert_eq!(toggled, (smart_case, fuzzy));
+            // the commit list searches with them too
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            assert_eq!(view.as_list_state().search_options(), options);
+        })
+    };
+    harness.run(vec![
+        // in the files tree, both
+        keys("4 / ctrl-g ctrl-x"),
+        options(true, true),
+        // in the preview, searched as text, only smart case
+        keys("esc enter / ctrl-g ctrl-x"),
+        options(false, true),
     ]);
 }
 

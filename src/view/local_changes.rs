@@ -9,7 +9,10 @@ use crate::{
     git::FilesSnapshot,
     keybind::Scope,
     layout::{Direction, Panel},
-    view::{copy_path, copy_selection, status_input, ListRefreshViewContext, RefreshViewContext},
+    view::{
+        copy_path, copy_selection, query_status, toggle_search_option, ListRefreshViewContext,
+        RefreshViewContext,
+    },
     widget::{
         commit_list::CommitListState,
         local_changes::{
@@ -76,8 +79,14 @@ impl<'a> LocalChangesView<'a> {
             return;
         }
         if self.local_changes_state.is_typing_query() {
+            let kind = self.local_changes_state.query_kind();
+            let toggled = toggle_search_option(&self.ctx, &key, kind);
             let options = self.ctx.search_options.get();
-            self.local_changes_state.handle_query_key(key, options);
+            if toggled {
+                self.local_changes_state.reapply_query(options);
+            } else {
+                self.local_changes_state.handle_query_key(key, options);
+            }
             self.update_query_status();
             return;
         }
@@ -344,7 +353,8 @@ impl<'a> LocalChangesView<'a> {
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
         let typed = self.local_changes_state.query_status_input();
-        self.tx.send(status_input(typed, String::new()));
+        let kind = self.local_changes_state.query_kind();
+        self.tx.send(query_status(&self.ctx, typed, kind));
     }
 
     fn after_action(&mut self, result: Result<(), String>) {

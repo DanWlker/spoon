@@ -118,9 +118,8 @@ pub struct AppContext {
     pub layout: RefCell<PanelLayout>,
     // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
     pub wrap: Cell<bool>,
-    // the search options of the commit list, which the file trees, diffs and previews search
-    // with too
-    pub search_options: Cell<SearchOptions>,
+    // the options of every search, toggled while typing any of them, shared with the commit list
+    pub search_options: Rc<Cell<SearchOptions>>,
 }
 
 impl AppContext {
@@ -239,12 +238,13 @@ impl Overlay {
         }
     }
 
-    // The name of the blame or the timeline and the path of its file, for the page bar.
-    fn file_title(&self) -> Option<(&'static str, &str)> {
+    // Its name in the page bar, with the path of the file of the blame and the timeline.
+    fn title(&self) -> (&'static str, Option<&str>) {
         match self {
-            Overlay::Blame(blame) => Some(("Blame", blame.path())),
-            Overlay::Timeline(timeline) => Some(("Timeline", timeline.path())),
-            Overlay::Help(_) | Overlay::CommandLog(_) => None,
+            Overlay::Help(_) => ("Help", None),
+            Overlay::Blame(blame) => ("Blame", Some(blame.path())),
+            Overlay::Timeline(timeline) => ("Timeline", Some(timeline.path())),
+            Overlay::CommandLog(_) => ("Command Log", None),
         }
     }
 
@@ -397,7 +397,7 @@ impl<'a> App<'a> {
             graph_image_manager,
             graph_cell_width,
             ref_name_to_commit_index_map,
-            search_options,
+            ctx.search_options.clone(),
             ctx.ui_config.common.scrolloff as usize,
         );
         // the checked-out branch, or the detached HEAD, marked in the graph and the sidebar
@@ -879,6 +879,10 @@ impl App<'_> {
                     vec![UserEvent::HalfPageDown, UserEvent::HalfPageUp],
                     "scroll output".into(),
                 ),
+                (
+                    vec![UserEvent::GoToTop, UserEvent::GoToBottom],
+                    "top/bottom".into(),
+                ),
                 hint(UserEvent::ShortCopy, "copy"),
                 hint(UserEvent::Cancel, "close"),
             ]
@@ -935,6 +939,7 @@ impl App<'_> {
             Some(UserEvent::Cancel | UserEvent::Close | UserEvent::CommandLog) => {
                 self.shell.overlay = None
             }
+            Some(UserEvent::KeysToggle) => self.shell.keys_popup = !self.shell.keys_popup,
             Some(UserEvent::NavigateDown | UserEvent::SelectDown) => state.select_next(),
             Some(UserEvent::NavigateUp | UserEvent::SelectUp) => state.select_prev(),
             Some(UserEvent::GoToTop) => state.select_first(),
@@ -990,12 +995,14 @@ impl App<'_> {
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
     // hidden. Computed once a frame, for clearing the screen and drawing.
     fn keys_popup_keys(&self) -> Vec<(String, String)> {
-        // over the blame and the timeline, the popup lists all their keys
-        let file_window = self.shell.overlay.as_ref().and_then(Overlay::file_title);
-        let local = self.visible_dialog().is_some() || self.is_typing();
-        let shown = match file_window {
-            Some(_) => !local,
-            None => !self.keys_are_local(),
+        // over the windows with keys of their own, not the help, which lists them all
+        let own_keys = matches!(
+            self.shell.overlay,
+            Some(Overlay::Blame(_) | Overlay::Timeline(_) | Overlay::CommandLog(_))
+        );
+        let shown = match own_keys {
+            true => self.visible_dialog().is_none() && !self.is_typing(),
+            false => !self.keys_are_local(),
         };
         if !self.shell.keys_popup || !shown {
             return vec![];
@@ -1121,10 +1128,6 @@ impl App<'_> {
             }
             _ => {}
         }
-        if !keys.is_empty() {
-            let popup = KeysPopup::new(keys, &self.ctx.color_theme);
-            f.render_widget(popup, app_area);
-        }
         if let Some(dialog) = self.visible_dialog() {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), app_area);
         }
@@ -1135,6 +1138,11 @@ impl App<'_> {
                 f.buffer_mut(),
                 state,
             );
+        }
+        // over the command log too, which takes the keys it lists
+        if !keys.is_empty() {
+            let popup = KeysPopup::new(keys, &self.ctx.color_theme);
+            f.render_widget(popup, app_area);
         }
         let dismiss = self.ctx.short_keys(&[UserEvent::DismissNotifications]);
         let theme = &self.ctx.color_theme;
@@ -1172,30 +1180,29 @@ impl App<'_> {
                 theme.accent_fg,
             ),
         ];
-        // the blame or the timeline over them, after them, with its file
-        let window = self.shell.overlay.as_ref().and_then(Overlay::file_title);
+        // a window over them, like the help, after them, with its file
+        let window = self.shell.overlay.as_ref().map(Overlay::title);
+        let pill = |name: String, color| {
+            [
+                Span::raw("\u{e0b6}").fg(color),
+                Span::raw(name).fg(theme.accent_text_fg).bg(color).bold(),
+                Span::raw("\u{e0b4}").fg(color),
+            ]
+        };
         let mut spans = vec![Span::raw(" ")];
         for (name, shown, color) in pages {
-            let shown = shown && window.is_none();
-            if shown {
-                spans.extend([
-                    Span::raw("\u{e0b6}").fg(color),
-                    Span::raw(name).fg(theme.accent_text_fg).bg(color).bold(),
-                    Span::raw("\u{e0b4}").fg(color),
-                ]);
+            if shown && window.is_none() {
+                spans.extend(pill(name, color));
             } else {
                 spans.push(Span::raw(format!(" {name} ")).fg(theme.muted_fg));
             }
             spans.push(Span::raw("  "));
         }
         if let Some((name, path)) = window {
-            let color = theme.accent_fg;
-            spans.extend([
-                Span::raw("\u{e0b6}").fg(color),
-                Span::raw(name).fg(theme.accent_text_fg).bg(color).bold(),
-                Span::raw("\u{e0b4}").fg(color),
-                Span::raw(format!(" {path}")).fg(theme.muted_fg),
-            ]);
+            spans.extend(pill(name.into(), theme.accent_fg));
+            if let Some(path) = path {
+                spans.push(Span::raw(format!(" {path}")).fg(theme.muted_fg));
+            }
         }
         f.render_widget(Line::from(spans), area);
     }
@@ -1644,6 +1651,7 @@ impl App<'_> {
             hint(UserEvent::ToggleSelect, "pick"),
             hint(UserEvent::ShortCopy, "copy name"),
             hint(UserEvent::OpenInBrowser, "open in browser"),
+            hint(UserEvent::CopyLink, "copy link"),
         ];
         hints.extend(
             commands

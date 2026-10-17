@@ -33,6 +33,16 @@ impl SearchTarget {
     }
 }
 
+// What a search goes through, which decides the options that apply to it: the commit list's, all
+// of them; names, like paths and the commits of the blame and the timeline, smart case and fuzzy;
+// or text, like diffs and files, smart case only, as it is matched exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchKind {
+    Commits,
+    Names,
+    Text,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOptions {
     pub target: SearchTarget,
@@ -41,14 +51,27 @@ pub struct SearchOptions {
 }
 
 impl SearchOptions {
-    pub fn status_string(&self) -> String {
+    // The options that apply to a search of `kind`, for the status line.
+    pub fn status_string(&self, kind: SearchKind) -> String {
         let case = if self.smart_case {
             "smart-case"
         } else {
             "case-sensitive"
         };
         let matcher = if self.fuzzy { "fuzzy" } else { "substring" };
-        format!("[{}] [{case}] [{matcher}]", self.target.as_str())
+        let mut parts = vec![];
+        if kind == SearchKind::Commits {
+            parts.push(self.target.as_str());
+        }
+        parts.push(case);
+        if kind != SearchKind::Text {
+            parts.push(matcher);
+        }
+        parts
+            .iter()
+            .map(|part| format!("[{part}]"))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -87,6 +110,9 @@ mod tests {
             fuzzy: true,
         };
 
-        assert_eq!(options.status_string(), "[author] [smart-case] [fuzzy]");
+        let status = |kind| options.status_string(kind);
+        assert_eq!(status(SearchKind::Commits), "[author] [smart-case] [fuzzy]");
+        assert_eq!(status(SearchKind::Names), "[smart-case] [fuzzy]");
+        assert_eq!(status(SearchKind::Text), "[smart-case]");
     }
 }

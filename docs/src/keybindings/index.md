@@ -81,8 +81,8 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
 | <kbd>Ctrl-t</kbd>                    | Toggle search target                               | `search_target_toggle`                       |
-| <kbd>Ctrl-g</kbd>                    | Toggle smart case or case-sensitive                                 | `smart_case_toggle`                         |
-| <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match                                 | `fuzzy_toggle`                               |
+| <kbd>Ctrl-g</kbd>                    | Toggle smart case or case-sensitive, for every search (see below)  | `smart_case_toggle`                         |
+| <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match, for every search but of text (see below) | `fuzzy_toggle`                               |
 | <kbd>R</kbd>                         | Refresh                                            | `refresh`                                    |
 
 #### Commands on the commit graph
@@ -169,6 +169,8 @@ The file trees of the local changes page and of the changes and files tabs can b
 
 <kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Afterwards, the panel title shows the active search and filter, and <kbd>Esc</kbd> clears the search, then the filter.
 Matching ignores case unless the query has an uppercase letter.
+
+Every search shares its options with the commit list's: while typing any of them, <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
 On the local changes page, the unstaged and staged files each have their own search and filter, applying to the focused section only, and staging, unstaging and discarding a directory only affect the files shown.
 
 #### Resolving conflicts
@@ -296,7 +298,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 #### Blame
 
-<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **[0] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date; below, **[1] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
+<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **[0] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **[1] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |

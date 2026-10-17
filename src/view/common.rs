@@ -1,18 +1,21 @@
 // What the pages share: the key hints of the commit graph and of typing, the status line, copying,
 // and what each page keeps across a reload of the repository.
 
+use ratatui::crossterm::event::KeyEvent;
+
 use crate::{
     app::AppContext,
     browse::LinkTarget,
     event::{hint, AppEvent, KeyHint, UserEvent},
     git::{CommitHash, FileRevision, Repository},
-    search::SearchOptions,
+    keybind::Scope,
+    search::{SearchKind, SearchOptions},
     widget::{
         commit_list::format_date,
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
         file_tree::ROOT_PATH,
-        tree_query::match_range,
+        tree_query::match_ranges,
     },
 };
 
@@ -36,6 +39,7 @@ pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
         hint(UserEvent::CreateTag, "tag"),
         hint(UserEvent::BranchOnly, "branch only"),
         hint(UserEvent::OpenInBrowser, "open in browser"),
+        hint(UserEvent::CopyLink, "copy link"),
         hint(UserEvent::Revert, "revert"),
         hint(UserEvent::Reset, "reset"),
         hint(UserEvent::Search, "search"),
@@ -48,14 +52,14 @@ pub fn graph_hints(picked: usize) -> Vec<KeyHint> {
 }
 
 // The keys while typing a search or filter.
-pub fn typing_hints(searching_commits: bool) -> Vec<KeyHint> {
+pub fn typing_hints(kind: SearchKind) -> Vec<KeyHint> {
     let mut hints = vec![];
-    if searching_commits {
-        hints.extend([
-            hint(UserEvent::SearchTargetToggle, "target"),
-            hint(UserEvent::SmartCaseToggle, "smart case"),
-            hint(UserEvent::FuzzyToggle, "fuzzy"),
-        ]);
+    if kind == SearchKind::Commits {
+        hints.push(hint(UserEvent::SearchTargetToggle, "target"));
+    }
+    hints.push(hint(UserEvent::SmartCaseToggle, "smart case"));
+    if kind != SearchKind::Text {
+        hints.push(hint(UserEvent::FuzzyToggle, "fuzzy"));
     }
     hints.extend([
         hint(UserEvent::Confirm, "apply"),
@@ -91,8 +95,8 @@ pub fn commit_event(event: UserEvent, commit: &CommitHash) -> Option<AppEvent> {
     }
 }
 
-// Whether a search matches the commit of a file's history, by its hash, date or subject; in the
-// blame and the timeline.
+// Whether a search matches the commit of a file's history, by its hash, date or subject, as the
+// commit list searches; in the timeline.
 pub fn revision_matches(
     ctx: &AppContext,
     revision: &FileRevision,
@@ -102,7 +106,27 @@ pub fn revision_matches(
     let date = format_date(ctx, &revision.date);
     [revision.commit.as_str(), &date, &revision.subject]
         .iter()
-        .any(|text| match_range(text, query, options).is_some())
+        .any(|text| !match_ranges(text, query, options).is_empty())
+}
+
+// The options toggled while typing a search other than the commit list's, as there: smart case,
+// and fuzzy matching where it applies (see `SearchKind`); returns whether `key` toggled one, the
+// search to be applied again then.
+pub fn toggle_search_option(ctx: &AppContext, key: &KeyEvent, kind: SearchKind) -> bool {
+    let mut options = ctx.search_options.get();
+    match ctx.keybind.event_in(Scope::Global, key) {
+        Some(UserEvent::SmartCaseToggle) => options.smart_case = !options.smart_case,
+        Some(UserEvent::FuzzyToggle) if kind != SearchKind::Text => options.fuzzy = !options.fuzzy,
+        _ => return false,
+    }
+    ctx.search_options.set(options);
+    true
+}
+
+// The status line showing what is `typed` in a search of `kind`, with its options, cleared when
+// nothing is typed.
+pub fn query_status(ctx: &AppContext, typed: Option<(String, u16)>, kind: SearchKind) -> AppEvent {
+    status_input(typed, ctx.search_options.get().status_string(kind))
 }
 
 // The status line showing what is `typed`, with its cursor, and `metadata` on the right, like
