@@ -84,3 +84,11 @@ _Possible values:_ `latest`, `head`
 The primary branch to keep on the leftmost column.
 
 When specified, Serie preserves the first-parent commit spine of the specified branch along the leftmost column, displaying other branches in subsequent columns even if they contain newer commits.
+
+## --local-changes
+
+Start on the local changes page instead of the commit graph.
+
+## --minimize-sidebar
+
+Start with the sidebar minimized to its title. Pressing <kbd>0</kbd> brings it back.

@@ -15,7 +15,6 @@ rust-version = "1.88.0"
 exclude = ["/.github", "/img"]
 
 [dependencies]
-ansi-to-tui = "8.0.1"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 chrono = "0.4.45"

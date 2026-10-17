@@ -78,7 +78,7 @@ A key is looked up from the scope having the focus outward: the first scope bind
 Each scope takes the keys of the scopes around it, except:
 
 - `details` doesn't take the commands of the graph, which act on the commit list.
-- `details_pane` takes only moving in it, scrolling, `confirm`, `cancel`, `close`, the search, `short_copy`, the tabs and `apply_change`, and the keys of the whole app: quitting, help, refresh, switching pages and panels, fetch, pull, push and the user commands.
+- `details_pane` takes only moving in it, scrolling, `confirm`, `cancel`, `close`, the search, `short_copy`, the tabs and `apply_change`, and the keys of the whole app: quitting, help, refresh, switching pages and panels, fetch, pull and push.
 - `local_changes_diff` doesn't take the keys of the files beside it: `toggle_select`, `next_picked`, `previous_picked`, `filter`, `full_copy`, `navigate_left` and `navigate_right`.
 
 An event written in `[keybind]` is bound in its own scope:

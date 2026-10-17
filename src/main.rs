@@ -73,6 +73,14 @@ struct Args {
     /// Primary branch to keep on the leftmost column
     #[arg(short = 'b', long, value_name = "BRANCH")]
     primary_branch: Option<String>,
+
+    /// Start on the local changes page
+    #[arg(long)]
+    local_changes: bool,
+
+    /// Start with the sidebar minimized
+    #[arg(long)]
+    minimize_sidebar: bool,
 }
 
 impl Args {
@@ -198,6 +206,10 @@ fn main() -> Result<()> {
         .into();
     let mailmap = core_config.git.mailmap;
     let primary_branch = args.primary_branch.filter(|s| !s.is_empty());
+    let launch = app::Launch {
+        local_changes: args.local_changes,
+        sidebar_collapsed: args.minimize_sidebar,
+    };
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
 
@@ -277,6 +289,7 @@ fn main() -> Result<()> {
             &repository,
             graph_image_manager,
             initial_selection,
+            launch,
             ctx.clone(),
             &ec,
             refresh,

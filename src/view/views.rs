@@ -4,12 +4,11 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{hint, KeyHint, Sender, UserEvent},
+    event::{KeyHint, Sender, UserEvent},
     git::{Commit, FileChange, Ref, Repository},
     layout::Direction,
     view::{
-        detail::DetailView, list::ListView, local_changes::LocalChangesView,
-        user_command::UserCommandView, RefreshViewContext,
+        detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
     },
     widget::{commit_list::CommitListState, local_changes::LocalChangesState},
 };
@@ -21,7 +20,6 @@ pub enum ViewKind {
     Detail,
     // the details comparing two commits
     Compare,
-    UserCommand,
     LocalChanges,
 }
 
@@ -31,7 +29,6 @@ pub enum View<'a> {
     Default, // dummy variant to make #[default] work
     List(Box<ListView<'a>>),
     Detail(Box<DetailView<'a>>),
-    UserCommand(Box<UserCommandView<'a>>),
     LocalChanges(Box<LocalChangesView<'a>>),
 }
 
@@ -42,7 +39,6 @@ macro_rules! on_page {
             View::Default => $default,
             View::List($page) => $call,
             View::Detail($page) => $call,
-            View::UserCommand($page) => $call,
             View::LocalChanges($page) => $call,
         }
     };
@@ -68,7 +64,6 @@ impl<'a> View<'a> {
             View::Default => {}
             View::List(view) => view.prepare_graph_uploads(),
             View::Detail(view) => view.prepare_graph_uploads(),
-            View::UserCommand(view) => view.prepare_graph_uploads(),
             View::LocalChanges(_) => {}
         }
     }
@@ -78,7 +73,6 @@ impl<'a> View<'a> {
             View::Default => Vec::new(),
             View::List(view) => view.drain_pending_graph_uploads(),
             View::Detail(view) => view.drain_pending_graph_uploads(),
-            View::UserCommand(view) => view.drain_pending_graph_uploads(),
             View::LocalChanges(_) => Vec::new(),
         }
     }
@@ -93,7 +87,6 @@ impl<'a> View<'a> {
             View::List(view) => view.key_hints(),
             View::Detail(view) => view.key_hints(),
             View::LocalChanges(view) => view.key_hints(),
-            View::UserCommand(_) => vec![hint(UserEvent::Cancel, "close")],
             View::Default => vec![],
         }
     }
@@ -114,7 +107,6 @@ impl<'a> View<'a> {
             View::List(_) => ViewKind::List,
             View::Detail(view) if view.is_comparing() => ViewKind::Compare,
             View::Detail(_) => ViewKind::Detail,
-            View::UserCommand(_) => ViewKind::UserCommand,
             View::LocalChanges(_) => ViewKind::LocalChanges,
         }
     }
@@ -123,7 +115,6 @@ impl<'a> View<'a> {
         match self {
             View::Default | View::List(_) => None,
             View::Detail(view) => Some(view.image_clear_area(area)),
-            View::UserCommand(view) => Some(view.image_clear_area(area)),
             View::LocalChanges(_) => Some(area),
         }
     }
@@ -153,7 +144,6 @@ impl<'a> View<'a> {
         match self {
             View::List(view) => Some(view.as_list_state()),
             View::Detail(view) => Some(view.as_list_state()),
-            View::UserCommand(view) => Some(view.as_list_state()),
             View::Default | View::LocalChanges(_) => None,
         }
     }
@@ -199,22 +189,6 @@ impl<'a> View<'a> {
             changes,
             refs,
             repository,
-            ctx,
-            tx,
-        )))
-    }
-
-    pub fn of_user_command(
-        commit_list_state: CommitListState<'a>,
-        command_output: String,
-        user_command_number: usize,
-        ctx: Rc<AppContext>,
-        tx: Sender,
-    ) -> Self {
-        View::UserCommand(Box::new(UserCommandView::new(
-            commit_list_state,
-            command_output,
-            user_command_number,
             ctx,
             tx,
         )))

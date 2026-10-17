@@ -82,6 +82,8 @@ Options:
       --no-graph-antialias        Disable antialiasing for commit graph images
   -i, --initial-selection <TYPE>  Initial selection of commit [default: latest] [possible values: latest, head]
   -b, --primary-branch <BRANCH>   Primary branch to keep on the leftmost column
+      --local-changes             Start on the local changes page
+      --minimize-sidebar          Start with the sidebar minimized
   -h, --help                      Print help
   -V, --version                   Print version
 ```
@@ -104,10 +106,6 @@ Config files are loaded in the following order of priority:
   - If `$XDG_CONFIG_HOME` is not set, `~/.config/` is used instead.
 
 Unset items use their defaults. For the format, see [Config File Format](./docs/src/configurations/config-file-format.md).
-
-### User commands
-
-User commands run external commands on the selected commit: show the output of `git diff` in a view, run a command in the background, or suspend the app for an interactive one like `vim`. See [User Command](./docs/src/features/user-command.md).
 
 ## Compatibility
 

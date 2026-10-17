@@ -11,7 +11,6 @@ use ratatui::{
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    config::CoreConfig,
     event::{AppEvent, Sender, UserEvent},
     keybind::KeyBind,
     widget::style::{key_span, ScrollState},
@@ -31,8 +30,7 @@ pub struct HelpView {
 
 impl HelpView {
     pub fn new(ctx: Rc<AppContext>, tx: Sender) -> HelpView {
-        let (help_key_lines, help_value_lines) =
-            build_lines(&ctx.color_theme, &ctx.keybind, &ctx.core_config);
+        let (help_key_lines, help_value_lines) = build_lines(&ctx.color_theme, &ctx.keybind);
         let help_key_line_max_width = help_key_lines
             .iter()
             .map(|line| line.width())
@@ -121,21 +119,7 @@ impl HelpView {
 fn build_lines(
     color_theme: &ColorTheme,
     keybind: &KeyBind,
-    core_config: &CoreConfig,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let user_command_help_items = keybind
-        .user_command_event_numbers()
-        .into_iter()
-        .flat_map(|n| {
-            core_config
-                .user_command
-                .commands
-                .get(&n.to_string())
-                .map(|c| format!("Execute user command {} - {}", n, c.name))
-                .map(|desc| (vec![UserEvent::UserCommand(n)], desc))
-        })
-        .collect::<Vec<_>>();
-
     let common_helps = vec![
         (vec![UserEvent::ForceQuit, UserEvent::Quit], "Quit app".into()),
         (vec![UserEvent::HelpToggle], "Open help".into()),
@@ -168,7 +152,7 @@ fn build_lines(
     ];
     let (help_key_lines, help_value_lines) = build_block_lines("Help:", help_helps, color_theme, keybind);
 
-    let mut list_helps = vec![
+    let list_helps = vec![
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
         (vec![UserEvent::GoToTop], "Go to top".into()),
@@ -210,10 +194,9 @@ fn build_lines(
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash".into()),
     ];
-    list_helps.extend(user_command_help_items.clone());
     let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);
     
-    let mut detail_helps = vec![
+    let detail_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Clear picked commits, then close commit details".into()),
         (vec![UserEvent::Confirm], "Close commit details".into()),
         (vec![UserEvent::FocusPanel(1)], "Focus the commit list, the details follow the selection".into()),
@@ -242,7 +225,6 @@ fn build_lines(
         (vec![UserEvent::FullCopy], "Copy commit hash; the absolute path in a file tree".into()),
         (vec![UserEvent::Ignore], "Add the file or directory to .gitignore, in a file tree".into()),
     ];
-    detail_helps.extend(user_command_help_items.clone());
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
 
     let refs_helps = vec![
@@ -320,24 +302,6 @@ fn build_lines(
     ];
     let (dialog_key_lines, dialog_value_lines) = build_block_lines("Git Command Popups:", dialog_helps, color_theme, keybind);
 
-    let mut user_command_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Close user command".into()),
-        (vec![UserEvent::NavigateDown], "Scroll down".into()),
-        (vec![UserEvent::NavigateUp], "Scroll up".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::SelectDown], "Select older commit".into()),
-        (vec![UserEvent::SelectUp], "Select newer commit".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::Confirm], "Show commit details".into()),
-    ];
-    user_command_helps.extend(user_command_help_items);
-    let (user_command_key_lines, user_command_value_lines) = build_block_lines("User Command:", user_command_helps, color_theme, keybind);
-
     let key_lines = join_line_groups_with_empty(vec![
         common_key_lines,
         help_key_lines,
@@ -346,7 +310,6 @@ fn build_lines(
         refs_key_lines,
         local_changes_key_lines,
         dialog_key_lines,
-        user_command_key_lines,
     ]);
     let value_lines = join_line_groups_with_empty(vec![
         common_value_lines,
@@ -356,7 +319,6 @@ fn build_lines(
         refs_value_lines,
         local_changes_value_lines,
         dialog_value_lines,
-        user_command_value_lines,
     ]);
 
     (key_lines, value_lines)
@@ -415,7 +377,7 @@ mod tests {
         // like the status bar's hints and the keys popup: "k/up", in the key style
         let theme = ColorTheme::default();
         let keybind = KeyBind::new(None);
-        let (keys, values) = build_lines(&theme, &keybind, &CoreConfig::default());
+        let (keys, values) = build_lines(&theme, &keybind);
         let mut checked = 0;
         for (key, value) in keys.iter().zip(&values) {
             // the rows of keys, not the titles of the blocks

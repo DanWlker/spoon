@@ -12,8 +12,6 @@ pub enum Panel {
     Sidebar,
     // the height of the commit details under the commit list
     Details,
-    // the height of the output of a user command under the commit list
-    UserCommand,
     // the width of the file tree beside the diff or preview in the details
     DetailTree,
     // the width of the files on the local changes page

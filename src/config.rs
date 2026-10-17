@@ -118,9 +118,6 @@ pub struct CoreConfig {
     pub search: CoreSearchConfig,
     #[garde(dive)]
     #[nested]
-    pub user_command: CoreUserCommandConfig,
-    #[garde(dive)]
-    #[nested]
     pub external: CoreExternalConfig,
     #[garde(skip)]
     #[nested]
@@ -166,127 +163,6 @@ pub struct CoreSearchConfig {
     pub fuzzy: bool,
 }
 
-#[optional]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
-pub struct CoreUserCommandConfig {
-    #[garde(dive)]
-    #[default(FxHashMap::from_iter([("1".into(), UserCommand {
-        name: "git diff".into(),
-        r#type: UserCommandType::Inline,
-        commands: vec![
-            "git".into(),
-            "--no-pager".into(),
-            "diff".into(),
-            "--color=always".into(),
-            "{{first_parent_hash}}".into(),
-            "{{target_hash}}".into(),
-        ],
-        refresh: false,
-    })]))]
-    pub commands: FxHashMap<String, UserCommand>,
-    #[garde(range(min = 0))]
-    #[default = 4]
-    pub tab_width: u16,
-}
-
-impl<'de> Deserialize<'de> for OptionalCoreUserCommandConfig {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{Error, MapAccess, Visitor};
-        use std::fmt;
-
-        struct OptionalCoreUserCommandConfigVisitor;
-
-        impl<'de> Visitor<'de> for OptionalCoreUserCommandConfigVisitor {
-            type Value = OptionalCoreUserCommandConfig;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a user command configuration")
-            }
-
-            fn visit_map<V>(self, mut map: V) -> std::result::Result<Self::Value, V::Error>
-            where
-                V: MapAccess<'de>,
-            {
-                let mut commands = FxHashMap::default();
-                let mut tab_width = None;
-
-                while let Some(key) = map.next_key::<String>()? {
-                    if let Some(suffix) = key.strip_prefix("commands_") {
-                        let command_key = suffix.to_string();
-                        if command_key.is_empty() {
-                            return Err(V::Error::custom(
-                                "command key cannot be empty, like `commands_`",
-                            ));
-                        }
-                        let command_value: UserCommand = map.next_value()?;
-                        commands.insert(command_key, command_value);
-                    } else if key == "tab_width" {
-                        tab_width = Some(map.next_value()?);
-                    } else if key == "commands" {
-                        return Err(V::Error::custom(
-                            "invalid key `commands`, use `commands_n` format instead",
-                        ));
-                    } else {
-                        let _: serde::de::IgnoredAny = map.next_value()?;
-                    }
-                }
-
-                let commands = if commands.is_empty() {
-                    None
-                } else {
-                    Some(commands)
-                };
-
-                Ok(OptionalCoreUserCommandConfig {
-                    commands,
-                    tab_width,
-                })
-            }
-        }
-
-        deserializer.deserialize_map(OptionalCoreUserCommandConfigVisitor)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Validate)]
-pub struct UserCommand {
-    #[garde(length(min = 1))]
-    pub name: String,
-    #[serde(default)]
-    #[garde(skip)]
-    pub r#type: UserCommandType,
-    #[garde(length(min = 1), inner(length(min = 1)))]
-    pub commands: Vec<String>,
-    #[serde(default)]
-    #[garde(custom(validate_user_command_refresh(&self.r#type)))]
-    pub refresh: bool,
-}
-
-fn validate_user_command_refresh(
-    command_type: &UserCommandType,
-) -> impl FnOnce(&bool, &()) -> garde::Result + '_ {
-    move |refresh, _| {
-        if matches!(command_type, UserCommandType::Inline) && *refresh {
-            return Err(garde::Error::new(
-                "refresh cannot be true for inline command",
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UserCommandType {
-    #[default]
-    Inline,
-    Silent,
-    Suspend,
-}
-
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct UiConfig {
@@ -299,9 +175,6 @@ pub struct UiConfig {
     #[garde(dive)]
     #[nested]
     pub detail: UiDetailConfig,
-    #[garde(dive)]
-    #[nested]
-    pub user_command: UiUserCommandConfig,
     #[garde(dive)]
     #[nested]
     pub refs: UiRefsConfig,
@@ -400,14 +273,6 @@ pub struct UiDetailConfig {
 
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
-pub struct UiUserCommandConfig {
-    #[garde(range(min = 1))]
-    #[default = 20]
-    pub height: u16,
-}
-
-#[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiRefsConfig {
     #[garde(range(min = 1))]
     #[default = 26]
@@ -473,25 +338,6 @@ mod tests {
                     smart_case: true,
                     fuzzy: false,
                 },
-                user_command: CoreUserCommandConfig {
-                    commands: FxHashMap::from_iter([(
-                        "1".into(),
-                        UserCommand {
-                            name: "git diff".into(),
-                            r#type: UserCommandType::Inline,
-                            commands: vec![
-                                "git".into(),
-                                "--no-pager".into(),
-                                "diff".into(),
-                                "--color=always".into(),
-                                "{{first_parent_hash}}".into(),
-                                "{{target_hash}}".into(),
-                            ],
-                            refresh: false,
-                        },
-                    )]),
-                    tab_width: 4,
-                },
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
@@ -522,7 +368,6 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
-                user_command: UiUserCommandConfig { height: 20 },
                 refs: UiRefsConfig { width: 26 },
             },
             graph: GraphConfig {
@@ -562,12 +407,6 @@ mod tests {
             target = "author"
             smart_case = true
             fuzzy = true
-            [core.user_command]
-            commands_1 = { name = "git diff no color", commands = ["git", "diff", "{{first_parent_hash}}", "{{target_hash}}"] }
-            commands_2 = { name = "echo hello", type = "silent", commands = ["echo", "hello"], refresh = true }
-            commands_10 = { name = "echo world", type = "inline", commands = ["echo", "world"], refresh = false }
-            commands_3 = { name = "open vim", type = "suspend", commands = ["vim"] }
-            tab_width = 2
             [core.browser.services]
             "git.company.com" = "gitlab"
             "code.example.org" = { commit = "{base}/c/{hash}" }
@@ -585,8 +424,6 @@ mod tests {
             height = 30
             date_format = "%Y/%m/%d %H:%M:%S"
             date_local = false
-            [ui.user_command]
-            height = 30
             [ui.refs]
             width = 40
             [graph]
@@ -615,52 +452,6 @@ mod tests {
                     target: SearchTarget::Author,
                     smart_case: true,
                     fuzzy: true,
-                },
-                user_command: CoreUserCommandConfig {
-                    commands: FxHashMap::from_iter([
-                        (
-                            "1".into(),
-                            UserCommand {
-                                name: "git diff no color".into(),
-                                r#type: UserCommandType::Inline,
-                                commands: vec![
-                                    "git".into(),
-                                    "diff".into(),
-                                    "{{first_parent_hash}}".into(),
-                                    "{{target_hash}}".into(),
-                                ],
-                                refresh: false,
-                            },
-                        ),
-                        (
-                            "2".into(),
-                            UserCommand {
-                                name: "echo hello".into(),
-                                r#type: UserCommandType::Silent,
-                                commands: vec!["echo".into(), "hello".into()],
-                                refresh: true,
-                            },
-                        ),
-                        (
-                            "3".into(),
-                            UserCommand {
-                                name: "open vim".into(),
-                                r#type: UserCommandType::Suspend,
-                                commands: vec!["vim".into()],
-                                refresh: false,
-                            },
-                        ),
-                        (
-                            "10".into(),
-                            UserCommand {
-                                name: "echo world".into(),
-                                r#type: UserCommandType::Inline,
-                                commands: vec!["echo".into(), "world".into()],
-                                refresh: false,
-                            },
-                        ),
-                    ]),
-                    tab_width: 2,
                 },
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
@@ -706,7 +497,6 @@ mod tests {
                     date_format: "%Y/%m/%d %H:%M:%S".into(),
                     date_local: false,
                 },
-                user_command: UiUserCommandConfig { height: 30 },
                 refs: UiRefsConfig { width: 40 },
             },
             graph: GraphConfig {
@@ -751,25 +541,6 @@ mod tests {
                     smart_case: true,
                     fuzzy: false,
                 },
-                user_command: CoreUserCommandConfig {
-                    commands: FxHashMap::from_iter([(
-                        "1".into(),
-                        UserCommand {
-                            name: "git diff".into(),
-                            r#type: UserCommandType::Inline,
-                            commands: vec![
-                                "git".into(),
-                                "--no-pager".into(),
-                                "diff".into(),
-                                "--color=always".into(),
-                                "{{first_parent_hash}}".into(),
-                                "{{target_hash}}".into(),
-                            ],
-                            refresh: false,
-                        },
-                    )]),
-                    tab_width: 4,
-                },
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
@@ -800,7 +571,6 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
-                user_command: UiUserCommandConfig { height: 20 },
                 refs: UiRefsConfig { width: 26 },
             },
             graph: GraphConfig {

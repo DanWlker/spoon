@@ -20,10 +20,6 @@ target = "all"
 smart_case = true
 fuzzy = false
 
-[core.user_command]
-commands_1 = { name = "git diff", commands = ["git", "--no-pager", "diff", "--color=always", "{{first_parent_hash}}", "{{target_hash}}"]}
-tab_width = 4
-
 [core.external]
 clipboard = "auto"
 
@@ -46,9 +42,6 @@ name_width = 20
 height = 20
 date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
-
-[ui.user_command]
-height = 20
 
 [ui.refs]
 width = 26
@@ -253,37 +246,6 @@ Whether to enable fuzzy matching when the application starts. The option can be 
 - type: `boolean`
 - default: `false`
 
-### `core.user_command.commands_{n}`
-
-The command definition for executing external commands.
-
-Multiple commands can be specified in the format `commands_{n}`.
-For details about user command, see the separate [User command](../features/user-command.md) section.
-
-- type: `object`
-- fields:
-  - `name`: `string` - The name of the user command.
-  - `type`: `string` (enum) - The type of user command.
-    - default: `inline`
-    - possible values:
-      - `inline`: Display the output of the command in the user command view.
-      - `silent`: Execute the command in the background without opening a view.
-      - `suspend`: Execute the command by suspending the application. This is useful for interactive commands.
-  - `commands`: `array of strings` - The command and its arguments.
-  - `refresh`: `boolean` - Whether to reload the repository and refresh the display after executing the command. Available for `silent` and `suspend` commands.
-    - default: `false`
-- examples:
-    - `commands_1 = { name = "git diff", commands = ["git", "--no-pager", "diff", "--color=always", "{{first_parent_hash}}", "{{target_hash}}"]}`
-    - `commands_2 = { name = "delete branch", type = "silent", commands = ["git", "branch", "-D", "{{branches}}"], refresh = true }`
-    - `commands_3 = { name = "amend commit", type = "suspend", commands = ["git", "commit", "--amend"], refresh = true }`
-  
-### `core.user_command.tab_width`
-
-The number of spaces to replace tabs in the user command output.
-
-- type: `u16`
-- default: `4`
-
 ### `core.external.clipboard`
 
 The clipboard command to use for copy operations.
@@ -422,13 +384,6 @@ Whether to show a author/committer date in the commit list in local timezone.
 
 - type: `boolean`
 - default: `true`
-
-### `ui.user_command.height`
-
-The height of a user command area.
-
-- type: `u16`
-- default: `20`
 
 ### `ui.refs.width`
 

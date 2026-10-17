@@ -34,8 +34,6 @@ pub enum AppEvent {
     // opens the details of the selected commit on a tab
     OpenDetail(DetailTab),
     CloseDetail,
-    OpenUserCommand(usize),
-    CloseUserCommand,
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),
     // the working tree changed, the count of the local changes in the sidebar is updated
@@ -55,6 +53,8 @@ pub enum AppEvent {
         task: GitTask,
         result: Result<(), String>,
     },
+    // the fetch of all remotes on launch finished, see `App::fetch_on_launch`
+    LaunchFetched(Result<(), String>),
     OpenHelp,
     CloseHelp,
     SelectNewerCommit,
@@ -346,7 +346,6 @@ pub enum UserEvent {
     RefList,
     Search,
     Filter,
-    UserCommand(usize),
     FocusPanel(usize),
     ResizeLeft,
     ResizeRight,
@@ -431,14 +430,7 @@ impl<'de> Deserialize<'de> for UserEvent {
             where
                 E: de::Error,
             {
-                if value.starts_with("user_command_") {
-                    if let Some(num) = parse_user_command_number(value) {
-                        Ok(UserEvent::UserCommand(num))
-                    } else {
-                        let msg = format!("Invalid user_command_n format: {value}",);
-                        Err(de::Error::custom(msg))
-                    }
-                } else if let Some(num) = value.strip_prefix("focus_panel_") {
+                if let Some(num) = value.strip_prefix("focus_panel_") {
                     match num.parse::<usize>() {
                         Ok(n) => Ok(UserEvent::FocusPanel(n)),
                         Err(_) => {
@@ -548,20 +540,6 @@ impl<'de> Deserialize<'de> for UserEvent {
     }
 }
 
-fn parse_user_command_number(s: &str) -> Option<usize> {
-    if let Some(num_str) = s.strip_prefix("user_command_") {
-        if num_str.parse::<usize>().is_ok() {
-            return num_str.parse::<usize>().ok();
-        }
-        if let Some(num_str) = s.strip_prefix("user_command_view_toggle_") {
-            if num_str.parse::<usize>().is_ok() {
-                return num_str.parse::<usize>().ok();
-            }
-        }
-    }
-    None
-}
-
 impl UserEvent {
     // The scope a key of the event is bound in, when the keybind doesn't say: the keys of most
     // events work everywhere, those of the commands of a part of the app in that part only, so
@@ -605,7 +583,7 @@ impl UserEvent {
     }
 
     // The events of the whole app, which work wherever the focus is: quitting, help, refreshing,
-    // switching pages and panels, the remotes and the user commands.
+    // switching pages and panels, and the remotes.
     pub fn is_app_wide(&self) -> bool {
         matches!(
             self,
@@ -631,7 +609,6 @@ impl UserEvent {
                 | UserEvent::FetchAll
                 | UserEvent::Pull
                 | UserEvent::Push
-                | UserEvent::UserCommand(_)
         )
     }
 }

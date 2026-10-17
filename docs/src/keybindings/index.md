@@ -285,19 +285,6 @@ While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
 Unstaging while amending removes changes from the commit being amended. Turning it off restores the previous message.
 
-#### User Command
-
-| Key                                  | Description                 | Corresponding keybind           |
-| ------------------------------------ | --------------------------- | ------------------------------- |
-| <kbd>Esc</kbd> <kbd>Backspace</kbd>  | Close user command          | `close` `cancel`                |
-| <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up              | `navigate_down` `navigate_up`   |
-| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Scroll down/up              | `select_down` `select_up`       |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up         | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up    | `half_page_down` `half_page_up` |
-| <kbd>g/G</kbd>                       | Go to top/bottom            | `go_to_top` `go_to_bottom`      |
-| <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit   | `select_down` `select_up`       |
-| <kbd>R</kbd>                         | Refresh                     | `refresh`                       |
-
 #### Help
 
 | Key                                                            | Description              | Corresponding keybind           |

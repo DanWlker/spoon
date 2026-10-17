@@ -111,10 +111,6 @@ pub enum RefreshViewContext {
         // the tab shown
         tab: DetailTab,
     },
-    UserCommand {
-        list_context: ListRefreshViewContext,
-        user_command_context: UserCommandRefreshViewContext,
-    },
     LocalChanges {
         list_context: ListRefreshViewContext,
         local_changes_context: LocalChangesRefreshViewContext,
@@ -126,7 +122,6 @@ impl RefreshViewContext {
         match self {
             RefreshViewContext::List { list_context }
             | RefreshViewContext::Detail { list_context, .. }
-            | RefreshViewContext::UserCommand { list_context, .. }
             | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
         }
     }
@@ -135,7 +130,6 @@ impl RefreshViewContext {
         match self {
             RefreshViewContext::List { list_context }
             | RefreshViewContext::Detail { list_context, .. }
-            | RefreshViewContext::UserCommand { list_context, .. }
             | RefreshViewContext::LocalChanges { list_context, .. } => list_context,
         }
     }
@@ -171,11 +165,6 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             search_context,
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct UserCommandRefreshViewContext {
-    pub n: usize,
 }
 
 pub use crate::widget::local_changes::LocalChangesSnapshot as LocalChangesRefreshViewContext;

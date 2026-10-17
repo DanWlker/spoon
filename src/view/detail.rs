@@ -473,9 +473,6 @@ impl<'a> DetailView<'a> {
                     copy: event == UserEvent::CopyLink,
                 });
             }
-            UserEvent::UserCommand(n) => {
-                self.tx.send(AppEvent::OpenUserCommand(n));
-            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }

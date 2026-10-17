@@ -24,12 +24,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     browse::{self, LinkTarget},
     color::ColorTheme,
-    config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
+    config::{CoreConfig, CursorType, UiConfig},
     event::{hint, AppEvent, EventController, KeyHint, UserEvent},
-    external::{
-        copy_to_clipboard, exec_interactive, exec_user_command, exec_user_command_suspend,
-        validate_marked_hash, ExternalCommandParameters,
-    },
+    external::{copy_to_clipboard, exec_interactive},
     git::{
         moves_head_command, run_task, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
         Ref, Repository,
@@ -41,10 +38,7 @@ use crate::{
     protocol::ImageProtocol,
     ref_commands::{ref_command, ref_command_applies},
     search::SearchOptions,
-    view::{
-        user_command_height, HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View,
-        ViewKind,
-    },
+    view::{HelpView, LocalChangesRefreshViewContext, RefreshViewContext, View, ViewKind},
     widget::{
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState},
@@ -81,6 +75,13 @@ enum StatusLine {
 pub enum InitialSelection {
     Latest,
     Head,
+}
+
+// How the app starts, from the command line: on the local changes page, with the sidebar shrunk.
+#[derive(Clone, Copy)]
+pub struct Launch {
+    pub local_changes: bool,
+    pub sidebar_collapsed: bool,
 }
 
 // How long the fetch, pull and push popups wait for their key to be pressed again before showing,
@@ -268,6 +269,7 @@ impl<'a> App<'a> {
         repository: &'a Repository,
         graph_image_manager: GraphImageManager<'a>,
         initial_selection: InitialSelection,
+        launch: Launch,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
         // the shell and view of the app before the repository was reloaded
@@ -399,8 +401,19 @@ impl<'a> App<'a> {
 
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
-            // start on the graph, as Tab from the local changes page shows it
-            None => app.shell.sidebar.select_branches(),
+            None => {
+                app.shell.sidebar_collapsed = launch.sidebar_collapsed;
+                if launch.local_changes {
+                    app.show_local_changes_page();
+                    app.shell.sidebar.select_local_changes();
+                } else {
+                    // start on the graph, as Tab from the local changes page shows it
+                    app.shell.sidebar.select_branches();
+                }
+                if !repository.remotes().is_empty() {
+                    app.fetch_on_launch();
+                }
+            }
         }
         app.open_ref_compare();
 
@@ -521,7 +534,7 @@ impl App<'_> {
                 let scope = self.current_scope();
                 if self.view.is_capturing_keys() {
                     if !self.force_quit(&key) {
-                        self.handle_view_event(UserEvent::Unknown, key);
+                        self.view.handle_event(UserEvent::Unknown, key);
                     }
                     return Ok(None);
                 }
@@ -632,14 +645,6 @@ impl App<'_> {
                     self.show_list();
                 }
             }
-            AppEvent::OpenUserCommand(n) => {
-                self.open_user_command(n);
-            }
-            AppEvent::CloseUserCommand => {
-                if let View::UserCommand(_) = self.view {
-                    self.show_list();
-                }
-            }
             AppEvent::RunExternal(command) => {
                 self.run_external(&command);
             }
@@ -722,6 +727,15 @@ impl App<'_> {
             AppEvent::NotifyWarn(msg) => {
                 self.warn_notification(msg);
             }
+            // the remote branches show once reloaded; when paused, the next reload shows them
+            AppEvent::LaunchFetched(Ok(())) => {
+                if !self.refresh_paused() {
+                    self.view.refresh();
+                }
+            }
+            AppEvent::LaunchFetched(Err(err)) => {
+                self.ec.send(AppEvent::NotifyError(err));
+            }
             AppEvent::NotifyError(msg) => {
                 push_notice(&mut self.shell.notices, Notice::new(true, msg));
             }
@@ -734,7 +748,6 @@ impl App<'_> {
         let [view_area, _] = split_app_areas(area);
         let [_, view_area] = self.split_sidebar(view_area);
         self.update_state(view_area);
-        self.run_user_command();
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
         Ok(())
@@ -1038,7 +1051,6 @@ impl App<'_> {
             _ if self.shell.help.is_some() => ("HELP", theme.highlight_fg),
             _ if self.shell.sidebar_focused => ("REFS", theme.status_warn_fg),
             View::LocalChanges(_) => ("CHANGES", theme.status_success_fg),
-            View::UserCommand(_) => ("COMMAND", theme.highlight_fg),
             _ => ("GRAPH", theme.accent_fg),
         };
         // the first letter only on narrow terminals, like the mode
@@ -1203,7 +1215,7 @@ impl App<'_> {
     }
 
     fn open_detail(&mut self, tab: DetailTab) {
-        if !matches!(self.view, View::List(_) | View::UserCommand(_)) {
+        if !matches!(self.view, View::List(_)) {
             return;
         }
         let Some(commit_list_state) = self.view.take_list_state() else {
@@ -1224,91 +1236,7 @@ impl App<'_> {
         }
     }
 
-    fn open_user_command(&mut self, user_command_number: usize) {
-        match extract_user_command_by_number(user_command_number, &self.ctx).map(|c| &c.r#type) {
-            Ok(UserCommandType::Inline) => {
-                self.open_user_command_inline(user_command_number);
-            }
-            Ok(UserCommandType::Silent) => {
-                let result = self.with_user_command(user_command_number, exec_user_command);
-                self.after_user_command(user_command_number, result.map(|r| r.map(|_| ())));
-                self.shell.app_status.pending_clear = PendingClear::Screen;
-            }
-            Ok(UserCommandType::Suspend) => {
-                let result = self.with_user_command(user_command_number, |params| {
-                    self.suspended(|| exec_user_command_suspend(params))
-                });
-                self.after_user_command(user_command_number, result);
-                self.shell.app_status.pending_clear = PendingClear::Screen;
-            }
-            Err(err) => {
-                self.ec.send(AppEvent::NotifyError(err));
-            }
-        };
-    }
-
-    fn open_user_command_inline(&mut self, user_command_number: usize) {
-        match self.with_user_command(user_command_number, exec_user_command) {
-            Some(Ok(output)) => {
-                // take list state only when the command execution is successful, to avoid losing the state when the command fails
-                let Some(commit_list_state) = self.view.take_list_state() else {
-                    return;
-                };
-                self.replace_view(View::of_user_command(
-                    commit_list_state,
-                    output,
-                    user_command_number,
-                    self.ctx.clone(),
-                    self.ec.sender(),
-                ));
-            }
-            Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
-            None => {}
-        }
-    }
-
-    // Runs `run` with the parameters of user command `number` on the selected commit, and the
-    // picked ones; None without a commit list.
-    fn with_user_command<T>(
-        &self,
-        number: usize,
-        run: impl FnOnce(ExternalCommandParameters) -> Result<T, String>,
-    ) -> Option<Result<T, String>> {
-        let commit_list_state = self.view.as_list_state()?;
-        let selected = commit_list_state.selected_commit_hash();
-        let commit = self.repository.commit(selected)?;
-        let refs: Vec<Ref> = self
-            .repository
-            .refs(selected)
-            .into_iter()
-            .cloned()
-            .collect();
-        let params = build_external_command_parameters(
-            commit,
-            &refs,
-            commit_list_state.picked_commit_hashes(),
-            number,
-            self.shell.app_status.view_area,
-            &self.ctx,
-        );
-        Some(params.and_then(run))
-    }
-
-    // After a user command run without showing its output: the repository reloaded when it is
-    // configured to, then its error, if any.
-    fn after_user_command(&mut self, number: usize, result: Option<Result<(), String>>) {
-        let Some(result) = result else {
-            return;
-        };
-        if extract_user_command_refresh_by_number(number, &self.ctx) {
-            self.view.refresh();
-        }
-        if let Err(err) = result {
-            self.ec.send(AppEvent::NotifyError(err));
-        }
-    }
-
-    // Runs `run` with the terminal given back to it, like an editor or a user command.
+    // Runs `run` with the terminal given back to it, like an editor.
     fn suspended<T>(&self, run: impl FnOnce() -> T) -> T {
         self.ec.suspend();
         let result = run();
@@ -1387,29 +1315,7 @@ impl App<'_> {
         if self.shell.sidebar_focused {
             self.handle_sidebar_event(event, key);
         } else {
-            self.handle_view_event(event, key);
-        }
-    }
-
-    fn handle_view_event(&mut self, event: UserEvent, key: KeyEvent) {
-        // held, the keys stepping through the commits run the user command once let go
-        if !matches!(event, UserEvent::SelectDown | UserEvent::SelectUp) {
-            self.run_user_command();
-        }
-        self.view.handle_event(event, key);
-    }
-
-    // Runs the user command shown for the selected commit, when the selection moved since it ran.
-    fn run_user_command(&mut self) {
-        let View::UserCommand(view) = &mut self.view else {
-            return;
-        };
-        let Some(number) = view.take_stale() else {
-            return;
-        };
-        let output = self.with_user_command(number, exec_user_command);
-        if let (View::UserCommand(view), Some(output)) = (&mut self.view, output) {
-            view.show_output(output);
+            self.view.handle_event(event, key);
         }
     }
 
@@ -1691,15 +1597,7 @@ impl App<'_> {
             UserEvent::Pull => RemoteAction::Pull,
             UserEvent::Push => RemoteAction::Push,
             UserEvent::FetchAll => {
-                let task = GitTask {
-                    remote: true,
-                    ..GitTask::new(
-                        &["fetch", "--all"],
-                        "Fetching all remotes".into(),
-                        "Fetched all remotes".into(),
-                    )
-                };
-                self.start_task(task);
+                self.start_task(fetch_all_task());
                 return true;
             }
             _ => return false,
@@ -1782,6 +1680,17 @@ impl App<'_> {
             .dialog
             .as_ref()
             .filter(|_| self.shell.dialog_reveal.is_none())
+    }
+
+    // Fetches all remotes in the background like lazygit, without taking the place of the git
+    // command running, so the commands of the user are not held back by it.
+    fn fetch_on_launch(&self) {
+        let path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            let result = run_task(&path, &fetch_all_task());
+            tx.send(AppEvent::LaunchFetched(result));
+        });
     }
 
     // Runs the git command in the background; the app is told when it finishes.
@@ -1990,7 +1899,6 @@ impl App<'_> {
             _ if self.shell.sidebar_focused => sidebar.filter(|_| vertical),
             View::Detail(view) if vertical && view.shows_tree() => Some(Panel::DetailTree),
             View::Detail(_) if !vertical => Some(Panel::Details),
-            View::UserCommand(_) if !vertical => Some(Panel::UserCommand),
             View::LocalChanges(_) if vertical => Some(Panel::Files),
             View::LocalChanges(view) => Some(view.height_panel()),
             _ if vertical => sidebar,
@@ -2237,15 +2145,11 @@ impl App<'_> {
     fn select_older_commit(&mut self) {
         if let View::Detail(ref mut view) = self.view {
             view.select_older_commit();
-        } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_older_commit();
         }
     }
 
     fn select_newer_commit(&mut self) {
         if let View::Detail(ref mut view) = self.view {
-            view.select_newer_commit();
-        } else if let View::UserCommand(ref mut view) = self.view {
             view.select_newer_commit();
         }
     }
@@ -2257,12 +2161,6 @@ impl App<'_> {
         match context {
             RefreshViewContext::List { .. } => {}
             RefreshViewContext::Detail { tab, .. } => self.open_detail(tab),
-            RefreshViewContext::UserCommand {
-                user_command_context,
-                ..
-            } => {
-                self.open_user_command(user_command_context.n);
-            }
             RefreshViewContext::LocalChanges {
                 local_changes_context,
                 ..
@@ -2384,6 +2282,17 @@ fn status_bar_line(
     Line::from(left)
 }
 
+fn fetch_all_task() -> GitTask {
+    GitTask {
+        remote: true,
+        ..GitTask::new(
+            &["fetch", "--all"],
+            "Fetching all remotes".into(),
+            "Fetched all remotes".into(),
+        )
+    }
+}
+
 fn selected_commit_details(
     repository: &Repository,
     commit_list_state: &CommitListState,
@@ -2392,79 +2301,6 @@ fn selected_commit_details(
     let (commit, changes) = repository.commit_detail(&selected);
     let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
     (commit, changes, refs)
-}
-
-fn extract_user_command_by_number(
-    user_command_number: usize,
-    ctx: &AppContext,
-) -> Result<&UserCommand, String> {
-    ctx.core_config
-        .user_command
-        .commands
-        .get(&user_command_number.to_string())
-        .ok_or_else(|| format!("No user command configured for number {user_command_number}",))
-}
-
-fn extract_user_command_refresh_by_number(user_command_number: usize, ctx: &AppContext) -> bool {
-    extract_user_command_by_number(user_command_number, ctx)
-        .map(|c| c.refresh)
-        .unwrap_or_default()
-}
-
-fn build_external_command_parameters<'a>(
-    commit: &'a Commit,
-    refs: &'a [Ref],
-    picked_commit_hashes: &'a [CommitHash],
-    user_command_number: usize,
-    view_area: Rect,
-    ctx: &'a AppContext,
-) -> Result<ExternalCommandParameters<'a>, String> {
-    let command = &extract_user_command_by_number(user_command_number, ctx)?.commands;
-    validate_marked_hash(command, picked_commit_hashes.len())?;
-    let target_hash = commit.commit_hash.as_str();
-    let parent_hashes = commit
-        .parent_commit_hashes
-        .iter()
-        .map(|c| c.as_str())
-        .collect();
-
-    let mut all_refs = vec![];
-    let mut branches = vec![];
-    let mut remote_branches = vec![];
-    let mut tags = vec![];
-    let mut stash = None;
-    for r in refs {
-        match r {
-            Ref::Tag { .. } => tags.push(r.name()),
-            Ref::Branch { .. } => branches.push(r.name()),
-            Ref::RemoteBranch { .. } => remote_branches.push(r.name()),
-            Ref::Stash { .. } => {
-                stash = Some(r.name());
-                continue; // skip stashes from {{refs}}
-            }
-        }
-        all_refs.push(r.name());
-    }
-
-    // minus the left and right padding, and the top and bottom borders
-    let area_width = view_area.width.saturating_sub(4);
-    let area_height = user_command_height(ctx, view_area.height).saturating_sub(2);
-    Ok(ExternalCommandParameters {
-        command,
-        target_hash,
-        picked_hashes: picked_commit_hashes
-            .iter()
-            .map(CommitHash::as_str)
-            .collect(),
-        parent_hashes,
-        all_refs,
-        branches,
-        remote_branches,
-        tags,
-        stash,
-        area_width,
-        area_height,
-    })
 }
 
 #[cfg(test)]

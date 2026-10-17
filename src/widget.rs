@@ -2,7 +2,6 @@ pub mod command_log;
 pub mod commit_detail;
 pub mod commit_list;
 pub mod commit_tabs;
-pub mod commit_user_command;
 pub mod conflict;
 pub mod diff;
 pub mod file_tree;

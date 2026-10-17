@@ -251,23 +251,6 @@ impl KeyBind {
         keys.join("/")
     }
 
-    pub fn user_command_event_numbers(&self) -> Vec<usize> {
-        let mut numbers: Vec<usize> = self
-            .bindings
-            .values()
-            .filter_map(|ue| {
-                if let UserEvent::UserCommand(n) = ue {
-                    Some(*n)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        numbers.sort_unstable();
-        numbers.dedup();
-        numbers
-    }
-
     // Binds the keys of `key_events` (sequences when separated by spaces) to the event in `scope`.
     fn bind(
         &mut self,
@@ -421,8 +404,6 @@ mod tests {
             navigate_left = ["ctrl-h", "shift-h", "alt-h"]
             navigate_right = ["ctrl-shift-l", "alt-shift-ctrl-l"]
             quit = ["esc", "f12"]
-            user_command_1 = ["d"]
-            user_command_view_toggle_10 = ["e"]
         "#;
 
         let expected = KeyBind {
@@ -466,14 +447,6 @@ mod tests {
                 (
                     (Scope::Global, KeyEvent::new(KeyCode::F(12), KeyModifiers::empty())),
                     UserEvent::Quit,
-                ),
-                (
-                    (Scope::Global, KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty())),
-                    UserEvent::UserCommand(1),
-                ),
-                (
-                    (Scope::Global, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty())),
-                    UserEvent::UserCommand(10),
                 ),
             ]
             .into_iter()

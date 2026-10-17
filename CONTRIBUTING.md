@@ -44,7 +44,7 @@ When reporting a bug, please include the following information:
 
 ### Suggesting Features
 
-When proposing a feature, describe the problem and workflow it would address, the expected behavior or interaction, and why it fits the project's Goals and Non-Goals. Please also explain why existing configuration or user commands are not sufficient, when applicable, and note any effect on existing behavior or defaults.
+When proposing a feature, describe the problem and workflow it would address, the expected behavior or interaction, and why it fits the project's Goals and Non-Goals. Please also explain why existing configuration is not sufficient, when applicable, and note any effect on existing behavior or defaults.
 
 ### Terminal Emulator Compatibility
 

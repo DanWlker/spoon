@@ -12,7 +12,6 @@
 - [Keybindings](./keybindings/index.md)
   - [Custom Keybindings](./keybindings/custom-keybindings.md)
 - [Features](./features/index.md)
-  - [User Command](./features/user-command.md)
   - [Screenshots](./features/screenshots.md)
 - [FAQ](./faq/index.md)
 
