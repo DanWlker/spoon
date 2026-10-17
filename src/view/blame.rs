@@ -165,7 +165,6 @@ impl BlameView {
             UserEvent::NewerCommit | UserEvent::NavigateRight => {
                 self.select(self.index.saturating_sub(1), repository)
             }
-            UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
             UserEvent::Search if body => {
                 self.query.start(QueryKind::Search);
                 self.update_query_status();

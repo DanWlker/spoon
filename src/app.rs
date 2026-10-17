@@ -605,20 +605,13 @@ impl App<'_> {
                     self.handle_dialog_key(key);
                     return Ok(None);
                 }
-                if let Some(Overlay::File(window)) = &self.shell.overlay {
-                    let event = if window.is_typing() {
-                        (!self.force_quit(&key)).then_some(UserEvent::Unknown)
-                    } else {
-                        self.ctx.keybind.event_in(Scope::FileHistory, &key)
-                    };
-                    match (event, self.shell.overlay.as_mut()) {
-                        (Some(UserEvent::KeysToggle), _) => {
-                            self.shell.keys_popup = !self.shell.keys_popup
-                        }
-                        (Some(event), Some(Overlay::File(window))) => {
-                            window.handle_event(event, key, self.repository)
-                        }
-                        _ => {}
+                // typing a search in the blame or the timeline, keys go to it as they are; else
+                // they are resolved like the page's, sequences too, see `dispatch`
+                if matches!(&self.shell.overlay, Some(Overlay::File(w)) if w.is_typing()) {
+                    if let (false, Some(Overlay::File(window))) =
+                        (self.force_quit(&key), self.shell.overlay.as_mut())
+                    {
+                        window.handle_event(UserEvent::Unknown, key, self.repository);
                     }
                     return Ok(None);
                 }
@@ -1448,6 +1441,16 @@ impl App<'_> {
             self.ec.send(AppEvent::Quit);
             return;
         }
+        // over the blame or the timeline, the keys working over everything, and its own
+        if let Some(Overlay::File(window)) = self.shell.overlay.as_mut() {
+            match event {
+                UserEvent::KeysToggle => self.shell.keys_popup = !self.shell.keys_popup,
+                UserEvent::DismissNotifications => self.shell.notices.clear(),
+                UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
+                _ => window.handle_event(event, key, self.repository),
+            }
+            return;
+        }
         // keys typed into the search of the list belong to the view
         let typing = matches!(self.shell.app_status.status_line, StatusLine::Input { .. });
         if typing {
@@ -1612,6 +1615,9 @@ impl App<'_> {
 
     // The scope of the keys, where the focus is, see `Scope`.
     fn current_scope(&self) -> Scope {
+        if let Some(Overlay::File(_)) = self.shell.overlay {
+            return Scope::FileHistory;
+        }
         if self.shell.sidebar_focused() {
             return Scope::Sidebar;
         }

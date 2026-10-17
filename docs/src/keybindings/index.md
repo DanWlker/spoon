@@ -332,7 +332,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the commits (by hash, date or subject), or the diff while it has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
 
-The scroll keys scroll the diff from the commits too. A commit whose diff has no hunk, like a rename, puts the focus back on the commits.
+In both windows, <kbd>,</kbd> dismisses the notices and <kbd>w</kbd> wraps long lines, as everywhere. The scroll keys scroll the diff from the commits too. A commit whose diff has no hunk, like a rename, puts the focus back on the commits.
 
 #### Help
 

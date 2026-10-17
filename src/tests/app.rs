@@ -954,6 +954,26 @@ fn test_search_options_toggled_in_any_search() {
 }
 
 #[test]
+fn test_keys_over_everything_work_over_the_blame() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("4 shift-b l /"),
+        typing("zzz"),
+        keys("enter n"),
+        check(|app| assert_notice(app, "No match for zzz")),
+        // dismissed, and the long lines wrapped, without closing the blame
+        keys(", w"),
+        overlay("blame"),
+        check(|app| {
+            assert!(notices(app).is_empty());
+            assert!(app.ctx.wrap.get());
+        }),
+    ]);
+}
+
+#[test]
 fn test_timeline_shows_a_commit_on_the_graph() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

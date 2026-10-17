@@ -137,7 +137,6 @@ impl TimelineView {
             }
             UserEvent::OlderCommit => self.select(self.selected + 1, repository),
             UserEvent::NewerCommit => self.select(self.selected.saturating_sub(1), repository),
-            UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
             UserEvent::Search => {
                 self.query.start(QueryKind::Search);
                 self.update_query_status();
