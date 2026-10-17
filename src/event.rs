@@ -12,7 +12,8 @@ use serde::Deserialize;
 
 use crate::{
     browse::LinkTarget,
-    git::{FilesSnapshot, GitTask},
+    git::{CommitHash, FilesSnapshot, GitTask},
+    graph::Fold,
     keybind::Scope,
     view::RefreshViewContext,
     widget::commit_tabs::DetailTab,
@@ -69,6 +70,11 @@ pub enum AppEvent {
         copy: bool,
     },
     Refresh(RefreshViewContext),
+    // folds or unfolds the merge commit, the graph drawn again
+    FoldMerge {
+        commit: CommitHash,
+        fold: Fold,
+    },
     ClearStatusLine,
     UpdateStatusInput {
         message: String,

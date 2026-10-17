@@ -51,6 +51,11 @@ impl<'a> ListView<'a> {
                 self.tx.send(AppEvent::Quit);
             }
             _ if self.as_mut_list_state().handle_navigation(event) => {}
+            UserEvent::NavigateLeft | UserEvent::NavigateRight => {
+                if let Some(fold) = self.as_list_state().fold_event(event) {
+                    self.tx.send(fold);
+                }
+            }
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 let full = event == UserEvent::FullCopy;
                 self.tx

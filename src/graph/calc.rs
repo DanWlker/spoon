@@ -11,6 +11,71 @@ pub struct Graph<'a> {
     pub edges: Vec<Vec<Edge>>,
     pub max_pos_x: usize,
     pub warning: Option<String>,
+    // the merge commits shown, those with two parents or more loaded, see `calc_graph`
+    pub merges: FxHashMap<&'a CommitHash, Fold>,
+}
+
+// Whether a merge commit shows the commits it brought in, see `calc_graph`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fold {
+    Folded,
+    Unfolded,
+}
+
+// The parents and children of the commits shown: a folded merge has its first parent only, and
+// the commits only it brought in are left out.
+struct Links<'a, 'f> {
+    repository: &'a Repository,
+    folded: &'f FxHashSet<CommitHash>,
+    // None for all
+    shown: Option<FxHashSet<&'a CommitHash>>,
+}
+
+impl<'a, 'f> Links<'a, 'f> {
+    fn new(repository: &'a Repository, folded: &'f FxHashSet<CommitHash>) -> Self {
+        let mut links = Links {
+            repository,
+            folded,
+            shown: None,
+        };
+        if folded.is_empty() {
+            return links;
+        }
+        // from the commits with no children and those of refs, which stay shown
+        let mut stack: Vec<&CommitHash> = repository
+            .all_commits()
+            .into_iter()
+            .map(|c| &c.commit_hash)
+            .filter(|h| repository.children_hash(h).is_empty())
+            .chain(repository.all_refs().into_iter().map(Ref::target))
+            .collect();
+        let mut shown = FxHashSet::default();
+        while let Some(hash) = stack.pop() {
+            if repository.commit(hash).is_some() && shown.insert(hash) {
+                stack.extend(links.parents_hash(hash));
+            }
+        }
+        links.shown = Some(shown);
+        links
+    }
+
+    fn is_shown(&self, hash: &CommitHash) -> bool {
+        self.shown.as_ref().is_none_or(|shown| shown.contains(hash))
+    }
+
+    fn parents_hash(&self, hash: &CommitHash) -> Vec<&'a CommitHash> {
+        let mut parents = self.repository.parents_hash(hash);
+        if self.folded.contains(hash) {
+            parents.truncate(1);
+        }
+        parents
+    }
+
+    fn children_hash(&self, hash: &CommitHash) -> Vec<&'a CommitHash> {
+        let mut children = self.repository.children_hash(hash);
+        children.retain(|c| self.is_shown(c) && self.parents_hash(c).contains(&hash));
+        children
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,11 +115,39 @@ impl EdgeType {
     }
 }
 
-pub fn calc_graph<'a>(repository: &'a Repository, primary_branch: Option<&str>) -> Graph<'a> {
-    let commits = repository.all_commits();
+// The graph of the commits loaded, the `folded` merges without the commits only they brought in.
+pub fn calc_graph<'a>(
+    repository: &'a Repository,
+    primary_branch: Option<&str>,
+    folded: &FxHashSet<CommitHash>,
+) -> Graph<'a> {
+    let links = Links::new(repository, folded);
+    let mut commits = repository.all_commits();
+    commits.retain(|c| links.is_shown(&c.commit_hash));
 
-    let (commit_pos_map, warning) = calc_commit_positions(&commits, repository, primary_branch);
-    let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
+    let (commit_pos_map, warning) = calc_commit_positions(&commits, &links, primary_branch);
+    let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &links);
+    // a stash has parents not loaded
+    let merges = commits
+        .iter()
+        .map(|c| &c.commit_hash)
+        .filter(|h| {
+            let parents = repository.parents_hash(h);
+            parents
+                .iter()
+                .filter(|p| repository.commit(p).is_some())
+                .count()
+                > 1
+        })
+        .map(|h| {
+            let fold = if folded.contains(h) {
+                Fold::Folded
+            } else {
+                Fold::Unfolded
+            };
+            (h, fold)
+        })
+        .collect();
 
     Graph {
         commits,
@@ -62,6 +155,7 @@ pub fn calc_graph<'a>(repository: &'a Repository, primary_branch: Option<&str>) 
         edges: graph_edges,
         max_pos_x,
         warning,
+        merges,
     }
 }
 
@@ -86,14 +180,14 @@ fn find_primary_branch_tip<'a>(
 
 fn primary_branch_spine<'a>(
     commits: &[&'a Commit],
-    repository: &'a Repository,
+    links: &Links<'a, '_>,
     primary_branch: Option<&str>,
 ) -> (FxHashSet<&'a CommitHash>, Option<String>) {
     let Some(branch) = primary_branch else {
         return (FxHashSet::default(), None);
     };
 
-    let Some(tip) = find_primary_branch_tip(repository, branch) else {
+    let Some(tip) = find_primary_branch_tip(links.repository, branch) else {
         let msg = format!("Primary branch '{branch}' could not be resolved");
         return (FxHashSet::default(), Some(msg));
     };
@@ -108,7 +202,7 @@ fn primary_branch_spine<'a>(
 
     while let Some(hash) = current {
         spine.insert(hash);
-        let parents = repository.parents_hash(hash);
+        let parents = links.parents_hash(hash);
         current = parents.first().copied();
     }
 
@@ -117,21 +211,21 @@ fn primary_branch_spine<'a>(
 
 fn calc_commit_positions<'a>(
     commits: &[&'a Commit],
-    repository: &'a Repository,
+    links: &Links<'a, '_>,
     primary_branch: Option<&str>,
 ) -> (CommitPosMap<'a>, Option<String>) {
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<&CommitHash>> = Vec::new();
     let mut line_last_occupied_pos_y: Vec<usize> = Vec::new();
-    let (primary_spine, warning) = primary_branch_spine(commits, repository, primary_branch);
+    let (primary_spine, warning) = primary_branch_spine(commits, links, primary_branch);
     let has_visible_primary = !primary_spine.is_empty();
     let min_col = if has_visible_primary { 1 } else { 0 };
 
     for (pos_y, commit) in commits.iter().enumerate() {
         let is_primary = primary_spine.contains(&commit.commit_hash);
-        let filtered_children_hash = filtered_children_hash(commit, repository);
+        let filtered_children_hash = filtered_children_hash(commit, links);
         if filtered_children_hash.is_empty() {
-            let merge_child_pos_y = repository
+            let merge_child_pos_y = links
                 .children_hash(&commit.commit_hash)
                 .into_iter()
                 .map(|hash| commit_pos_map[hash].1)
@@ -193,15 +287,12 @@ fn calc_commit_positions<'a>(
     (commit_pos_map, warning)
 }
 
-fn filtered_children_hash<'a>(
-    commit: &'a Commit,
-    repository: &'a Repository,
-) -> Vec<&'a CommitHash> {
-    repository
+fn filtered_children_hash<'a>(commit: &'a Commit, links: &Links<'a, '_>) -> Vec<&'a CommitHash> {
+    links
         .children_hash(&commit.commit_hash)
         .into_iter()
         .filter(|child_hash| {
-            let child_parents_hash = repository.parents_hash(child_hash);
+            let child_parents_hash = links.parents_hash(child_hash);
             !child_parents_hash.is_empty() && *child_parents_hash[0] == commit.commit_hash
         })
         .collect()
@@ -297,7 +388,7 @@ impl<'a> WrappedEdge<'a> {
 fn calc_edges(
     commit_pos_map: &CommitPosMap,
     commits: &[&Commit],
-    repository: &Repository,
+    links: &Links,
 ) -> (Vec<Vec<Edge>>, usize) {
     let mut max_pos_x = 0;
     let mut edges: Vec<Vec<WrappedEdge>> = vec![vec![]; commits.len()];
@@ -306,7 +397,7 @@ fn calc_edges(
         let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
         let hash = &commit.commit_hash;
 
-        for child_hash in repository.children_hash(hash) {
+        for child_hash in links.children_hash(hash) {
             let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
 
             if pos_x == child_pos_x {
@@ -390,7 +481,10 @@ fn calc_edges(
 
         // draw down edge if has parent but parent not in the graph (when max_count is set)
         if !commit.parent_commit_hashes.is_empty()
-            && repository.commit(&commit.parent_commit_hashes[0]).is_none()
+            && links
+                .repository
+                .commit(&commit.parent_commit_hashes[0])
+                .is_none()
         {
             edges[pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash));
             ((pos_y + 1)..commits.len()).for_each(|y| {
@@ -403,7 +497,7 @@ fn calc_edges(
         let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
         let hash = &commit.commit_hash;
 
-        for child_hash in repository.children_hash(hash) {
+        for child_hash in links.children_hash(hash) {
             let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
 
             if pos_x == child_pos_x {

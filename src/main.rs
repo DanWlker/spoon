@@ -246,8 +246,14 @@ fn main() -> Result<()> {
     let mut terminal_guard = None;
     let mut terminal = None;
 
+    // false to draw the graph again only, see `Ret::Regraph`
+    let mut load = true;
     let ret = loop {
-        let repository = loader.load(&mut refresh, &mut repository)?;
+        let repository = if load {
+            loader.load(&mut refresh, &mut repository)?
+        } else {
+            repository.as_ref().expect("loaded before")
+        };
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
@@ -273,12 +279,16 @@ fn main() -> Result<()> {
         let ran = loader.with_app(repository, size, &ctx, &ec, refresh.take(), |mut app| {
             app.run(terminal).map(|ret| match ret {
                 Ret::Quit => None,
-                Ret::Refresh(context) => Some((app.into_shell(), context)),
+                Ret::Refresh(context) => Some((app.into_shell(), context, true)),
+                Ret::Regraph(context) => Some((app.into_shell(), context, false)),
             })
         });
         match ran {
             Ok(Ok(None)) => break Ok(()),
-            Ok(Ok(next)) => refresh = next,
+            Ok(Ok(Some((shell, context, reload)))) => {
+                refresh = Some((shell, context));
+                load = reload;
+            }
             Ok(Err(e)) => break Err(e.into()),
             Err(e) => break Err(e),
         }
@@ -362,7 +372,11 @@ impl Loader {
         refresh: Refresh,
         run: impl FnOnce(App) -> R,
     ) -> Result<R> {
-        let graph = graph::calc_graph(repository, self.primary_branch.as_deref());
+        let folded = refresh
+            .as_ref()
+            .map(|(shell, _)| shell.folded_merges().clone())
+            .unwrap_or_default();
+        let graph = graph::calc_graph(repository, self.primary_branch.as_deref(), &folded);
         let cell_width_type = check::decide_cell_width_type(&graph, size, self.graph_width)?;
         let image_params =
             graph::ImageParams::new(&self.graph_color_set, cell_width_type, self.graph_antialias)

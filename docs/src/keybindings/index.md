@@ -58,6 +58,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up                                | `page_down` `page_up`                        |
 | <kbd>Ctrl-d/u</kbd>                  | Jump half page down/up, scrolling as needed       | `half_page_down` `half_page_up`              |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
+| <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show commit details on the info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
 | <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
@@ -110,6 +111,7 @@ The other commands ask first, in a popup showing what they do and the git comman
 
 <kbd>L</kbd> shows only the history of `HEAD` (the commits of the current branch, and of the branches merged into it), and again all commits; the title of the commit list says so ("main only").
 The commits that are not on the current branch are dimmed, and the branches and tags at a commit are shown as labels before its subject, the checked-out branch standing out. A branch whose upstream is at the same commit shows one label, with a cloud (󰅠) before its name.
+A merge commit is drawn as a ring, larger than a commit's dot, with a chevron in it pointing to the side the merged line comes in from. <kbd>h</kbd> folds it: the commits only it brought in are hidden (those a branch, tag or other commit still reaches stay) and its chevron points down; <kbd>l</kbd> unfolds it. Merges stay folded across reloads.
 
 Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.

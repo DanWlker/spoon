@@ -19,9 +19,9 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
-    event::UserEvent,
+    event::{AppEvent, UserEvent},
     git::{Commit, CommitHash, Head, Ref, Tracking},
-    graph::GraphImageManager,
+    graph::{Fold, GraphImageManager},
     protocol::PreparedImage,
     search::{case_insensitive, SearchOptions, SearchTarget},
     widget::{
@@ -515,6 +515,20 @@ impl<'a> CommitListState<'a> {
 
     pub fn select_prev_match(&mut self) {
         self.select_prev_match_index(self.current_selected_index());
+    }
+
+    // Folds the selected merge commit with left, unfolds it with right; None for other events
+    // and commits.
+    pub fn fold_event(&self, event: UserEvent) -> Option<AppEvent> {
+        let commit = self.selected_commit_hash();
+        let merge = self.graph_image_manager.graph().merges.get(commit)?;
+        let fold = match (event, merge) {
+            (UserEvent::NavigateLeft, Fold::Unfolded) => Fold::Folded,
+            (UserEvent::NavigateRight, Fold::Folded) => Fold::Unfolded,
+            _ => return None,
+        };
+        let commit = commit.clone();
+        Some(AppEvent::FoldMerge { commit, fold })
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
@@ -1420,7 +1434,7 @@ mod tests {
             Head::None,
             commit_hashes,
         );
-        let graph = calc_graph(&repository, None);
+        let graph = calc_graph(&repository, None, &Default::default());
         let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
         let image_params =
             crate::graph::ImageParams::new(&graph_color_set, CellWidthType::Double, false);

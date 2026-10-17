@@ -21,5 +21,3 @@ TODO:
      - o open the thing at that commit (we probably should consider a commit object, file object stuff at this point to unify these functionalities & behaviours)
 1. `T` timeline, it should show all the commits related to this file reopened in a new window, at the right is the changes at each commit
    same actions apply, y copy, space checkout, enter view the commit on the graph, ] [ to navigate between the commits, o open the thing at that commit
-1. see if can 'fold' merge commits in the commit graph, may need to rerender graph, merge commits should also use a different design, see if possible
-   - left right to fold on the commit graph

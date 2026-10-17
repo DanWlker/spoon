@@ -738,6 +738,12 @@ impl<'a> DetailView<'a> {
         let before = state.selected_commit_hash().clone();
         match event {
             _ if state.handle_navigation(event) => {}
+            UserEvent::NavigateLeft | UserEvent::NavigateRight => {
+                if let Some(fold) = state.fold_event(event) {
+                    tx.send(fold);
+                }
+                return true;
+            }
             UserEvent::ToggleSelect if comparing => {
                 let msg = "Close the diff first (esc) to pick other commits".to_string();
                 tx.send(AppEvent::NotifyWarn(msg));

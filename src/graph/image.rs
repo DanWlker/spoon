@@ -12,8 +12,8 @@ use crate::{
     color::GraphColorSet,
     git::CommitHash,
     graph::{
-        geometry::{bounding_box_u32, Point},
-        Edge, EdgeType, Graph,
+        geometry::{bounding_box_u32, Point, Vector},
+        Edge, EdgeType, Fold, Graph,
     },
     protocol::{ImageProtocol, PreparedImage},
 };
@@ -179,6 +179,8 @@ pub struct ImageParams {
     line_width: u16,
     circle_inner_radius: u16,
     circle_outer_radius: u16,
+    // of a merge commit's node, see `Chevron`
+    merge_radius: u16,
     edge_colors: Vec<image::Rgba<u8>>,
     circle_edge_color: image::Rgba<u8>,
     background_color: image::Rgba<u8>,
@@ -197,10 +199,10 @@ impl ImageParams {
         cell_width_type: CellWidthType,
         antialias: bool,
     ) -> Self {
-        let (width, height, line_width, circle_inner_radius, circle_outer_radius) =
+        let (width, height, line_width, circle_inner_radius, circle_outer_radius, merge_radius) =
             match cell_width_type {
-                CellWidthType::Double => (50, 50, 5, 10, 13),
-                CellWidthType::Single => (25, 50, 3, 7, 10),
+                CellWidthType::Double => (50, 50, 5, 10, 13, 20),
+                CellWidthType::Single => (25, 50, 3, 7, 10, 12),
             };
         let edge_colors = graph_color_set
             .colors
@@ -215,6 +217,7 @@ impl ImageParams {
             line_width,
             circle_inner_radius,
             circle_outer_radius,
+            merge_radius,
             edge_colors,
             circle_edge_color,
             background_color,
@@ -274,7 +277,74 @@ pub fn build_single_graph_row_image(
         image_params,
         drawing_pixels,
         graph_style,
+        graph.merges.get(commit_hash).copied(),
     )
+}
+
+// The node of a merge commit, larger than a commit's dot: a ring with a chevron in it, pointing to
+// the side the merged line comes in from, or down once the merge is folded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Chevron {
+    Left,
+    Right,
+    Down,
+}
+
+impl Chevron {
+    const ALL: [Chevron; 3] = [Chevron::Left, Chevron::Right, Chevron::Down];
+
+    // Of the merge commit at `pos_x` in the row of `edges`: a merged line turns down to its
+    // parent (╮ or ╭) on the side it comes from; the right one first for an octopus merge.
+    fn of(fold: Fold, edges: &[Edge], pos_x: usize) -> Self {
+        let turns = |edge_type: EdgeType, side: fn(usize, usize) -> bool| {
+            edges
+                .iter()
+                .any(|e| e.edge_type == edge_type && side(e.pos_x, pos_x))
+        };
+        match fold {
+            Fold::Folded => Chevron::Down,
+            _ if turns(EdgeType::RightTop, |x, pos_x| x > pos_x) => Chevron::Right,
+            _ if turns(EdgeType::LeftTop, |x, pos_x| x < pos_x) => Chevron::Left,
+            Fold::Unfolded => Chevron::Right,
+        }
+    }
+}
+
+fn merge_center(params: &ImageParams) -> Point {
+    Point::new(
+        f64::from(params.width / 2) + 0.5,
+        f64::from(params.height / 2) + 0.5,
+    )
+}
+
+// Whether `p` is in the node of a merge commit, cleared of the lines under it.
+fn merge_disk_contains(p: Point, params: &ImageParams) -> bool {
+    (p - merge_center(params)).length() <= f64::from(params.merge_radius) + 0.5
+}
+
+// Whether `p` is on the ring of a merge commit's node or on its chevron, see `Chevron`.
+fn merge_mark_contains(p: Point, params: &ImageParams, chevron: Chevron) -> bool {
+    let center = merge_center(params);
+    let width = f64::from(params.line_width);
+    let outer = f64::from(params.merge_radius) + 0.5;
+    let inner = outer - width;
+    let distance = (p - center).length();
+    if inner < distance && distance <= outer {
+        return true;
+    }
+    let at = |(x, y): (f64, f64)| center + Vector::new(x * inner, y * inner);
+    let [start, tip, end] = match chevron {
+        Chevron::Right => [(-0.25, -0.5), (0.3, 0.0), (-0.25, 0.5)],
+        Chevron::Left => [(0.25, -0.5), (-0.3, 0.0), (0.25, 0.5)],
+        Chevron::Down => [(-0.5, -0.25), (0.0, 0.3), (0.5, -0.25)],
+    }
+    .map(at);
+    let near = |a: Point, b: Point| {
+        let ab = b - a;
+        let t = ((p - a).dot(ab) / ab.dot(ab)).clamp(0.0, 1.0);
+        (p - (a + ab * t)).length() <= width / 2.0
+    };
+    near(start, tip) || near(tip, end)
 }
 
 type Pixels = FxHashSet<(i32, i32)>;
@@ -314,6 +384,9 @@ pub struct DrawingPixels {
     curved_connections: FxHashMap<ConnectionKey, Pixels>,
     circle: Pixels,
     circle_edge: Pixels,
+    // the node of a merge commit instead of the circle, see `Chevron`
+    merge_disk: Pixels,
+    merge_marks: FxHashMap<Chevron, Pixels>,
     vertical_edge: Pixels,
     horizontal_edge: Pixels,
     up_edge: Pixels,
@@ -349,6 +422,16 @@ impl DrawingPixels {
                 .then(|| antialias::Masks::new(image_params)),
             circle,
             circle_edge,
+            merge_disk: cell_pixels(image_params, |p| merge_disk_contains(p, image_params)),
+            merge_marks: Chevron::ALL
+                .into_iter()
+                .map(|chevron| {
+                    let marks = cell_pixels(image_params, |p| {
+                        merge_mark_contains(p, image_params, chevron)
+                    });
+                    (chevron, marks)
+                })
+                .collect(),
             vertical_edge,
             horizontal_edge,
             up_edge,
@@ -398,6 +481,15 @@ fn calc_circle_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
     let outer = calc_circle_drawing_pixels(image_params, image_params.circle_outer_radius as i32);
 
     outer.difference(&inner).cloned().collect()
+}
+
+// The pixels of a cell whose center is in a shape.
+fn cell_pixels(image_params: &ImageParams, contains: impl Fn(Point) -> bool) -> Pixels {
+    let (width, height) = (image_params.width as i32, image_params.height as i32);
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter(|&(x, y)| contains(Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5)))
+        .collect()
 }
 
 fn calc_circle_drawing_pixels(image_params: &ImageParams, radius: i32) -> Pixels {
@@ -702,9 +794,11 @@ pub fn calc_graph_row_image(
     image_params: &ImageParams,
     drawing_pixels: &mut DrawingPixels,
     graph_style: GraphStyle,
+    merge: Option<Fold>,
 ) -> GraphRowImage {
     let image_width = (image_params.width as usize * cell_count) as u32;
     let image_height = image_params.height as u32;
+    let chevron = merge.map(|fold| Chevron::of(fold, edges, commit_pos_x));
 
     if image_params.antialias {
         let image = antialias::render(
@@ -714,6 +808,7 @@ pub fn calc_graph_row_image(
             image_params,
             drawing_pixels,
             graph_style,
+            chevron,
         );
         return GraphRowImage {
             bytes: build_image(&image, image_width, image_height),
@@ -724,7 +819,9 @@ pub fn calc_graph_row_image(
     let mut img_buf = image::ImageBuffer::new(image_width, image_height);
 
     draw_background(&mut img_buf, image_params);
-    draw_commit_circle(&mut img_buf, commit_pos_x, image_params, drawing_pixels);
+    if chevron.is_none() {
+        draw_commit_circle(&mut img_buf, commit_pos_x, image_params, drawing_pixels);
+    }
 
     match graph_style {
         GraphStyle::Curved => {
@@ -754,6 +851,20 @@ pub fn calc_graph_row_image(
             }
             for edges in horizontal_edges_map.values() {
                 draw_diagonal_connected_edge(&mut img_buf, edges, image_params, drawing_pixels);
+            }
+        }
+    }
+
+    // over the lines, which it hides under it
+    if let Some(chevron) = chevron {
+        let x_offset = (commit_pos_x * image_params.width as usize) as i32;
+        let color = image_params.edge_color(commit_pos_x);
+        for (pixels, color) in [
+            (&drawing_pixels.merge_disk, image_params.background_color),
+            (&drawing_pixels.merge_marks[&chevron], color),
+        ] {
+            for (x, y) in pixels {
+                img_buf.put_pixel((x + x_offset) as u32, *y as u32, color);
             }
         }
     }
@@ -1386,8 +1497,15 @@ mod tests {
             // Reuse the shape across colors, placements and image widths,
             // including after a first rendering that clips the connection.
             for cell_count in [side_x + 1, offset + distance + 1, offset + distance + 4] {
-                let cached =
-                    calc_graph_row_image(side_x, cell_count, &edges, &params, &mut pixels, style);
+                let cached = calc_graph_row_image(
+                    side_x,
+                    cell_count,
+                    &edges,
+                    &params,
+                    &mut pixels,
+                    style,
+                    None,
+                );
                 let fresh = calc_graph_row_image(
                     side_x,
                     cell_count,
@@ -1395,6 +1513,7 @@ mod tests {
                     &params,
                     &mut DrawingPixels::new(&params),
                     style,
+                    None,
                 );
                 assert_eq!(cached.bytes, fresh.bytes);
                 let cache = match style {
@@ -1427,6 +1546,7 @@ mod tests {
                 &params,
                 &mut pixels,
                 GraphStyle::Rounded,
+                None,
             );
             let curved = calc_graph_row_image(
                 commit_pos_x,
@@ -1435,6 +1555,7 @@ mod tests {
                 &params,
                 &mut pixels,
                 GraphStyle::Curved,
+                None,
             );
             assert_eq!(rounded.cell_count, curved.cell_count);
             let rounded = image::load_from_memory(&rounded.bytes).unwrap().to_rgba8();
@@ -1486,8 +1607,8 @@ mod tests {
                 .into_iter()
                 .map(|(t, x, line)| Edge::new(t, x, line))
                 .collect();
-            let aliased = calc_graph_row_image(pos, 4, &edges, &params, &mut pixels, style);
-            let aa = calc_graph_row_image(pos, 4, &edges, &aa_params, &mut aa_pixels, style);
+            let aliased = calc_graph_row_image(pos, 4, &edges, &params, &mut pixels, style, None);
+            let aa = calc_graph_row_image(pos, 4, &edges, &aa_params, &mut aa_pixels, style, None);
             assert_eq!(aliased.cell_count, aa.cell_count);
             let aliased = image::load_from_memory(&aliased.bytes).unwrap().to_rgba8();
             let aa_image = image::load_from_memory(&aa.bytes).unwrap().to_rgba8();
@@ -1503,9 +1624,67 @@ mod tests {
                 }
             }
             edges.reverse();
-            let reordered = calc_graph_row_image(pos, 4, &edges, &aa_params, &mut aa_pixels, style);
+            let reordered =
+                calc_graph_row_image(pos, 4, &edges, &aa_params, &mut aa_pixels, style, None);
             assert_eq!(aa.bytes, reordered.bytes);
         }
+    }
+
+    #[rstest]
+    fn test_merge_node(#[values(false, true)] antialias: bool) {
+        let colors = GraphColorSet::new(&GraphColorConfig::default());
+        let params = ImageParams::new(&colors, CellWidthType::Double, antialias);
+        let mut pixels = DrawingPixels::new(&params);
+        // the merge in the first column, the merged line coming in from the second: ─╮
+        let from_right = [
+            Edge::new(EdgeType::Right, 0, 0),
+            Edge::new(EdgeType::RightTop, 1, 0),
+        ];
+        let from_left = [
+            Edge::new(EdgeType::LeftTop, 0, 0),
+            Edge::new(EdgeType::Left, 1, 0),
+        ];
+        assert_eq!(Chevron::of(Fold::Unfolded, &from_right, 0), Chevron::Right);
+        assert_eq!(Chevron::of(Fold::Unfolded, &from_left, 1), Chevron::Left);
+        assert_eq!(Chevron::of(Fold::Folded, &[], 0), Chevron::Down);
+
+        let mut pixel = |merge, pos_x, edges: &[Edge], (x, y)| {
+            let row = calc_graph_row_image(
+                pos_x,
+                2,
+                edges,
+                &params,
+                &mut pixels,
+                GraphStyle::Rounded,
+                merge,
+            );
+            *image::load_from_memory(&row.bytes)
+                .unwrap()
+                .to_rgba8()
+                .get_pixel(x, y)
+        };
+        let color = params.edge_color(0);
+        // a commit's dot is filled, a merge's ring hollow, larger than the dot
+        assert_eq!(pixel(None, 0, &[], (25, 25)), color);
+        assert_ne!(pixel(Some(Fold::Folded), 0, &[], (25, 25)), color);
+        assert_ne!(pixel(None, 0, &[], (25, 25 - 16)), color);
+        assert_eq!(pixel(Some(Fold::Folded), 0, &[], (25, 25 - 16)), color);
+        // the starts of the chevrons, up the left of `>`, the right of `<`, the left of `v`
+        let (right, left, down) = ((22, 19), (28, 19), (19, 22));
+        assert_eq!(pixel(Some(Fold::Unfolded), 0, &from_right, right), color);
+        assert_ne!(pixel(Some(Fold::Unfolded), 0, &from_right, down), color);
+        assert_eq!(pixel(Some(Fold::Folded), 0, &[], down), color);
+        assert_ne!(pixel(Some(Fold::Folded), 0, &[], right), color);
+        let color = params.edge_color(1);
+        let in_second = |(x, y)| (50 + x, y);
+        assert_eq!(
+            pixel(Some(Fold::Unfolded), 1, &from_left, in_second(left)),
+            color
+        );
+        assert_ne!(
+            pixel(Some(Fold::Unfolded), 1, &from_left, in_second(right)),
+            color
+        );
     }
 
     #[rstest]
@@ -1518,7 +1697,7 @@ mod tests {
         let colors = GraphColorSet::new(&config);
         let params = ImageParams::new(&colors, CellWidthType::Double, true);
         let mut pixels = DrawingPixels::new(&params);
-        let row = calc_graph_row_image(0, 1, &[], &params, &mut pixels, GraphStyle::Rounded);
+        let row = calc_graph_row_image(0, 1, &[], &params, &mut pixels, GraphStyle::Rounded, None);
         let image = image::load_from_memory(&row.bytes).unwrap().to_rgba8();
         assert_eq!(*image.get_pixel(25, 25), params.edge_color(0));
         let outline = if params.circle_edge_color[3] == 0 {
@@ -1584,6 +1763,7 @@ mod tests {
                     &image_params,
                     &mut drawing_pixels,
                     graph_style,
+                    None,
                 )
             })
             .collect();

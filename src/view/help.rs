@@ -157,6 +157,7 @@ fn build_lines(
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
         (vec![UserEvent::GoToTop], "Go to top".into()),
         (vec![UserEvent::GoToBottom], "Go to bottom".into()),
+        (vec![UserEvent::NavigateLeft, UserEvent::NavigateRight], "Fold/Unfold the selected merge commit".into()),
         (vec![UserEvent::PageDown], "Scroll page down".into()),
         (vec![UserEvent::PageUp], "Scroll page up".into()),
         (vec![UserEvent::HalfPageDown], "Jump half page down, scrolling as needed".into()),

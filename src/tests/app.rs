@@ -140,10 +140,15 @@ impl Harness {
         let mut steps = steps.into_iter().flatten();
         let mut refresh: Refresh = None;
         let mut repository = None;
+        let mut load = true;
         let (path, ctx, ec, quit) = (&self.path, &self.ctx, &self.ec, &mut self.quit);
         loop {
-            let loaded = self.loader.load(&mut refresh, &mut repository).unwrap();
-            self.loads += 1;
+            let loaded = if load {
+                self.loads += 1;
+                self.loader.load(&mut refresh, &mut repository).unwrap()
+            } else {
+                repository.as_ref().unwrap()
+            };
             // what the app was before reloading, None once done
             let next = self
                 .loader
@@ -154,7 +159,8 @@ impl Harness {
                                 *quit = true;
                                 None
                             }
-                            Ret::Refresh(context) => Some((app.into_shell(), context)),
+                            Ret::Refresh(context) => Some((app.into_shell(), context, true)),
+                            Ret::Regraph(context) => Some((app.into_shell(), context, false)),
                         };
                     }
                     take_step(steps.next()?, &mut app, path, ec);
@@ -162,7 +168,10 @@ impl Harness {
                 .unwrap();
             match next {
                 None => return,
-                next => refresh = next,
+                Some((shell, context, reload)) => {
+                    refresh = Some((shell, context));
+                    load = reload;
+                }
             }
         }
     }
@@ -733,6 +742,78 @@ fn test_half_page_jump_in_the_sidebar() {
         keys("ctrl-d ctrl-u"),
         selected("b18"),
     ]);
+}
+
+#[test]
+fn test_fold_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let shown = |count: usize, folded: usize| {
+        check(move |app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().position(), (1, count));
+            assert_eq!(app.shell.folded_merges().len(), folded);
+        })
+    };
+    harness.run(vec![
+        // the merge, selected; right does nothing while it is unfolded
+        keys("l"),
+        shown(4, 0),
+        // feat1, only it brought in, goes
+        keys("h"),
+        shown(3, 1),
+        keys("h"),
+        shown(3, 1),
+        keys("l"),
+        shown(4, 0),
+    ]);
+    // the graph is drawn again, the repository isn't loaded again
+    assert_eq!(harness.loads, 1);
+}
+
+#[test]
+fn test_fold_merge_with_branch_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let shown = |count: usize, note: Option<&'static str>| {
+        check(move |app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().position().1, count);
+            assert_eq!(graph_note(app).as_deref(), note);
+        })
+    };
+    harness.run(vec![
+        keys("h"),
+        shown(3, None),
+        // the merge stays folded in the history of the branch, and back in all of it
+        keys("shift-l"),
+        shown(3, Some("master only")),
+        keys("l"),
+        shown(4, Some("master only")),
+        keys("h"),
+        shown(3, Some("master only")),
+        keys("shift-l"),
+        shown(3, None),
+        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+    ]);
+    // the branch only view loads the repository again, folding draws the graph again only
+    assert_eq!(harness.loads, 3);
 }
 
 #[test]

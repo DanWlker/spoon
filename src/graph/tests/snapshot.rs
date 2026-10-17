@@ -84,7 +84,11 @@ fn render_graph_image(path: &Path, option: &GenerateGraphOption) -> image::RgbaI
     let graph_color_set = color::GraphColorSet::new(&graph_color_config);
     let cell_width_type = option.cell_width_type;
     let repository = git::Repository::load(path, option.sort, max_count, true).unwrap();
-    let graph = graph::calc_graph(&repository, option.primary_branch.as_deref());
+    let graph = graph::calc_graph(
+        &repository,
+        option.primary_branch.as_deref(),
+        &Default::default(),
+    );
     let image_params = graph::ImageParams::new(&graph_color_set, cell_width_type, option.antialias);
     let mut drawing_pixels = graph::DrawingPixels::new(&image_params);
     let row_images: Vec<_> = graph

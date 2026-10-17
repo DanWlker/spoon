@@ -18,7 +18,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
     DefaultTerminal, Frame, Terminal,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
         moves_head_command, run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
         GitTask, Head, Ref, Repository,
     },
-    graph::GraphImageManager,
+    graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
     layout::{fit_size, Direction, Edge, Panel, PanelLayout},
@@ -96,6 +96,8 @@ pub enum Ret {
     Quit,
     // reload the repository and show the view of the context again
     Refresh(Box<RefreshViewContext>),
+    // draw the graph again, of the repository as loaded, see `AppShell::folded_merges`
+    Regraph(Box<RefreshViewContext>),
 }
 
 #[derive(Debug)]
@@ -208,6 +210,8 @@ pub struct AppShell {
     notices: Vec<Notice>,
     // a rebase, merge, cherry-pick or revert waits to be finished, as last loaded, for the key hints
     operation_shown: bool,
+    // the merge commits folded in the graph, see `UserEvent::NavigateLeft`
+    folded_merges: FxHashSet<CommitHash>,
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
@@ -281,6 +285,10 @@ impl AppShell {
             )),
             GraphFilter::Compare { refs, .. } => Some(format!("{} ↔ {}", refs.base, refs.target)),
         }
+    }
+
+    pub fn folded_merges(&self) -> &FxHashSet<CommitHash> {
+        &self.folded_merges
     }
 
     pub fn reset_graph_filter(&mut self) {
@@ -400,8 +408,13 @@ impl<'a> App<'a> {
                 overlay: None,
                 notices: Vec::new(),
                 operation_shown: false,
+                folded_merges: FxHashSet::default(),
             },
         };
+        // gone, like after a rebase
+        shell
+            .folded_merges
+            .retain(|h| repository.commit(h).is_some());
         shell.operation_shown = repository.operation_in_progress().is_some();
         // a git command still running from before the reload
         let running = ctx
@@ -690,6 +703,17 @@ impl App<'_> {
                 // the graph is drawn again from scratch
                 self.shell.last_frame = None;
                 return Ok(Some(Ret::Refresh(Box::new(context))));
+            }
+            AppEvent::FoldMerge { commit, fold } => {
+                match fold {
+                    Fold::Folded => self.shell.folded_merges.insert(commit),
+                    Fold::Unfolded => self.shell.folded_merges.remove(&commit),
+                };
+                if let Some(context) = self.view.refresh_context() {
+                    self.cleanup_graph_images()?;
+                    self.shell.last_frame = None;
+                    return Ok(Some(Ret::Regraph(Box::new(context))));
+                }
             }
             AppEvent::ClearStatusLine => {
                 self.clear_status_line();

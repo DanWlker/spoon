@@ -4,8 +4,9 @@ use rustc_hash::FxHashMap;
 use crate::graph::{
     geometry::Point,
     image::{
-        bezier_point, curved_connection_points, diagonal_connection, ConnectionKey, DrawingPixels,
-        GraphStyle, ImageParams, Pixels,
+        bezier_point, curved_connection_points, diagonal_connection, merge_disk_contains,
+        merge_mark_contains, Chevron, ConnectionKey, DrawingPixels, GraphStyle, ImageParams,
+        Pixels,
     },
     Edge, EdgeType,
 };
@@ -22,6 +23,8 @@ type Coverage = FxHashMap<(i32, i32), u16>;
 pub struct Masks {
     circle: Coverage,
     circle_edge: Coverage,
+    merge_disk: Coverage,
+    merge_marks: FxHashMap<Chevron, Coverage>,
     corners: [Coverage; 4],
     diagonal_connections: FxHashMap<ConnectionKey, Coverage>,
     curved_connections: FxHashMap<ConnectionKey, Coverage>,
@@ -65,9 +68,23 @@ impl Masks {
             });
             mask
         });
+        let mut merge_disk = Coverage::default();
+        sample_shape(&mut merge_disk, bounds, |p| merge_disk_contains(p, params));
+        let merge_marks = Chevron::ALL
+            .into_iter()
+            .map(|chevron| {
+                let mut mask = Coverage::default();
+                sample_shape(&mut mask, bounds, |p| {
+                    merge_mark_contains(p, params, chevron)
+                });
+                (chevron, mask)
+            })
+            .collect();
         Self {
             circle,
             circle_edge: outer,
+            merge_disk,
+            merge_marks,
             corners,
             diagonal_connections: FxHashMap::default(),
             curved_connections: FxHashMap::default(),
@@ -139,6 +156,7 @@ pub fn render(
     params: &ImageParams,
     pixels: &mut DrawingPixels,
     style: GraphStyle,
+    chevron: Option<Chevron>,
 ) -> RgbaImage {
     let background = if params.background_color[3] == 0 {
         Rgba([0; 4])
@@ -152,9 +170,11 @@ pub fn render(
     );
     let masks = pixels.antialias.as_mut().unwrap();
     let offset = (commit_pos_x * params.width as usize) as i32;
-    image.paint(&masks.circle, offset, params.edge_color(commit_pos_x));
-    if params.circle_edge_color[3] != 0 {
-        image.paint(&masks.circle_edge, offset, params.circle_edge_color);
+    if chevron.is_none() {
+        image.paint(&masks.circle, offset, params.edge_color(commit_pos_x));
+        if params.circle_edge_color[3] != 0 {
+            image.paint(&masks.circle_edge, offset, params.circle_edge_color);
+        }
     }
     let mut ordered_edges: Vec<_> = edges.iter().collect();
     ordered_edges.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
@@ -204,6 +224,17 @@ pub fn render(
                 params.edge_color(corner.associated_line_pos_x),
             );
         }
+    }
+    // over the lines, which it hides under it
+    if let Some(chevron) = chevron {
+        let masks = pixels.antialias.as_ref().unwrap();
+        let offset = (commit_pos_x * params.width as usize) as i32;
+        image.paint(&masks.merge_disk, offset, background);
+        image.paint(
+            &masks.merge_marks[&chevron],
+            offset,
+            params.edge_color(commit_pos_x),
+        );
     }
     image.resolve()
 }

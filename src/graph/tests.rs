@@ -1412,7 +1412,7 @@ fn orphan_003() -> TestResult {
 
     // Every row has the same empty edge list, but its commit is in a different column.
     let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
-    let graph = graph::calc_graph(&repository, None);
+    let graph = graph::calc_graph(&repository, None, &Default::default());
     assert!(graph.edges.iter().all(Vec::is_empty));
     assert_eq!(
         graph
@@ -1642,7 +1642,7 @@ fn complex_002() -> TestResult {
     }
 
     let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
-    let graph = graph::calc_graph(&repository, None);
+    let graph = graph::calc_graph(&repository, None, &Default::default());
     let mut connections: FxHashMap<(graph::EdgeType, usize), FxHashSet<(usize, usize)>> =
         FxHashMap::default();
     for edges in &graph.edges {
@@ -1790,7 +1790,7 @@ fn primary_branch_001() -> TestResult {
 
     let normal_repository =
         git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
-    let normal_graph = graph::calc_graph(&normal_repository, None);
+    let normal_graph = graph::calc_graph(&normal_repository, None, &Default::default());
     let normal_feature_tip = normal_graph
         .commits
         .iter()
@@ -1803,7 +1803,7 @@ fn primary_branch_001() -> TestResult {
 
     for sort in [git::SortCommit::Chronological, git::SortCommit::Topological] {
         let repository = git::Repository::load(repo_path, sort, None, true)?;
-        let graph = graph::calc_graph(&repository, Some("master"));
+        let graph = graph::calc_graph(&repository, Some("master"), &Default::default());
 
         assert_eq!(graph.warning, None);
 
@@ -1864,7 +1864,7 @@ fn primary_branch_merge_back() -> TestResult {
     git.checkout("master");
 
     let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
-    let graph = graph::calc_graph(&repository, Some("master"));
+    let graph = graph::calc_graph(&repository, Some("master"), &Default::default());
 
     let m4 = graph.commits.iter().find(|c| c.subject == "004").unwrap();
     let merge_commit = graph
@@ -1910,8 +1910,9 @@ fn primary_branch_fallback_unresolved_or_none() -> TestResult {
 
     let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
 
-    let graph_none = graph::calc_graph(&repository, None);
-    let graph_unknown = graph::calc_graph(&repository, Some("nonexistent_branch"));
+    let graph_none = graph::calc_graph(&repository, None, &Default::default());
+    let graph_unknown =
+        graph::calc_graph(&repository, Some("nonexistent_branch"), &Default::default());
 
     // Unknown branch must fall back gracefully to the normal layout
     assert_eq!(graph_none.commit_pos_map, graph_unknown.commit_pos_map);
@@ -1945,8 +1946,8 @@ fn primary_branch_max_count() -> TestResult {
     // Must return warning and fall back to the normal graph layout.
     let repo_truncated =
         git::Repository::load(repo_path, git::SortCommit::Chronological, Some(2), true)?;
-    let graph_truncated = graph::calc_graph(&repo_truncated, Some("master"));
-    let graph_normal = graph::calc_graph(&repo_truncated, None);
+    let graph_truncated = graph::calc_graph(&repo_truncated, Some("master"), &Default::default());
+    let graph_normal = graph::calc_graph(&repo_truncated, None, &Default::default());
     assert_eq!(graph_truncated.commit_pos_map, graph_normal.commit_pos_map);
     assert_eq!(
         graph_truncated.warning.as_deref(),
@@ -1957,7 +1958,7 @@ fn primary_branch_max_count() -> TestResult {
     // Feature commits must be on pos_x = 1, and master commits on pos_x = 0.
     let repo_full =
         git::Repository::load(repo_path, git::SortCommit::Chronological, Some(5), true)?;
-    let graph_full = graph::calc_graph(&repo_full, Some("master"));
+    let graph_full = graph::calc_graph(&repo_full, Some("master"), &Default::default());
     let feat3_full = graph_full
         .commits
         .iter()
@@ -1975,7 +1976,7 @@ fn primary_branch_max_count() -> TestResult {
     // Pinning the visible part of the spine to column 0.
     let repo_part =
         git::Repository::load(repo_path, git::SortCommit::Chronological, Some(4), true)?;
-    let graph_part = graph::calc_graph(&repo_part, Some("master"));
+    let graph_part = graph::calc_graph(&repo_part, Some("master"), &Default::default());
     let feat3_part = graph_part
         .commits
         .iter()
@@ -1989,5 +1990,65 @@ fn primary_branch_max_count() -> TestResult {
     assert_eq!(graph_part.commit_pos_map[&feat3_part.commit_hash].0, 1);
     assert_eq!(graph_part.commit_pos_map[&m2_part.commit_hash].0, 0);
 
+    Ok(())
+}
+
+#[test]
+fn fold_merge_hides_only_what_it_alone_reaches() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+    git.commit("base", "2024-01-01");
+    git.checkout_b("feat");
+    git.commit("f1", "2024-01-02");
+    git.commit("f2", "2024-01-03");
+    git.checkout("master");
+    git.commit("m1", "2024-01-04");
+    git.merge(&["feat"], "2024-01-05");
+    git.stash("2024-01-06");
+
+    let subjects = |graph: &graph::Graph| -> Vec<String> {
+        graph.commits.iter().map(|c| c.subject.clone()).collect()
+    };
+    let load = || git::Repository::load(repo_path, git::SortCommit::Chronological, None, true);
+
+    let repository = load()?;
+    let graph = graph::calc_graph(&repository, None, &Default::default());
+    // the stash isn't a merge, its other parents aren't loaded
+    let merges: Vec<_> = graph
+        .merges
+        .iter()
+        .map(|(h, f)| ((*h).clone(), *f))
+        .collect();
+    let [(merge, graph::Fold::Unfolded)] = &merges[..] else {
+        panic!("{merges:?}")
+    };
+    let folded = [merge.clone()].into_iter().collect();
+
+    // feat still points at f2, nothing goes but the merge line
+    let graph = graph::calc_graph(&repository, None, &folded);
+    assert_eq!(subjects(&graph).len(), 6);
+    assert_eq!(graph.merges[merge], graph::Fold::Folded);
+
+    git.branch_d("feat");
+    let repository = load()?;
+    let graph = graph::calc_graph(&repository, None, &folded);
+    let shown = subjects(&graph);
+    assert!(
+        !shown.contains(&"f1".into()) && !shown.contains(&"f2".into()),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains(&"m1".into()) && shown.contains(&"base".into()),
+        "{shown:?}"
+    );
+    // the merge is drawn as a commit on the line of its first parent
+    let (merge_x, _) = graph.commit_pos_map[merge];
+    assert!(graph
+        .commits
+        .iter()
+        .all(|c| graph.commit_pos_map[&c.commit_hash].0 == merge_x));
     Ok(())
 }
