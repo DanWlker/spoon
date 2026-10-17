@@ -243,13 +243,15 @@ fn repository(dir: &Path) -> PathBuf {
 // `repository` pushed to `dir/remote.git` as origin, master and feat tracking their branches there.
 fn with_remote(dir: &Path) -> PathBuf {
     let path = repository(dir);
-    git(dir, &["init", "-q", "--bare", "remote.git"]);
+    git(dir, &["init", "-q", "--bare", "-b", "master", "remote.git"]);
     let remote = dir.join("remote.git");
     git(
         &path,
         &["remote", "add", "origin", remote.to_str().unwrap()],
     );
     git(&path, &["push", "-q", "-u", "origin", "master", "feat"]);
+    // origin/HEAD, as a clone has: else git 2.48+ creates it on the first fetch
+    git(&path, &["remote", "set-head", "origin", "master"]);
     path
 }
 
