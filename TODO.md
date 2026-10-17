@@ -11,4 +11,5 @@ TODO:
 1. Interactive rebase, Shift R? need to find another keybind for refresh
 1. if ]f pressed in a diff pane, it should go to the next search result and display that diff, while still keeping focus on diff pane, same with ]f
 1. Remove user command function
-1.should be able to search in diff panel
+1. should be able to search in diff panel
+1. add command line option to launch local changes page on start and minimize side panel on statt
