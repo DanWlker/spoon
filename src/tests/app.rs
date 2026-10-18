@@ -1258,6 +1258,45 @@ fn test_no_match_said_alike_on_every_page() {
 }
 
 #[test]
+fn test_diff_keys_alike_on_every_page() {
+    // the keys into a diff, at its hunks, and the page they are on
+    let pages = [
+        ("3 enter", StartPage::Graph),
+        ("4 shift-t l", StartPage::Graph),
+        ("enter", StartPage::LocalChanges),
+    ];
+    // what the keys popup names enter and y
+    let named = |enter: Option<&'static str>, copy: &'static str, to: &'static str| {
+        check(move |app| {
+            let keys = app.keys_popup_keys();
+            let action = |key: &str| {
+                let label = keys.iter().find(|k| k.keys == key);
+                label.map(|k| k.action.as_str())
+            };
+            assert_eq!(
+                (action("enter"), action("y")),
+                (enter, Some(copy)),
+                "{to:?}"
+            );
+        })
+    };
+    for (to, page) in pages {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        harness.run(vec![
+            keys(to),
+            keys("shift-h"),
+            named(Some("select lines"), "copy hunk", to),
+            keys("shift-h enter shift-h"),
+            // already on the lines, enter does nothing
+            named(None, "copy line", to),
+        ]);
+    }
+}
+
+#[test]
 fn test_timeline_shows_a_commit_on_the_graph() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

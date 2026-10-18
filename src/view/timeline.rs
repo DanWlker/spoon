@@ -17,7 +17,8 @@ use crate::{
     search::SearchKind,
     view::{
         commit_event, copy_selection, file_link, not_found, query_status, register_commit_keys,
-        register_moving_keys, revision_matches, revision_spans, type_query, typing_keys,
+        register_diff_keys, register_moving_keys, revision_matches, revision_spans, type_query,
+        typing_keys,
     },
     widget::{
         diff::{parse_diff, Step},
@@ -256,14 +257,7 @@ impl TimelineView {
             "older/newer commit",
             "Select the older/newer commit, from the diff too",
         );
-        k.add(
-            &[Confirm],
-            "select lines",
-            "Select the commit on the graph, closing the window; in the diff, select lines",
-        )
-        .when(diff);
-        k.add(&[ShortCopy], "copy", "Copy the hunk or line, in the diff")
-            .when(diff);
+        register_diff_keys(k, |v| v.pane.is_focused().then_some(&v.pane));
         k.add(
             &[OpenInBrowser],
             "open in browser",

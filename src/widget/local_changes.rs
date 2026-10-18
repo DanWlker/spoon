@@ -21,6 +21,7 @@ use crate::{
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions},
+    view::register_diff_keys,
     widget::{
         conflict::ConflictView,
         diff::{parse_diff, DiffPart, Step, CONVERTED_DIFF},
@@ -899,13 +900,7 @@ impl<'a> LocalChangesState<'a> {
             !v.changes.staged.is_empty() || v.draft.amend.is_some() || v.operation.is_some()
         };
         let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
-        let what = |v: &Self| {
-            if v.pane.is_selecting_lines() {
-                "line"
-            } else {
-                "hunk"
-            }
-        };
+        let what = |v: &Self| v.pane.selected_part().name();
         // committing, or amending, or continuing an operation
         let commit_word = |v: &Self| {
             if v.editing_commit() || v.draft.amend.is_some() {
@@ -940,13 +935,13 @@ impl<'a> LocalChangesState<'a> {
         .short(|v| format!("{} {}", stage(v), what(v)));
         k.add(
             &[Confirm],
-            "hunks",
+            "select hunks",
             "Select the hunks of the diff, then their lines; resolve a conflict",
         )
         .when(|v| files(v) && !empty(v))
         .short(|v| {
             let resolve = v.conflict.is_some() && !picks(v);
-            if resolve { "resolve" } else { "hunks" }.into()
+            if resolve { "resolve" } else { "select hunks" }.into()
         });
         k.add(
             &[Confirm],
@@ -954,12 +949,7 @@ impl<'a> LocalChangesState<'a> {
             "On the empty staged files, go to the unstaged ones",
         )
         .when(|v| files(v) && empty(v) && !unstaged(v));
-        k.add(
-            &[Confirm],
-            "lines",
-            "Select the hunks of the diff, then their lines; resolve a conflict",
-        )
-        .when(|v| diff(v) && !v.pane.is_selecting_lines());
+        register_diff_keys(k, |v| (v.focus == Focus::Diff).then_some(&v.pane));
         k.add(
             &[Confirm],
             "choose",
@@ -974,9 +964,6 @@ impl<'a> LocalChangesState<'a> {
             "Discard the unstaged file, directory, hunk or line",
         )
         .when(|v| (row(v) || diff(v)) && unstaged(v));
-        k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
-            .when(diff)
-            .short(|v| format!("copy {}", what(v)));
         // on the empty unstaged files enter commits too, see `enter`; with nothing to commit they
         // say so, unlisted
         let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));

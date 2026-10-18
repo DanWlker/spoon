@@ -18,6 +18,7 @@ use crate::{
         commit_list::{CommitListState, SearchOutcome, SearchRefreshContext},
         commit_tabs::DetailTab,
         diff::DiffPart,
+        diff_pane::DiffPane,
         file_tree::{Entry, FileTreeRow},
         style::ListCursor,
         tree_query::{highlighted_text, name_matches, QueryChange, TreeQuery},
@@ -211,6 +212,24 @@ pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
         .when(applies);
     k.add(&[ScrollDown, ScrollUp], "scroll", "Scroll down/up")
         .when(applies);
+}
+
+// The keys of a diff, alike on every page, where `pane` gives it while it has the focus: into the
+// lines of the selected hunk, and copying the hunk or line.
+pub fn register_diff_keys<T: ?Sized>(k: &mut Keys<T>, pane: fn(&T) -> Option<&DiffPane>) {
+    use UserEvent::*;
+    k.add(
+        &[Confirm],
+        "select lines",
+        "Select the hunks of the diff, then their lines",
+    )
+    .when(|v| pane(v).is_some_and(|p| !p.is_selecting_lines()));
+    k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
+        .when(|v| pane(v).is_some())
+        .short(|v| {
+            let part = pane(v).map_or(DiffPart::Hunk, DiffPane::selected_part);
+            format!("copy {}", part.name())
+        });
 }
 
 // The keys of `commit_event`, where `applies`.

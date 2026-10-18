@@ -274,6 +274,16 @@ pub enum DiffPart {
     Line,
 }
 
+impl DiffPart {
+    // "copy hunk", "Applied the line"
+    pub fn name(self) -> &'static str {
+        match self {
+            DiffPart::Hunk => "hunk",
+            DiffPart::Line => "line",
+        }
+    }
+}
+
 // The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
 // commit changes select the same way.
 #[derive(Debug, Default, Clone)]

@@ -21,8 +21,9 @@ use crate::{
     search::SearchKind,
     view::{
         commit_event, copy_path, copy_selection, file_link, handle_search_event, not_found,
-        query_status, register_commit_list_keys, type_commit_search, type_query, typing_keys,
-        Compare, CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
+        query_status, register_commit_list_keys, register_diff_keys, type_commit_search,
+        type_query, typing_keys, Compare, CopyForm, ListFacts, ListRefreshViewContext,
+        RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -196,13 +197,9 @@ impl<'a> DetailView<'a> {
             "Select the lines of the preview",
         )
         .when(|v| entry(v) && tab(DetailTab::Files)(v));
-        k.add(
-            &[Confirm],
-            "select lines",
-            "Select the hunks of the diff, then their lines",
-        )
-        .when(|v| {
-            pane(v) && tab(DetailTab::Changes)(v) && !v.changes_state.pane.is_selecting_lines()
+        register_diff_keys(k, |v| {
+            let diff = v.focus() == Pane && v.tab == DetailTab::Changes;
+            diff.then_some(&v.changes_state.pane)
         });
         k.quiet(&[Confirm], "Close the details").when(on(Info));
         k.add(
@@ -213,22 +210,8 @@ impl<'a> DetailView<'a> {
         .when(|v| pane(v) && tab(DetailTab::Changes)(v));
         k.add(
             &[ShortCopy],
-            "copy hunk",
-            "Copy the selected hunk, line or preview line",
-        )
-        .when(|v| pane(v) && tab(DetailTab::Changes)(v))
-        .short(|v| {
-            let what = if v.changes_state.pane.is_selecting_lines() {
-                "line"
-            } else {
-                "hunk"
-            };
-            format!("copy {what}")
-        });
-        k.add(
-            &[ShortCopy],
             "copy line",
-            "Copy the selected hunk, line or preview line",
+            "Copy the selected line of the preview",
         )
         .when(|v| pane(v) && tab(DetailTab::Files)(v));
         k.add(
@@ -909,11 +892,7 @@ impl<'a> DetailView<'a> {
         else {
             return;
         };
-        let what = if self.changes_state.pane.is_selecting_lines() {
-            "line"
-        } else {
-            "hunk"
-        };
+        let what = self.changes_state.pane.selected_part().name();
         let task = GitTask {
             commands: vec![GitCommand::Apply.args(["-"])],
             input: Some(patch),
