@@ -9,8 +9,8 @@ use crate::{
     search::SearchOptions,
     widget::{
         diff::{
-            diff_line_count, diff_lines, render_diff_lines, DiffCursor, DiffHunk, DiffPart,
-            ParsedDiff, Step,
+            diff_lines, render_diff_lines, DiffCursor, DiffHunk, DiffPart, ParsedDiff, Step,
+            WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -228,17 +228,31 @@ impl DiffPane {
         search: Option<&str>,
     ) {
         let theme = &ctx.color_theme;
-        let count = self.diff.as_ref().map_or(0, diff_line_count);
+        let wrap = ctx.wrap.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
-        let range = self
-            .cursor
-            .scroll
-            .fit(count, area.height as usize, scrolloff);
         let Some(diff) = &self.diff else {
             return;
         };
-        render_scrollbar(buf, scrollbar, count, range.start, focused, theme);
-        let mut lines = diff_lines(diff, theme, range.clone(), area.width);
+        // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
+        // the rows are measured again, showing the selection again with them
+        if !self.cursor.wrap().matches(area.width, wrap) {
+            let map = WrapMap::of(diff, theme, area.width, wrap);
+            self.cursor.set_wrap_map(map);
+            if self.focus.is_some() {
+                let rows = self.cursor.highlighted(diff, self.selected_part());
+                self.cursor.scroll_to(rows);
+            }
+        }
+        let total = self.cursor.wrap().total();
+        let range = self
+            .cursor
+            .scroll
+            .fit(total, area.height as usize, scrolloff);
+        render_scrollbar(buf, scrollbar, total, range.start, focused, theme);
+        // only the rows the screen range overlaps are built
+        let rows = self.cursor.wrap().logical_rows(range.clone());
+        let skip = range.start - self.cursor.wrap().visual_start(rows.start);
+        let mut lines = diff_lines(diff, theme, rows.clone(), area.width);
         let highlighted = match self.focus {
             None => 0..0,
             Some(part) => self.cursor.highlighted(diff, part),
@@ -248,6 +262,79 @@ impl DiffPane {
                 highlight_match(line, query, ctx.search_options.get(), theme);
             }
         }
-        render_diff_lines(lines, range, highlighted, ctx.wrap.get(), theme, area, buf);
+        render_diff_lines(
+            rows.zip(lines),
+            skip..skip + range.len(),
+            highlighted,
+            wrap,
+            theme,
+            area,
+            buf,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        test_support::ui::{dump, test_ctx},
+        widget::diff::parse_diff,
+    };
+
+    // A diff whose rows fit the panel unwrapped, so only their wrapping makes it scroll.
+    fn long_line_diff() -> ParsedDiff {
+        parse_diff(&format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+{}\n",
+            "x".repeat(80)
+        ))
+    }
+
+    fn draw(pane: &mut DiffPane, ctx: &AppContext, area: Rect) -> Buffer {
+        let mut buf = Buffer::empty(area);
+        let scrollbar = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+        pane.render(area, scrollbar, &mut buf, ctx, false, None);
+        buf
+    }
+
+    #[test]
+    fn test_wrap_scrolls_the_wrapped_rows() {
+        let ctx = test_ctx();
+        ctx.wrap.set(true);
+        let area = Rect::new(0, 0, 20, 5);
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(long_line_diff()));
+
+        let top = draw(&mut pane, &ctx, area);
+        assert_eq!(pane.cursor.scroll.offset, 0);
+        // the wrapped rows are more than the panel, so a page down moves the view
+        assert!(pane.cursor.wrap().total() > area.height as usize);
+        pane.scroll(UserEvent::PageDown);
+        let scrolled = draw(&mut pane, &ctx, area);
+        assert!(
+            pane.cursor.scroll.offset > 0,
+            "the wrapped diff didn't scroll"
+        );
+        assert_ne!(dump(&top), dump(&scrolled));
+
+        // and back to the top
+        pane.scroll(UserEvent::PageUp);
+        draw(&mut pane, &ctx, area);
+        assert_eq!(pane.cursor.scroll.offset, 0);
+    }
+
+    #[test]
+    fn test_unwrapped_diff_does_not_scroll() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 20, 5);
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(long_line_diff()));
+
+        draw(&mut pane, &ctx, area);
+        // the logical rows fit the panel, so there is nothing to scroll
+        assert_eq!(pane.cursor.wrap().total(), 3);
+        pane.scroll(UserEvent::PageDown);
+        draw(&mut pane, &ctx, area);
+        assert_eq!(pane.cursor.scroll.offset, 0);
     }
 }

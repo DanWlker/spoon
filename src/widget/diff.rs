@@ -284,6 +284,95 @@ impl DiffPart {
     }
 }
 
+// The screen rows the rows of a diff wrap to, with a running total: the first screen row of each
+// logical row, and one past the last. The scroll counts these while wrapping, see
+// `DiffCursor::scroll_to`.
+#[derive(Debug, Default, Clone)]
+pub struct WrapMap {
+    width: u16,
+    wrap: bool,
+    // prefix[i] = the screen row logical row i starts on; one longer than the rows
+    prefix: Vec<usize>,
+}
+
+impl WrapMap {
+    // The rows of `diff` at `width`, wrapped when `wrap`; built once per width or wrap change, so
+    // drawing still builds only the rows it shows.
+    pub fn of(diff: &ParsedDiff, theme: &ColorTheme, width: u16, wrap: bool) -> Self {
+        Self::from_lines(
+            diff_lines(diff, theme, 0..diff_line_count(diff), width).into_iter(),
+            width,
+            wrap,
+        )
+    }
+
+    // The screen rows `lines` wrap to at `width`, wrapped when `wrap`; the diff and the file
+    // preview measure the same way.
+    pub fn from_lines<'a>(lines: impl Iterator<Item = Line<'a>>, width: u16, wrap: bool) -> Self {
+        let mut prefix = vec![0];
+        let mut total = 0;
+        for line in lines {
+            total += visual_height(line, width, wrap);
+            prefix.push(total);
+        }
+        WrapMap {
+            width,
+            wrap,
+            prefix,
+        }
+    }
+
+    // Whether this is the map for `width` and `wrap`.
+    pub fn matches(&self, width: u16, wrap: bool) -> bool {
+        self.width == width && self.wrap == wrap
+    }
+
+    // The screen rows the diff takes.
+    pub fn total(&self) -> usize {
+        self.prefix.last().copied().unwrap_or(0)
+    }
+
+    // The screen rows logical `rows` take.
+    pub fn visual_range(&self, rows: Range<usize>) -> Range<usize> {
+        if self.prefix.len() <= 1 {
+            // no map yet: the rows are their own screen rows, so a selection made before the
+            // first draw still shows
+            return rows;
+        }
+        self.visual_start(rows.start)..self.visual_start(rows.end)
+    }
+
+    // The first screen row of logical row `row`, the end of the diff past its last.
+    pub fn visual_start(&self, row: usize) -> usize {
+        self.prefix
+            .get(row)
+            .copied()
+            .unwrap_or_else(|| self.total())
+    }
+
+    // The logical rows whose screen rows overlap `visual`.
+    pub fn logical_rows(&self, visual: Range<usize>) -> Range<usize> {
+        let start = self
+            .prefix
+            .partition_point(|&p| p <= visual.start)
+            .saturating_sub(1);
+        let end = self
+            .prefix
+            .partition_point(|&p| p < visual.end)
+            .min(self.prefix.len().saturating_sub(1));
+        start..end
+    }
+}
+
+// The screen rows `line` takes in `width`, wrapped when `wrap`.
+fn visual_height(line: Line, width: u16, wrap: bool) -> usize {
+    if wrap {
+        wrap_line(line, width as usize).len()
+    } else {
+        1
+    }
+}
+
 // The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
 // commit changes select the same way.
 #[derive(Debug, Default, Clone)]
@@ -292,6 +381,8 @@ pub struct DiffCursor {
     // a row of `ParsedDiff::rows`, a change of the hunk
     pub line: usize,
     pub scroll: ScrollState,
+    // the screen rows the diff's rows wrap to, for the scroll to count
+    wrap: WrapMap,
     // the row the search last matched, where the next one starts from
     search_row: Option<usize>,
 }
@@ -302,6 +393,16 @@ impl DiffCursor {
         let height = self.scroll.height;
         *self = DiffCursor::default();
         self.scroll.height = height;
+    }
+
+    // Measures the scroll against the rows `map` wraps to, see `WrapMap`.
+    pub fn set_wrap_map(&mut self, map: WrapMap) {
+        self.wrap = map;
+    }
+
+    // The wrapped rows the scroll counts against, see `WrapMap`.
+    pub fn wrap(&self) -> &WrapMap {
+        &self.wrap
     }
 
     // Selects a hunk, the last one past the end, showing it; false when there is none.
@@ -435,13 +536,14 @@ impl DiffCursor {
     }
 
     // Scrolls as little as can be to show `rows` with `scrolloff` rows around them, see
-    // `style::scroll_to`.
+    // `style::scroll_to`; `rows` are logical, counted as screen rows while wrapping.
     pub fn scroll_to(&mut self, rows: Range<usize>) {
         let ScrollState {
             offset,
             height,
             scrolloff,
         } = self.scroll;
+        let rows = self.wrap.visual_range(rows);
         // the rows aren't counted here: rendering keeps the offset within them, see `fit`
         self.scroll.offset = scroll_to(offset, rows, height, usize::MAX, scrolloff);
     }
@@ -879,25 +981,29 @@ fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
     }
 }
 
-// Renders the lines of `diff_lines` for `rows`, a line's background (added, removed) across
-// `area`, the `selected` rows marked on their line numbers and by the bar left of `area`;
-// long lines wrapped, when `wrap`.
-pub fn render_diff_lines(
-    lines: Vec<Line>,
-    rows: Range<usize>,
+// Renders `lines` with their logical row, the screen rows `screen` of them, a line's background
+// (added, removed) across `area`, the `selected` rows marked on their line numbers and by the bar
+// left of `area`; long lines wrapped at the width of `area`, when `wrap`.
+pub fn render_diff_lines<'a>(
+    lines: impl Iterator<Item = (usize, Line<'a>)>,
+    screen: Range<usize>,
     selected: Range<usize>,
     wrap: bool,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let lines = rows.zip(lines).map(|(row, mut line)| {
-        if selected.contains(&row) {
-            select_diff_line(&mut line, theme);
-        }
-        (row, line)
-    });
-    let visual = visual_rows(lines, wrap, &selected, area);
+    let visual = wrapped_rows(
+        lines.map(|(row, mut line)| {
+            if selected.contains(&row) {
+                select_diff_line(&mut line, theme);
+            }
+            (row, line)
+        }),
+        screen,
+        wrap,
+        area,
+    );
     for (y, (_, line)) in (area.y..).zip(&visual) {
         if let Some(bg) = line.style.bg {
             buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(bg));
@@ -906,35 +1012,30 @@ pub fn render_diff_lines(
     render_visual_rows(visual, &selected, theme, area, buf);
 }
 
-// The screen rows showing `lines` (a row of the text each) in `area`: wrapped at its width when
-// `wrap`, and starting further down when wrapping pushed the `selected` rows out of it.
-pub fn visual_rows<'a>(
+// The screen rows `screen` of `lines` with their logical row, wrapped at the width of `area` when
+// `wrap`; only the rows shown are built.
+pub fn wrapped_rows<'a>(
     lines: impl Iterator<Item = (usize, Line<'a>)>,
+    screen: Range<usize>,
     wrap: bool,
-    selected: &Range<usize>,
     area: Rect,
-) -> Vec<(usize, Line<'a>)> {
+) -> Vec<(usize, Line<'static>)> {
     let width = area.width as usize;
-    let mut visual: Vec<(usize, Line<'a>)> = Vec::new();
-    for (row, line) in lines {
-        if wrap {
-            visual.extend(wrap_line(line, width).into_iter().map(|l| (row, l)));
-        } else {
-            visual.push((row, line));
-        }
-    }
-    let height = area.height as usize;
-    let first = visual.iter().position(|(row, _)| selected.contains(row));
-    let last = visual.iter().rposition(|(row, _)| selected.contains(row));
-    if let (Some(first), Some(last)) = (first, last) {
-        let skip = (last + 1).saturating_sub(height).min(first);
-        visual.drain(..skip);
-    }
-    visual.truncate(height);
-    visual
+    lines
+        .flat_map(|(row, line)| {
+            let wrapped = if wrap {
+                wrap_line(line, width)
+            } else {
+                vec![owned(line)]
+            };
+            wrapped.into_iter().map(move |line| (row, line))
+        })
+        .skip(screen.start)
+        .take(screen.len())
+        .collect()
 }
 
-// Draws the rows of `visual_rows`, with the bar left of `area` beside the `selected` ones.
+// Draws screen rows, with the bar left of `area` beside the `selected` ones.
 pub fn render_visual_rows(
     visual: Vec<(usize, Line)>,
     selected: &Range<usize>,
@@ -1102,13 +1203,13 @@ mod tests {
         let rows = wrap_line(selected, 7);
         assert_eq!(rows[1].spans[0].style.bg, Some(ratatui::style::Color::Red));
 
-        // the selected row kept in view below the rows wrapping above it
+        // the screen rows asked for, wrapped or one per line
         let lines = (0..3).map(|i| (i, line("abcdefghijkl")));
-        let visual = visual_rows(lines, true, &(2..3), Rect::new(0, 0, 7, 4));
+        let visual = wrapped_rows(lines, 5..9, true, Rect::new(0, 0, 7, 4));
         let rows: Vec<usize> = visual.iter().map(|(row, _)| *row).collect();
         assert_eq!(rows, [1, 2, 2, 2]);
         let lines = (0..3).map(|i| (i, line("abcdefghijkl")));
-        let visual = visual_rows(lines, false, &(2..3), Rect::new(0, 0, 7, 4));
+        let visual = wrapped_rows(lines, 0..4, false, Rect::new(0, 0, 7, 4));
         assert_eq!(visual.len(), 3);
     }
 

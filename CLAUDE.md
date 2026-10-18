@@ -8,6 +8,7 @@ Dialogs (`GitDialog`), search (`tree_query`, `SearchOptions`: smart case, fuzzy 
 
 ## UI and keybinds
 
+- One key per action; a key does nothing, and is not shown, where it does not apply.
 - Keys never act on a view other than the focused one, except page-level commands like committing.
 - The selection bar, highlights, borders, titles, folder chevrons and colours look the same on every panel.
 - Everything hjkl navigates, arrow keys navigate too.
