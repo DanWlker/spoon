@@ -36,7 +36,7 @@ use crate::{
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel, PanelLayout},
+    layout::{fit_size, Direction, Edge, Panel, PanelLayout, Size},
     protocol::ImageProtocol,
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::SearchOptions,
@@ -277,11 +277,11 @@ impl FileWindow {
     }
 
     // See `View::resizable_panel`.
-    fn resizable_panel(&self, vertical: bool) -> Option<Panel> {
-        match self {
-            FileWindow::Blame(_) if vertical => Some(Panel::BlameCommits),
-            FileWindow::Timeline(_) if vertical => Some(Panel::TimelineCommits),
-            _ => None,
+    fn resizable_panel(&self, size: Size) -> Option<Panel> {
+        match (self, size) {
+            (FileWindow::Blame(_), Size::Width) => Some(Panel::BlameCommits),
+            (FileWindow::Timeline(_), Size::Width) => Some(Panel::TimelineCommits),
+            (_, Size::Height) => None,
         }
     }
 
@@ -685,13 +685,21 @@ impl App<'_> {
                     self.dispatch(event, key);
                 }
             }
+            // the wheel moves the selection of what has the focus like j and k, whatever keys they
+            // are bound to; over a popup, or while typing, it does nothing
             AppEvent::Mouse(mouse)
                 if matches!(
                     mouse.kind,
                     MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
                 ) =>
             {
-                self.scroll_wheel(mouse.kind == MouseEventKind::ScrollDown);
+                let (event, code) = match mouse.kind {
+                    MouseEventKind::ScrollDown => (UserEvent::NavigateDown, KeyCode::Down),
+                    _ => (UserEvent::NavigateUp, KeyCode::Up),
+                };
+                if self.shell.dialog.is_none() && !self.is_typing() {
+                    self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
+                }
             }
             AppEvent::Mouse(mouse) => {
                 let mut layout = self.ctx.layout.borrow_mut();
@@ -933,21 +941,6 @@ impl App<'_> {
     // these are in the status bar, else those of the whole app, the others in the keys popup.
     fn keys_are_local(&self) -> bool {
         self.visible_dialog().is_some() || self.shell.overlay.is_some() || self.is_typing()
-    }
-
-    // The wheel moves the selection of what has the focus like j and k, whatever keys they are bound
-    // to; over a popup, or while typing, it does nothing.
-    fn scroll_wheel(&mut self, down: bool) {
-        let event = if down {
-            UserEvent::NavigateDown
-        } else {
-            UserEvent::NavigateUp
-        };
-        let code = if down { KeyCode::Down } else { KeyCode::Up };
-        let key = KeyEvent::new(code, KeyModifiers::NONE);
-        if self.shell.dialog.is_none() && !self.is_typing() {
-            self.dispatch(event, key);
-        }
     }
 
     // Whether a search or filter is typed, in the window over everything or the page.
@@ -2244,18 +2237,19 @@ impl App<'_> {
     // Moves the border beside the focused panel with ctrl-left and ctrl-right (the sidebar, or the
     // files beside a diff), the one above or under it with ctrl-up and ctrl-down.
     fn move_border(&mut self, direction: Direction) {
-        let (vertical, step) = match direction {
-            Direction::Left => (true, -2),
-            Direction::Right => (true, 2),
-            Direction::Up => (false, -1),
-            Direction::Down => (false, 1),
+        let (size, step) = match direction {
+            Direction::Left => (Size::Width, -2),
+            Direction::Right => (Size::Width, 2),
+            Direction::Up => (Size::Height, -1),
+            Direction::Down => (Size::Height, 1),
         };
-        let sidebar = (!self.shell.sidebar_collapsed() && vertical).then_some(Panel::Sidebar);
+        let sidebar =
+            (!self.shell.sidebar_collapsed() && size == Size::Width).then_some(Panel::Sidebar);
         // the window over everything, else the sidebar or the page with the focus
         let panel = match &self.shell.overlay {
-            Some(Overlay::File(window)) => window.resizable_panel(vertical),
+            Some(Overlay::File(window)) => window.resizable_panel(size),
             _ if self.shell.sidebar_focused() => sidebar,
-            _ => self.view.resizable_panel(vertical).or(sidebar),
+            _ => self.view.resizable_panel(size).or(sidebar),
         };
         if let Some(panel) = panel {
             self.ctx.layout.borrow_mut().move_border(panel, step);

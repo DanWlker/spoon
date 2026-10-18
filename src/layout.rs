@@ -42,6 +42,14 @@ pub enum Direction {
     Down,
 }
 
+// What the resize keys change of a panel: its width with ctrl-left and ctrl-right, its height
+// with ctrl-up and ctrl-down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    Width,
+    Height,
+}
+
 // The edge of a panel its border is on, which dragging resizes it by: the right one is dragged
 // left and right, the bottom and top ones up and down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

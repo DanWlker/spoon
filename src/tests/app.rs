@@ -1196,6 +1196,30 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
 }
 
 #[test]
+fn test_esc_clears_the_picks_before_the_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let state = |picked: usize, searched: bool| {
+        check(move |app| {
+            let state = app.view.as_list_state().unwrap();
+            let shown = (state.picked_commit_hashes().len(), state.search_applied());
+            assert_eq!(shown, (picked, searched));
+        })
+    };
+    harness.run(vec![
+        keys("v /"),
+        typing("c"),
+        keys("enter"),
+        state(1, true),
+        keys("esc"),
+        state(0, true),
+        keys("esc"),
+        state(0, false),
+    ]);
+}
+
+#[test]
 fn test_no_match_said_alike_on_every_page() {
     // the keys to a search, and the page they are on
     let pages = [

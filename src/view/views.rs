@@ -7,7 +7,7 @@ use crate::{
     event::{Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keys::KeyList,
-    layout::{Direction, Panel},
+    layout::{Direction, Panel, Size},
     view::{
         detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
     },
@@ -102,14 +102,14 @@ impl<'a> View<'a> {
         }
     }
 
-    // The panel ctrl and the arrow keys resize, by its width when `vertical` (moving a border left
-    // or right), else by its height; none when the page has no such border there.
-    pub fn resizable_panel(&self, vertical: bool) -> Option<Panel> {
-        match self {
-            View::Detail(view) if vertical && view.shows_tree() => Some(Panel::DetailTree),
-            View::Detail(_) if !vertical => Some(Panel::Details),
-            View::LocalChanges(_) if vertical => Some(Panel::Files),
-            View::LocalChanges(view) => Some(view.height_panel()),
+    // The panel ctrl and the arrow keys resize, by its `size`; none when the page has no such
+    // border there.
+    pub fn resizable_panel(&self, size: Size) -> Option<Panel> {
+        match (self, size) {
+            (View::Detail(view), Size::Width) if view.shows_tree() => Some(Panel::DetailTree),
+            (View::Detail(_), Size::Height) => Some(Panel::Details),
+            (View::LocalChanges(_), Size::Width) => Some(Panel::Files),
+            (View::LocalChanges(view), Size::Height) => Some(view.height_panel()),
             _ => None,
         }
     }

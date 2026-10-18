@@ -25,7 +25,7 @@ pub enum AppEvent {
     OpenDialog(Box<crate::widget::git_dialog::GitDialog>),
     Key(KeyEvent),
     // pressing, dragging and releasing the left button, to drag the borders of the panels, and the
-    // wheel, see `App::scroll_wheel`
+    // wheel, see `App::handle_event`
     Mouse(MouseEvent),
     Resize(usize, usize),
     Quit,

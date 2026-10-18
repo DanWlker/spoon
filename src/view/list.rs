@@ -48,6 +48,12 @@ impl<'a> ListView<'a> {
             type_commit_search(self.as_mut_list_state(), &ctx, &tx, key);
             return;
         }
+        // the picked commits are cleared before the search, like on every page
+        let picked = !self.as_list_state().picked_commit_hashes().is_empty();
+        if event == UserEvent::Cancel && picked {
+            self.as_mut_list_state().clear_picks();
+            return;
+        }
         if handle_search_event(self.as_mut_list_state(), &ctx, &tx, event) {
             return;
         }
@@ -66,10 +72,6 @@ impl<'a> ListView<'a> {
                 if let Some(event) = commit_event(event, commit) {
                     self.tx.send(event);
                 }
-            }
-            // an applied search is cleared first, see `handle_search_event`
-            UserEvent::Cancel => {
-                self.as_mut_list_state().clear_picks();
             }
             UserEvent::ToggleSelect => {
                 self.as_mut_list_state().toggle_pick();
@@ -227,16 +229,16 @@ pub fn register_commit_list_keys<T: ?Sized>(
         .when(works(Confirm));
     k.add(
         &[Cancel],
-        "clear search",
-        "Clear the search, then the picked commits",
+        "clear picks",
+        "Clear the picked commits, then the search",
     )
-    .when(move |v| works(Search)(v) && facts(v).search_applied);
+    .when(move |v| works(Cancel)(v) && facts(v).picked > 0);
     k.add(
         &[Cancel],
-        "clear picks",
-        "Clear the search, then the picked commits",
+        "clear search",
+        "Clear the picked commits, then the search",
     )
-    .when(move |v| works(Cancel)(v) && !facts(v).search_applied && facts(v).picked > 0);
+    .when(move |v| works(Search)(v) && facts(v).search_applied && facts(v).picked == 0);
     k.add_where(
         &[ToggleSelect],
         "pick",
