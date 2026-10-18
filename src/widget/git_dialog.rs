@@ -16,7 +16,8 @@ use crate::{
     event::{AppEvent, UserEvent},
     git::{
         parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
-        Conflict, FileChange, GitTask, NamedRef, RemoteInfo, MAX_CONFLICT_STEPS,
+        Conflict, FileChange, GitArgs, GitCommand, GitTask, NamedRef, Operation, RemoteInfo,
+        MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
     widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
@@ -332,16 +333,17 @@ impl GitDialog {
         Self::with(" Discard changes ", "discard", vec![prompt], kind)
     }
 
-    // Aborts the rebase, merge, cherry-pick or revert in progress, named like "rebase".
-    pub fn abort(operation: &str) -> Self {
+    // Aborts the rebase, merge, cherry-pick or revert in progress.
+    pub fn abort(operation: Operation) -> Self {
         let task = GitTask {
-            commands: vec![vec![operation.to_string(), "--abort".into()]],
-            running: format!("Aborting the {operation}"),
-            done: format!("Aborted the {operation}"),
+            commands: vec![GitCommand::Resume(operation).args(["--abort"])],
+            running: format!("Aborting the {}", operation.name()),
+            done: format!("Aborted the {}", operation.name()),
             ..Default::default()
         };
         let intro = vec![format!(
-            "Abort the {operation} and go back to where it started"
+            "Abort the {} and go back to where it started",
+            operation.name()
         )];
         let kind = DialogKind::Prepared {
             task: Box::new(task),
@@ -516,13 +518,13 @@ impl GitDialog {
         let mut branch_status = None;
         let (args, running, done) = match action {
             RemoteAction::Fetch => (
-                vec!["fetch".to_string(), remote.clone()],
+                GitCommand::Fetch.args([remote.clone()]),
                 format!("Fetching {remote}"),
                 format!("Fetched {remote}"),
             ),
             RemoteAction::Pull => {
                 let branch = self.value(FieldId::Branch);
-                let mut args = vec!["pull".to_string()];
+                let mut args = vec![];
                 // explicit, so the checkbox wins over pull.rebase
                 args.push(if self.checked(FieldId::Rebase) {
                     "--rebase".into()
@@ -547,7 +549,7 @@ impl GitDialog {
                         short: "↓",
                     });
                 (
-                    args,
+                    GitCommand::Pull.args(args),
                     format!("Pulling {remote}/{branch}"),
                     format!("Pulled {remote}/{branch}"),
                 )
@@ -558,7 +560,7 @@ impl GitDialog {
                 if remote_branch.is_empty() {
                     return Err("Choose a branch to push to".into());
                 }
-                let mut args = vec!["push".to_string()];
+                let mut args = vec![];
                 if self.checked(FieldId::Force) {
                     args.push("--force-with-lease".into());
                 }
@@ -587,7 +589,7 @@ impl GitDialog {
                     short: "↑",
                 });
                 (
-                    args,
+                    GitCommand::Push.args(args),
                     format!("{force} {branch} to {remote}/{remote_branch}"),
                     format!("Pushed {branch} to {remote}/{remote_branch}"),
                 )
@@ -595,7 +597,6 @@ impl GitDialog {
         };
         Ok(GitTask {
             commands: vec![args],
-            remote: true,
             running,
             done,
             branch_status,
@@ -626,7 +627,8 @@ impl GitDialog {
             "--no-autostash"
         };
         Ok(GitTask::new(
-            &["rebase", stash, onto],
+            GitCommand::Rebase,
+            &[stash, onto],
             description.replace("Rebased", "Rebasing"),
             description.to_string(),
         ))
@@ -652,7 +654,7 @@ impl GitDialog {
     }
 
     fn merge_command(&self, source: &str, description: &str) -> Result<GitTask, String> {
-        let mut args = vec!["merge"];
+        let mut args = vec![];
         args.extend_from_slice(match self.choice(FieldId::MergeType) {
             0 => &["--ff", "--no-edit"][..],
             1 => &["--no-ff", "--no-edit"],
@@ -671,7 +673,12 @@ impl GitDialog {
             } else {
                 AfterTask::Reload
             },
-            ..GitTask::new(&args, description.replace("Merged", "Merging"), done)
+            ..GitTask::new(
+                GitCommand::Merge,
+                &args,
+                description.replace("Merged", "Merging"),
+                done,
+            )
         })
     }
 
@@ -692,13 +699,13 @@ impl GitDialog {
     fn checkout_command(&self, targets: &[CheckoutTarget]) -> Result<GitTask, String> {
         let target = &targets[self.choice(FieldId::Target)];
         let local_changes = self.choice(FieldId::LocalChanges);
-        let mut args = vec!["checkout".to_string()];
+        let mut args = vec![];
         if local_changes == 2 {
             args.push("--force".into());
         }
         args.extend(target.args.iter().cloned());
         Ok(GitTask {
-            commands: vec![args],
+            commands: vec![GitCommand::Checkout.args(args)],
             stash: local_changes == 1,
             running: format!("Checking out {}", target.label),
             done: format!("Checked out {}", target.label),
@@ -721,7 +728,7 @@ impl GitDialog {
     }
 
     fn cherry_pick_command(&self, commits: &[DialogCommit]) -> Result<GitTask, String> {
-        let mut args = vec!["cherry-pick".to_string()];
+        let mut args = vec![];
         if !self.checked(FieldId::Commit) {
             args.push("--no-commit".into());
         }
@@ -731,7 +738,7 @@ impl GitDialog {
         args.extend(commits.iter().map(|c| c.hash.as_str().to_string()));
         let n = count_commits(commits.len());
         Ok(GitTask {
-            commands: vec![args],
+            commands: vec![GitCommand::CherryPick.args(args)],
             running: format!("Cherry-picking {n}"),
             done: format!("Cherry-picked {n}"),
             uses_picks: true,
@@ -796,14 +803,14 @@ impl GitDialog {
     }
 
     fn revert_command(&self, commits: &[DialogCommit]) -> Result<GitTask, String> {
-        let mut args = vec!["revert".to_string(), "--no-edit".into()];
+        let mut args = vec!["--no-edit".to_string()];
         if !self.checked(FieldId::Commit) {
             args.push("--no-commit".into());
         }
         args.extend(commits.iter().map(|c| c.hash.as_str().to_string()));
         let n = count_commits(commits.len());
         Ok(GitTask {
-            commands: vec![args],
+            commands: vec![GitCommand::Revert.args(args)],
             running: format!("Reverting {n}"),
             done: format!("Reverted {n}"),
             uses_picks: true,
@@ -931,12 +938,13 @@ impl GitDialog {
             return Err("A branch name can't start with -".into());
         }
         // tracking `from` when it is a remote branch, either way
-        let args: &[&str] = if self.checked(FieldId::Checkout) {
-            &["checkout", "-b", &name, &from]
+        let (command, args): (_, &[&str]) = if self.checked(FieldId::Checkout) {
+            (GitCommand::Checkout, &["-b", &name, &from])
         } else {
-            &["branch", &name, &from]
+            (GitCommand::Branch, &[&name, &from])
         };
         Ok(GitTask::new(
+            command,
             args,
             format!("Creating {name}"),
             format!("Created {name} from {}", start.label()),
@@ -975,8 +983,12 @@ impl GitDialog {
         names: &[String],
         upstreams: &[(String, String)],
     ) -> Result<GitTask, String> {
-        let mut args = vec!["branch".to_string(), "-D".into()];
-        args.extend(names.iter().cloned());
+        let args = GitCommand::Branch.args(
+            ["-D"]
+                .into_iter()
+                .map(String::from)
+                .chain(names.iter().cloned()),
+        );
         let what = names_label("branch", "branches", names);
         let mut task = GitTask {
             commands: vec![args],
@@ -987,7 +999,6 @@ impl GitDialog {
         if self.checked(FieldId::Force) {
             // the remote first: should it fail, offline say, nothing is deleted yet to retry it
             task.commands.splice(0..0, delete_on_remotes(upstreams));
-            task.remote = true;
             task.done = format!("Deleted {what}, also on the remote");
         }
         Ok(task)
@@ -1016,7 +1027,6 @@ impl GitDialog {
             commands,
             running: format!("Deleting {what}"),
             done: format!("Deleted {what}"),
-            remote: true,
             ..Default::default()
         })
     }
@@ -1071,21 +1081,16 @@ impl GitDialog {
         if new_name.starts_with('-') {
             return Err("A branch name can't start with -".into());
         }
-        let mut commands: Vec<Vec<String>> = vec![];
+        let mut commands = vec![];
         if new_name != *name {
-            commands.push(vec![
-                "branch".into(),
-                "-m".into(),
-                name.to_string(),
-                new_name.clone(),
-            ]);
+            commands.push(GitCommand::Branch.args(["-m", name, &new_name]));
         }
         if new_upstream != *upstream {
             let upstream_arg = match new_upstream {
                 None => "--unset-upstream".to_string(),
                 Some(new_upstream) => format!("--set-upstream-to={new_upstream}"),
             };
-            commands.push(vec!["branch".into(), upstream_arg, new_name.clone()]);
+            commands.push(GitCommand::Branch.args([upstream_arg, new_name.clone()]));
         }
         if commands.is_empty() {
             return Err("Change the name or the upstream".into());
@@ -1111,22 +1116,12 @@ impl GitDialog {
 
     fn edit_remote_command(&self, name: &str, url: &str) -> Result<GitTask, String> {
         let (new_name, new_url) = self.remote_values()?;
-        let mut commands: Vec<Vec<String>> = vec![];
+        let mut commands = vec![];
         if new_name != *name {
-            commands.push(vec![
-                "remote".into(),
-                "rename".into(),
-                name.to_string(),
-                new_name.clone(),
-            ]);
+            commands.push(GitCommand::Remote.args(["rename", name, &new_name]));
         }
         if new_url != *url {
-            commands.push(vec![
-                "remote".into(),
-                "set-url".into(),
-                new_name.clone(),
-                new_url,
-            ]);
+            commands.push(GitCommand::Remote.args(["set-url", &new_name, &new_url]));
         }
         if commands.is_empty() {
             return Err("Change the name or the URL".into());
@@ -1150,12 +1145,11 @@ impl GitDialog {
         let (name, url) = self.remote_values()?;
         Ok(GitTask {
             commands: vec![
-                vec!["remote".into(), "add".into(), name.clone(), url],
-                vec!["fetch".into(), name.clone()],
+                GitCommand::Remote.args(["add", &name, &url]),
+                GitCommand::Fetch.args([&name]),
             ],
             running: format!("Adding {name}"),
             done: format!("Added and fetched {name}"),
-            remote: true,
             ..Default::default()
         })
     }
@@ -1209,19 +1203,19 @@ impl GitDialog {
         if name.starts_with('-') {
             return Err("A tag name can't start with -".into());
         }
-        let mut args = vec!["tag"];
+        let mut args = vec![];
         if !message.is_empty() {
             args.extend(["-a", "-m", &message]);
         }
         args.extend([name.as_str(), &at]);
         Ok(GitTask::new(
+            GitCommand::Tag,
             &args,
             format!("Tagging {label} {name}"),
             format!("Tagged {label} {name}"),
         ))
     }
 
-    // `remote` is where they may be deleted too, when there are remotes.
     // Removes a remote, and its remote branches from this repository.
     pub fn remove_remote(name: &str) -> Self {
         let intro = vec![format!("Remove the remote {name}")];
@@ -1231,6 +1225,7 @@ impl GitDialog {
         Self::with(" Remove remote ", "remove", intro, kind)
     }
 
+    // `remote` is where they may be deleted too, when there are remotes.
     pub fn delete_tags(names: Vec<String>, remote: Option<String>) -> Self {
         let intro = names_intro("Delete the tag", "Delete the tags", &names);
         // named, as it may not be the remote meant: origin, else the first one
@@ -1250,21 +1245,20 @@ impl GitDialog {
         names: &[String],
         remote: Option<&str>,
     ) -> Result<GitTask, String> {
-        let mut args = vec!["tag".to_string(), "-d".into()];
+        let mut args = vec!["-d".to_string()];
         args.extend(names.iter().cloned());
         let what = names_label("tag", "tags", names);
         let mut task = GitTask {
-            commands: vec![args],
+            commands: vec![GitCommand::Tag.args(args)],
             running: format!("Deleting {what}"),
             done: format!("Deleted {what}"),
             ..Default::default()
         };
         if let Some(remote) = remote.filter(|_| self.checked(FieldId::Force)) {
-            let mut push = vec!["push".to_string(), remote.to_string(), "--delete".into()];
+            let mut push = vec![remote.to_string(), "--delete".into()];
             push.extend(names.iter().map(|name| format!("refs/tags/{name}")));
             // the remote first: should it fail, offline say, nothing is deleted yet to retry it
-            task.commands.insert(0, push);
-            task.remote = true;
+            task.commands.insert(0, GitCommand::Push.args(push));
             task.done = format!("Deleted {what}, also from {remote}");
         }
         Ok(task)
@@ -1285,7 +1279,7 @@ impl GitDialog {
     fn apply_stash_command(&self, name: &str) -> Result<GitTask, String> {
         // popping drops it once applied, git keeps it when it stops on conflicts
         let pop = self.checked(FieldId::Pop);
-        let mut args = vec!["stash", if pop { "pop" } else { "apply" }];
+        let mut args = vec![if pop { "pop" } else { "apply" }];
         if self.checked(FieldId::Index) {
             args.push("--index");
         }
@@ -1300,7 +1294,7 @@ impl GitDialog {
         };
         Ok(GitTask {
             after: AfterTask::LocalChanges,
-            ..GitTask::new(&args, running, done)
+            ..GitTask::new(GitCommand::Stash, &args, running, done)
         })
     }
 
@@ -1324,7 +1318,7 @@ impl GitDialog {
         let what = names_label("stash", "stashes", &names);
         let commands = names
             .iter()
-            .map(|name| vec!["stash".to_string(), "drop".into(), name.clone()]);
+            .map(|name| GitCommand::Stash.args(["drop", name]));
         Ok(GitTask {
             commands: commands.collect(),
             running: format!("Dropping {what}"),
@@ -1373,7 +1367,8 @@ impl GitDialog {
         let mode = ["--mixed", "--soft", "--hard"][self.choice(FieldId::ResetMode)];
         let short = commit.hash.as_short_hash();
         Ok(GitTask::new(
-            &["reset", mode, commit.hash.as_str()],
+            GitCommand::Reset,
+            &[mode, commit.hash.as_str()],
             format!("Resetting {branch} to {short}"),
             format!("Reset {branch} to {short}"),
         ))
@@ -1421,25 +1416,16 @@ impl GitDialog {
         } else {
             commit.hash.as_str().to_string()
         };
-        let mut commands: Vec<Vec<String>> = vec![];
+        let mut commands = vec![];
         if let Some(path) = absent {
-            let mut args = ["rm", "-q", "-f", "--ignore-unmatch", "--"]
-                .map(String::from)
-                .to_vec();
-            args.extend(pathspecs(&[path]));
+            let mut args = GitCommand::Rm.args(["-q", "-f", "--ignore-unmatch", "--"]);
+            args.args.extend(pathspecs(&[path]));
             commands.push(args);
         }
         if let Some(path) = present {
-            let args = [
-                "restore",
-                "--source",
-                &source,
-                "--staged",
-                "--worktree",
-                "--",
-            ];
-            let mut args = args.map(String::from).to_vec();
-            args.extend(pathspecs(&[path]));
+            let args = ["--source", &source, "--staged", "--worktree", "--"];
+            let mut args = GitCommand::Restore.args(args);
+            args.args.extend(pathspecs(&[path]));
             commands.push(args);
         }
         let name = present.or(absent).cloned().unwrap_or_default();
@@ -1870,7 +1856,8 @@ impl GitDialog {
             DialogKind::EditRemote { name, url } => self.edit_remote_command(name, url),
             DialogKind::AddRemote => self.add_remote_command(),
             DialogKind::RemoveRemote { name } => Ok(GitTask::new(
-                &["remote", "remove", name],
+                GitCommand::Remote,
+                &["remove", name],
                 format!("Removing {name}"),
                 format!("Removed {name}"),
             )),
@@ -1959,17 +1946,16 @@ impl GitDialog {
             Some(Err(err)) => return err,
             None => return String::new(),
         };
-        let git = |args: &[String]| {
-            let args: Vec<_> = args.iter().map(|a| shorten_hash(a)).collect();
+        let git = |args: &GitArgs| {
+            let args: Vec<_> = args
+                .argv()
+                .iter()
+                .map(|a| shorten_hash(a).into_owned())
+                .collect();
             format!("git {}", args.join(" "))
         };
         // with those run after it
-        let command = task
-            .commands
-            .iter()
-            .map(|args| git(args))
-            .collect::<Vec<_>>()
-            .join("; ");
+        let command = task.commands.iter().map(git).collect::<Vec<_>>().join("; ");
         if task.stash {
             format!("git stash; {command}; git stash pop")
         } else {
@@ -2038,14 +2024,14 @@ fn names_label(one: &str, many: &str, names: &[String]) -> String {
 }
 
 // Deletes the branches on their remotes, as (remote, branch): one push for those of each remote.
-fn delete_on_remotes(branches: &[(String, String)]) -> Vec<Vec<String>> {
+fn delete_on_remotes(branches: &[(String, String)]) -> Vec<GitArgs> {
     let mut remotes: Vec<&String> = branches.iter().map(|(r, _)| r).collect();
     remotes.sort();
     remotes.dedup();
     remotes
         .into_iter()
         .map(|remote| {
-            let mut args = vec!["push".to_string(), remote.clone(), "--delete".into()];
+            let mut args = vec![remote.clone(), "--delete".into()];
             args.extend(
                 branches
                     .iter()
@@ -2053,7 +2039,7 @@ fn delete_on_remotes(branches: &[(String, String)]) -> Vec<Vec<String>> {
                     // in full, as a tag of the same name makes the short one ambiguous
                     .map(|(_, b)| format!("refs/heads/{b}")),
             );
-            args
+            GitCommand::Push.args(args)
         })
         .collect()
 }
@@ -2347,7 +2333,7 @@ mod tests {
             files: vec![("M".into(), "a.rs".into())],
         };
         let dialogs = [
-            GitDialog::abort("rebase"),
+            GitDialog::abort(Operation::Rebase),
             GitDialog::stash("all changes".into(), vec![]),
             GitDialog::merge("main", "feature".into(), "feature", None),
             GitDialog::delete_branches(vec!["a".into(), "b".into()], vec!["a".into()], vec![]),
@@ -2441,7 +2427,7 @@ mod tests {
 
     fn args(dialog: &GitDialog) -> String {
         let task = dialog.command().unwrap().unwrap();
-        task.commands[0].join(" ")
+        task.commands[0].to_string()
     }
 
     fn commit(n: char) -> DialogCommit {
@@ -2605,7 +2591,7 @@ mod tests {
         // on the remote first: failing there, offline say, nothing is deleted yet to retry it
         let commands = |dialog: &GitDialog| -> Vec<String> {
             let task = dialog.command().unwrap().unwrap();
-            task.commands.iter().map(|c| c.join(" ")).collect()
+            task.commands.iter().map(ToString::to_string).collect()
         };
         let mut dialog = GitDialog::delete_tags(vec!["v1".into()], Some("fork".into()));
         press(&mut dialog, UserEvent::DialogToggle);
@@ -2652,7 +2638,10 @@ mod tests {
         let mut dialog = GitDialog::edit_branch("topic", gone, remote_branches);
         dialog.handle_key(None, key(KeyCode::Char('2')));
         let task = dialog.command().unwrap().unwrap();
-        assert_eq!(task.commands, [["branch", "-m", "topic", "topic2"]]);
+        assert_eq!(
+            task.commands,
+            [GitCommand::Branch.args(["-m", "topic", "topic2"])]
+        );
         // from a commit, or a tag at it, where the cursor is
         let dialog = GitDialog::create_branch_at("a".repeat(40).as_str().into());
         assert!(matches!(&dialog.fields[1].2, Field::Fixed(_)));
@@ -2671,7 +2660,7 @@ mod tests {
     fn test_fetch_defaults_to_upstream_remote() {
         let mut dialog = GitDialog::remote(RemoteAction::Fetch, info()).unwrap();
         assert_eq!(args(&dialog), "fetch origin");
-        assert!(dialog.command().unwrap().unwrap().remote);
+        assert!(dialog.command().unwrap().unwrap().is_remote());
         press(&mut dialog, UserEvent::NavigateRight);
         assert_eq!(args(&dialog), "fetch fork");
         assert!(matches!(

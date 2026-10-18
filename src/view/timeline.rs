@@ -382,15 +382,10 @@ impl TimelineView {
 
         // the file's changes in it
         let path = &self.history[self.selected].path;
-        let block =
-            panel_block(!focused, theme).title(panel_title("[1] Diff", path, !focused, theme));
-        let inner = block.inner(diff_area);
-        block.render(diff_area, buf);
-        // the scrollbar on the right border, the selection bar on the left one
+        let title = panel_title("[1] Diff", path, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
-        let scrollbar = Rect::new(inner.right(), inner.y, 1, inner.height);
         self.pane
-            .render(inner, scrollbar, buf, &ctx, !focused, search);
+            .render_panel(diff_area, title, buf, &ctx, !focused, search);
     }
 }
 

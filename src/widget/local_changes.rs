@@ -15,8 +15,8 @@ use crate::{
     app::AppContext,
     event::UserEvent,
     git::{
-        AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
-        LocalChangeStatus, LocalChanges, Operation, PatchAction, Repository,
+        AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
+        LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
     },
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
@@ -506,7 +506,7 @@ impl<'a> LocalChangesState<'a> {
     // Asks for confirmation to abort the operation in progress; its key works only then.
     pub fn request_abort(&mut self) {
         if let Some(operation) = self.operation {
-            self.request = Some(Request::Dialog(GitDialog::abort(operation.name())));
+            self.request = Some(Request::Dialog(GitDialog::abort(operation)));
         }
     }
 
@@ -556,9 +556,9 @@ impl<'a> LocalChangesState<'a> {
         self.check_commit()?;
         let amend = self.draft.amend.is_some();
         // the message is read from stdin so no editor is opened
-        let mut commit = vec!["commit".to_string(), "--quiet".into(), "--file=-".into()];
+        let mut commit = GitCommand::Commit.args(["--quiet", "--file=-"]);
         if amend {
-            commit.push("--amend".into());
+            commit.args.push("--amend".into());
         }
         let continued = self
             .operation
@@ -746,8 +746,8 @@ impl<'a> LocalChangesState<'a> {
         };
         if self.is_diff_focused() {
             // the other changed lines stay in the working tree, like when unstaging from the index
-            let patch = self.pane.selected_patch(true);
-            let apply = ["apply", "--reverse", "-"].map(String::from).to_vec();
+            let patch = self.pane.selected_patch(PatchDirection::Reverse);
+            let apply = GitCommand::Apply.args(["--reverse", "-"]);
             return Ok(patch.map(|patch| task(vec![apply], Some(patch))));
         }
 
@@ -886,6 +886,8 @@ impl<'a> LocalChangesState<'a> {
         // a row of the files, or a file, selected
         let row = |v: &Self| v.focus == Focus::Files && v.selected_row().is_some();
         let file = |v: &Self| v.focus == Focus::Files && v.selected_file().is_some();
+        // a file or directory, not the root row standing for all of them
+        let path = |v: &Self| row(v) && !v.selected_row().is_some_and(FileTreeRow::is_root);
         // something to commit: staged changes, amending, or an operation to conclude
         let committable = |v: &Self| {
             !v.changes.staged.is_empty() || v.draft.amend.is_some() || v.operation.is_some()
@@ -1050,7 +1052,7 @@ impl<'a> LocalChangesState<'a> {
             "ignore",
             "Add the file or directory to .gitignore",
         )
-        .when(row);
+        .when(path);
         k.add(
             &[Cancel],
             "back",
@@ -1137,7 +1139,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Adds the selected file or directory to .gitignore; returns what to tell.
     pub fn ignore_selected(&mut self) -> Result<String, String> {
-        let Some(row) = self.selected_row() else {
+        let Some(row) = self.selected_row().filter(|row| !row.is_root()) else {
             return Ok(String::new());
         };
         let message = self
@@ -1334,10 +1336,10 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Staging the unstaged changes, unstaging the staged ones.
-    fn patch_action(&self) -> PatchAction {
+    fn patch_direction(&self) -> PatchDirection {
         match self.section {
-            LocalChangesSection::Unstaged => PatchAction::Stage,
-            LocalChangesSection::Staged => PatchAction::Unstage,
+            LocalChangesSection::Unstaged => PatchDirection::Forward,
+            LocalChangesSection::Staged => PatchDirection::Reverse,
         }
     }
 
@@ -1350,9 +1352,10 @@ impl<'a> LocalChangesState<'a> {
             }
             Focus::Conflict => return Ok(()),
             Focus::Diff => {
-                let reverse = self.section == LocalChangesSection::Staged;
-                match self.pane.selected_patch(reverse) {
-                    Some(patch) => self.repository.apply_patch(&patch, self.patch_action()),
+                // the patch is made and applied the same way
+                let direction = self.patch_direction();
+                match self.pane.selected_patch(direction) {
+                    Some(patch) => self.repository.apply_patch(&patch, direction),
                     None => Ok(()),
                 }
             }
@@ -1930,14 +1933,12 @@ impl LocalChangesPanel<'_> {
             _ => "",
         };
         let diff_focused = self.focused && state.is_diff_focused();
-        let inner = render_panel(
-            buf,
-            area,
-            panel_title(&title, mode, diff_focused, &self.ctx.color_theme),
-            diff_focused,
-            &self.ctx.color_theme,
-        );
-
+        let title = panel_title(&title, mode, diff_focused, &self.ctx.color_theme);
+        let search = state.diff_query.search();
+        let inner = state
+            .pane
+            .render_panel(area, title, buf, &self.ctx, diff_focused, search);
+        // with no row, the diff is empty
         if state.selected_row().is_none() {
             let message = if state.count() == 0 {
                 "No local changes"
@@ -1945,14 +1946,7 @@ impl LocalChangesPanel<'_> {
                 "No file selected"
             };
             Paragraph::new(placeholder(message, &self.ctx.color_theme)).render(inner, buf);
-            return;
         }
-        // on the right border, past the padding
-        let scrollbar = Rect::new(area.right().saturating_sub(1), inner.y, 1, inner.height);
-        let search = state.diff_query.search();
-        state
-            .pane
-            .render(inner, scrollbar, buf, &self.ctx, diff_focused, search);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -2825,12 +2819,14 @@ mod tests {
         assert!(keys.takes(UserEvent::Stash));
         assert!(shown(&state).contains(&"commit".to_string()));
 
-        // on the staged root, staging works but not editing; on the file, both
+        // on the staged root, staging works but not editing or ignoring; on the file, all
         state.focus_section(LocalChangesSection::Staged);
         assert!(state.keys().takes(UserEvent::ToggleStage));
         assert!(!state.keys().takes(UserEvent::Edit));
+        assert!(!state.keys().takes(UserEvent::Ignore));
         select_row(&mut state, "a.txt");
         assert!(state.keys().takes(UserEvent::Edit));
+        assert!(state.keys().takes(UserEvent::Ignore));
 
         // nothing staged: c says so, unlisted
         git_stdout(repo_path, &["reset", "-q"]);

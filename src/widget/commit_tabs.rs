@@ -875,9 +875,12 @@ mod tests {
             SearchDirection::Current,
             SearchOptions::default(),
         );
-        let patch = state.pane.selected_patch(false).unwrap();
+        let patch = state
+            .pane
+            .selected_patch(crate::git::PatchDirection::Forward)
+            .unwrap();
         let task = crate::git::GitTask {
-            commands: vec![vec!["apply".into(), "-".into()]],
+            commands: vec![crate::git::GitCommand::Apply.args(["-"])],
             input: Some(patch),
             ..Default::default()
         };

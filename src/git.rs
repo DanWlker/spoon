@@ -98,11 +98,13 @@ impl Ref {
     }
 }
 
-// What `Repository::apply_patch` does with a patch.
+// Which way git applies a patch: forward, making its changes (staging them), or in reverse, taking
+// them back (unstaging or discarding them). A partial patch is made for its direction, see
+// `DiffHunk::partial_patch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatchAction {
-    Stage,
-    Unstage,
+pub enum PatchDirection {
+    Forward,
+    Reverse,
 }
 
 // A branch, remote branch or tag by its name: a ref to work on, unlike a stash.
@@ -835,7 +837,7 @@ impl Repository {
         tracked: &[&str],
         untracked: &[&str],
         conflicted: &[&str],
-    ) -> std::result::Result<Vec<Vec<String>>, String> {
+    ) -> std::result::Result<Vec<GitArgs>, String> {
         // git status lists an untracked repository inside as `nested/`, which `clean -f` skips
         if let Some(path) = untracked.iter().find(|path| path.ends_with('/')) {
             return Err(format!(
@@ -844,15 +846,20 @@ impl Repository {
         }
         let mut tracked = tracked.to_vec();
         let mut untracked = untracked.to_vec();
-        let command = |args: &[&str], paths: &[&str]| -> Vec<String> {
-            let mut command: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-            command.push("--".into());
-            command.extend(pathspecs(paths));
+        // restoring and cleaning files moves no HEAD, which an operation stopped allows
+        let command = |command: GitCommand, args: &[&str], paths: &[&str]| {
+            let mut command = command.args(args.iter().copied());
+            command.args.push("--".into());
+            command.args.extend(pathspecs(paths));
             command
         };
         let mut commands = vec![];
         if !conflicted.is_empty() {
-            commands.push(command(&["reset", "--quiet"], conflicted));
+            commands.push(command(
+                GitCommand::Restore,
+                &["--staged", "--quiet"],
+                conflicted,
+            ));
             let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
             args.extend_from_slice(conflicted);
             let in_head = git_output(&self.path, &args)?;
@@ -866,10 +873,14 @@ impl Repository {
             }
         }
         if !tracked.is_empty() {
-            commands.push(command(&["checkout", "--quiet"], &tracked));
+            commands.push(command(GitCommand::Restore, &["--quiet"], &tracked));
         }
         if !untracked.is_empty() {
-            commands.push(command(&["clean", "--force", "--quiet"], &untracked));
+            commands.push(command(
+                GitCommand::Clean,
+                &["--force", "--quiet"],
+                &untracked,
+            ));
         }
         Ok(commands)
     }
@@ -878,9 +889,6 @@ impl Repository {
     // tree, anchored there. Returns what to tell: a tracked path stays tracked, ignoring only
     // keeps untracked files out.
     pub fn ignore_path(&self, path: &str, dir: bool) -> std::result::Result<String, String> {
-        if path == ":/" {
-            return Err("The whole repository can't be ignored, choose a file or directory".into());
-        }
         let pattern = gitignore_pattern(path, dir);
         let file = self.path.join(".gitignore");
         let content = std::fs::read_to_string(&file).unwrap_or_default();
@@ -1181,12 +1189,12 @@ impl Repository {
 
     // The command continuing a rebase, or the remaining commits of a cherry-pick or revert of
     // several commits, after the commit concluding the stop; None when that commit concludes it.
-    pub fn continue_args(&self, operation: Operation) -> Option<Vec<String>> {
+    pub fn continue_args(&self, operation: Operation) -> Option<GitArgs> {
         // a merge, or a single cherry-pick or revert, is done once committed
         let goes_on = operation == Operation::Rebase
             || (operation != Operation::Merge
                 && self.git_path("sequencer").is_some_and(|p| p.exists()));
-        goes_on.then(|| vec![operation.name().to_string(), "--continue".into()])
+        goes_on.then(|| GitCommand::Resume(operation).args(["--continue"]))
     }
 
     fn git_path(&self, name: &str) -> Option<PathBuf> {
@@ -1198,11 +1206,16 @@ impl Repository {
             .ok()
     }
 
-    // Stages the changes in `patch`, a diff produced by `local_change_diff`, or unstages them.
-    pub fn apply_patch(&self, patch: &str, action: PatchAction) -> std::result::Result<(), String> {
-        let args: &[&str] = match action {
-            PatchAction::Stage => &["apply", "--cached", "-"],
-            PatchAction::Unstage => &["apply", "--cached", "--reverse", "-"],
+    // Applies `patch`, a diff produced by `local_change_diff`, to the index: forward stages it,
+    // in reverse unstages it.
+    pub fn apply_patch(
+        &self,
+        patch: &str,
+        direction: PatchDirection,
+    ) -> std::result::Result<(), String> {
+        let args: &[&str] = match direction {
+            PatchDirection::Forward => &["apply", "--cached", "-"],
+            PatchDirection::Reverse => &["apply", "--cached", "--reverse", "-"],
         };
         self.run(args, Some(patch))
     }
@@ -2104,15 +2117,127 @@ pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
     Ok(refs + &head + &stashes)
 }
 
+// The git commands the app runs in the background. What each does to HEAD, to signing and to the
+// remotes is told by its variant, so a new command can't be left out of those checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitCommand {
+    Apply,
+    Branch,
+    Checkout,
+    CherryPick,
+    Clean,
+    Commit,
+    Fetch,
+    Merge,
+    Pull,
+    Push,
+    Rebase,
+    Remote,
+    Reset,
+    Restore,
+    Revert,
+    Rm,
+    Stash,
+    Tag,
+    // going on with the operation stopped, or aborting it: `rebase --continue`, `merge --abort`
+    Resume(Operation),
+}
+
+impl GitCommand {
+    pub fn name(self) -> &'static str {
+        match self {
+            GitCommand::Apply => "apply",
+            GitCommand::Branch => "branch",
+            GitCommand::Checkout => "checkout",
+            GitCommand::CherryPick => "cherry-pick",
+            GitCommand::Clean => "clean",
+            GitCommand::Commit => "commit",
+            GitCommand::Fetch => "fetch",
+            GitCommand::Merge => "merge",
+            GitCommand::Pull => "pull",
+            GitCommand::Push => "push",
+            GitCommand::Rebase => "rebase",
+            GitCommand::Remote => "remote",
+            GitCommand::Reset => "reset",
+            GitCommand::Restore => "restore",
+            GitCommand::Revert => "revert",
+            GitCommand::Rm => "rm",
+            GitCommand::Stash => "stash",
+            GitCommand::Tag => "tag",
+            GitCommand::Resume(operation) => operation.name(),
+        }
+    }
+
+    // Whether it moves or rewrites HEAD, which git refuses or tangles up while a rebase, merge,
+    // cherry-pick or revert waits to be continued or aborted; going on with it or aborting it doesn't.
+    pub fn moves_head(self) -> bool {
+        use GitCommand::*;
+        match self {
+            Checkout | Rebase | Merge | CherryPick | Revert | Reset | Pull => true,
+            Apply | Branch | Clean | Commit | Fetch | Push | Remote | Restore | Rm | Stash
+            | Tag | Resume(_) => false,
+        }
+    }
+
+    // Whether it may make a commit or a tag, which git signs when configured to.
+    pub fn may_sign(self) -> bool {
+        use GitCommand::*;
+        match self {
+            Commit | Rebase | CherryPick | Merge | Revert | Tag | Pull | Resume(_) => true,
+            Apply | Branch | Checkout | Clean | Fetch | Push | Remote | Reset | Restore | Rm
+            | Stash => false,
+        }
+    }
+
+    // Whether it talks to a remote, one at a time, see `run_task`.
+    pub fn is_remote(self) -> bool {
+        use GitCommand::*;
+        match self {
+            Fetch | Pull | Push => true,
+            Apply | Branch | Checkout | CherryPick | Clean | Commit | Merge | Rebase | Remote
+            | Reset | Restore | Revert | Rm | Stash | Tag | Resume(_) => false,
+        }
+    }
+
+    // The command with its arguments.
+    pub fn args<S: Into<String>>(self, args: impl IntoIterator<Item = S>) -> GitArgs {
+        GitArgs {
+            command: self,
+            args: args.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+// A git command and its arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitArgs {
+    pub command: GitCommand,
+    pub args: Vec<String>,
+}
+
+impl GitArgs {
+    // What git is run with, the command first.
+    pub fn argv(&self) -> Vec<String> {
+        std::iter::once(self.command.name().to_string())
+            .chain(self.args.iter().cloned())
+            .collect()
+    }
+}
+
+// As in the popups and the command log: "commit --quiet --file=-".
+impl std::fmt::Display for GitArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.argv().join(" "))
+    }
+}
+
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GitTask {
-    // the arguments of the git commands, each run when the one before succeeded
-    pub commands: Vec<Vec<String>>,
+    // the git commands, each run when the one before succeeded
+    pub commands: Vec<GitArgs>,
     // stash the local changes before the command, and reapply them after
     pub stash: bool,
-    // talks to a remote
-    pub remote: bool,
     pub env: Vec<(String, String)>,
     // "Pushing main to origin/main"
     pub running: String,
@@ -2154,44 +2279,32 @@ pub struct BranchStatus {
 }
 
 impl GitTask {
-    // Whether it may make a commit or a tag, which git signs when configured to.
+    // Whether it may make a commit or a tag, see `GitCommand::may_sign`.
     pub fn may_sign(&self) -> bool {
-        self.commands
-            .iter()
-            .filter_map(|args| args.first())
-            .any(|command| {
-                matches!(
-                    command.as_str(),
-                    "commit" | "rebase" | "cherry-pick" | "merge" | "revert" | "tag" | "pull"
-                )
-            })
+        self.commands.iter().any(|c| c.command.may_sign())
     }
 
-    // Whether it moves or rewrites HEAD, which git refuses or tangles up while a rebase, merge,
-    // cherry-pick or revert waits to be continued or aborted; going on with it or aborting it doesn't.
+    // Whether it moves or rewrites HEAD, see `GitCommand::moves_head`.
     pub fn moves_head(&self) -> bool {
-        self.commands.iter().any(|args| {
-            let resumes = args
-                .iter()
-                .any(|a| matches!(a.as_str(), "--continue" | "--abort" | "--skip" | "--quit"));
-            !resumes
-                && args
-                    .first()
-                    .is_some_and(|command| moves_head_command(command))
-        })
+        self.commands.iter().any(|c| c.command.moves_head())
+    }
+
+    // Whether it talks to a remote, see `GitCommand::is_remote`.
+    pub fn is_remote(&self) -> bool {
+        self.commands.iter().any(|c| c.command.is_remote())
     }
 
     // Whether it makes a commit with a typed message, which the message box is then cleared of.
     pub fn commits(&self) -> bool {
         self.commands
             .first()
-            .is_some_and(|args| args[0] == "commit")
+            .is_some_and(|c| c.command == GitCommand::Commit)
             && self.input.is_some()
     }
 
-    pub fn new(args: &[&str], running: String, done: String) -> Self {
+    pub fn new(command: GitCommand, args: &[&str], running: String, done: String) -> Self {
         GitTask {
-            commands: vec![args.iter().map(|a| a.to_string()).collect()],
+            commands: vec![command.args(args.iter().copied())],
             running,
             done,
             ..Default::default()
@@ -2226,15 +2339,12 @@ impl GitTask {
         ];
         GitTask {
             // autosquash would move and squash `fixup!` commits nobody picked
-            commands: vec![[
-                "rebase",
+            commands: vec![GitCommand::Rebase.args([
                 "-i",
                 "--no-autosquash",
                 stash,
                 base.unwrap_or("--root"),
-            ]
-            .map(String::from)
-            .to_vec()],
+            ])],
             env: env
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -2242,14 +2352,6 @@ impl GitTask {
             ..Default::default()
         }
     }
-}
-
-// Whether the git command moves or rewrites HEAD, see `GitTask::moves_head`.
-pub fn moves_head_command(command: &str) -> bool {
-    matches!(
-        command,
-        "checkout" | "switch" | "rebase" | "merge" | "cherry-pick" | "revert" | "reset" | "pull"
-    )
 }
 
 // A sed expression turning the pick of the commit (a full hash) in a rebase todo list into
@@ -2263,7 +2365,7 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     // one remote command at a time, like lazygit's sync mutex: a pull waits for the fetch on
     // launch instead of both locking the same remote refs
     static REMOTE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _remote = task.remote.then(|| {
+    let _remote = task.is_remote().then(|| {
         REMOTE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2274,11 +2376,11 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     let stashed = task.stash && {
         let before = stash_top();
         let message = format!("spoon: {}", task.running);
-        let args = ["stash", "push", "--include-untracked", "-m", &message].map(String::from);
+        let args = GitCommand::Stash.args(["push", "--include-untracked", "-m", &message]);
         run_task_step(path, &args, None, task)?;
         stash_top() != before
     };
-    let pop = || run_task_step(path, &["stash", "pop"].map(String::from), None, task);
+    let pop = || run_task_step(path, &GitCommand::Stash.args(["pop"]), None, task);
 
     let run = || {
         task.commands.iter().enumerate().try_for_each(|(i, args)| {
@@ -2312,17 +2414,18 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
 // prepares are used as they are), and credentials come from a helper or an agent.
 fn run_task_step(
     path: &Path,
-    args: &[String],
+    args: &GitArgs,
     input: Option<&str>,
     task: &GitTask,
 ) -> std::result::Result<(), String> {
+    let args = args.argv();
     let mut cmd = git_command();
-    cmd.args(args)
+    cmd.args(&args)
         .current_dir(path)
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
         .envs(task.env.iter().map(|(k, v)| (k, v)));
-    if task.remote {
+    if task.is_remote() {
         let has_ssh_command = std::env::var_os("GIT_SSH_COMMAND").is_some()
             || std::env::var_os("GIT_SSH").is_some()
             || git_output(path, &["config", "--get", "core.sshCommand"]).is_ok();
@@ -2330,7 +2433,7 @@ fn run_task_step(
             cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         }
     }
-    run_logged(&mut cmd, args, input, task.timeout)
+    run_logged(&mut cmd, &args, input, task.timeout)
 }
 
 // Runs `cmd`, git with `args`, writing `input` to it, and logs it in the command log; the error
@@ -2437,8 +2540,8 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> std::io::Result<Opt
 }
 
 // The command stashing the changes of `paths` (all changes when empty), including untracked files.
-pub fn stash_args(paths: &[String], message: &str) -> Vec<String> {
-    let mut args: Vec<String> = ["stash", "push", "--include-untracked", "--quiet"]
+pub fn stash_args(paths: &[String], message: &str) -> GitArgs {
+    let mut args: Vec<String> = ["push", "--include-untracked", "--quiet"]
         .map(String::from)
         .to_vec();
     if !message.is_empty() {
@@ -2449,7 +2552,7 @@ pub fn stash_args(paths: &[String], message: &str) -> Vec<String> {
         args.push("--".into());
         args.extend(pathspecs(&paths));
     }
-    args
+    GitCommand::Stash.args(args)
 }
 
 pub const MAX_CONFLICT_STEPS: usize = 100;
@@ -2950,19 +3053,8 @@ mod tests {
         let task = GitTask {
             input: Some("from stdin".into()),
             ..GitTask::new(
-                &[
-                    "-c",
-                    "user.name=T",
-                    "-c",
-                    "user.email=t@e",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "commit",
-                    "--allow-empty",
-                    "--no-verify",
-                    "-F",
-                    "-",
-                ],
+                GitCommand::Commit,
+                &["--allow-empty", "--no-verify", "-F", "-"],
                 String::new(),
                 String::new(),
             )
@@ -2974,27 +3066,31 @@ mod tests {
 
     #[test]
     fn test_task_moves_head() {
-        let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
-        assert!(task(&["checkout", "-b", "topic", "HEAD"]).moves_head());
-        assert!(task(&["pull", "origin", "main"]).moves_head());
-        assert!(!task(&["branch", "topic", "HEAD"]).moves_head());
+        use GitCommand::*;
+        let task =
+            |command, args: &[&str]| GitTask::new(command, args, String::new(), String::new());
+        assert!(task(Checkout, &["-b", "topic", "HEAD"]).moves_head());
+        assert!(task(Pull, &["origin", "main"]).moves_head());
+        assert!(!task(Branch, &["topic", "HEAD"]).moves_head());
         // going on with the operation, or aborting it
-        assert!(!task(&["rebase", "--continue"]).moves_head());
-        assert!(!task(&["merge", "--abort"]).moves_head());
-        let mut tag_then_reset = task(&["tag", "v1"]);
-        tag_then_reset
-            .commands
-            .push(vec!["reset".into(), "--hard".into()]);
+        assert!(!task(Resume(Operation::Rebase), &["--continue"]).moves_head());
+        assert!(!task(Resume(Operation::Merge), &["--abort"]).moves_head());
+        // discarding files restores them
+        assert!(!task(Restore, &["--", "f"]).moves_head());
+        let mut tag_then_reset = task(Tag, &["v1"]);
+        tag_then_reset.commands.push(Reset.args(["--hard"]));
         assert!(tag_then_reset.moves_head());
     }
 
     #[test]
     fn test_task_may_sign() {
-        let task = |args: &[&str]| GitTask::new(args, String::new(), String::new());
-        assert!(task(&["rebase", "-i", "main"]).may_sign());
-        assert!(!task(&["fetch", "origin"]).may_sign());
-        let mut delete_tag = task(&["branch", "-D", "x"]);
-        delete_tag.commands.push(vec!["tag".into(), "v1".into()]);
+        use GitCommand::*;
+        let task =
+            |command, args: &[&str]| GitTask::new(command, args, String::new(), String::new());
+        assert!(task(Rebase, &["-i", "main"]).may_sign());
+        assert!(!task(Fetch, &["origin"]).may_sign());
+        let mut delete_tag = task(Branch, &["-D", "x"]);
+        delete_tag.commands.push(Tag.args(["v1"]));
         assert!(delete_tag.may_sign());
     }
 
@@ -3074,18 +3170,23 @@ mod tests {
         git(&["checkout", "-q", "main"]);
         let stashed = |args: &[&str]| GitTask {
             stash: true,
-            ..GitTask::new(args, "Checking out".into(), "Checked out".into())
+            ..GitTask::new(
+                GitCommand::Checkout,
+                args,
+                "Checking out".into(),
+                "Checked out".into(),
+            )
         };
 
         // the command failing, the changes come back as they were
         std::fs::write(path.join("f"), "local\n").unwrap();
-        let err = run_task(path, &stashed(&["checkout", "-q", "nowhere"])).unwrap_err();
+        let err = run_task(path, &stashed(&["-q", "nowhere"])).unwrap_err();
         assert!(err.starts_with("git checkout failed:"), "{err}");
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), "local\n");
         assert_eq!(git(&["stash", "list"]), "");
 
         // reapplying them conflicting, they are kept in the stash, and the user told so
-        let err = run_task(path, &stashed(&["checkout", "-q", "other"])).unwrap_err();
+        let err = run_task(path, &stashed(&["-q", "other"])).unwrap_err();
         assert!(err.starts_with("Checked out, but reapplying the local changes failed (they are kept in the stash):"), "{err}");
         assert_eq!(
             git(&["stash", "list", "--format=%s"]),
@@ -3113,7 +3214,8 @@ mod tests {
         let task = GitTask {
             input: Some("m".repeat(1 << 20)),
             ..GitTask::new(
-                &["commit", "--quiet", "--file=-"],
+                GitCommand::Commit,
+                &["--quiet", "--file=-"],
                 String::new(),
                 String::new(),
             )
@@ -3157,7 +3259,7 @@ mod tests {
 
         let task = GitTask {
             stash: true,
-            ..GitTask::new(&["branch", "other"], String::new(), String::new())
+            ..GitTask::new(GitCommand::Branch, &["other"], String::new(), String::new())
         };
         run_task(&path, &task).unwrap();
         // the older stash is left alone
@@ -3183,12 +3285,19 @@ mod tests {
         )
         .unwrap();
 
-        let run = |s: &str| {
-            let args: Vec<&str> = s.split(' ').collect();
-            run_task(&work, &GitTask::new(&args, String::new(), String::new()))
+        let run = |command, args: &[&str]| {
+            run_task(
+                &work,
+                &GitTask::new(command, args, String::new(), String::new()),
+            )
         };
-        run("push --set-upstream origin refs/heads/master:refs/heads/main").unwrap();
-        run("fetch --all").unwrap();
+        let push = [
+            "--set-upstream",
+            "origin",
+            "refs/heads/master:refs/heads/main",
+        ];
+        run(GitCommand::Push, &push).unwrap();
+        run(GitCommand::Fetch, &["--all"]).unwrap();
 
         let repository = Repository::load(&work, SortCommit::Chronological, None, false).unwrap();
         let info = repository.remote_info();
@@ -3202,7 +3311,7 @@ mod tests {
         );
 
         // the reason is reported, not the hints after it
-        let err = run("fetch nowhere").unwrap_err();
+        let err = run(GitCommand::Fetch, &["nowhere"]).unwrap_err();
         assert!(err.starts_with("git fetch failed: fatal:"), "{err}");
 
         // in sync, then two commits to push and, once they are pushed and one undone, one to pull
@@ -3215,7 +3324,7 @@ mod tests {
         repo.commit("second", "2024-01-02");
         repo.commit("third", "2024-01-03");
         assert_eq!(tracking(), (2, 0));
-        run("push origin master:main").unwrap();
+        run(GitCommand::Push, &["origin", "master:main"]).unwrap();
         git_output(&work, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
         assert_eq!(tracking(), (0, 1));
         // also with a tag of the same name
@@ -3389,9 +3498,9 @@ mod tests {
         let diff =
             parse_diff(&repository.local_change_diff(&["é.txt"], DiffOf::Staged { base: None }));
         // unstaging the second line keeps the file staged with the first
-        let patch = diff.hunks[0].partial_patch(&[1], true);
+        let patch = diff.hunks[0].partial_patch(&[1], PatchDirection::Reverse);
         repository
-            .apply_patch(&patch, PatchAction::Unstage)
+            .apply_patch(&patch, PatchDirection::Reverse)
             .unwrap();
         let staged = git_output(path, &["show", ":é.txt"]).unwrap();
         assert_eq!(staged, "a\n");
@@ -3423,7 +3532,7 @@ mod tests {
             parse_diff(&repository.local_change_diff(&[":/"], DiffOf::Staged { base: None }));
         assert_eq!(staged.hunks.len(), 2);
         repository
-            .apply_patch(&staged.hunks[0].patch(), PatchAction::Unstage)
+            .apply_patch(&staged.hunks[0].patch(), PatchDirection::Reverse)
             .unwrap();
         let index = git_output(path, &["show", ":new.txt"]).unwrap();
         assert_eq!(index, numbers.replace("\n15\n", "\nfifteen\n"));
@@ -3438,8 +3547,8 @@ mod tests {
         let diff = parse_diff(&repository.diff_between(&base, head.as_str(), &[]));
         // to the working tree, as `git apply` does from the changes of a commit
         let task = GitTask {
-            commands: vec![vec!["apply".into(), "-".into()]],
-            input: Some(diff.hunks[0].partial_patch(&[3, 4], false)),
+            commands: vec![GitCommand::Apply.args(["-"])],
+            input: Some(diff.hunks[0].partial_patch(&[3, 4], PatchDirection::Forward)),
             ..Default::default()
         };
         run_task(path, &task).unwrap();
@@ -3532,9 +3641,8 @@ mod tests {
         git_output(&work, &["remote", "add", "origin", url]).unwrap();
         git_output(&work, &["push", "-q", "origin", "HEAD:refs/heads/main"]).unwrap();
         let fetch = |timeout| GitTask {
-            remote: true,
             timeout,
-            ..GitTask::new(&["fetch", "--all"], String::new(), String::new())
+            ..GitTask::new(GitCommand::Fetch, &["--all"], String::new(), String::new())
         };
 
         // a branch made on the remote shows in the fingerprint once fetched, which reloads the app

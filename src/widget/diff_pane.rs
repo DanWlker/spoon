@@ -1,14 +1,15 @@
-use ratatui::{buffer::Buffer, layout::Rect};
+use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use crate::{
     app::AppContext,
     event::UserEvent,
+    git::PatchDirection,
     search::SearchOptions,
     widget::{
         diff::{
             diff_line_count, diff_lines, render_diff_lines, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
-        style::{render_scrollbar, ScrollState},
+        style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
     },
 };
@@ -159,13 +160,13 @@ impl DiffPane {
         }
     }
 
-    // The patch of the selected hunk or line, see `DiffHunk::partial_patch` for `reverse`.
-    pub fn selected_patch(&self, reverse: bool) -> Option<String> {
+    // The patch of the selected hunk or line, to apply in `direction`.
+    pub fn selected_patch(&self, direction: PatchDirection) -> Option<String> {
         let diff = self.diff.as_ref()?;
         match self.focus {
             DiffFocus::Outside => None,
             DiffFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
-            DiffFocus::Lines => self.cursor.line_patch(diff, reverse),
+            DiffFocus::Lines => self.cursor.line_patch(diff, direction),
         }
     }
 
@@ -197,6 +198,23 @@ impl DiffPane {
             }
             None => false,
         }
+    }
+
+    // Draws the diff in a panel titled `title`, like the timeline and the local changes do: the
+    // selection bar in the padding, the scrollbar on the right border. Returns the area inside.
+    pub fn render_panel(
+        &mut self,
+        area: Rect,
+        title: Line,
+        buf: &mut Buffer,
+        ctx: &AppContext,
+        focused: bool,
+        search: Option<&str>,
+    ) -> Rect {
+        let inner = render_panel(buf, area, title, focused, &ctx.color_theme);
+        let scrollbar = Rect::new(area.right().saturating_sub(1), inner.y, 1, inner.height);
+        self.render(inner, scrollbar, buf, ctx, focused, search);
+        inner
     }
 
     // Draws the diff, its selected hunk or line highlighted while it has the focus, and the

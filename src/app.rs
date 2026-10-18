@@ -29,8 +29,8 @@ use crate::{
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
-        NamedRef, Ref, Repository, Rev,
+        run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitCommand, GitTask,
+        Head, NamedRef, Ref, Repository, Rev,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -2625,14 +2625,12 @@ fn status_bar_line(
 }
 
 fn fetch_all_task() -> GitTask {
-    GitTask {
-        remote: true,
-        ..GitTask::new(
-            &["fetch", "--all"],
-            "Fetching all remotes".into(),
-            "Fetched all remotes".into(),
-        )
-    }
+    GitTask::new(
+        GitCommand::Fetch,
+        &["--all"],
+        "Fetching all remotes".into(),
+        "Fetched all remotes".into(),
+    )
 }
 
 fn selected_commit_details(

@@ -495,7 +495,7 @@ fn compare(
 mod tests {
     use super::*;
     use crate::{
-        git::{AfterTask, GitTask, SortCommit},
+        git::{AfterTask, GitCommand, GitTask, SortCommit},
         test_support::git::GitRepository,
     };
 
@@ -511,7 +511,7 @@ mod tests {
     fn args(command: Result<GraphCommand, String>) -> String {
         match command {
             Ok(GraphCommand::Dialog(dialog)) => {
-                dialog.command().unwrap().unwrap().commands[0].join(" ")
+                dialog.command().unwrap().unwrap().commands[0].to_string()
             }
             Ok(GraphCommand::Compare(compare)) => compare.title(),
             Ok(GraphCommand::AmendHead) => "amend head".into(),
@@ -914,7 +914,7 @@ mod tests {
         let tag = ref_graph_command(&repository, UserEvent::CreateTag, &named, hashes[1].clone());
         assert_eq!(
             run(path, tag.unwrap(), "t2").commands,
-            [["tag", "t2", "refs/heads/topic"]]
+            [GitCommand::Tag.args(["t2", "refs/heads/topic"])]
         );
 
         // a branch at a commit of the graph, checked out

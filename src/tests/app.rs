@@ -1396,6 +1396,33 @@ fn test_revert_conflicting_then_aborted() {
 }
 
 #[test]
+fn test_discard_while_merging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // feat and master changed the same line
+    let merge = crate::git::git_command()
+        .args(["merge", "-q", "feat"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // discarding restores files and moves no HEAD, which the merge stopped allows
+        keys("tab d enter"),
+        check(|app| {
+            let notices = notices(app);
+            assert!(
+                !notices.iter().any(|n| n.contains("in progress")),
+                "{notices:?}"
+            );
+        }),
+    ]);
+    let content = std::fs::read_to_string(path.join("f.txt")).unwrap();
+    assert_eq!(content, "a\nMASTER\nc\n");
+}
+
+#[test]
 fn test_squash_off_the_branch_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

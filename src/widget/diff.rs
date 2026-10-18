@@ -18,7 +18,7 @@ use ratatui::{
 use crate::{
     color::ColorTheme,
     event::UserEvent,
-    git::Repository,
+    git::{PatchDirection, Repository},
     search::SearchOptions,
     widget::{
         style::{divider, half_page_jump, mark_selected_bar, placeholder, ScrollState},
@@ -117,10 +117,11 @@ impl DiffHunk {
 
     // A patch applying only the `selected` lines (indices into `lines`) of this hunk.
     //
-    // The patch is applied to the index: forward to stage, or `reverse` to unstage.
-    // Unselected changes must leave the index as is, so they become context on the side that is
-    // in the index (removed lines when staging, added lines when unstaging) and are dropped from the other.
-    pub fn partial_patch(&self, selected: &[usize], reverse: bool) -> String {
+    // The patch is applied in `direction`: forward to stage, in reverse to unstage or discard.
+    // Unselected changes must leave the target as is, so they become context on the side that is
+    // in it (removed lines when staging, added lines when unstaging) and are dropped from the other.
+    pub fn partial_patch(&self, selected: &[usize], direction: PatchDirection) -> String {
+        let reverse = direction == PatchDirection::Reverse;
         let mut body = String::new();
         let (mut old_count, mut new_count) = (0, 0);
         // whether the previous line was kept, so its "\ No newline at end of file" marker is too
@@ -440,11 +441,11 @@ impl DiffCursor {
     }
 
     // A patch of the selected line alone, see `DiffHunk::partial_patch`.
-    pub fn line_patch(&self, diff: &ParsedDiff, reverse: bool) -> Option<String> {
+    pub fn line_patch(&self, diff: &ParsedDiff, direction: PatchDirection) -> Option<String> {
         let hunk = self.selected_hunk(diff)?;
         // the hunk header occupies the first row, its lines follow
         let line = self.line.checked_sub(hunk.rows.start + 1)?;
-        Some(hunk.partial_patch(&[line], reverse))
+        Some(hunk.partial_patch(&[line], direction))
     }
 
     // The text of the selected line as in the file, without its +/- and line ending.
@@ -1168,12 +1169,12 @@ mod tests {
         let hunk = &diff.hunks[0];
 
         // staging "-b" and "+B": "-c" stays in the index as context, "+C" is left out
-        let actual = hunk.partial_patch(&[1, 3], false);
+        let actual = hunk.partial_patch(&[1, 3], PatchDirection::Forward);
         let expected = format!("{file_header}@@ -1,3 +1,3 @@\n a\n-b\n c\n+B\n");
         assert_eq!(actual, expected);
 
         // unstaging "+C": "+B" stays in the index as context, "-b" and "-c" are left out
-        let actual = hunk.partial_patch(&[4], true);
+        let actual = hunk.partial_patch(&[4], PatchDirection::Reverse);
         let expected = format!("{file_header}@@ -1,2 +1,3 @@\n a\n B\n+C\n");
         assert_eq!(actual, expected);
     }
@@ -1186,12 +1187,12 @@ mod tests {
         let hunk = &diff.hunks[0];
 
         // staging part of a new file still creates it
-        let actual = hunk.partial_patch(&[0], false);
+        let actual = hunk.partial_patch(&[0], PatchDirection::Forward);
         let expected = format!("{file_header}@@ -0,0 +1,1 @@\n+a\n");
         assert_eq!(actual, expected);
 
         // unstaging part of it keeps the file, so it becomes a modification
-        let actual = hunk.partial_patch(&[1], true);
+        let actual = hunk.partial_patch(&[1], PatchDirection::Reverse);
         let expected = "diff --git a/f b/f\nindex 0000000..1234567\n--- a/f\n+++ b/f\n@@ -1,1 +1,2 @@\n a\n+b\n";
         assert_eq!(actual, expected);
     }

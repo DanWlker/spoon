@@ -10,7 +10,10 @@ use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
-    git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
+    git::{
+        AfterTask, Commit, CommitHash, FileChange, GitCommand, GitTask, PatchDirection, Ref,
+        Repository,
+    },
     graph_commands::dialog_commit,
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
@@ -900,7 +903,11 @@ impl<'a> DetailView<'a> {
 
     // Applies the selected hunk or line of the diff to the working tree.
     fn apply_change(&self) {
-        let Some(patch) = self.changes_state.pane.selected_patch(false) else {
+        let Some(patch) = self
+            .changes_state
+            .pane
+            .selected_patch(PatchDirection::Forward)
+        else {
             return;
         };
         let what = if self.changes_state.pane.is_selecting_lines() {
@@ -909,7 +916,7 @@ impl<'a> DetailView<'a> {
             "hunk"
         };
         let task = GitTask {
-            commands: vec![vec!["apply".into(), "-".into()]],
+            commands: vec![GitCommand::Apply.args(["-"])],
             input: Some(patch),
             running: format!("Applying the {what} to the working tree"),
             done: format!("Applied the {what} to the working tree"),
