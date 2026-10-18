@@ -246,8 +246,9 @@ pub struct Repository {
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
     loaded_local_changes: std::cell::RefCell<Option<LocalChanges>>,
-    // what runs in the background, the repository refusing to be changed meanwhile, see `run`
-    busy: std::cell::RefCell<Option<String>>,
+    // the git command the app runs in the background, shared with it: the repository refuses to
+    // be changed meanwhile, see `run`
+    running: std::rc::Rc<std::cell::RefCell<Option<RunningTask>>>,
     // the fingerprint of the refs when loaded, see `refs_snapshot`
     refs_snapshot: Option<String>,
     // HEAD when loaded, see `check_head`
@@ -277,17 +278,18 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
     ) -> Result<Self> {
-        Self::load_scoped(path, sort, max_count, mailmap, None)
+        Self::load_scoped(path, sort, max_count, mailmap, None, Default::default())
     }
 
     // `revisions` loads only their history, like ["HEAD"] for the current branch; else that of
-    // every branch, tag and stash.
+    // every branch, tag and stash. `running` is the app's, see `RunningTask`.
     pub fn load_scoped(
         path: &Path,
         sort: SortCommit,
         max_count: Option<usize>,
         mailmap: bool,
         revisions: Option<&[String]>,
+        running: std::rc::Rc<std::cell::RefCell<Option<RunningTask>>>,
     ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
@@ -301,6 +303,7 @@ impl Repository {
             let tracking = scope.spawn(|| load_branch_tracking(path));
             let mut repository = Self::load_commits(path, sort, max_count, mailmap, revisions)?;
             repository.git_dir = git_dir;
+            repository.running = running;
             repository.remotes = remotes.join().unwrap_or_default();
             repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
             repository.loaded_local_changes = local_changes.join().ok().into();
@@ -361,7 +364,7 @@ impl Repository {
             path,
             git_dir: None,
             loaded_local_changes: Default::default(),
-            busy: Default::default(),
+            running: Default::default(),
             refs_snapshot: None,
             loaded_head: HeadState::default(),
             tracking: Default::default(),
@@ -1107,13 +1110,8 @@ impl Repository {
         self.config(key).as_deref().and_then(parse_git_bool)
     }
 
-    // Refuses changes to the repository while `running` (a git command in the background), which
-    // could fail on its locked index or end up in the middle of its stash and pop, like lazygit.
-    pub fn set_busy(&self, running: Option<String>) {
-        *self.busy.borrow_mut() = running;
-    }
-
-    // Runs a git command changing the repository, unless one runs in the background, see `set_busy`.
+    // Runs a git command changing the repository, unless one runs in the background, see
+    // `check_idle`.
     fn run(&self, args: &[&str], stdin: Option<&str>) -> std::result::Result<(), String> {
         self.check_idle()?;
         run_logged(
@@ -1137,10 +1135,11 @@ impl Repository {
         ))
     }
 
-    // An error while a git command runs in the background, see `set_busy`.
+    // An error while a git command runs in the background, which a change could fail on (its
+    // locked index) or end up in the middle of (its stash and pop), like lazygit.
     fn check_idle(&self) -> std::result::Result<(), String> {
-        match self.busy.borrow().as_ref() {
-            Some(running) => Err(format!("{running}, wait for it to finish")),
+        match self.running.borrow().as_ref() {
+            Some(running) => Err(running.busy_message()),
             None => Ok(()),
         }
     }
@@ -2333,6 +2332,25 @@ impl std::fmt::Display for GitArgs {
     }
 }
 
+// The git command running in the background, and what waits for it to finish. The app sets it
+// and the repository reads it, sharing one, see `Repository::check_idle`.
+#[derive(Debug)]
+pub struct RunningTask {
+    pub task: GitTask,
+    // HEAD before committing the message of the local changes page, which is cleared once the
+    // commit is made, see `App::finish_task`
+    pub head_before_commit: Option<CommitHash>,
+    // quit was asked meanwhile, the app quits once it finishes
+    pub quit_after: bool,
+}
+
+impl RunningTask {
+    // Why the repository can't be changed now.
+    pub fn busy_message(&self) -> String {
+        format!("{}, wait for it to finish", self.task.running)
+    }
+}
+
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GitTask {
@@ -2792,6 +2810,19 @@ fn hide_password(arg: &str) -> String {
 mod tests {
     use super::*;
 
+    // A git command running in the background, saying `running`.
+    fn running(running: &str) -> RunningTask {
+        let task = GitTask {
+            running: running.into(),
+            ..Default::default()
+        };
+        RunningTask {
+            task,
+            head_before_commit: None,
+            quit_after: false,
+        }
+    }
+
     #[test]
     fn test_load_root_commit_and_stash() {
         use crate::test_support::git::GitRepository;
@@ -3097,12 +3128,12 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
         // while a git command runs in the background
-        repository.set_busy(Some("Pushing main".into()));
+        *repository.running.borrow_mut() = Some(running("Pushing main"));
         assert_eq!(
             repository.stage_paths(&["a"]),
             Err("Pushing main, wait for it to finish".into())
         );
-        repository.set_busy(None);
+        *repository.running.borrow_mut() = None;
         repository.stage_paths(&["a"]).unwrap();
     }
 
@@ -3468,8 +3499,9 @@ mod tests {
         let all = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         assert_eq!(subjects(&all), ["main", "-other", "base"]);
         let head = ["HEAD".to_string()];
+        let sort = SortCommit::Chronological;
         let head_only =
-            Repository::load_scoped(path, SortCommit::Chronological, None, false, Some(&head))
+            Repository::load_scoped(path, sort, None, false, Some(&head), Default::default())
                 .unwrap();
         assert_eq!(subjects(&head_only), ["main", "base"]);
     }
@@ -3537,12 +3569,12 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         // refused while a git command runs, the conflict markers kept
         let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
-        repository.set_busy(Some("Pushing master".into()));
+        *repository.running.borrow_mut() = Some(running("Pushing master"));
         assert!(repository
             .resolve_conflict("f", ConflictSide::Ours)
             .is_err());
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
-        repository.set_busy(None);
+        *repository.running.borrow_mut() = None;
         repository
             .resolve_conflict("f", ConflictSide::Ours)
             .unwrap();

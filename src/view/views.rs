@@ -189,10 +189,16 @@ impl<'a> View<'a> {
 
     pub fn of_list(
         commit_list_state: CommitListState<'a>,
+        repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
-        View::List(Box::new(ListView::new(commit_list_state, ctx, tx)))
+        View::List(Box::new(ListView::new(
+            commit_list_state,
+            repository,
+            ctx,
+            tx,
+        )))
     }
 
     pub fn of_detail(

@@ -6,7 +6,7 @@ use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
-    git::CommitHash,
+    git::{CommitHash, Repository},
     keys::{Availability, KeyList, Keys},
     search::SearchKind,
     view::{
@@ -24,6 +24,7 @@ use crate::{
 pub struct ListView<'a> {
     commit_list_state: CommitListState<'a>,
 
+    repository: &'a Repository,
     ctx: Rc<AppContext>,
     tx: Sender,
 }
@@ -31,11 +32,13 @@ pub struct ListView<'a> {
 impl<'a> ListView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
+        repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> ListView<'a> {
         ListView {
             commit_list_state,
+            repository,
             ctx,
             tx,
         }
@@ -99,7 +102,7 @@ impl<'a> ListView<'a> {
     pub fn register_keys(k: &mut Keys<Self>) {
         register_commit_list_keys(
             k,
-            |v| ListFacts::of(v.as_list_state(), &v.ctx),
+            |v| ListFacts::of(v.as_list_state(), v.repository),
             |_, _| Availability::Works,
         );
     }
@@ -202,14 +205,15 @@ impl<'a> ListView<'a> {
 pub struct ListFacts {
     pub picked: usize,
     pub search_applied: bool,
-    // see `AppContext::operation`
+    // a rebase, merge, cherry-pick or revert waits to be finished: the commands moving HEAD are
+    // refused meanwhile, see `App::blocked_by_operation`
     pub operation_waits: bool,
 }
 
 impl ListFacts {
-    pub fn of(state: &CommitListState, ctx: &AppContext) -> Self {
+    pub fn of(state: &CommitListState, repository: &Repository) -> Self {
         ListFacts {
-            operation_waits: ctx.operation.get().is_some(),
+            operation_waits: repository.operation_in_progress().is_some(),
             picked: state.picked_commit_hashes().len(),
             search_applied: state.search_applied(),
         }

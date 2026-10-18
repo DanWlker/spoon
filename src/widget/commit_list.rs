@@ -1274,7 +1274,6 @@ mod tests {
                     layout: Default::default(),
                     wrap: Default::default(),
                     search_options: Default::default(),
-                    operation: Default::default(),
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1382,7 +1381,6 @@ mod tests {
                 layout: Default::default(),
                 wrap: Default::default(),
                 search_options: Default::default(),
-                operation: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
             let mut before = Buffer::empty(area);

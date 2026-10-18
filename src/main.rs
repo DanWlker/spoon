@@ -242,7 +242,6 @@ fn main() -> Result<()> {
         layout: Default::default(),
         wrap: Default::default(),
         search_options: Default::default(),
-        operation: Default::default(),
     });
 
     let ec = event::EventController::init();
@@ -256,7 +255,7 @@ fn main() -> Result<()> {
     let mut load = true;
     let ret = loop {
         let repository = if load {
-            loader.load(&mut refresh, &mut repository)?
+            loader.load(&mut refresh, &mut repository, &ctx.running_task)?
         } else {
             repository.as_ref().expect("loaded before")
         };
@@ -329,10 +328,12 @@ impl Loader {
     // Loads the repository into `repository`, with the history the app shown before the reload
     // (`refresh`) shows. Reloading failing, like on a broken ref, keeps the one loaded before,
     // the app saying why.
+    // `running` is the app's git command running in the background, see `git::RunningTask`.
     fn load<'r>(
         &self,
         refresh: &mut Refresh,
         repository: &'r mut Option<git::Repository>,
+        running: &Rc<std::cell::RefCell<Option<git::RunningTask>>>,
     ) -> Result<&'r git::Repository> {
         let revisions = refresh
             .as_ref()
@@ -344,6 +345,7 @@ impl Loader {
                 self.max_count,
                 self.mailmap,
                 revisions,
+                running.clone(),
             )
         };
         let loaded = match load(revisions.as_deref()) {

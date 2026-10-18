@@ -173,7 +173,7 @@ impl<'a> DetailView<'a> {
         if k.view().is_some() {
             register_commit_list_keys(
                 k,
-                |v| ListFacts::of(v.as_list_state(), &v.ctx),
+                |v| ListFacts::of(v.as_list_state(), v.repository),
                 |v, event| match event {
                     _ if !v.list_focused => Availability::Off,
                     // no other diff until this one is closed, which clears the picks too

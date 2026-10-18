@@ -159,7 +159,9 @@ impl Harness {
         loop {
             let loaded = if load {
                 self.loads += 1;
-                self.loader.load(&mut refresh, &mut repository).unwrap()
+                self.loader
+                    .load(&mut refresh, &mut repository, &ctx.running_task)
+                    .unwrap()
             } else {
                 repository.as_ref().unwrap()
             };
@@ -840,12 +842,11 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
     let listed = |app: &App, short: &str| app.view.keys().hints().iter().any(|(_, s)| s == short);
     harness.run(vec![
         check(move |app| assert!(listed(app, "checkout"))),
-        // a merge stopped, as git leaves it
+        // a merge stopped, as git leaves it: seen right away, before any reload
         outside(|path| {
             let head = git(path, &["rev-parse", "HEAD"]);
             std::fs::write(path.join(".git/MERGE_HEAD"), head).unwrap();
         }),
-        tick(),
         check(move |app| {
             assert!(!listed(app, "checkout"));
             // the others stay
@@ -853,6 +854,35 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
         }),
         keys("c"),
         check(|app| assert_notice(app, "A merge is in progress")),
+    ]);
+}
+
+#[test]
+fn test_repository_refuses_changes_while_the_app_runs_a_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    // the app's command running, as the repository sees it, also once reloaded
+    let running = |app: &App, on: bool| {
+        *app.ctx.running_task.borrow_mut() = on.then(|| crate::git::RunningTask {
+            task: crate::git::GitTask {
+                running: "Pushing master".into(),
+                ..Default::default()
+            },
+            head_before_commit: None,
+            quit_after: false,
+        });
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("shift-r"),
+        check(move |app| {
+            running(app, true);
+            let refused = app.repository.stage_paths(&["f.txt"]);
+            running(app, false);
+            assert_eq!(refused, Err("Pushing master, wait for it to finish".into()));
+            app.repository.stage_paths(&["f.txt"]).unwrap();
+        }),
     ]);
 }
 

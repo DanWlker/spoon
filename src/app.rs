@@ -30,7 +30,7 @@ use crate::{
     external::{copy_to_clipboard, exec_interactive},
     git::{
         run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitCommand, GitTask,
-        Head, NamedRef, Ref, Repository, Rev,
+        Head, NamedRef, Ref, Repository, Rev, RunningTask,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -117,8 +117,8 @@ pub struct AppContext {
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
-    // the git command running in the background, kept across refreshes
-    pub running_task: RefCell<Option<RunningTask>>,
+    // the git command running in the background, kept across refreshes, shared with the repository
+    pub running_task: Rc<RefCell<Option<RunningTask>>>,
     // the keys of the hints in the status bar, see `short_keys`
     pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
     // the sizes of the panels, set by the user, kept across refreshes
@@ -127,9 +127,6 @@ pub struct AppContext {
     pub wrap: Cell<bool>,
     // the options of every search, toggled while typing any of them, shared with the commit list
     pub search_options: Rc<Cell<SearchOptions>>,
-    // the rebase, merge, cherry-pick or revert waiting to be finished, as last loaded: the
-    // commands moving HEAD are refused meanwhile, see `App::blocked_by_operation`
-    pub operation: Cell<Option<crate::git::Operation>>,
 }
 
 impl AppContext {
@@ -144,22 +141,11 @@ impl AppContext {
 
     // Why the repository can't be changed now: a git command is running in the background.
     pub fn busy_message(&self) -> Option<String> {
-        let running = self.running_task.borrow();
-        running
+        self.running_task
+            .borrow()
             .as_ref()
-            .map(|running| format!("{}, wait for it to finish", running.task.running))
+            .map(RunningTask::busy_message)
     }
-}
-
-// The git command running in the background, and what waits for it to finish.
-#[derive(Debug)]
-pub struct RunningTask {
-    pub task: GitTask,
-    // HEAD before committing the message of the local changes page, which is cleared once the
-    // commit is made, see `finish_task`
-    head_before_commit: Option<CommitHash>,
-    // quit was asked meanwhile, the app quits once it finishes
-    quit_after: bool,
 }
 
 // The longest the events waiting are handled for before drawing, see `App::run`.
@@ -459,7 +445,7 @@ impl<'a> App<'a> {
                 Head::None => {}
             }
         }
-        let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
+        let view = View::of_list(commit_list_state, repository, ctx.clone(), ec.sender());
 
         let refs = repository.all_refs();
         let loaded_refs = repository.refs_snapshot().map(String::from);
@@ -495,14 +481,6 @@ impl<'a> App<'a> {
         shell
             .folded_merges
             .retain(|h| repository.commit(h).is_some());
-        ctx.operation.set(repository.operation_in_progress());
-        // a git command still running from before the reload
-        let running = ctx
-            .running_task
-            .borrow()
-            .as_ref()
-            .map(|running| running.task.running.clone());
-        repository.set_busy(running);
         shell
             .sidebar
             .set_tracking(repository.branch_tracking().clone());
@@ -1423,7 +1401,7 @@ impl App<'_> {
             k.add_where(&[event], short, long, move |app| {
                 let runs = !app.repository.remotes().is_empty()
                     && (event != Pull || app.repository.current_branch().is_some())
-                    && !(event.moves_head() && app.ctx.operation.get().is_some());
+                    && !(event.moves_head() && app.repository.operation_in_progress().is_some());
                 match (page(app), runs) {
                     (false, _) => Availability::Off,
                     (true, false) => Availability::Warns,
@@ -1696,7 +1674,7 @@ impl App<'_> {
                 false => Availability::Off,
             },
             |_| false,
-            |app| app.ctx.operation.get().is_some(),
+            |app| app.repository.operation_in_progress().is_some(),
         );
         k.add(
             &[ToggleSelect],
@@ -1822,6 +1800,7 @@ impl App<'_> {
         };
         self.replace_view(View::of_list(
             commit_list_state,
+            self.repository,
             self.ctx.clone(),
             self.ec.sender(),
         ));
@@ -2029,7 +2008,6 @@ impl App<'_> {
             head_before_commit,
             quit_after: false,
         });
-        self.repository.set_busy(Some(task.running.clone()));
         let path = self.repository.path().to_path_buf();
         // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
         if task.may_sign() && self.repository.signs() {
@@ -2061,7 +2039,6 @@ impl App<'_> {
     fn finish_task(&mut self, task: GitTask, mut result: Result<(), String>) -> bool {
         let running = self.ctx.running_task.borrow_mut().take();
         let quit = running.as_ref().is_some_and(|running| running.quit_after);
-        self.repository.set_busy(None);
         if let (Err(_), Some(failed)) = (&result, &task.failed) {
             result = Err(failed.clone());
         }
@@ -2369,9 +2346,6 @@ impl App<'_> {
     // Reloads the local changes, made outside the app too: the page showing them, else their
     // count in the page bar.
     fn reload_files(&mut self, files: FilesSnapshot) {
-        self.ctx
-            .operation
-            .set(self.repository.operation_in_progress());
         match &mut self.view {
             View::LocalChanges(view) => view.reload_files(files),
             _ => {
