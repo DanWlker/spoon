@@ -3,6 +3,20 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, WrapMode};
 
+// Whether the text shows the caret, while it is typed into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caret {
+    Shown,
+    Hidden,
+}
+
+// How long lines show: wrapped, or scrolled sideways like a one-line input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lines {
+    Wrapped,
+    Scrolled,
+}
+
 // The commit message editor: ratatui-textarea, with its Emacs-like keys, undo (ctrl-u), redo
 // (ctrl-r) and moving by word; long lines wrap at words.
 #[derive(Debug, Clone)]
@@ -45,16 +59,15 @@ impl TextArea {
         self.0.input(key);
     }
 
-    // Draws the text in `style`: while `editing` with the cursor, scrolled to it, else from the
-    // start. Without `wrap` a long line scrolls sideways, like a one-line input.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, style: Style, editing: bool, wrap: bool) {
+    // Draws the text in `style`: while typing with the caret, scrolled to it, else from the start.
+    pub fn render(&self, area: Rect, buf: &mut Buffer, style: Style, caret: Caret, lines: Lines) {
         // a copy to style, the text is short
         let mut inner = self.0.clone();
         inner.set_style(style);
-        if !wrap {
+        if lines == Lines::Scrolled {
             inner.set_wrap_mode(WrapMode::None);
         }
-        if !editing {
+        if caret == Caret::Hidden {
             inner.set_cursor_style(style);
             inner.move_cursor(CursorMove::Top);
             inner.move_cursor(CursorMove::Head);

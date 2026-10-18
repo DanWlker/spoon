@@ -243,6 +243,12 @@ struct RemoteFields {
     url: Text,
 }
 
+// The name and URL typed for a remote, see `RemoteFields`.
+struct RemoteValues {
+    name: String,
+    url: String,
+}
+
 impl RemoteFields {
     fn new(form: &mut Form, name: &str, url: &str) -> Self {
         RemoteFields {
@@ -1421,21 +1427,21 @@ impl GitDialog {
         url: &str,
         fields: RemoteFields,
     ) -> Result<GitTask, String> {
-        let (new_name, new_url) = self.remote_values(fields)?;
+        let new = self.remote_values(fields)?;
         let mut commands = vec![];
-        if new_name != *name {
-            commands.push(GitCommand::Remote.args(["rename", name, &new_name]));
+        if new.name != *name {
+            commands.push(GitCommand::Remote.args(["rename", name, &new.name]));
         }
-        if new_url != *url {
-            commands.push(GitCommand::Remote.args(["set-url", &new_name, &new_url]));
+        if new.url != *url {
+            commands.push(GitCommand::Remote.args(["set-url", &new.name, &new.url]));
         }
         if commands.is_empty() {
             return Err("Change the name or the URL".into());
         }
         Ok(GitTask {
             commands,
-            running: format!("Saving {new_name}"),
-            done: format!("Saved {new_name}"),
+            running: format!("Saving {}", new.name),
+            done: format!("Saved {}", new.name),
             ..Default::default()
         })
     }
@@ -1450,7 +1456,7 @@ impl GitDialog {
     }
 
     fn add_remote_command(&self, fields: RemoteFields) -> Result<GitTask, String> {
-        let (name, url) = self.remote_values(fields)?;
+        let RemoteValues { name, url } = self.remote_values(fields)?;
         Ok(GitTask {
             commands: vec![
                 GitCommand::Remote.args(["add", &name, &url]),
@@ -1463,13 +1469,13 @@ impl GitDialog {
     }
 
     // The name and URL typed for a remote.
-    fn remote_values(&self, fields: RemoteFields) -> Result<(String, String), String> {
+    fn remote_values(&self, fields: RemoteFields) -> Result<RemoteValues, String> {
         let name = self.text(fields.name);
         let url = self.text(fields.url);
         if name.is_empty() || url.is_empty() {
             return Err("Type a name and a URL for the remote".into());
         }
-        Ok((name, url))
+        Ok(RemoteValues { name, url })
     }
 
     // A tag at `at`, annotated when it has a message.

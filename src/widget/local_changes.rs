@@ -34,7 +34,7 @@ use crate::{
             badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
             render_panel_scrollbar, tree_panel_width,
         },
-        text_area::TextArea,
+        text_area::{Caret, Lines, TextArea},
         tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -2129,9 +2129,14 @@ impl LocalChangesPanel<'_> {
             if text.is_empty() && !typing {
                 placeholder(empty, theme).render(box_area, buf);
             } else {
+                let caret = if typing { Caret::Shown } else { Caret::Hidden };
                 // the one-line summary scrolls sideways, the description wraps
-                let wrap = field == CommitField::Description;
-                text.render(box_area, buf, Style::default().fg(theme.fg), typing, wrap);
+                let lines = match field {
+                    CommitField::Summary => Lines::Scrolled,
+                    CommitField::Description => Lines::Wrapped,
+                };
+                let style = Style::default().fg(theme.fg);
+                text.render(box_area, buf, style, caret, lines);
             }
             let focused = self.focused && state.is_commit_focused();
             if focused && state.commit_field == field && box_area.height > 0 && area.x > 0 {
