@@ -929,7 +929,7 @@ impl GitDialog {
         }
         args.extend([
             remote.clone(),
-            format!("refs/heads/{branch}:refs/heads/{remote_branch}"),
+            format!("refs/heads/{branch}:{remote_branch}"),
         ]);
         let pushing = if force { "Force pushing" } else { "Pushing" };
         Ok(GitTask {
@@ -3296,13 +3296,13 @@ mod tests {
     #[test]
     fn test_push_options() {
         let mut dialog = GitDialog::remote(RemoteAction::Push, info()).unwrap();
-        assert_eq!(args(&dialog), "push origin refs/heads/main:refs/heads/main");
+        assert_eq!(args(&dialog), "push origin refs/heads/main:main");
 
         // a branch without an upstream is pushed under its own name, and tracks it
         press(&mut dialog, UserEvent::NavigateRight);
         assert_eq!(
             args(&dialog),
-            "push --set-upstream origin refs/heads/topic:refs/heads/topic"
+            "push --set-upstream origin refs/heads/topic:topic"
         );
 
         // type another name for the remote branch
@@ -3320,7 +3320,7 @@ mod tests {
         press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
             args(&dialog),
-            "push --force-with-lease --tags --set-upstream origin refs/heads/topic:refs/heads/topic2"
+            "push --force-with-lease --tags --set-upstream origin refs/heads/topic:topic2"
         );
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::DialogToggle);
