@@ -46,7 +46,7 @@ use crate::{
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
-        commit_list::{CommitInfo, CommitListState},
+        commit_list::{CommitInfo, CommitListState, SearchOutcome},
         commit_tabs::DetailTab,
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
         keys_popup::KeysPopup,
@@ -68,9 +68,8 @@ enum StatusLine {
     },
     Transient(String),
     SearchResult {
-        message: String,
+        outcome: SearchOutcome,
         options: String,
-        matched: bool,
     },
     NotificationInfo(String),
     NotificationSuccess(String),
@@ -85,8 +84,15 @@ pub enum InitialSelection {
 // How the app starts, from the command line: on the local changes page; and fetching the remotes, which the tests leave out, see `fetch_on_launch`.
 #[derive(Clone, Copy)]
 pub struct Launch {
-    pub local_changes: bool,
+    pub page: StartPage,
     pub fetch: bool,
+}
+
+// The page the app opens on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StartPage {
+    Graph,
+    LocalChanges,
 }
 
 // The longest the fetch on launch runs, for a remote that never answers; long enough for a big
@@ -517,7 +523,7 @@ impl<'a> App<'a> {
         match refresh_view_context {
             Some(context) => app.init_with_context(context),
             None => {
-                if launch.local_changes {
+                if launch.page == StartPage::LocalChanges {
                     app.show_local_changes_page();
                 }
                 if launch.fetch && !repository.remotes().is_empty() {
@@ -826,16 +832,8 @@ impl App<'_> {
             AppEvent::UpdateStatusTransient(msg) => {
                 self.shell.app_status.status_line = StatusLine::Transient(msg);
             }
-            AppEvent::UpdateSearchResult {
-                message,
-                options,
-                matched,
-            } => {
-                self.shell.app_status.status_line = StatusLine::SearchResult {
-                    message,
-                    options,
-                    matched,
-                };
+            AppEvent::UpdateSearchResult { outcome, options } => {
+                self.shell.app_status.status_line = StatusLine::SearchResult { outcome, options };
             }
             AppEvent::NotifyInfo(msg) => {
                 self.shell.app_status.status_line = StatusLine::NotificationInfo(msg);
@@ -925,11 +923,9 @@ impl App<'_> {
         };
         match event {
             UserEvent::Cancel | UserEvent::CommandLog => self.shell.overlay = None,
-            UserEvent::NavigateDown | UserEvent::SelectDown => state.select_next(),
-            UserEvent::NavigateUp | UserEvent::SelectUp => state.select_prev(),
-            UserEvent::GoToTop => state.select_first(),
-            UserEvent::GoToBottom => state.select_last(),
+            // the scroll keys scroll the output, ctrl-d and ctrl-u too
             event if state.scroll_output(event) => {}
+            event if state.move_selection(event) => {}
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 if let Some(text) = state.selected_text() {
                     self.ec.send(AppEvent::copy("Command and output", text));
@@ -1230,16 +1226,11 @@ impl App<'_> {
             StatusLine::Transient(msg) => {
                 right.push(Span::raw(format!("{msg} ")).fg(theme.muted_fg));
             }
-            StatusLine::SearchResult {
-                message,
-                options,
-                matched,
-            } => {
-                let span = Span::raw(message.clone());
-                left.push(if *matched {
-                    span.fg(theme.status_info_fg)
-                } else {
-                    span.fg(theme.status_warn_fg).bold()
+            StatusLine::SearchResult { outcome, options } => {
+                let span = Span::raw(outcome.to_string());
+                left.push(match outcome {
+                    SearchOutcome::Found { .. } => span.fg(theme.status_info_fg),
+                    SearchOutcome::NotFound { .. } => span.fg(theme.status_warn_fg).bold(),
                 });
                 right.push(Span::raw(format!("{options} ")).fg(theme.muted_fg));
             }
@@ -2149,11 +2140,11 @@ impl App<'_> {
         // typing stopped, see `check_refs`
         if let Some(mut context) = self.view.refresh_context().filter(|_| !typing) {
             // the rewritten commit stays selected
-            let select = match &task.after {
-                AfterTask::Select(revision) if result.is_ok() => Some(revision.as_str()),
+            let select = match task.after {
+                AfterTask::SelectBehindHead(n) if result.is_ok() => Some(format!("HEAD~{n}")),
                 _ => None,
             };
-            if let Some(hash) = select.and_then(|revision| self.repository.resolve(revision)) {
+            if let Some(hash) = select.and_then(|revision| self.repository.resolve(&revision)) {
                 let list_context = context.list_context_mut();
                 list_context.commit_hash = hash.as_str().to_string();
                 list_context.scroll_to_top = false;

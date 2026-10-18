@@ -175,24 +175,19 @@ pub fn ref_graph_command(
         }),
         UserEvent::Checkout => checked_out().map(|_| {
             let mut targets = checkout_targets(repository, &target);
-            match targets
-                .iter()
-                .position(|t| t.args.last().map(String::as_str) == Some(name))
-            {
+            match targets.iter().position(|t| t.is_of(name)) {
                 Some(i) => {
                     let ours = targets.remove(i);
                     targets.insert(0, ours);
                 }
                 // a tag, checked out detached in place of its commit
                 None => {
-                    targets.retain(|t| t.args.first().map(String::as_str) != Some("--detach"));
-                    targets.insert(
-                        0,
-                        CheckoutTarget {
-                            label: format!("{name} (detached HEAD)"),
-                            args: vec!["--detach".into(), name.to_string()],
-                        },
-                    );
+                    targets.retain(|t| !matches!(t, CheckoutTarget::Detach { .. }));
+                    let tag = CheckoutTarget::Detach {
+                        revision: name.to_string(),
+                        label: name.to_string(),
+                    };
+                    targets.insert(0, tag);
                 }
             }
             GitDialog::checkout(targets)
@@ -297,10 +292,7 @@ fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutT
     for r in repository.refs(hash) {
         match r {
             Ref::Branch { name, .. } if Some(name) != current.as_ref() => {
-                targets.push(CheckoutTarget {
-                    label: name.clone(),
-                    args: vec![name.clone()],
-                });
+                targets.push(CheckoutTarget::Branch(name.clone()));
             }
             Ref::RemoteBranch { name, .. } => {
                 // a new local branch tracking it, unless there is one by that name
@@ -308,18 +300,18 @@ fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutT
                     continue;
                 };
                 if local != "HEAD" && !local_exists(local) {
-                    targets.push(CheckoutTarget {
-                        label: format!("{local} (new, tracking {name})"),
-                        args: vec!["--track".into(), name.clone()],
+                    targets.push(CheckoutTarget::Track {
+                        local: local.to_string(),
+                        remote_branch: name.clone(),
                     });
                 }
             }
             _ => {}
         }
     }
-    targets.push(CheckoutTarget {
-        label: format!("{} (detached HEAD)", hash.as_short_hash()),
-        args: vec!["--detach".into(), hash.as_str().into()],
+    targets.push(CheckoutTarget::Detach {
+        revision: hash.as_str().into(),
+        label: hash.as_short_hash().into(),
     });
     targets
 }
@@ -410,7 +402,7 @@ fn drop_commits(
     }
     // the commit after the newest one takes its place, under a new hash
     let after = repository.count_after(newest, "HEAD")?;
-    let select = Some(format!("HEAD~{}", after.saturating_sub(1)));
+    let behind_head = after.saturating_sub(1);
     let dropped = commits.clone();
     let commits = commits
         .iter()
@@ -423,11 +415,9 @@ fn drop_commits(
         repository.replay_conflict(base, &[&range], &dropped)
     });
     let pushed = repository.upstream_containing(oldest.as_str());
-    let dialog = GitDialog::drop(branch, commits, base, rebase_auto_stash(repository));
-    Ok(dialog
-        .selecting(select)
-        .conflicting(conflict)
-        .pushed(pushed))
+    let auto_stash = rebase_auto_stash(repository);
+    let dialog = GitDialog::drop(branch, commits, base, auto_stash, behind_head);
+    Ok(dialog.conflicting(conflict).pushed(pushed))
 }
 
 // Amends a commit on the local changes page, with its changes and message there: the last one
@@ -825,7 +815,7 @@ mod tests {
             command(&repository, UserEvent::DropCommit, &hashes[1], &[]),
             "",
         );
-        assert_eq!(task.after, AfterTask::Select("HEAD~0".into()));
+        assert_eq!(task.after, AfterTask::SelectBehindHead(0));
         assert_eq!(git(&["log", "--format=%s"]), "c3\nc1\n");
         assert_eq!(git(&["ls-files"]), "f0\nf2\n");
         assert_eq!(git(&["status", "--porcelain"]), " M f0\n");
@@ -937,7 +927,7 @@ mod tests {
             command(&repository, UserEvent::DropCommit, &hashes[1], &picked),
             "",
         );
-        assert_eq!(task.after, AfterTask::Select("HEAD~0".into()));
+        assert_eq!(task.after, AfterTask::SelectBehindHead(0));
         assert_eq!(git(&["log", "--format=%s"]), "c2\n");
         assert_eq!(git(&["ls-files"]), "f1\n");
     }

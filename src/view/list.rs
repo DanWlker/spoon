@@ -390,11 +390,10 @@ fn update_search_options_message(state: &CommitListState, tx: &Sender) {
 }
 
 fn update_matched_message(state: &CommitListState, tx: &Sender) {
-    if let Some((msg, matched)) = state.matched_query_string() {
+    if let Some(outcome) = state.search_outcome() {
         tx.send(AppEvent::UpdateSearchResult {
-            message: msg,
+            outcome,
             options: state.search_options().status_string(SearchKind::Commits),
-            matched,
         });
     } else {
         tx.send(AppEvent::ClearStatusLine);

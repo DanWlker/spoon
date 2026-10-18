@@ -2293,8 +2293,8 @@ pub enum AfterTask {
     // the repository reloaded, the page as it was
     #[default]
     Reload,
-    // and this commit selected, like "HEAD~2", as rewriting the history changes its hash
-    Select(String),
+    // and the commit this many before HEAD selected, as rewriting the history changes its hash
+    SelectBehindHead(usize),
     // the local changes page, it left changes to commit
     LocalChanges,
     // only the working tree changed, the page stays as it is instead of being reloaded

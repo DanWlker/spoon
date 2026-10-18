@@ -329,36 +329,36 @@ impl DiffCursor {
     }
 
     // Selects the row matching `query` in `direction` from the last match, else from the selection:
-    // the changed line it is on, else its hunk. Returns whether that is a changed line, None when
+    // the changed line it is on, else its hunk. Returns which of them it selected, None when
     // nothing matches.
     pub fn search(
         &mut self,
         diff: &ParsedDiff,
         query: &str,
         direction: SearchDirection,
-        lines: bool,
+        selected: DiffPart,
         options: SearchOptions,
-    ) -> Option<bool> {
-        let selected = if lines {
-            self.line
-        } else {
-            diff.hunks.get(self.hunk).map_or(0, |h| h.rows.start)
+    ) -> Option<DiffPart> {
+        let selected = match selected {
+            DiffPart::Line => self.line,
+            DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0, |h| h.rows.start),
         };
         let start = self.search_row.unwrap_or(selected);
         let row = find_around(diff.rows.len(), start, direction, |r| {
             match_range(&diff.rows[r].text, query, options).is_some()
         })?;
-        let changed = diff.rows[row].is_change();
-        if changed {
+        let part = if diff.rows[row].is_change() {
             self.select_line(diff, row);
+            DiffPart::Line
         } else {
             if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
                 self.hunk = index;
             }
             self.scroll_to(row..row + 1);
-        }
+            DiffPart::Hunk
+        };
         self.search_row = Some(row);
-        Some(changed)
+        Some(part)
     }
 
     pub fn move_hunk(&mut self, diff: &ParsedDiff, step: Step) {
@@ -424,22 +424,31 @@ impl DiffCursor {
         row.is_some()
     }
 
+    // Scrolls as little as can be to show `rows` with `scrolloff` rows around them, like the lists
+    // (see `style::scroll_to`); their top first when they don't fit.
     pub fn scroll_to(&mut self, rows: Range<usize>) {
-        let ScrollState { offset, height } = &mut self.scroll;
-        // before the first render the height is unknown
-        if *height == 0 || rows.start < *offset || rows.len() > *height {
-            *offset = rows.start;
-        } else if rows.end > *offset + *height {
-            *offset = rows.end - *height;
+        let ScrollState {
+            offset,
+            height,
+            scrolloff,
+        } = &mut self.scroll;
+        // before the first render the height is unknown, no margin then
+        let margin = (*scrolloff).min(height.saturating_sub(1) / 2);
+        let top = rows.start.saturating_sub(margin);
+        let bottom = rows.end + margin;
+        if bottom > *offset + *height {
+            *offset = bottom - *height;
+        }
+        if top < *offset {
+            *offset = top;
         }
     }
 
-    // The rows highlighted: the selected line, else the selected hunk.
-    pub fn highlighted(&self, diff: &ParsedDiff, lines: bool) -> Range<usize> {
-        if lines {
-            self.line..self.line + 1
-        } else {
-            diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone())
+    // The rows highlighted: the selected line, or the selected hunk.
+    pub fn highlighted(&self, diff: &ParsedDiff, part: DiffPart) -> Range<usize> {
+        match part {
+            DiffPart::Line => self.line..self.line + 1,
+            DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone()),
         }
     }
 
@@ -464,13 +473,11 @@ impl DiffCursor {
         Some(line.get(1..)?.trim_end_matches(['\n', '\r']).to_string())
     }
 
-    // The selected line as in the file while selecting `lines`, else the selected hunk as a diff,
-    // to copy.
-    pub fn selected_text(&self, diff: &ParsedDiff, lines: bool) -> Option<String> {
-        if lines {
-            self.line_text(diff)
-        } else {
-            self.selected_hunk(diff).map(DiffHunk::text)
+    // The selected line as in the file, or the selected hunk as a diff, to copy.
+    pub fn selected_text(&self, diff: &ParsedDiff, part: DiffPart) -> Option<String> {
+        match part {
+            DiffPart::Line => self.line_text(diff),
+            DiffPart::Hunk => self.selected_hunk(diff).map(DiffHunk::text),
         }
     }
 
@@ -1139,6 +1146,24 @@ mod tests {
                 ("uno dos three cuatro", vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn test_selection_keeps_scrolloff_like_the_lists() {
+        use crate::widget::style::scroll_to;
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 10;
+        cursor.scroll.scrolloff = 3;
+        // a row at a time, down then up: the offset the lists would have
+        let mut offset = 0;
+        for row in (0..30).chain((0..30).rev()) {
+            cursor.scroll_to(row..row + 1);
+            offset = scroll_to(offset, row, 10, usize::MAX, 3);
+            assert_eq!(cursor.scroll.offset, offset, "row {row}");
+        }
+        // a hunk taller than the rows shown: from its top, with the margin above it
+        cursor.scroll_to(40..60);
+        assert_eq!(cursor.scroll.offset, 37);
     }
 
     #[test]

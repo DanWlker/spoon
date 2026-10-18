@@ -18,7 +18,7 @@ use crate::{
     search::SearchOptions,
     widget::{
         style::{
-            change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder, scroll_to,
+            change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder, ListCursor,
         },
         tree_query::{find_around, highlighted_text, name_matches, SearchDirection},
     },
@@ -152,9 +152,8 @@ pub struct FileTreeState {
     rows: Vec<FileTreeRow>,
     // the indent markers of the rows, see `tree_guides`
     guides: Vec<String>,
-    cursor: usize,
-    // the first row shown, moved as little as can be to show the cursor as the tree is drawn
-    offset: Cell<usize>,
+    // the selected row and the rows shown, which drawing the tree moves to show it
+    cursor: Cell<ListCursor>,
 }
 
 impl FileTreeState {
@@ -166,8 +165,7 @@ impl FileTreeState {
             filter: None,
             rows: Vec::new(),
             guides: Vec::new(),
-            cursor: 0,
-            offset: Cell::new(0),
+            cursor: Cell::default(),
         };
         state.rebuild_rows();
         state
@@ -182,8 +180,7 @@ impl FileTreeState {
             filter: self.filter.clone(),
             rows: Vec::new(),
             guides: Vec::new(),
-            cursor: 0,
-            offset: self.offset.clone(),
+            cursor: self.cursor.clone(),
         };
         state.rebuild_rows();
         if let Some(path) = self.selected().map(|r| r.path.as_str()) {
@@ -206,14 +203,9 @@ impl FileTreeState {
     // The first row shown in `height` rows, showing the cursor with `scrolloff` rows around it,
     // moved as little as can be since the last time, like the other lists; see `scroll_to`.
     pub fn scroll(&self, height: usize, scrolloff: usize) -> usize {
-        let offset = scroll_to(
-            self.offset.get(),
-            self.cursor,
-            height,
-            self.rows.len(),
-            scrolloff,
-        );
-        self.offset.set(offset);
+        let mut cursor = self.cursor.get();
+        let offset = cursor.fit(height, self.rows.len(), scrolloff);
+        self.cursor.set(cursor);
         offset
     }
 
@@ -228,11 +220,11 @@ impl FileTreeState {
     }
 
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.cursor.get().selected()
     }
 
     pub fn selected(&self) -> Option<&FileTreeRow> {
-        self.rows.get(self.cursor)
+        self.rows.get(self.cursor())
     }
 
     pub fn is_open(&self, path: &str) -> bool {
@@ -280,29 +272,30 @@ impl FileTreeState {
 
     // Moves the cursor to the row at `index`, or the last one.
     pub fn select_index(&mut self, index: usize) {
-        self.cursor = index.min(self.rows.len().saturating_sub(1));
+        let total = self.rows.len();
+        self.cursor.get_mut().select(index, total);
     }
 
     pub fn select_path(&mut self, path: &str) {
         if let Some(pos) = self.rows.iter().position(|r| r.path == path) {
-            self.cursor = pos;
+            self.select_index(pos);
         }
     }
 
     pub fn select_next(&mut self) {
-        self.cursor = (self.cursor + 1).min(self.rows.len().saturating_sub(1));
+        self.select_index(self.cursor() + 1);
     }
 
     pub fn select_prev(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        self.select_index(self.cursor().saturating_sub(1));
     }
 
     pub fn select_first(&mut self) {
-        self.cursor = 0;
+        self.select_index(0);
     }
 
     pub fn select_last(&mut self) {
-        self.cursor = self.rows.len().saturating_sub(1);
+        self.select_index(usize::MAX);
     }
 
     pub fn expand(&mut self) {
@@ -364,7 +357,7 @@ impl FileTreeState {
             rows
         };
         self.guides = tree_guides(self.rows.iter().map(|r| (r.depth, r.is_dir())));
-        self.select_index(self.cursor);
+        self.select_index(self.cursor());
         if let Some(path) = selected {
             self.select_path(&path);
         }

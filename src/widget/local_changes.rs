@@ -29,7 +29,7 @@ use crate::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
             TreeShape,
         },
-        git_dialog::{CommitPreview, GitDialog},
+        git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
             badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
             render_panel_scrollbar, tree_panel_width,
@@ -463,26 +463,20 @@ impl<'a> LocalChangesState<'a> {
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
     fn request_commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let amend = self.draft.amend.is_some();
-        let (action, branch) = if self.editing_commit() {
+        let branch = match self.repository.head() {
+            Head::Branch { name } => Some(name.clone()),
+            _ => None,
+        };
+        let kind = match (&self.draft.amend, self.operation) {
             // HEAD is the commit being edited, on no branch while rebasing
-            let head = self
-                .repository
-                .head_commit()
-                .unwrap_or_else(|| "HEAD".into());
-            let target = format!("{}, then go on with the rebase", head.as_short_hash());
-            ("Amend".to_string(), target)
-        } else {
-            let branch = match self.repository.head() {
-                Head::Branch { name } => name.clone(),
-                _ => "detached HEAD".to_string(),
-            };
-            let action = match (amend, self.operation) {
-                (true, _) => "Amend the last commit on".to_string(),
-                (false, Some(operation)) => format!("Commit the {} on", operation.name()),
-                (false, None) => "Commit to".to_string(),
-            };
-            (action, branch)
+            (Some(amend), _) if amend.of == AmendOf::EditStop => CommitKind::AmendEditStop {
+                commit: self
+                    .repository
+                    .head_commit()
+                    .unwrap_or_else(|| "HEAD".into()),
+            },
+            (Some(_), _) => CommitKind::AmendLast { branch },
+            (None, finishing) => CommitKind::New { branch, finishing },
         };
         let subject = self.draft.summary.text().trim().to_string();
         let description = self.draft.description.text();
@@ -493,18 +487,16 @@ impl<'a> LocalChangesState<'a> {
             .iter()
             .map(|f| (f.status.symbol().to_string(), f.path.clone()))
             .collect();
+        // amending a commit a rebase stopped at was warned about when it started
+        let pushed = matches!(kind, CommitKind::AmendLast { .. })
+            .then(|| self.repository.upstream_containing("HEAD"))
+            .flatten();
         let preview = CommitPreview {
-            action,
-            branch,
-            amend,
+            kind,
             subject,
             body,
             files,
         };
-        // amending a commit a rebase stopped at was warned about when it started
-        let pushed = (amend && !self.editing_commit())
-            .then(|| self.repository.upstream_containing("HEAD"))
-            .flatten();
         let dialog = GitDialog::commit(preview, self.commit_task()?).pushed(pushed);
         self.request = Some(Request::Dialog(dialog));
         Ok(())
@@ -2065,7 +2057,8 @@ impl LocalChangesPanel<'_> {
             block.render(side_area, buf);
             height = content_area.height as usize;
             let longest = conflict.ours.len().max(conflict.theirs.len());
-            let range = state.pane.scroll_state().fit(longest, height);
+            let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
+            let range = state.pane.scroll_state().fit(longest, height, scrolloff);
             let lines: Vec<Line> = lines
                 .iter()
                 .skip(range.start)
@@ -2949,8 +2942,15 @@ mod tests {
             panic!("no commit to confirm");
         };
         assert_eq!(
-            (preview.action.as_str(), preview.branch.as_str()),
-            ("Commit to", "master")
+            preview.kind,
+            CommitKind::New {
+                branch: Some("master".into()),
+                finishing: None
+            }
+        );
+        assert_eq!(
+            preview.kind.sentence(),
+            ("Commit to".into(), "master".into())
         );
         assert_eq!(preview.subject, "first change");
         assert_eq!(preview.body, vec!["body"]);

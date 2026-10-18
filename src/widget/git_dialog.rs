@@ -32,9 +32,49 @@ pub enum RemoteAction {
 
 // A branch or commit to check out, and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CheckoutTarget {
-    pub label: String,
-    pub args: Vec<String>,
+pub enum CheckoutTarget {
+    // a local branch
+    Branch(String),
+    // a new local branch `local` tracking the remote branch `remote_branch`, like "origin/main"
+    Track {
+        local: String,
+        remote_branch: String,
+    },
+    // a commit or a tag on no branch, shown as `label`: the tag, or the short hash
+    Detach {
+        revision: String,
+        label: String,
+    },
+}
+
+impl CheckoutTarget {
+    pub fn label(&self) -> String {
+        match self {
+            CheckoutTarget::Branch(name) => name.clone(),
+            CheckoutTarget::Track {
+                local,
+                remote_branch,
+            } => format!("{local} (new, tracking {remote_branch})"),
+            CheckoutTarget::Detach { label, .. } => format!("{label} (detached HEAD)"),
+        }
+    }
+
+    fn args(&self) -> Vec<&str> {
+        match self {
+            CheckoutTarget::Branch(name) => vec![name],
+            CheckoutTarget::Track { remote_branch, .. } => vec!["--track", remote_branch],
+            CheckoutTarget::Detach { revision, .. } => vec!["--detach", revision],
+        }
+    }
+
+    // Whether it checks out the branch or remote branch `name`.
+    pub fn is_of(&self, name: &str) -> bool {
+        match self {
+            CheckoutTarget::Branch(branch) => branch == name,
+            CheckoutTarget::Track { remote_branch, .. } => remote_branch == name,
+            CheckoutTarget::Detach { .. } => false,
+        }
+    }
 }
 
 // Where a new branch starts or a tag goes: a commit, or a branch, remote branch or tag (a branch
@@ -135,6 +175,7 @@ enum DialogKind {
         commits: Vec<DialogCommit>,
         base: Option<String>,
         auto_stash: Check,
+        behind_head: usize,
     },
     // where it may start, chosen with `from`
     CreateBranch {
@@ -269,14 +310,55 @@ enum AutoStashFollows {
 // The commit to make, shown in the popup confirming it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitPreview {
-    // "Commit to", "Amend the last commit on", "Commit the merge on"
-    pub action: String,
-    pub branch: String,
-    pub amend: bool,
+    pub kind: CommitKind,
     pub subject: String,
     pub body: Vec<String>,
     // the staged files, as their status letter like "M" and their path
     pub files: Vec<(String, String)>,
+}
+
+// What committing does. `branch` is None on a detached HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitKind {
+    // a new commit, finishing the operation stopped when there is one
+    New {
+        branch: Option<String>,
+        finishing: Option<Operation>,
+    },
+    AmendLast {
+        branch: Option<String>,
+    },
+    // amending the commit a rebase stopped at to edit, then going on with the rebase
+    AmendEditStop {
+        commit: CommitHash,
+    },
+}
+
+impl CommitKind {
+    pub fn amends(&self) -> bool {
+        !matches!(self, CommitKind::New { .. })
+    }
+
+    // What it does and to what, like ("Commit to", "main").
+    pub fn sentence(&self) -> (String, String) {
+        let branch =
+            |branch: &Option<String>| branch.clone().unwrap_or_else(|| "detached HEAD".into());
+        match self {
+            CommitKind::New {
+                branch: on,
+                finishing: Some(operation),
+            } => (format!("Commit the {} on", operation.name()), branch(on)),
+            CommitKind::New {
+                branch: on,
+                finishing: None,
+            } => ("Commit to".into(), branch(on)),
+            CommitKind::AmendLast { branch: on } => ("Amend the last commit on".into(), branch(on)),
+            CommitKind::AmendEditStop { commit } => (
+                "Amend".into(),
+                format!("{}, then go on with the rebase", commit.as_short_hash()),
+            ),
+        }
+    }
 }
 
 // The lines of the message, and the files, shown in the popup confirming a commit.
@@ -538,8 +620,6 @@ pub struct GitDialog {
     selected: usize,
     // typing into the selected text field
     editing: bool,
-    // the commit to select once the command is done, see `GitTask::select`
-    select: Option<String>,
     // the conflicts git would stop at, shown in the warning color
     conflicts: Option<String>,
     // the remote branch already having the commits it rewrites, see `GitDialog::pushed`
@@ -563,7 +643,6 @@ impl GitDialog {
             selected: 0,
             editing: false,
             trigger: None,
-            select: None,
             conflicts: None,
             pushed: None,
         }
@@ -573,12 +652,6 @@ impl GitDialog {
     pub fn pushed(mut self, remote_branch: Option<String>) -> Self {
         self.pushed = remote_branch
             .map(|b| format!("Already on {b}, pushing the rewrite needs a force push."));
-        self
-    }
-
-    // Selects the revision once the command rewrote the history, see `GitTask::select`.
-    pub fn selecting(mut self, revision: Option<String>) -> Self {
-        self.select = revision;
         self
     }
 
@@ -618,7 +691,7 @@ impl GitDialog {
 
     // Commits as `preview` shows; the commit key confirms it too.
     pub fn commit(preview: CommitPreview, task: GitTask) -> Self {
-        let (title, verb) = if preview.amend {
+        let (title, verb) = if preview.kind.amends() {
             (" Amend ", "amend")
         } else {
             (" Commit ", "commit")
@@ -957,7 +1030,7 @@ impl GitDialog {
     }
 
     pub fn checkout(targets: Vec<CheckoutTarget>) -> Self {
-        let options = targets.iter().map(|t| t.label.clone()).collect();
+        let options = targets.iter().map(CheckoutTarget::label).collect();
         let mut form = Form::default();
         let target = form.pick("Check out", options, "");
         let local_changes = form.choose("Local changes", LocalChanges::Keep);
@@ -979,14 +1052,14 @@ impl GitDialog {
         let local_changes = self.chosen(local_changes);
         let mut args = vec![];
         if local_changes == LocalChanges::Discard {
-            args.push("--force".into());
+            args.push("--force");
         }
-        args.extend(target.args.iter().cloned());
+        args.extend(target.args());
         Ok(GitTask {
             commands: vec![GitCommand::Checkout.args(args)],
             stash: local_changes == LocalChanges::Stash,
-            running: format!("Checking out {}", target.label),
-            done: format!("Checked out {}", target.label),
+            running: format!("Checking out {}", target.label()),
+            done: format!("Checked out {}", target.label()),
             ..Default::default()
         })
     }
@@ -1154,11 +1227,14 @@ impl GitDialog {
     }
 
     // `base` is the commit the rebase starts after, None to rebase from the root.
+    // `behind_head` is how many commits before HEAD the one taking the place of the newest
+    // dropped is, selected once they are.
     pub fn drop(
         branch: &str,
         commits: Vec<DialogCommit>,
         base: Option<String>,
         auto_stash: bool,
+        behind_head: usize,
     ) -> Self {
         let intro = commits_intro(&format!("Drop from {branch}"), &commits);
         let mut form = Form::default();
@@ -1167,6 +1243,7 @@ impl GitDialog {
             commits,
             base,
             auto_stash,
+            behind_head,
         };
         Self::with(" Drop ", "drop", intro, kind, form)
     }
@@ -1176,6 +1253,7 @@ impl GitDialog {
         commits: &[DialogCommit],
         base: Option<&str>,
         auto_stash: Check,
+        behind_head: usize,
     ) -> Result<GitTask, String> {
         let auto_stash = self.checked(auto_stash);
         let todo: Vec<String> = commits
@@ -1187,6 +1265,7 @@ impl GitDialog {
             running: format!("Dropping {n}"),
             done: format!("Dropped {n}"),
             uses_picks: true,
+            after: AfterTask::SelectBehindHead(behind_head),
             ..GitTask::rebase_todo(base, auto_stash, &todo)
         })
     }
@@ -2122,13 +2201,7 @@ impl GitDialog {
 
     // The git command of the popup; None for a link, which is opened instead, see `run`.
     pub fn command(&self) -> Option<Result<GitTask, String>> {
-        let task = self.kind_command()?;
-        Some(task.map(|mut task| {
-            if let Some(revision) = &self.select {
-                task.after = AfterTask::Select(revision.clone());
-            }
-            task
-        }))
+        self.kind_command()
     }
 
     // The git commands of the popup, built by the command of each kind next to its constructor.
@@ -2174,7 +2247,8 @@ impl GitDialog {
                 commits,
                 base,
                 auto_stash,
-            } => self.drop_command(commits, base.as_deref(), *auto_stash),
+                behind_head,
+            } => self.drop_command(commits, base.as_deref(), *auto_stash, *behind_head),
             K::CreateBranch {
                 starts,
                 name,
@@ -2280,7 +2354,7 @@ impl GitDialog {
             }
             DialogKind::DropStashes { .. } => Some("The stashed changes are lost."),
             DialogKind::Prepared { warning, .. } => Some(*warning),
-            DialogKind::Commit { preview, .. } if preview.amend => {
+            DialogKind::Commit { preview, .. } if preview.kind.amends() => {
                 Some("The last commit is rewritten.")
             }
             _ => None,
@@ -2421,20 +2495,17 @@ fn commits_intro(heading: &str, commits: &[DialogCommit]) -> Vec<String> {
 // The commit to make: on which branch, the message beside a bar, and the staged files.
 fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme.muted_fg);
-    let color = if preview.amend {
+    let color = if preview.kind.amends() {
         theme.status_warn_fg
     } else {
         theme.accent_fg
     };
     let bar = || Span::raw("┃ ").fg(color);
+    let (action, target) = preview.kind.sentence();
     let mut lines = vec![
         Line::from(vec![
-            Span::raw(format!("{} ", preview.action))
-                .fg(theme.fg)
-                .bold(),
-            Span::raw(preview.branch.clone())
-                .fg(theme.highlight_fg)
-                .bold(),
+            Span::raw(format!("{action} ")).fg(theme.fg).bold(),
+            Span::raw(target).fg(theme.highlight_fg).bold(),
         ]),
         Line::raw(""),
         Line::from(vec![
@@ -2684,9 +2755,10 @@ mod tests {
         mark_selected_bar(&mut list_bar, 0, 0, true, &theme);
 
         let preview = CommitPreview {
-            action: "Commit to".into(),
-            branch: "main".into(),
-            amend: false,
+            kind: CommitKind::New {
+                branch: Some("main".into()),
+                finishing: None,
+            },
             subject: "subject".into(),
             body: vec!["body".into()],
             files: vec![("M".into(), "a.rs".into())],
@@ -3257,13 +3329,10 @@ mod tests {
         assert_eq!(args(&dialog), "merge --no-ff --no-commit feature");
 
         let targets = vec![
-            CheckoutTarget {
-                label: "feature".into(),
-                args: vec!["feature".into()],
-            },
-            CheckoutTarget {
-                label: "aaaaaaa (detached)".into(),
-                args: vec!["--detach".into(), "a".repeat(40)],
+            CheckoutTarget::Branch("feature".into()),
+            CheckoutTarget::Detach {
+                revision: "a".repeat(40),
+                label: "aaaaaaa".into(),
             },
         ];
         let mut dialog = GitDialog::checkout(targets);
@@ -3350,10 +3419,7 @@ mod tests {
         git(path, &["branch", "old", "HEAD~1"]);
         std::fs::write(path.join("untracked"), "x").unwrap();
 
-        let targets = vec![CheckoutTarget {
-            label: "old".into(),
-            args: vec!["old".into()],
-        }];
+        let targets = vec![CheckoutTarget::Branch("old".into())];
         let mut dialog = GitDialog::checkout(targets);
         dialog.handle_key(Some(UserEvent::NavigateDown), key(KeyCode::Null));
         dialog.handle_key(Some(UserEvent::NavigateRight), key(KeyCode::Null));

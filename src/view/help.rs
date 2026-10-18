@@ -129,7 +129,7 @@ impl HelpView {
 impl HelpView {
     fn update_state(&mut self, area: Rect) {
         self.scroll
-            .fit(self.help_key_lines.len(), area.height as usize);
+            .fit(self.help_key_lines.len(), area.height as usize, 0);
     }
 }
 

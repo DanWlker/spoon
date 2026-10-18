@@ -23,8 +23,8 @@ use crate::{
     search::{SearchOptions, SearchTarget},
     widget::{
         style::{
-            half_page_jump, mark_selected_bar, panel_block, panel_title, picked_style,
-            render_panel_scrollbar, scroll_to,
+            mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
+            ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
@@ -33,6 +33,33 @@ use crate::{
 };
 
 pub const ELLIPSIS: &str = "...";
+
+// How the search of the commit list went, shown in the status line; `index` is 0 while the
+// selected commit isn't a match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchOutcome {
+    Found {
+        index: usize,
+        total: usize,
+        query: String,
+    },
+    NotFound {
+        query: String,
+    },
+}
+
+impl std::fmt::Display for SearchOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchOutcome::Found {
+                index,
+                total,
+                query,
+            } => write!(f, "Match {index} of {total} (query: \"{query}\")"),
+            SearchOutcome::NotFound { query } => write!(f, "No matches found (query: \"{query}\")"),
+        }
+    }
+}
 // before the labels of refs (Nerd Font): a branch whose upstream is on the same commit, a remote
 // branch, a tag and a stash; a plain branch has none
 const UPSTREAM_ICON: &str = "\u{f0160}";
@@ -118,10 +145,8 @@ pub struct CommitListState<'a> {
     filter_note: Option<String>,
     // the checked-out branch, its label in its own color; a detached HEAD gets a label
     head: Head,
-    selected: usize,
-    offset: usize,
+    cursor: ListCursor,
     total: usize,
-    height: usize,
     scrolloff: usize,
 }
 
@@ -149,10 +174,8 @@ impl<'a> CommitListState<'a> {
             picked_commit_hashes: Vec::new(),
             filter_note: None,
             head: Head::None,
-            selected: 0,
-            offset: 0,
+            cursor: ListCursor::default(),
             total,
-            height: 0,
             scrolloff,
         }
     }
@@ -197,25 +220,14 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn update_height(&mut self, height: usize) {
-        self.height = height;
-
-        if self.total > self.height && self.total - self.height < self.offset {
-            let diff = self.offset - (self.total - self.height);
-            self.selected += diff;
-            self.offset -= diff;
-        }
-        if self.selected >= self.height {
-            let diff = self.selected - self.height + 1;
-            self.selected -= diff;
-            self.offset += diff;
-        }
+        self.cursor.fit(height, self.total, self.scrolloff);
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
         self.commits
             .iter()
-            .skip(self.offset)
-            .take(self.height)
+            .skip(self.cursor.offset())
+            .take(self.cursor.height())
             .for_each(|commit_info| {
                 self.graph_image_manager
                     .ensure_uploaded(&commit_info.commit.commit_hash);
@@ -238,9 +250,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_next(&mut self) {
-        if self.total > 0 {
-            self.select_visible_index((self.current_selected_index() + 1).min(self.total - 1));
-        }
+        self.select_visible_index(self.current_selected_index() + 1);
     }
 
     pub fn select_prev(&mut self) {
@@ -248,112 +258,48 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_first(&mut self) {
-        self.selected = 0;
-        self.offset = 0;
+        self.select_visible_index(0);
     }
 
     pub fn select_last(&mut self) {
-        // the last rows fill the list, from the top when they all fit
-        let height = self.height.max(1);
-        self.selected = (height - 1).min(self.total - 1);
-        self.offset = self.total.saturating_sub(height);
+        self.select_visible_index(usize::MAX);
     }
 
     pub fn scroll_down(&mut self) {
-        if self.offset + self.height < self.total {
-            self.offset += 1;
-            if self.selected > self.effective_scrolloff() {
-                self.selected -= 1;
-            }
-        }
+        self.cursor.scroll_lines(1, self.total);
     }
 
     pub fn scroll_up(&mut self) {
-        if self.offset > 0 {
-            self.offset -= 1;
-            if self.selected < self.height.saturating_sub(1 + self.effective_scrolloff()) {
-                self.selected += 1;
-            }
-        }
+        self.cursor.scroll_lines(-1, self.total);
     }
 
     pub fn scroll_down_page(&mut self) {
-        self.scroll_down_height(self.height);
+        self.cursor.scroll_pages(1, self.total);
     }
 
     pub fn scroll_up_page(&mut self) {
-        self.scroll_up_height(self.height);
+        self.cursor.scroll_pages(-1, self.total);
     }
 
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
-        let selected = self.current_selected_index();
-        if let Some(index) = half_page_jump(event, selected, self.height, self.total) {
+        if let Some(index) = self.cursor.moved_to(event, self.total) {
             self.select_visible_index(index);
         }
     }
 
-    fn scroll_down_height(&mut self, scroll_height: usize) {
-        if self.height == 0 || self.total == 0 {
-            return;
-        }
-        if self.offset + self.height + scroll_height < self.total {
-            self.offset += scroll_height;
-        } else {
-            let old_offset = self.offset;
-            let size = self.height.min(self.total);
-            self.offset = self.total - size;
-            self.selected += scroll_height - (self.offset - old_offset);
-            if self.selected >= size {
-                self.selected = size - 1;
-            }
-        }
-        // At the final page, keep the viewport fixed so further page scrolls
-        // can move the selection to the last commit as before.
-        if self.offset < self.total.saturating_sub(self.height) {
-            self.select_visible_index(self.current_selected_index());
-        }
-    }
-
-    fn scroll_up_height(&mut self, scroll_height: usize) {
-        if self.height == 0 || self.total == 0 {
-            return;
-        }
-        if self.offset > scroll_height {
-            self.offset -= scroll_height;
-        } else {
-            let old_offset = self.offset;
-            self.offset = 0;
-            self.selected = self
-                .selected
-                .saturating_sub(scroll_height - (old_offset - self.offset));
-        }
-        if self.offset > 0 {
-            self.select_visible_index(self.current_selected_index());
-        }
-    }
-
+    // Selects the commit at `index` near the top, the scrolloff above it: a match jumped to.
     fn select_index(&mut self, index: usize) {
         if index < self.total {
-            self.offset = index
-                .saturating_sub(self.effective_scrolloff())
-                .min(self.total.saturating_sub(self.height));
-            self.selected = index - self.offset;
+            let margin = self
+                .scrolloff
+                .min(self.cursor.height().saturating_sub(1) / 2);
+            self.cursor.select_at(index, margin, self.total);
         }
-    }
-
-    fn effective_scrolloff(&self) -> usize {
-        self.scrolloff.min(self.height.saturating_sub(1) / 2)
     }
 
     fn select_visible_index(&mut self, index: usize) {
-        if self.height == 0 {
-            self.select_index(index);
-            return;
-        }
-
-        self.offset = scroll_to(self.offset, index, self.height, self.total, self.scrolloff);
-        self.selected = index - self.offset;
+        self.cursor.select(index, self.total);
     }
 
     // Selects the next (or previous) picked commit, wrapping around.
@@ -402,7 +348,7 @@ impl<'a> CommitListState<'a> {
     }
 
     fn current_selected_index(&self) -> usize {
-        self.offset + self.selected
+        self.cursor.selected()
     }
 
     // The selected commit, counting from 1, and how many there are.
@@ -410,20 +356,21 @@ impl<'a> CommitListState<'a> {
         (self.current_selected_index() + 1, self.total)
     }
 
+    // The row of the selected commit among those shown, the first shown, and how many are.
     pub fn current_list_status(&self) -> (usize, usize, usize) {
-        (self.selected, self.offset, self.height)
+        let cursor = &self.cursor;
+        let row = cursor.selected() - cursor.offset();
+        (row, cursor.offset(), cursor.height())
     }
 
     pub fn reset_height(&mut self, height: usize) {
-        self.height = height;
+        self.update_height(height);
     }
 
+    // Shows the selected commit at `row` of those shown, where it can be.
     pub fn restore_selected_row(&mut self, row: usize) {
         let index = self.current_selected_index();
-        self.offset = index
-            .saturating_sub(row.min(self.height.saturating_sub(1)))
-            .min(self.total.saturating_sub(self.height));
-        self.selected = index - self.offset;
+        self.cursor.select_at(index, row, self.total);
     }
 
     pub fn set_filter_note(&mut self, note: Option<String>) {
@@ -566,11 +513,16 @@ impl<'a> CommitListState<'a> {
     }
 
     // How the applied search went: the selected match of how many, and whether there are any.
-    pub fn matched_query_string(&self) -> Option<(String, bool)> {
-        let query = self.query.search().filter(|_| self.search_applied())?;
+    // How the applied search went, None without one.
+    pub fn search_outcome(&self) -> Option<SearchOutcome> {
+        let query = self
+            .query
+            .search()
+            .filter(|_| self.search_applied())?
+            .to_string();
         let total = self.search_matches.iter().filter(|m| **m).count();
         if total == 0 {
-            return Some((format!("No matches found (query: \"{query}\")"), false));
+            return Some(SearchOutcome::NotFound { query });
         }
         let selected = self.current_selected_index();
         let index = if self.search_matches[selected] {
@@ -581,10 +533,11 @@ impl<'a> CommitListState<'a> {
         } else {
             0
         };
-        Some((
-            format!("Match {index} of {total} (query: \"{query}\")"),
-            true,
-        ))
+        Some(SearchOutcome::Found {
+            index,
+            total,
+            query,
+        })
     }
 
     fn update_search_matches(&mut self) {
@@ -648,7 +601,7 @@ pub fn render_commit_list_panel<'a>(
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
     // the bar on the border, the graph starts right after it
-    let y = inner.y + state.selected as u16;
+    let y = inner.y + (state.cursor.selected() - state.cursor.offset()) as u16;
     if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
         mark_selected_bar(f.buffer_mut(), inner.x - 1, y, focused, &ctx.color_theme);
     }
@@ -657,7 +610,7 @@ pub fn render_commit_list_panel<'a>(
         f.buffer_mut(),
         area,
         state.commits.len(),
-        state.offset,
+        state.cursor.offset(),
         focused,
         theme,
     );
@@ -869,8 +822,8 @@ impl CommitList<'_> {
         state
             .commits
             .iter()
-            .skip(state.offset)
-            .take(state.height)
+            .skip(state.cursor.offset())
+            .take(state.cursor.height())
             .enumerate()
     }
 
@@ -885,9 +838,10 @@ impl CommitList<'_> {
         spans.push(Span::raw(" "));
         let mut line = Line::from(spans);
         // the selection only colors the background, the text keeps its colors
-        if i == state.selected {
+        let index = state.cursor.offset() + i;
+        if index == state.cursor.selected() {
             line = line.bg(self.ctx.color_theme.list_selected_bg);
-        } else if state.is_picked(&state.commits[state.offset + i].commit.commit_hash) {
+        } else if state.is_picked(&state.commits[index].commit.commit_hash) {
             // spans keep their own colors over the line's, so each one takes the picked style
             let picked = picked_style(&self.ctx.color_theme);
             line.spans = line
@@ -1124,6 +1078,13 @@ mod tests {
     };
 
     use super::*;
+
+    // The search's message, and whether it found something.
+    fn matched(state: &CommitListState) -> Option<(String, bool)> {
+        let outcome = state.search_outcome()?;
+        let found = matches!(outcome, SearchOutcome::Found { .. });
+        Some((outcome.to_string(), found))
+    }
 
     fn with_commit_list_state<R>(
         subjects: &[&str],
@@ -1456,8 +1417,8 @@ mod tests {
     #[test]
     fn test_scrolloff_keeps_context_for_selection_and_single_row_scrolling() {
         with_commit_list_state(&["commit"; 12], |state| {
-            state.reset_height(6);
             state.scrolloff = 2;
+            state.reset_height(6);
 
             for _ in 0..4 {
                 state.select_next();
@@ -1485,8 +1446,8 @@ mod tests {
     #[test]
     fn test_scrolloff_is_limited_by_list_height() {
         with_commit_list_state(&["commit"; 8], |state| {
-            state.reset_height(2);
             state.scrolloff = 10;
+            state.reset_height(2);
 
             state.select_next();
             state.select_next();
@@ -1501,8 +1462,8 @@ mod tests {
     #[test]
     fn test_page_scrolloff_keeps_context_until_final_page() {
         with_commit_list_state(&["commit"; 30], |state| {
-            state.reset_height(10);
             state.scrolloff = 2;
+            state.reset_height(10);
 
             state.scroll_down_page();
             assert_eq!(state.current_list_status(), (2, 8, 10));
@@ -1525,8 +1486,8 @@ mod tests {
     #[test]
     fn test_half_page_jumps_then_scrolls() {
         with_commit_list_state(&["commit"; 26], |state| {
-            state.reset_height(10);
             state.scrolloff = 2;
+            state.reset_height(10);
             state.select_index(12);
             assert_eq!(state.current_list_status(), (2, 10, 10));
 
@@ -1547,8 +1508,8 @@ mod tests {
     #[test]
     fn test_full_page_scroll_reaches_last_commit_after_final_page() {
         with_commit_list_state(&["commit"; 25], |state| {
-            state.reset_height(10);
             state.scrolloff = 2;
+            state.reset_height(10);
             state.select_index(12);
 
             state.scroll_down_page();
@@ -1561,8 +1522,8 @@ mod tests {
     #[test]
     fn test_refresh_restores_selected_row_with_scrolloff() {
         with_commit_list_state(&["commit"; 30], |state| {
-            state.reset_height(10);
             state.scrolloff = 2;
+            state.reset_height(10);
             state.select_index(15);
             assert_eq!(state.current_list_status(), (2, 13, 10));
 
@@ -1622,7 +1583,7 @@ mod tests {
 
             state.select_next_match(Toward::Next);
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 2 (query: \"fx\")".into(), true))
             );
             assert_eq!(
@@ -1632,7 +1593,7 @@ mod tests {
 
             state.select_next_match(Toward::Next);
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 2 of 2 (query: \"fx\")".into(), true))
             );
             assert_eq!(
@@ -1655,7 +1616,7 @@ mod tests {
             apply_search(state);
 
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
         });
@@ -1679,7 +1640,7 @@ mod tests {
 
             assert_eq!(state.current_list_status(), (1, 1, 2));
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
         });
@@ -1697,7 +1658,7 @@ mod tests {
             apply_search(state);
 
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
         });
@@ -1718,7 +1679,7 @@ mod tests {
 
             let options = state.search_options();
             let position = state.current_list_status();
-            let result = state.matched_query_string();
+            let result = matched(state);
             let matches = state.search_matches.clone();
             assert_eq!(result, Some(("Match 2 of 2 (query: \"fx\")".into(), true)));
 
@@ -1731,7 +1692,7 @@ mod tests {
             assert_eq!(state.search_matches, matches);
 
             apply_search(state);
-            assert_eq!(state.matched_query_string(), result);
+            assert_eq!(matched(state), result);
             assert_eq!(state.current_list_status(), position);
         });
     }
@@ -1758,7 +1719,7 @@ mod tests {
                 assert_eq!(typed(state), Some("/fix parse".into()));
                 apply_search(state);
                 assert_eq!(
-                    state.matched_query_string(),
+                    matched(state),
                     Some(("Match 2 of 2 (query: \"fix parse\")".into(), true))
                 );
             },
@@ -1772,14 +1733,14 @@ mod tests {
             apply_search(state);
             state.select_next();
             let position = state.current_list_status();
-            let result = state.matched_query_string();
+            let result = matched(state);
 
             state.start_search();
             apply_search(state);
 
             assert_eq!(state.current_list_status(), position);
             assert_eq!(state.current_selected_index(), 1);
-            assert_eq!(state.matched_query_string(), result);
+            assert_eq!(matched(state), result);
         });
     }
 
@@ -1788,18 +1749,18 @@ mod tests {
         with_commit_list_state(&["fix", "other"], |state| {
             input_search_query(state, "fixx");
             apply_search(state);
-            let result = state.matched_query_string();
+            let result = matched(state);
 
             state.start_search();
             assert_eq!(typed(state), Some("/fixx".into()));
             apply_search(state);
-            assert_eq!(state.matched_query_string(), result);
+            assert_eq!(matched(state), result);
 
             state.start_search();
             type_key(state, KeyEvent::from(KeyCode::Backspace));
             apply_search(state);
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
         });
@@ -1839,14 +1800,14 @@ mod tests {
                 assert!(state.search_matches.iter().all(|m| !m));
                 apply_search(state);
                 assert!(!state.search_applied() && !state.is_typing_search());
-                assert_eq!(state.matched_query_string(), None);
+                assert_eq!(matched(state), None);
 
                 state.start_search();
                 assert_eq!(typed(state), Some("/".into()));
                 type_key(state, KeyEvent::from(KeyCode::Char('o')));
                 apply_search(state);
                 assert_eq!(
-                    state.matched_query_string(),
+                    matched(state),
                     Some(("Match 1 of 1 (query: \"o\")".into(), true))
                 );
             });
@@ -1877,7 +1838,7 @@ mod tests {
             apply_search(state);
 
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
         });
@@ -2002,14 +1963,14 @@ mod tests {
             state.toggle_search_target();
             assert_eq!(state.search_options().target, SearchTarget::Subject);
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
 
             state.toggle_search_target();
             assert_eq!(state.search_options().target, SearchTarget::Author);
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("No matches found (query: \"fix\")".into(), false))
             );
         });
@@ -2027,7 +1988,7 @@ mod tests {
                 "fix"
             );
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 2 of 2 (query: \"fix\")".into(), true))
             );
         });
@@ -2046,7 +2007,7 @@ mod tests {
                 "fix"
             );
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
         });
@@ -2064,7 +2025,7 @@ mod tests {
 
             assert_eq!(state.current_selected_index(), selected);
             assert_eq!(
-                state.matched_query_string(),
+                matched(state),
                 Some(("No matches found (query: \"fx\")".into(), false))
             );
         });

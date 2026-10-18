@@ -16,7 +16,7 @@ use crate::{
     graph::Fold,
     keybind::Scope,
     view::RefreshViewContext,
-    widget::commit_tabs::DetailTab,
+    widget::{commit_list::SearchOutcome, commit_tabs::DetailTab},
 };
 
 #[derive(Debug)]
@@ -99,9 +99,8 @@ pub enum AppEvent {
     },
     UpdateStatusTransient(String),
     UpdateSearchResult {
-        message: String,
+        outcome: SearchOutcome,
         options: String,
-        matched: bool,
     },
     #[expect(dead_code)]
     NotifyInfo(String),

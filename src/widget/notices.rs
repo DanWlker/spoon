@@ -22,9 +22,16 @@ const MAX_LINES: usize = 6;
 const WARNING_DURATION: Duration = Duration::from_secs(5);
 const ERROR_DURATION: Duration = Duration::from_secs(10);
 
+// How bad what a notice says is; information and success show in the status line instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone)]
 pub struct Notice {
-    pub error: bool,
+    pub severity: Severity,
     pub message: String,
     // dropped then, unless dismissed before
     pub until: Instant,
@@ -33,7 +40,7 @@ pub struct Notice {
 impl Notice {
     pub fn error(message: String) -> Self {
         Notice {
-            error: true,
+            severity: Severity::Error,
             message,
             until: Instant::now() + ERROR_DURATION,
         }
@@ -41,7 +48,7 @@ impl Notice {
 
     pub fn warning(message: String) -> Self {
         Notice {
-            error: false,
+            severity: Severity::Warning,
             message,
             until: Instant::now() + WARNING_DURATION,
         }
@@ -50,7 +57,7 @@ impl Notice {
 
 // Adds a notice, the newest last; the same message again replaces the older one.
 pub fn push_notice(notices: &mut Vec<Notice>, notice: Notice) {
-    notices.retain(|n| (n.error, &n.message) != (notice.error, &notice.message));
+    notices.retain(|n| (n.severity, &n.message) != (notice.severity, &notice.message));
     notices.push(notice);
     let excess = notices.len().saturating_sub(MAX_NOTICES);
     notices.drain(..excess);
@@ -68,10 +75,9 @@ pub fn render_notices(
     let text_width = width.saturating_sub(4) as usize;
     let mut y = area.y;
     for (i, notice) in notices.iter().rev().enumerate() {
-        let (color, title) = if notice.error {
-            (theme.status_error_fg, " \u{f057} Error ")
-        } else {
-            (theme.status_warn_fg, " \u{f071} Warning ")
+        let (color, title) = match notice.severity {
+            Severity::Error => (theme.status_error_fg, " \u{f057} Error "),
+            Severity::Warning => (theme.status_warn_fg, " \u{f071} Warning "),
         };
         // broken at spaces where it can, else anywhere
         let mut lines: Vec<String> = textwrap::wrap(&notice.message, text_width.max(1))

@@ -255,13 +255,16 @@ pub struct ScrollState {
     pub offset: usize,
     // of the last render, 0 before it
     pub height: usize,
+    // the rows kept around a selection, of the last render, see `scroll_to`
+    pub scrolloff: usize,
 }
 
 impl ScrollState {
     // Keeps the offset within the `count` rows shown in `height`, the last one at the bottom; the
-    // rows to render.
-    pub fn fit(&mut self, count: usize, height: usize) -> std::ops::Range<usize> {
+    // rows to render. `scrolloff` is kept for the next selection, see `DiffCursor::scroll_to`.
+    pub fn fit(&mut self, count: usize, height: usize, scrolloff: usize) -> std::ops::Range<usize> {
         self.height = height;
+        self.scrolloff = scrolloff;
         self.offset = self.offset.min(count.saturating_sub(height));
         self.offset..self.offset + height
     }
@@ -336,6 +339,114 @@ pub fn scroll_to(
             selected.saturating_sub(margin),
         )
         .min(total.saturating_sub(height))
+}
+
+// The selected row of a list and the rows shown from `offset`, `height` at a time: the commit list,
+// the file trees, the command log and the timeline. The selection moves keep it in view with
+// `scrolloff` rows around it, scrolling as little as can be, see `scroll_to`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ListCursor {
+    selected: usize,
+    offset: usize,
+    // as last drawn, 0 before
+    height: usize,
+    scrolloff: usize,
+}
+
+impl ListCursor {
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    // Selects the row at `index` of `total`, or the last one.
+    pub fn select(&mut self, index: usize, total: usize) {
+        self.selected = index.min(total.saturating_sub(1));
+        // before the first drawing the rows shown are unknown, which `fit` scrolls to then
+        if self.height > 0 {
+            let (offset, height) = (self.offset, self.height);
+            self.offset = scroll_to(offset, self.selected, height, total, self.scrolloff);
+        }
+    }
+
+    // Selects the row at `index`, shown at `row` of the rows where it can be: a list shown again
+    // as it was, or a match jumped to.
+    pub fn select_at(&mut self, index: usize, row: usize, total: usize) {
+        self.selected = index.min(total.saturating_sub(1));
+        self.offset = self
+            .selected
+            .saturating_sub(row.min(self.height.saturating_sub(1)))
+            .min(total.saturating_sub(self.height));
+    }
+
+    // The row the movement keys select in `total` rows: j and k (and J and K), g and G, ctrl-d and
+    // ctrl-u, see `half_page_jump`; None for other events.
+    pub fn moved_to(&self, event: UserEvent, total: usize) -> Option<usize> {
+        let last = total.checked_sub(1)?;
+        match event {
+            UserEvent::NavigateDown | UserEvent::SelectDown => Some((self.selected + 1).min(last)),
+            UserEvent::NavigateUp | UserEvent::SelectUp => Some(self.selected.saturating_sub(1)),
+            UserEvent::GoToTop => Some(0),
+            UserEvent::GoToBottom => Some(last),
+            _ => half_page_jump(event, self.selected, self.height, total),
+        }
+    }
+
+    // Scrolls a row at a time with ctrl-e and ctrl-y, the selection staying put until it would
+    // leave the `scrolloff` rows at the edge, then moving along.
+    pub fn scroll_lines(&mut self, rows: isize, total: usize) {
+        let margin = self.margin();
+        let last_offset = total.saturating_sub(self.height);
+        self.offset = self.offset.saturating_add_signed(rows).min(last_offset);
+        let top = self.offset + margin;
+        let bottom = (self.offset + self.height).saturating_sub(1 + margin);
+        self.selected = self
+            .selected
+            .clamp(top, bottom.max(top))
+            .min(total.saturating_sub(1));
+    }
+
+    // Scrolls a page at a time with ctrl-f and ctrl-b, the selection moving as much; at either end
+    // of the list the rows stay and the selection goes on to the first or last row.
+    pub fn scroll_pages(&mut self, pages: isize, total: usize) {
+        if self.height == 0 || total == 0 {
+            return;
+        }
+        let rows = pages * self.height as isize;
+        let last_offset = total.saturating_sub(self.height);
+        let offset = self.offset.saturating_add_signed(rows);
+        self.selected = self.selected.saturating_add_signed(rows).min(total - 1);
+        self.offset = offset.min(last_offset);
+        if self.offset != 0 && self.offset != last_offset {
+            self.offset = scroll_to(
+                self.offset,
+                self.selected,
+                self.height,
+                total,
+                self.scrolloff,
+            );
+        }
+    }
+
+    // Shows `total` rows in `height`, keeping the selection in view: the first row shown.
+    pub fn fit(&mut self, height: usize, total: usize, scrolloff: usize) -> usize {
+        self.height = height;
+        self.scrolloff = scrolloff;
+        self.selected = self.selected.min(total.saturating_sub(1));
+        self.offset = scroll_to(self.offset, self.selected, height, total, scrolloff);
+        self.offset
+    }
+
+    fn margin(&self) -> usize {
+        self.scrolloff.min(self.height.saturating_sub(1) / 2)
+    }
 }
 
 // The scroll thumb on the right border of the panel `area` (borders all around).

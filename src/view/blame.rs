@@ -662,10 +662,7 @@ mod tests {
         let popup_arrows = |labels: &[&str]| {
             let targets = labels
                 .iter()
-                .map(|label| CheckoutTarget {
-                    label: label.to_string(),
-                    args: vec![label.to_string()],
-                })
+                .map(|label| CheckoutTarget::Branch(label.to_string()))
                 .collect();
             let dialog = GitDialog::checkout(targets);
             let area = Rect::new(0, 0, 80, 20);

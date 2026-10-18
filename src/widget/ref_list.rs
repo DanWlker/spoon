@@ -298,7 +298,7 @@ impl RefListState {
         if self
             .visible_rows
             .iter()
-            .any(|row| row.identifier == self.selected && row.has_children)
+            .any(|row| row.identifier == self.selected && row.kind == RowKind::Folder)
             && self.opened.insert(self.selected.clone())
         {
             self.rebuild_visible_rows();
@@ -311,7 +311,7 @@ impl RefListState {
         let has_children = self
             .visible_rows
             .iter()
-            .any(|row| row.identifier == self.selected && row.has_children);
+            .any(|row| row.identifier == self.selected && row.kind == RowKind::Folder);
         if !has_children {
             return false;
         }
@@ -375,7 +375,7 @@ impl RefListState {
             && self
                 .visible_rows
                 .iter()
-                .any(|row| row.identifier == self.selected && !row.folder);
+                .any(|row| row.identifier == self.selected && row.kind == RowKind::Ref);
         match self.selected.last() {
             Some(NodeId::DetachedHead) => RefSelection::DetachedHead,
             Some(NodeId::Name(name)) if is_ref => match section.named(name.clone()) {
@@ -468,9 +468,15 @@ struct VisibleRefRow {
     identifier: Vec<NodeId>,
     name: String,
     depth: usize,
-    has_children: bool,
-    // a section, a folder or a remote, even without children
-    folder: bool,
+    kind: RowKind,
+}
+
+// What a row of the sidebar is: a ref, or a section, a folder or a remote, which may be empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    Ref,
+    Folder,
+    EmptyFolder,
 }
 
 fn collect_visible_rows(
@@ -486,8 +492,11 @@ fn collect_visible_rows(
             identifier: identifier.clone(),
             name: node.name.clone(),
             depth: parent.len(),
-            has_children: !node.children.is_empty(),
-            folder: node.folder || !node.children.is_empty(),
+            kind: match (node.folder, node.children.is_empty()) {
+                (_, false) => RowKind::Folder,
+                (true, true) => RowKind::EmptyFolder,
+                (false, true) => RowKind::Ref,
+            },
         });
         if opened.contains(&identifier) {
             collect_visible_rows(&node.children, opened, &identifier, rows);
@@ -571,7 +580,7 @@ impl StatefulWidget for RefList {
             state
                 .visible_rows
                 .iter()
-                .map(|row| (row.depth, row.has_children || is_head(row))),
+                .map(|row| (row.depth, row.kind == RowKind::Folder || is_head(row))),
         );
         for ((line, row), guide) in state
             .visible_rows
@@ -586,7 +595,7 @@ impl StatefulWidget for RefList {
             let head = is_head(row);
             let symbol = if head {
                 "● "
-            } else if !row.has_children {
+            } else if row.kind != RowKind::Folder {
                 ""
             } else {
                 fold_marker(state.opened.contains(&row.identifier))
@@ -606,7 +615,7 @@ impl StatefulWidget for RefList {
             let room = inner.right().saturating_sub(guide_x) as usize;
             let (text_x, _) = buf.set_stringn(guide_x, y, symbol, room, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
-            let picked = !row.folder
+            let picked = row.kind == RowKind::Ref
                 && row.identifier.len() > 1
                 && RefSection::of_root(&row.identifier[0]).is_some_and(|section| {
                     row.identifier

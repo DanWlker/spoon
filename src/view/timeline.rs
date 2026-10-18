@@ -22,10 +22,7 @@ use crate::{
     widget::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
-        style::{
-            half_page_jump, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
-            scroll_to,
-        },
+        style::{mark_selected_row, panel_block, panel_title, render_panel_scrollbar, ListCursor},
         tree_query::{find_around, QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -36,10 +33,7 @@ use crate::{
 pub struct TimelineView {
     // the newest first
     history: Vec<FileRevision>,
-    selected: usize,
-    // the first commit shown, and how many fit, as last drawn
-    offset: usize,
-    height: usize,
+    cursor: ListCursor,
     // the focus is on the commits while it is outside the diff
     pane: DiffPane,
     // the search of the diff
@@ -58,11 +52,11 @@ impl TimelineView {
         tx: Sender,
     ) -> Result<Self, String> {
         let (history, selected) = repository.file_history(commit, path)?;
+        let mut cursor = ListCursor::default();
+        cursor.select(selected, history.len());
         let mut view = TimelineView {
             history,
-            selected,
-            offset: 0,
-            height: 0,
+            cursor,
             pane: DiffPane::default(),
             query: TreeQuery::default(),
             ctx,
@@ -74,9 +68,9 @@ impl TimelineView {
 
     // The file's changes in the selected commit, from the path it had before when it moved.
     fn load(&mut self, repository: &Repository) {
-        let revision = &self.history[self.selected];
+        let revision = &self.history[self.cursor.selected()];
         let mut paths = vec![revision.path.as_str()];
-        if let Some(older) = self.history.get(self.selected + 1) {
+        if let Some(older) = self.history.get(self.cursor.selected() + 1) {
             if older.path != revision.path {
                 paths.push(&older.path);
             }
@@ -89,11 +83,11 @@ impl TimelineView {
     // Selects another commit; in the diff, it stays there, on the first hunk.
     fn select(&mut self, index: usize, repository: &Repository) {
         let index = index.min(self.history.len() - 1);
-        if index == self.selected {
+        if index == self.cursor.selected() {
             return;
         }
         let in_diff = self.pane.is_focused();
-        self.selected = index;
+        self.cursor.select(index, self.history.len());
         self.load(repository);
         if in_diff {
             self.pane.enter();
@@ -102,7 +96,7 @@ impl TimelineView {
 
     // The path of the file in the selected commit, for the page bar.
     pub fn path(&self) -> &str {
-        &self.history[self.selected].path
+        &self.history[self.cursor.selected()].path
     }
 
     // While typing a search, every key goes to it as is.
@@ -136,8 +130,10 @@ impl TimelineView {
             UserEvent::NavigateLeft if in_diff => {
                 self.pane.back();
             }
-            UserEvent::OlderCommit => self.select(self.selected + 1, repository),
-            UserEvent::NewerCommit => self.select(self.selected.saturating_sub(1), repository),
+            UserEvent::OlderCommit => self.select(self.cursor.selected() + 1, repository),
+            UserEvent::NewerCommit => {
+                self.select(self.cursor.selected().saturating_sub(1), repository)
+            }
             UserEvent::Search => {
                 self.query.start(QueryKind::Search);
                 self.update_query_status();
@@ -152,18 +148,10 @@ impl TimelineView {
     // The keys on the commits: moving, and acting on the selected one; the scroll keys scroll the
     // diff.
     fn handle_commits_event(&mut self, event: UserEvent, repository: &Repository) {
-        let last = self.history.len() - 1;
-        let index = match event {
-            UserEvent::NavigateDown | UserEvent::SelectDown => Some(self.selected + 1),
-            UserEvent::NavigateUp | UserEvent::SelectUp => Some(self.selected.saturating_sub(1)),
-            UserEvent::GoToTop => Some(0),
-            UserEvent::GoToBottom => Some(last),
-            _ => half_page_jump(event, self.selected, self.height, self.history.len()),
-        };
-        if let Some(index) = index {
+        if let Some(index) = self.cursor.moved_to(event, self.history.len()) {
             self.select(index, repository);
         } else if !self.pane.scroll(event) {
-            let commit = &self.history[self.selected].commit;
+            let commit = &self.history[self.cursor.selected()].commit;
             if let Some(event) = commit_event(event, commit) {
                 self.tx.send(event);
             }
@@ -189,7 +177,7 @@ impl TimelineView {
             }
             // the file at the commit, at the selected lines
             UserEvent::OpenInBrowser | UserEvent::CopyLink => {
-                let revision = &self.history[self.selected];
+                let revision = &self.history[self.cursor.selected()];
                 let lines = self.pane.selected_lines();
                 let link = file_link(event, &revision.commit, &revision.path, lines);
                 self.tx.send(link);
@@ -210,7 +198,7 @@ impl TimelineView {
             self.pane.search(&search, direction, options)
         } else {
             let history = &self.history;
-            let found = find_around(history.len(), self.selected, direction, |i| {
+            let found = find_around(history.len(), self.cursor.selected(), direction, |i| {
                 revision_matches(&self.ctx, &history[i], &search, options)
             });
             if let Some(index) = found {
@@ -356,7 +344,7 @@ impl TimelineView {
         // the commits, the selected one with the bar
         let focused = !self.pane.is_focused();
         let count = self.history.len();
-        let position = format!("{}/{count}", count - self.selected);
+        let position = format!("{}/{count}", count - self.cursor.selected());
         let block = panel_block(focused, theme).title(panel_title(
             "[0] Commits",
             &position,
@@ -365,12 +353,11 @@ impl TimelineView {
         ));
         let inner = block.inner(list_area);
         block.render(list_area, buf);
-        self.height = inner.height as usize;
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
-        self.offset = scroll_to(self.offset, self.selected, self.height, count, scrolloff);
-        let rows = self.history.iter().enumerate().skip(self.offset);
+        let offset = self.cursor.fit(inner.height as usize, count, scrolloff);
+        let rows = self.history.iter().enumerate().skip(offset);
         for ((i, revision), y) in rows.zip(inner.top()..inner.bottom()) {
-            if i == self.selected {
+            if i == self.cursor.selected() {
                 mark_selected_row(buf, inner, y, focused, theme);
             }
             // the search of the commits highlighted, not the diff's
@@ -378,10 +365,10 @@ impl TimelineView {
             let line = Line::from(revision_spans(&ctx, revision, search));
             buf.set_line(inner.x, y, &line, inner.width);
         }
-        render_panel_scrollbar(buf, list_area, count, self.offset, focused, theme);
+        render_panel_scrollbar(buf, list_area, count, offset, focused, theme);
 
         // the file's changes in it
-        let path = &self.history[self.selected].path;
+        let path = &self.history[self.cursor.selected()].path;
         let title = panel_title("[1] Diff", path, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
         self.pane
@@ -454,9 +441,9 @@ mod tests {
         press(&mut view, UserEvent::NavigateUp);
         press(&mut view, UserEvent::NavigateUp);
         press(&mut view, UserEvent::NavigateUp);
-        assert_eq!(view.selected, 0);
+        assert_eq!(view.cursor.selected(), 0);
         press(&mut view, UserEvent::GoToBottom);
-        assert_eq!(view.selected, 2);
+        assert_eq!(view.cursor.selected(), 2);
 
         // the commits searched by subject
         press(&mut view, UserEvent::Search);
@@ -464,6 +451,6 @@ mod tests {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
             view.handle_event(UserEvent::Unknown, key, &repository);
         }
-        assert_eq!(view.history[view.selected].subject, "c2");
+        assert_eq!(view.history[view.cursor.selected()].subject, "c2");
     }
 }

@@ -207,7 +207,11 @@ fn main() -> Result<()> {
     let mailmap = core_config.git.mailmap;
     let primary_branch = args.primary_branch.filter(|s| !s.is_empty());
     let launch = app::Launch {
-        local_changes: args.local_changes,
+        page: if args.local_changes {
+            app::StartPage::LocalChanges
+        } else {
+            app::StartPage::Graph
+        },
         fetch: true,
     };
 

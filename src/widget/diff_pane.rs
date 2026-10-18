@@ -15,31 +15,23 @@ use crate::{
     },
 };
 
-// What has the focus around a diff: what is beside it (the files of the changes tab, the commits of
-// the timeline), or the hunks or lines of the diff.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum DiffFocus {
-    #[default]
-    Outside,
-    Hunks,
-    Lines,
-}
-
-// A diff beside what picks it: moving into it selects hunks, then lines, to copy, link to, apply or
-// stage; the changes tab, the timeline and the local changes.
 // The selection of a diff, kept across its reload, see `DiffPane::restore`.
 #[derive(Debug, Clone, Copy)]
 pub struct DiffSelection {
-    focus: DiffFocus,
+    focus: Option<DiffPart>,
     hunk: usize,
     line: usize,
 }
 
+// A diff beside what picks it: moving into it selects hunks, then lines, to copy, link to, apply or
+// stage; the changes tab, the timeline and the local changes.
 #[derive(Debug, Default)]
 pub struct DiffPane {
     // loaded lazily, None until then
     diff: Option<ParsedDiff>,
-    focus: DiffFocus,
+    // the hunks or the lines while the diff has the focus, None while what is beside it does (the
+    // files of the changes tab, the commits of the timeline)
+    focus: Option<DiffPart>,
     cursor: DiffCursor,
 }
 
@@ -47,7 +39,7 @@ impl DiffPane {
     // Shows another diff, from the top, the focus beside it.
     pub fn set_diff(&mut self, diff: Option<ParsedDiff>) {
         self.diff = diff;
-        self.focus = DiffFocus::Outside;
+        self.focus = None;
         self.cursor.reset();
     }
 
@@ -71,19 +63,20 @@ impl DiffPane {
         let Some(diff) = &self.diff else {
             return;
         };
-        if selection.focus == DiffFocus::Outside || !self.cursor.select_hunk(diff, selection.hunk) {
+        if selection.focus.is_none() || !self.cursor.select_hunk(diff, selection.hunk) {
             return;
         }
-        self.focus = DiffFocus::Hunks;
-        if selection.focus == DiffFocus::Lines && self.cursor.select_line_near(diff, selection.line)
+        self.focus = Some(DiffPart::Hunk);
+        if selection.focus == Some(DiffPart::Line)
+            && self.cursor.select_line_near(diff, selection.line)
         {
-            self.focus = DiffFocus::Lines;
+            self.focus = Some(DiffPart::Line);
         }
     }
 
     // Moves the focus out of the diff, to what is beside it.
     pub fn leave(&mut self) {
-        self.focus = DiffFocus::Outside;
+        self.focus = None;
     }
 
     // The scroll of what is shown in place of the diff, like the sides of a conflict.
@@ -95,34 +88,32 @@ impl DiffPane {
     // whether `event` was one.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
         let jumped = match &self.diff {
-            Some(diff) if self.focus == DiffFocus::Lines => self.cursor.jump_half_page(diff, event),
+            Some(diff) if self.focus == Some(DiffPart::Line) => {
+                self.cursor.jump_half_page(diff, event)
+            }
             _ => false,
         };
         jumped || self.cursor.scroll.handle_scroll(event)
     }
 
     pub fn is_focused(&self) -> bool {
-        self.focus != DiffFocus::Outside
+        self.focus.is_some()
     }
 
     pub fn is_selecting_lines(&self) -> bool {
-        self.focus == DiffFocus::Lines
+        self.focus == Some(DiffPart::Line)
     }
 
-    // What `selected_text` is of.
+    // What `selected_text` is of: the hunk, until lines are selected.
     pub fn selected_part(&self) -> DiffPart {
-        if self.is_selecting_lines() {
-            DiffPart::Line
-        } else {
-            DiffPart::Hunk
-        }
+        self.focus.unwrap_or(DiffPart::Hunk)
     }
 
     // The lines of the selected hunk or line in the file at the commit, (first, last); None
     // outside the diff, or for lines only removed.
     pub fn selected_lines(&self) -> Option<(usize, usize)> {
         let diff = self.diff.as_ref().filter(|_| self.is_focused())?;
-        let rows = self.cursor.highlighted(diff, self.is_selecting_lines());
+        let rows = self.cursor.highlighted(diff, self.selected_part());
         let mut lines = diff.rows.get(rows)?.iter().filter_map(|row| row.new);
         let first = lines.next()?;
         Some((first, lines.next_back().unwrap_or(first)))
@@ -135,9 +126,11 @@ impl DiffPane {
             return false;
         };
         match self.focus {
-            DiffFocus::Outside if self.cursor.select_hunk(diff, 0) => self.focus = DiffFocus::Hunks,
-            DiffFocus::Hunks if self.cursor.enter_lines(diff) => self.focus = DiffFocus::Lines,
-            DiffFocus::Outside => return false,
+            None if self.cursor.select_hunk(diff, 0) => self.focus = Some(DiffPart::Hunk),
+            Some(DiffPart::Hunk) if self.cursor.enter_lines(diff) => {
+                self.focus = Some(DiffPart::Line)
+            }
+            None => return false,
             _ => {}
         }
         true
@@ -146,10 +139,10 @@ impl DiffPane {
     // Goes one level back: lines -> hunks -> out of the diff. Returns false when already out.
     pub fn back(&mut self) -> bool {
         match self.focus {
-            DiffFocus::Outside => return false,
-            DiffFocus::Hunks => self.focus = DiffFocus::Outside,
-            DiffFocus::Lines => {
-                self.focus = DiffFocus::Hunks;
+            None => return false,
+            Some(DiffPart::Hunk) => self.focus = None,
+            Some(DiffPart::Line) => {
+                self.focus = Some(DiffPart::Hunk);
                 if let Some(diff) = &self.diff {
                     self.cursor.leave_lines(diff);
                 }
@@ -164,9 +157,9 @@ impl DiffPane {
             return;
         };
         match self.focus {
-            DiffFocus::Outside => {}
-            DiffFocus::Hunks => self.cursor.move_hunk(diff, step),
-            DiffFocus::Lines => self.cursor.move_line(diff, step),
+            None => {}
+            Some(DiffPart::Hunk) => self.cursor.move_hunk(diff, step),
+            Some(DiffPart::Line) => self.cursor.move_line(diff, step),
         }
     }
 
@@ -174,16 +167,16 @@ impl DiffPane {
     pub fn selected_patch(&self, direction: PatchDirection) -> Option<String> {
         let diff = self.diff.as_ref()?;
         match self.focus {
-            DiffFocus::Outside => None,
-            DiffFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
-            DiffFocus::Lines => self.cursor.line_patch(diff, direction),
+            None => None,
+            Some(DiffPart::Hunk) => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
+            Some(DiffPart::Line) => self.cursor.line_patch(diff, direction),
         }
     }
 
     // The selected line as in the file, or the selected hunk as a diff, to copy.
     pub fn selected_text(&self) -> Option<String> {
         let diff = self.diff.as_ref().filter(|_| self.is_focused())?;
-        self.cursor.selected_text(diff, self.is_selecting_lines())
+        self.cursor.selected_text(diff, self.selected_part())
     }
 
     // Selects a row matching `query`, see `DiffCursor::search`. Returns false when nothing matches.
@@ -196,18 +189,12 @@ impl DiffPane {
         let Some(diff) = &self.diff else {
             return false;
         };
-        let lines = self.is_selecting_lines();
-        match self.cursor.search(diff, query, direction, lines, options) {
-            Some(changed) => {
-                self.focus = if changed {
-                    DiffFocus::Lines
-                } else {
-                    DiffFocus::Hunks
-                };
-                true
-            }
-            None => false,
+        let part = self.selected_part();
+        let found = self.cursor.search(diff, query, direction, part, options);
+        if found.is_some() {
+            self.focus = found;
         }
+        found.is_some()
     }
 
     // Draws the diff in a panel titled `title`, like the timeline and the local changes do: the
@@ -240,15 +227,19 @@ impl DiffPane {
     ) {
         let theme = &ctx.color_theme;
         let count = self.diff.as_ref().map_or(0, diff_line_count);
-        let range = self.cursor.scroll.fit(count, area.height as usize);
+        let scrolloff = ctx.ui_config.common.scrolloff as usize;
+        let range = self
+            .cursor
+            .scroll
+            .fit(count, area.height as usize, scrolloff);
         let Some(diff) = &self.diff else {
             return;
         };
         render_scrollbar(buf, scrollbar, count, range.start, focused, theme);
         let mut lines = diff_lines(diff, theme, range.clone(), area.width);
         let highlighted = match self.focus {
-            DiffFocus::Outside => 0..0,
-            focus => self.cursor.highlighted(diff, focus == DiffFocus::Lines),
+            None => 0..0,
+            Some(part) => self.cursor.highlighted(diff, part),
         };
         if let Some(query) = search {
             for line in lines.iter_mut() {

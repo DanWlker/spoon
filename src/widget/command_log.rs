@@ -16,15 +16,14 @@ use crate::{
     keys::Keys,
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
-        scroll_to, ScrollState,
+        ListCursor, ScrollState,
     },
 };
 
 #[derive(Debug, Default)]
 pub struct CommandLogState {
     entries: Vec<LoggedCommand>,
-    selected: usize,
-    offset: usize,
+    cursor: ListCursor,
     // the scroll of the output of the selected command
     output: ScrollState,
 }
@@ -37,25 +36,15 @@ impl CommandLogState {
         }
     }
 
-    pub fn select_next(&mut self) {
-        self.select(self.selected + 1);
-    }
-
-    pub fn select_prev(&mut self) {
-        self.select(self.selected.saturating_sub(1));
-    }
-
-    pub fn select_first(&mut self) {
-        self.select(0);
-    }
-
-    pub fn select_last(&mut self) {
-        self.select(self.entries.len().saturating_sub(1));
-    }
-
-    fn select(&mut self, index: usize) {
-        self.selected = index.min(self.entries.len().saturating_sub(1));
+    // Moves the selection by the movement keys, the output of the command selected shown from
+    // the top; returns whether `event` was one.
+    pub fn move_selection(&mut self, event: UserEvent) -> bool {
+        let Some(index) = self.cursor.moved_to(event, self.entries.len()) else {
+            return false;
+        };
+        self.cursor.select(index, self.entries.len());
         self.output.offset = 0;
+        true
     }
 
     // The keys of the command log, see `Keys`.
@@ -95,7 +84,7 @@ impl CommandLogState {
 
     // The command and its output, to copy.
     pub fn selected_text(&self) -> Option<String> {
-        let entry = self.entries.get(self.selected)?;
+        let entry = self.entries.get(self.cursor.selected())?;
         Some(format!("{}\n{}", entry.command, entry.output))
     }
 }
@@ -132,23 +121,10 @@ impl<'a> CommandLog<'a> {
         }
         let height = inner.height as usize;
         let total = state.entries.len();
-        state.offset = scroll_to(state.offset, state.selected, height, total, self.scrolloff);
-        render_panel_scrollbar(
-            buf,
-            list_area,
-            state.entries.len(),
-            state.offset,
-            true,
-            theme,
-        );
-        for (row, entry) in state
-            .entries
-            .iter()
-            .enumerate()
-            .skip(state.offset)
-            .take(height)
-        {
-            let y = inner.y + (row - state.offset) as u16;
+        let offset = state.cursor.fit(height, total, self.scrolloff);
+        render_panel_scrollbar(buf, list_area, total, offset, true, theme);
+        for (row, entry) in state.entries.iter().enumerate().skip(offset).take(height) {
+            let y = inner.y + (row - offset) as u16;
             let (mark, color) = if entry.ok {
                 ("✓", theme.status_success_fg)
             } else {
@@ -162,7 +138,7 @@ impl<'a> CommandLog<'a> {
                 Span::raw(entry.command.clone()).fg(if entry.ok { theme.fg } else { color }),
             ]);
             line.render(Rect::new(inner.x, y, inner.width, 1), buf);
-            if row == state.selected {
+            if row == state.cursor.selected() {
                 mark_selected_row(buf, inner, y, true, theme);
             }
         }
@@ -176,7 +152,7 @@ impl<'a> CommandLog<'a> {
         );
         let output = state
             .entries
-            .get(state.selected)
+            .get(state.cursor.selected())
             .map_or("", |entry| entry.output.as_str());
         let lines: Vec<Line> = if output.is_empty() && !state.entries.is_empty() {
             vec![placeholder("No output", theme)]
@@ -186,7 +162,7 @@ impl<'a> CommandLog<'a> {
                 .map(|l| Line::raw(l.to_string()).fg(theme.fg))
                 .collect()
         };
-        let rows = state.output.fit(lines.len(), inner.height as usize);
+        let rows = state.output.fit(lines.len(), inner.height as usize, 0);
         Paragraph::new(lines)
             .scroll((rows.start as u16, 0))
             .render(inner, buf);
@@ -227,9 +203,9 @@ mod tests {
             CommandLog::new(&theme, 0).render(area, &mut buf, state);
             buf
         };
-        state.select_next();
+        state.move_selection(UserEvent::NavigateDown);
         let plain = draw(&mut state);
-        state.select_prev();
+        state.move_selection(UserEvent::NavigateUp);
         let buf = draw(&mut state);
         // on the theme's background, but the selected row, a row like the other lists'
         assert_fills_bg(&buf, area, &theme, &[theme.list_selected_bg]);

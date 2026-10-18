@@ -304,7 +304,7 @@ The type of a cursor to display in the input.
 
 ### `ui.common.scrolloff`
 
-The minimum number of visible rows to keep above and below the selected row where possible, like vim's `scrolloff`: in the commit list, the file trees, the refs sidebar and the command log.
+The minimum number of visible rows to keep above and below the selected row where possible, like vim's `scrolloff`: in the commit list, the file trees, the refs sidebar, the command log, the timeline, the selected hunk or line of a diff, and the selected line of the blame and the file preview.
 
 - type: `u16`
 - default: `0`

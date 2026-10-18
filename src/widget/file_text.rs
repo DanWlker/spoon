@@ -130,7 +130,11 @@ impl FileText {
         let lines = &self.lines;
         // only the visible lines are built, files can be long
         let width = lines.len().to_string().len();
-        let range = self.cursor.scroll.fit(lines.len(), area.height as usize);
+        let scrolloff = ctx.ui_config.common.scrolloff as usize;
+        let range = self
+            .cursor
+            .scroll
+            .fit(lines.len(), area.height as usize, scrolloff);
         let border = Rect::new(area.right(), area.y, 1, area.height);
         render_scrollbar(buf, border, lines.len(), range.start, focused, theme);
         let highlight_style = Style::default().bg(theme.list_selected_bg);

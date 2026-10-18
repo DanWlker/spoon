@@ -12,7 +12,9 @@ use ratatui::{
     layout::Rect,
 };
 
-use super::{App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, Ret, StatusLine};
+use super::{
+    App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, Ret, StartPage, StatusLine,
+};
 use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
@@ -233,7 +235,7 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
 
 fn launch() -> Launch {
     Launch {
-        local_changes: false,
+        page: StartPage::Graph,
         fetch: false,
     }
 }
@@ -338,7 +340,7 @@ fn test_launch_on_local_changes() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let launch = Launch {
-        local_changes: true,
+        page: StartPage::LocalChanges,
         ..launch()
     };
     let mut harness = Harness::new(&path, launch);
@@ -596,7 +598,7 @@ fn test_reload_failing_keeps_the_app_as_it_was() {
     let path = repository(dir.path());
     std::fs::write(path.join("f.txt"), "changed\n").unwrap();
     let launch = Launch {
-        local_changes: true,
+        page: StartPage::LocalChanges,
         ..launch()
     };
     let broken = |path: &Path| path.join(".git/refs/heads/broken");
@@ -1320,7 +1322,7 @@ fn test_stage_while_the_index_is_locked() {
     let mut harness = Harness::new(
         &path,
         Launch {
-            local_changes: true,
+            page: StartPage::LocalChanges,
             ..launch()
         },
     );
@@ -1342,7 +1344,7 @@ fn test_commit_refused_by_a_hook_keeps_the_message() {
     let mut harness = Harness::new(
         &path,
         Launch {
-            local_changes: true,
+            page: StartPage::LocalChanges,
             ..launch()
         },
     );
@@ -1564,7 +1566,7 @@ fn test_command_in_the_terminal_reloads_after() {
     let mut harness = Harness::new(
         &path,
         Launch {
-            local_changes: true,
+            page: StartPage::LocalChanges,
             ..launch()
         },
     );
@@ -1624,7 +1626,7 @@ fn test_commit_made_clears_the_message() {
     let mut harness = Harness::new(
         &path,
         Launch {
-            local_changes: true,
+            page: StartPage::LocalChanges,
             ..launch()
         },
     );
