@@ -629,13 +629,10 @@ impl Repository {
             .collect())
     }
 
-    // How many commits `head` is after `commit`, on the history of `head`.
-    pub fn count_after(
-        &self,
-        commit: &CommitHash,
-        head: &str,
-    ) -> std::result::Result<usize, String> {
-        let range = format!("{}..{head}", commit.as_str());
+    // How many commits HEAD is after `commit`, on the history of HEAD.
+    pub fn count_after(&self, commit: &CommitHash) -> std::result::Result<usize, String> {
+        // up to HEAD, which git takes when the end is left out
+        let range = format!("{}..", commit.as_str());
         let out = git_output(&self.path, &["rev-list", "--count", &range, "--"])?;
         out.trim().parse().map_err(|e| format!("{e}"))
     }
@@ -665,7 +662,7 @@ impl Repository {
         // those merged into HEAD, in one call; the full names, a tag may have the same short one
         let args = [
             "for-each-ref",
-            "--merged=HEAD",
+            "--merged",
             "--format=%(refname)",
             "refs/heads",
         ];
@@ -704,14 +701,13 @@ impl Repository {
             .map(|hash| CommitHash::from(hash.trim()))
     }
 
-    // The commits after `base` (all of them when None) up to `head`, with their parents.
+    // The commits after `base` (all of them when None) up to HEAD, with their parents.
     pub fn commits_after(
         &self,
         base: Option<&CommitHash>,
-        head: &str,
     ) -> std::result::Result<FxHashMap<CommitHash, Vec<CommitHash>>, String> {
         let exclude = base.map(|base| format!("^{}", base.as_str()));
-        let mut args = vec!["rev-list", "--parents", head];
+        let mut args = vec!["rev-list", "--parents", "HEAD"];
         args.extend(exclude.as_deref());
         args.push("--");
         let out = git_output(&self.path, &args)?;
@@ -868,8 +864,7 @@ impl Repository {
     }
 
     pub fn head_commit_message(&self) -> std::result::Result<String, String> {
-        git_output(&self.path, &["log", "-1", "--format=%B", "HEAD"])
-            .map(|s| s.trim_end().to_string())
+        git_output(&self.path, &["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_string())
     }
 
     pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {

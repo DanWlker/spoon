@@ -286,7 +286,8 @@ fn sort_newest_first(repository: &Repository, mut hashes: Vec<CommitHash>) -> Ve
 // The conflicts rebasing the current branch onto `onto` stops at: the commits on it and not on
 // `onto`, without those already there, like git rebase.
 fn rebase_conflict(repository: &Repository, onto: &str) -> Option<Conflict> {
-    let range = format!("{onto}...HEAD");
+    // with HEAD, which git takes when the end is left out
+    let range = format!("{onto}...");
     repository.replay_conflict(onto, &["--right-only", "--cherry-pick", &range], &[])
 }
 
@@ -368,7 +369,7 @@ fn rebased(
     base: Option<&CommitHash>,
     commits: &[CommitHash],
 ) -> Result<FxHashMap<CommitHash, Vec<CommitHash>>, String> {
-    let rebased = repository.commits_after(base, "HEAD")?;
+    let rebased = repository.commits_after(base)?;
     if let Some(missing) = commits.iter().find(|h| !rebased.contains_key(*h)) {
         let short = missing.as_short_hash();
         return Err(format!("{short} is not on {branch}, check it out first"));
@@ -425,7 +426,7 @@ fn drop_commits(
         single_parent(repository, hash, "dropped")?;
     }
     // the commit after the newest one takes its place, under a new hash
-    let after = repository.count_after(newest, "HEAD")?;
+    let after = repository.count_after(newest)?;
     let behind_head = after.saturating_sub(1);
     let dropped = commits.clone();
     let commits = commits
@@ -435,7 +436,7 @@ fn drop_commits(
     let base = base.map(|h| h.as_str().to_string());
     // the commits after them are replayed without them; not checked from the root
     let conflict = base.as_ref().and_then(|base| {
-        let range = format!("{base}..HEAD");
+        let range = format!("{base}..");
         repository.replay_conflict(base, &[&range], &dropped)
     });
     let pushed = repository.upstream_containing(oldest.as_str());
