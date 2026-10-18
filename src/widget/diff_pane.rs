@@ -86,11 +86,11 @@ impl DiffPane {
         &mut self.cursor.scroll
     }
 
-    // Scrolls the diff by the scroll keys, or moves the selected line half a page or a page; returns
-    // whether `event` was one.
+    // Scrolls the diff by the scroll keys, or moves the selected hunk or line half a page or a
+    // page; returns whether `event` was one.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
-        let jumped = match &self.diff {
-            Some(diff) if self.focus == Some(DiffPart::Line) => self.cursor.jump_page(diff, event),
+        let jumped = match (&self.diff, self.focus) {
+            (Some(diff), Some(part)) => self.cursor.jump_page(diff, event, part),
             _ => false,
         };
         jumped || self.cursor.scroll.handle_scroll(event)

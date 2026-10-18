@@ -510,37 +510,103 @@ impl DiffCursor {
         }
     }
 
-    // Selects the changed line half a page or a page from the selected one, in `event`'s
-    // direction: the next changed line from the screen row that far away going down, else the
-    // last; the previous one going up, else the first. False for other events.
-    pub fn jump_page(&mut self, diff: &ParsedDiff, event: UserEvent) -> bool {
+    // The page keys on the selected hunk or changed line: the view moves half a page or a page,
+    // and the selection moves with it to the next or previous one, unless the page is still inside
+    // the selected one (a hunk or line taller than a page), which scrolls instead so none of it is
+    // skipped. False for other events.
+    pub fn jump_page(&mut self, diff: &ParsedDiff, event: UserEvent, part: DiffPart) -> bool {
         let down = matches!(event, UserEvent::HalfPageDown | UserEvent::PageDown);
         let rows = match event {
             UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.scroll.height / 2,
             UserEvent::PageDown | UserEvent::PageUp => self.scroll.height,
             _ => return false,
         };
-        let rows = rows.max(1) as isize;
-        let screen = self
-            .wrap
-            .visual_start(self.line)
-            .saturating_add_signed(if down { rows } else { -rows });
-        let row = self.wrap.logical_at(screen);
-        let mut changed = changed_rows(diff);
-        let changed = if down {
-            changed
-                .find(|&r| r >= row)
-                .or_else(|| changed_rows(diff).last())
-        } else {
-            changed
-                .rfind(|&r| r <= row)
-                .or_else(|| changed_rows(diff).next())
+        let rows = rows.max(1);
+        let unit = match part {
+            DiffPart::Line => self.line..self.line + 1,
+            DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone()),
         };
-        if let Some(row) = changed {
-            self.search_row = None;
-            self.select_line(diff, row);
+        let screen = self.wrap.visual_range(unit);
+        // where the unit shows in the view, the page moving from there
+        let bottom = self.scroll.offset + self.scroll.height.saturating_sub(1);
+        let anchor = screen.start.clamp(self.scroll.offset, bottom);
+        let target = if down {
+            anchor.saturating_add(rows)
+        } else {
+            anchor.saturating_sub(rows)
+        };
+        // the page is still inside the unit: scroll it, keeping the selection
+        let inside = if down {
+            target < screen.end
+        } else {
+            target >= screen.start
+        };
+        if inside {
+            let moved = if down {
+                rows as isize
+            } else {
+                -(rows as isize)
+            };
+            self.scroll.offset = self.scroll.offset.saturating_add_signed(moved);
+            return true;
+        }
+        // past its end: the next or previous unit from the screen row the page reached, or the
+        // edge of the file when there is none further and the selection is already on it
+        let row = self.wrap.logical_at(target);
+        match part {
+            DiffPart::Line => {
+                let mut changed = changed_rows(diff);
+                let found = if down {
+                    changed.find(|&r| r >= row)
+                } else {
+                    changed.rfind(|&r| r <= row)
+                };
+                let found = found.or_else(|| {
+                    if down {
+                        changed_rows(diff).last()
+                    } else {
+                        changed_rows(diff).next()
+                    }
+                });
+                match found {
+                    Some(row) if row != self.line => {
+                        self.search_row = None;
+                        self.select_line(diff, row);
+                    }
+                    _ => self.scroll_to_edge(down),
+                }
+            }
+            DiffPart::Hunk => {
+                let found = if down {
+                    diff.hunks.iter().position(|h| h.rows.start >= row)
+                } else {
+                    diff.hunks.iter().rposition(|h| h.rows.start <= row)
+                };
+                let found = found.or_else(|| {
+                    if down {
+                        diff.hunks.len().checked_sub(1)
+                    } else {
+                        (!diff.hunks.is_empty()).then_some(0)
+                    }
+                });
+                match found {
+                    Some(index) if index != self.hunk => {
+                        self.select_hunk(diff, index);
+                    }
+                    _ => self.scroll_to_edge(down),
+                }
+            }
         }
         true
+    }
+
+    // Scrolls to the edge of the diff the page was going to, the selection kept where it is.
+    fn scroll_to_edge(&mut self, down: bool) {
+        self.scroll.offset = if down {
+            self.wrap.total().saturating_sub(self.scroll.height)
+        } else {
+            0
+        };
     }
 
     // Selects the changed line at or after `row`, else the last one; for a diff reloaded after
@@ -1282,9 +1348,10 @@ mod tests {
         };
         let mut cursor = DiffCursor::default();
         cursor.scroll.height = 8;
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false));
         cursor.select_line(&diff, a);
         let mut jump = |event| {
-            assert!(cursor.jump_page(&diff, event));
+            assert!(cursor.jump_page(&diff, event, DiffPart::Line));
             cursor.line
         };
         // 4 rows down is context, the next change after it
@@ -1299,7 +1366,7 @@ mod tests {
         assert_eq!(jump(UserEvent::PageDown), b);
         assert_eq!(jump(UserEvent::PageUp), big_a);
         // the scroll keys are not jumps
-        assert!(!cursor.jump_page(&diff, UserEvent::ScrollDown));
+        assert!(!cursor.jump_page(&diff, UserEvent::ScrollDown, DiffPart::Line));
     }
 
     // The jump counts screen rows: half a page from -a lands on the long changed line that wraps
@@ -1319,14 +1386,88 @@ mod tests {
         cursor.select_line(&diff, a);
 
         // without a map, rows are screen rows: the long line is one of them, so the jump skips it
-        cursor.jump_page(&diff, UserEvent::HalfPageDown);
+        cursor.jump_page(&diff, UserEvent::HalfPageDown, DiffPart::Line);
         assert_eq!(cursor.line, b);
 
         // with the widths measured, the jump lands on the screen row the long line covers
         cursor.select_line(&diff, a);
         cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 20, true));
-        cursor.jump_page(&diff, UserEvent::HalfPageDown);
+        cursor.jump_page(&diff, UserEvent::HalfPageDown, DiffPart::Line);
         assert_eq!(cursor.line, long);
+    }
+
+    // A changed line taller than the panel is read a page at a time: the page scrolls it instead
+    // of jumping past it or doing nothing.
+    #[test]
+    fn test_page_inside_a_tall_line_scrolls_it() {
+        // the added line is the last changed line, taller than the panel
+        let diff = parse_diff(&format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-a\n+{}\n",
+            "x".repeat(200)
+        ));
+        let changed: Vec<usize> = changed_rows(&diff).collect();
+        let [_, long] = changed[..] else {
+            panic!("{changed:?}")
+        };
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 4;
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 20, true));
+        cursor.select_line(&diff, long);
+        let offset = cursor.scroll.offset;
+
+        assert!(cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Line));
+        assert_eq!(cursor.line, long, "the tall line stayed selected");
+        assert_eq!(cursor.scroll.offset, offset + 4, "the tall line scrolled");
+
+        // past its end, the page stops at the bottom instead of snapping back to its top
+        while cursor.scroll.offset + 4 < cursor.wrap().total() {
+            cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Line);
+        }
+        cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Line);
+        assert_eq!(cursor.line, long);
+        assert_eq!(
+            cursor.scroll.offset,
+            cursor.wrap().total().saturating_sub(4),
+            "the page stopped at the bottom"
+        );
+    }
+
+    // A short hunk hands the page over to the next one; a hunk taller than the panel scrolls.
+    #[test]
+    fn test_page_with_short_and_tall_hunks() {
+        let context = " x\n".repeat(20);
+        let diff = parse_diff(&format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n\
+             @@ -1,1 +1,1 @@\n-a\n+A\n\
+             @@ -26,22 +26,22 @@\n{context}-b\n+B\n"
+        ));
+        assert_eq!(diff.hunks.len(), 2);
+
+        // the first hunk is short: the page moves to the second
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 4;
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false));
+        cursor.select_hunk(&diff, 0);
+        assert!(cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Hunk));
+        assert_eq!(cursor.hunk, 1);
+
+        // the second is taller than the panel: the page scrolls it, keeping it selected
+        cursor.select_hunk(&diff, 1);
+        let offset = cursor.scroll.offset;
+        assert!(cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Hunk));
+        assert_eq!(cursor.hunk, 1);
+        assert_eq!(cursor.scroll.offset, offset + 4);
+
+        // past its end, the page stops at the bottom instead of snapping back to its top
+        while cursor.scroll.offset + 4 < cursor.wrap().total() {
+            cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Hunk);
+        }
+        cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Hunk);
+        assert_eq!(cursor.hunk, 1);
+        assert_eq!(
+            cursor.scroll.offset,
+            cursor.wrap().total().saturating_sub(4)
+        );
     }
 
     #[test]
