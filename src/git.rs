@@ -1155,6 +1155,10 @@ impl Repository {
         self.check_idle()?;
         let ours = self.stage_blob(path, ConflictSide::Ours.stage());
         let theirs = self.stage_blob(path, ConflictSide::Theirs.stage());
+        // a file with no stage of a conflict would be removed below, by `git rm`
+        if ours.is_none() && theirs.is_none() && self.stage_blob(path, 1).is_none() {
+            return Err(format!("{path} has no conflict to resolve"));
+        }
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
@@ -3497,6 +3501,12 @@ mod tests {
         let content = std::fs::read_to_string(path.join("f")).unwrap();
         assert_eq!(content, lines("ONE", "NINE-ours"));
         assert!(repository.local_changes().unstaged.is_empty());
+        // once resolved and committed, taking a side again is refused instead of removing the file
+        git_output(path, &["commit", "-q", "--no-edit"]).unwrap();
+        assert!(repository
+            .resolve_conflict("f", ConflictSide::Theirs)
+            .is_err());
+        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), content);
     }
 
     #[test]
