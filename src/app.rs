@@ -2010,6 +2010,12 @@ impl App<'_> {
         if self.blocked_by_operation(&task) {
             return;
         }
+        // the command was chosen from what the app shows, which no longer is how git has it
+        if let Err(err) = self.repository.check_head() {
+            self.ec.send(AppEvent::NotifyError(err));
+            self.view.refresh();
+            return;
+        }
         // a checkout from the blame or the timeline shows the graph
         if task.moves_head() && matches!(self.shell.overlay, Some(Overlay::File(_))) {
             self.shell.overlay = None;

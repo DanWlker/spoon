@@ -195,6 +195,7 @@ Like lazygit, the app picks up changes made elsewhere, in an editor or another t
 - when the terminal gets the focus back, both are checked right away.
 
 Nothing is reloaded while a git command runs, a popup is open, or something is being typed or confirmed; the next check catches up.
+When `HEAD` moved meanwhile, outside the app, a git command started from what the app still shows is refused and everything is reloaded: a popup that says "Reset main" doesn't reset the branch checked out since, and amending doesn't rewrite a commit made elsewhere.
 
 #### Picking files
 

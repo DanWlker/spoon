@@ -857,6 +857,47 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
 }
 
 #[test]
+fn test_commands_refused_once_head_moved_outside() {
+    // a popup open on master, while feat is checked out in another terminal
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let (master, feat) = (
+        git(&path, &["rev-parse", "master"]),
+        git(&path, &["rev-parse", "feat"]),
+    );
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("G shift-u"),
+        outside_git(&["checkout", "-q", "feat"]),
+        keys("enter"),
+        check(|app| assert_notice(app, "HEAD moved from master at")),
+    ]);
+    assert_eq!(git(&path, &["rev-parse", "master"]), master);
+    assert_eq!(git(&path, &["rev-parse", "feat"]), feat);
+
+    // amending, while a commit is made in another terminal: it isn't the one amended
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        keys("shift-a"),
+        outside_git(&["commit", "-q", "--allow-empty", "-m", "elsewhere"]),
+        keys("c enter"),
+        check(|app| assert_notice(app, "HEAD moved from master at")),
+    ]);
+    assert_eq!(
+        git(&path, &["log", "-1", "--format=%s"]).trim(),
+        "elsewhere"
+    );
+}
+
+#[test]
 fn test_no_file_keys_on_a_commit_without_changes() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

@@ -250,6 +250,8 @@ pub struct Repository {
     busy: std::cell::RefCell<Option<String>>,
     // the fingerprint of the refs when loaded, see `refs_snapshot`
     refs_snapshot: Option<String>,
+    // HEAD when loaded, see `check_head`
+    loaded_head: HeadState,
     // the upstream of each local branch having one when loaded, see `branch_tracking`
     tracking: FxHashMap<String, Tracking>,
     commit_map: CommitMap,
@@ -295,6 +297,7 @@ impl Repository {
             let remotes = scope.spawn(|| load_remotes(path));
             let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
             let refs_snapshot = scope.spawn(|| refs_snapshot(path).ok());
+            let loaded_head = scope.spawn(|| HeadState::read(path));
             let tracking = scope.spawn(|| load_branch_tracking(path));
             let mut repository = Self::load_commits(path, sort, max_count, mailmap, revisions)?;
             repository.git_dir = git_dir;
@@ -302,6 +305,7 @@ impl Repository {
             repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
             repository.loaded_local_changes = local_changes.join().ok().into();
             repository.refs_snapshot = refs_snapshot.join().unwrap_or_default();
+            repository.loaded_head = loaded_head.join().unwrap_or_default();
             repository.tracking = tracking.join().unwrap_or_default();
             Ok(repository)
         })
@@ -359,6 +363,7 @@ impl Repository {
             loaded_local_changes: Default::default(),
             busy: Default::default(),
             refs_snapshot: None,
+            loaded_head: HeadState::default(),
             tracking: Default::default(),
             commit_map,
             parents_map,
@@ -1119,6 +1124,19 @@ impl Repository {
         )
     }
 
+    // An error once HEAD moved since it was loaded, from outside the app: what the app shows, like
+    // the branch a popup names, is then no longer what a git command would change.
+    pub fn check_head(&self) -> std::result::Result<(), String> {
+        let now = HeadState::read(&self.path);
+        if now == self.loaded_head {
+            return Ok(());
+        }
+        Err(format!(
+            "HEAD moved from {} to {now} outside the app, nothing was run",
+            self.loaded_head
+        ))
+    }
+
     // An error while a git command runs in the background, see `set_busy`.
     fn check_idle(&self) -> std::result::Result<(), String> {
         match self.busy.borrow().as_ref() {
@@ -1721,6 +1739,37 @@ fn load_remotes(path: &Path) -> Vec<String> {
 }
 
 // None on a detached HEAD.
+// HEAD as git has it: the branch checked out, None when detached, and its commit.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HeadState {
+    branch: Option<String>,
+    commit: Option<CommitHash>,
+}
+
+impl HeadState {
+    fn read(path: &Path) -> Self {
+        let commit = git_output(path, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
+        HeadState {
+            branch: get_current_branch(path),
+            commit: commit.map(|hash| CommitHash::from(hash.trim())),
+        }
+    }
+}
+
+// "main at 1a2b3c4", or the commit alone when detached.
+impl std::fmt::Display for HeadState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let commit = self
+            .commit
+            .as_ref()
+            .map_or("no commit", CommitHash::as_short_hash);
+        match &self.branch {
+            Some(branch) => write!(f, "{branch} at {commit}"),
+            None => write!(f, "{commit}"),
+        }
+    }
+}
+
 fn get_current_branch(path: &Path) -> Option<String> {
     let out = git_output(path, &["branch", "--show-current"]).ok()?;
     Some(out.trim().to_string()).filter(|branch| !branch.is_empty())
