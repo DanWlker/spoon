@@ -37,7 +37,7 @@ use crate::{
         file_tree::{Entry, FileTreeRow, FileTreeState},
         git_dialog::GitDialog,
         style::{panel_block, ScrollState},
-        tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
+        tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
 };
 
@@ -967,7 +967,7 @@ impl<'a> DetailView<'a> {
             DetailTab::Files => self.files_state.ensure_loaded(),
         }
         // the states of another commit start without the filter
-        self.apply_query_change(QueryChange::Filter);
+        self.apply_query_change(Some(QueryKind::Filter));
     }
 
     pub fn is_typing_query(&self) -> bool {
@@ -1025,7 +1025,7 @@ impl<'a> DetailView<'a> {
             UserEvent::Cancel => {
                 // clear the search, then the filter, before closing
                 let change = query.clear();
-                if change == QueryChange::None {
+                if change.is_none() {
                     return false;
                 }
                 self.apply_query_change(change);
@@ -1037,12 +1037,12 @@ impl<'a> DetailView<'a> {
         true
     }
 
-    fn apply_query_change(&mut self, change: QueryChange) {
+    fn apply_query_change(&mut self, change: Option<QueryKind>) {
         let options = self.ctx.search_options.get();
         match change {
-            QueryChange::None => {}
-            QueryChange::Search => self.search(SearchDirection::Current),
-            QueryChange::Filter => {
+            None => {}
+            Some(QueryKind::Search) => self.search(SearchDirection::Current),
+            Some(QueryKind::Filter) => {
                 let filter = self.query().and_then(TreeQuery::filter).map(String::from);
                 let filter = filter.as_deref();
                 match self.tab {

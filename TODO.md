@@ -5,4 +5,4 @@ TODO:
      between the project, and its submodules
 1. Move commits (do we really need this?)...
 1. draw an architecture diagram showing which calls what, split by call layers. I want each file to list their functions and a short description of what it does,
-1. my kssaskpass is crashing when using spoon on tmux floating
+1. `+` and `-` on diff panel when viewing a single file only to show more around the context of the change

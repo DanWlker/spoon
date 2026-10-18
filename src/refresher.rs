@@ -13,7 +13,7 @@ use crate::{
 pub fn spawn(
     tx: Sender,
     work_tree: PathBuf,
-    git_dir: Option<PathBuf>,
+    git_dir: PathBuf,
     refs_interval: Duration,
     files_interval: Duration,
 ) -> mpsc::Sender<()> {
@@ -36,7 +36,7 @@ pub fn spawn(
                 }
             }
             if now || tick.is_multiple_of(files_every) {
-                let files = FilesSnapshot::load(&work_tree, git_dir.as_deref());
+                let files = FilesSnapshot::load(&work_tree, &git_dir);
                 if !tx.try_send(AppEvent::FilesTick(files)) {
                     break;
                 }
@@ -70,7 +70,7 @@ mod tests {
         let poke = spawn(
             tx,
             path.to_path_buf(),
-            Some(path.join(".git")),
+            path.join(".git"),
             refs_interval,
             files_interval,
         );

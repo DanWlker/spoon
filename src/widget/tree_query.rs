@@ -28,14 +28,6 @@ pub struct TreeQuery {
     filter: Option<String>,
 }
 
-// What a key typed into the query changed, for the tree to update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryChange {
-    None,
-    Search,
-    Filter,
-}
-
 impl TreeQuery {
     // A search already applied, like after a reload.
     pub fn with_search(search: String) -> Self {
@@ -59,24 +51,18 @@ impl TreeQuery {
     }
 
     // What applying the query being typed again changes, once its options are.
-    pub fn editing_change(&self) -> QueryChange {
-        match self.editing {
-            Some((QueryKind::Search, _)) => QueryChange::Search,
-            Some((QueryKind::Filter, _)) => QueryChange::Filter,
-            None => QueryChange::None,
-        }
+    pub fn editing_change(&self) -> Option<QueryKind> {
+        self.editing.as_ref().map(|(kind, _)| *kind)
     }
 
     // Enter keeps the query, Esc clears it; other keys edit it, which applies it right away.
-    pub fn handle_key(&mut self, key: KeyEvent) -> QueryChange {
-        let Some((kind, input)) = self.editing.as_mut() else {
-            return QueryChange::None;
-        };
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<QueryKind> {
+        let (kind, input) = self.editing.as_mut()?;
         let kind = *kind;
         match key.code {
             KeyCode::Enter => {
                 self.editing = None;
-                return QueryChange::None;
+                return None;
             }
             KeyCode::Esc => {
                 self.editing = None;
@@ -88,20 +74,17 @@ impl TreeQuery {
                 self.set(kind, value);
             }
         }
-        match kind {
-            QueryKind::Search => QueryChange::Search,
-            QueryKind::Filter => QueryChange::Filter,
-        }
+        Some(kind)
     }
 
     // Clears the search, or the filter when there is no search. Returns what was cleared.
-    pub fn clear(&mut self) -> QueryChange {
+    pub fn clear(&mut self) -> Option<QueryKind> {
         if self.search.take().is_some() {
-            QueryChange::Search
+            Some(QueryKind::Search)
         } else if self.filter.take().is_some() {
-            QueryChange::Filter
+            Some(QueryKind::Filter)
         } else {
-            QueryChange::None
+            None
         }
     }
 
@@ -427,9 +410,9 @@ mod tests {
         query.start(QueryKind::Filter);
         type_str(&mut query, "x");
         query.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(query.clear(), QueryChange::Search);
-        assert_eq!(query.clear(), QueryChange::Filter);
-        assert_eq!(query.clear(), QueryChange::None);
+        assert_eq!(query.clear(), Some(QueryKind::Search));
+        assert_eq!(query.clear(), Some(QueryKind::Filter));
+        assert_eq!(query.clear(), None);
     }
 
     #[test]

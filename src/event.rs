@@ -27,7 +27,8 @@ pub enum AppEvent {
     // pressing, dragging and releasing the left button, to drag the borders of the panels, and the
     // wheel, see `App::handle_event`
     Mouse(MouseEvent),
-    Resize(usize, usize),
+    // only redraws
+    Resize,
     Quit,
     // opens the details of the selected commit on a tab
     OpenDetail(DetailTab),
@@ -46,11 +47,8 @@ pub enum AppEvent {
     SpinnerTick,
     // runs a git command in the background, see `App::start_task`
     StartTask(GitTask),
-    // a git command running in the background finished
-    TaskFinished {
-        task: GitTask,
-        result: Result<(), String>,
-    },
+    // the git command running in the background finished, see `AppContext::running_task`
+    TaskFinished(Result<(), String>),
     OpenHelp,
     // closes the help or another window over everything
     CloseOverlay,
@@ -243,9 +241,7 @@ impl EventController {
                             }
                             _ => {}
                         },
-                        ratatui::crossterm::event::Event::Resize(w, h) => {
-                            tx.send(AppEvent::Resize(w as usize, h as usize));
-                        }
+                        ratatui::crossterm::event::Event::Resize(..) => tx.send(AppEvent::Resize),
                         ratatui::crossterm::event::Event::FocusGained => {
                             tx.send(AppEvent::FocusGained);
                         }

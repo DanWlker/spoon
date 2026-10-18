@@ -242,7 +242,7 @@ pub struct Repository {
     // commands run in, since the paths they take and give are relative to it
     path: PathBuf,
     // the git directory, to find the state files of operations in without running git
-    git_dir: Option<PathBuf>,
+    git_dir: PathBuf,
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
     loaded_local_changes: std::cell::RefCell<Option<LocalChanges>>,
@@ -301,8 +301,8 @@ impl Repository {
             let refs_snapshot = scope.spawn(|| refs_snapshot(path).ok());
             let loaded_head = scope.spawn(|| HeadState::read(path));
             let tracking = scope.spawn(|| load_branch_tracking(path));
-            let mut repository = Self::load_commits(path, sort, max_count, mailmap, revisions)?;
-            repository.git_dir = git_dir;
+            let mut repository =
+                Self::load_commits(path, git_dir, sort, max_count, mailmap, revisions)?;
             repository.running = running;
             repository.remotes = remotes.join().unwrap_or_default();
             repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
@@ -317,6 +317,7 @@ impl Repository {
     // The commits and refs, see `load_scoped`.
     fn load_commits(
         path: &Path,
+        git_dir: PathBuf,
         sort: SortCommit,
         max_count: Option<usize>,
         mailmap: bool,
@@ -333,36 +334,30 @@ impl Repository {
         }
 
         let commits = merge_stashes_to_commits(commits, stashes);
-        let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
-
-        let (parents_map, children_map) = build_commits_maps(&commits);
-        let commit_map = to_commit_map(commits);
-
         merge_ref_maps(&mut ref_map, stash_ref_map);
-
         Ok(Self::new(
             path.to_path_buf(),
-            commit_map,
-            parents_map,
-            children_map,
+            git_dir,
+            commits,
             ref_map,
             head,
-            commit_hashes,
         ))
     }
 
+    // `commits` in the order `git log` gave them.
     pub fn new(
         path: PathBuf,
-        commit_map: CommitMap,
-        parents_map: CommitsMap,
-        children_map: CommitsMap,
+        git_dir: PathBuf,
+        commits: Vec<Commit>,
         ref_map: RefMap,
         head: Head,
-        commit_hashes: Vec<CommitHash>,
     ) -> Self {
+        let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
+        let (parents_map, children_map) = build_commits_maps(&commits);
+        let commit_map = to_commit_map(commits);
         Self {
             path,
-            git_dir: None,
+            git_dir,
             loaded_local_changes: Default::default(),
             running: Default::default(),
             refs_snapshot: None,
@@ -517,13 +512,13 @@ impl Repository {
     }
 
     // The git directory, None when git can't tell.
-    pub fn git_dir(&self) -> Option<&Path> {
-        self.git_dir.as_deref()
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
     }
 
     // See `files_stamp`.
     pub fn files_stamp(&self, changes: &LocalChanges) -> u64 {
-        files_stamp(&self.path, self.git_dir(), changes)
+        files_stamp(&self.path, &self.git_dir, changes)
     }
 
     pub fn take_loaded_local_changes(&self) -> LocalChanges {
@@ -982,7 +977,7 @@ impl Repository {
 
     // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
     pub fn operation_in_progress(&self) -> Option<Operation> {
-        let exists = |name: &str| self.git_path(name).is_some_and(|p| p.exists());
+        let exists = |name: &str| self.git_dir.join(name).exists();
         // rebase-apply is also used by `git am`, which does not leave the "rebasing" file
         if exists("rebase-merge") || exists("rebase-apply/rebasing") {
             Some(Operation::Rebase)
@@ -1209,10 +1204,9 @@ impl Repository {
         // both sides added the file when there is no base
         let base = self.stage_blob(path, 1).unwrap_or_default();
         let files = [("ours", ours), ("base", base), ("theirs", theirs)]
-            .map(|(name, blob)| (self.git_path(&format!("spoon-merge-{name}")), blob));
+            .map(|(name, blob)| (self.git_dir.join(format!("spoon-merge-{name}")), blob));
         let mut paths = vec![];
         for (file, blob) in &files {
-            let file = file.as_ref()?;
             std::fs::write(file, blob).ok()?;
             paths.push(file.to_string_lossy().into_owned());
         }
@@ -1226,7 +1220,7 @@ impl Repository {
         ];
         // fails (with a negative code) on binary files
         let merged = git_output_bytes(&self.path, &args).ok();
-        for file in files.iter().filter_map(|(file, _)| file.as_ref()) {
+        for (file, _) in &files {
             let _ = std::fs::remove_file(file);
         }
         merged
@@ -1234,8 +1228,7 @@ impl Repository {
 
     // Whether a rebase stopped to edit a commit (rather than on conflicts), which is amended then.
     pub fn rebase_stopped_to_edit(&self) -> bool {
-        self.git_path("rebase-merge/amend")
-            .is_some_and(|p| p.exists())
+        self.git_dir.join("rebase-merge/amend").exists()
     }
 
     // The commit message git prepared for the operation in progress, without its comment lines.
@@ -1264,7 +1257,7 @@ impl Repository {
 
     // A file of the repository's git directory, like MERGE_MSG.
     fn git_file(&self, name: &str) -> Option<String> {
-        std::fs::read_to_string(self.git_path(name)?).ok()
+        std::fs::read_to_string(self.git_dir.join(name)).ok()
     }
 
     // The command continuing a rebase, or the remaining commits of a cherry-pick or revert of
@@ -1272,18 +1265,8 @@ impl Repository {
     pub fn continue_args(&self, operation: Operation) -> Option<GitArgs> {
         // a merge, or a single cherry-pick or revert, is done once committed
         let goes_on = operation == Operation::Rebase
-            || (operation != Operation::Merge
-                && self.git_path("sequencer").is_some_and(|p| p.exists()));
+            || (operation != Operation::Merge && self.git_dir.join("sequencer").exists());
         goes_on.then(|| GitCommand::Resume(operation).args(["--continue"]))
-    }
-
-    fn git_path(&self, name: &str) -> Option<PathBuf> {
-        if let Some(git_dir) = &self.git_dir {
-            return Some(git_dir.join(name));
-        }
-        git_output(&self.path, &["rev-parse", "--git-path", name])
-            .map(|p| self.path.join(p.trim()))
-            .ok()
     }
 
     // Applies `patch`, a diff produced by `local_change_diff`, to the index: forward stages it,
@@ -1338,7 +1321,7 @@ pub fn parse_git_bool(value: &str) -> Option<bool> {
 
 // The top directory of the working tree (None when bare) and the git directory of the repository
 // at `path`, which must be in a working tree or a bare repository.
-fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, PathBuf)> {
     let not_a_repository = || "not a git repository (or any of the parent directories)".into();
     let args = [
         "rev-parse",
@@ -1358,10 +1341,10 @@ fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, Option<PathBuf>)> 
     let output = String::from_utf8_lossy(&output.stdout);
     let mut lines = output.lines();
     let (inside_work_tree, bare) = (lines.next() == Some("true"), lines.next() == Some("true"));
-    let git_dir = lines.next().map(PathBuf::from);
-    if !inside_work_tree && !bare {
-        return Err(not_a_repository());
-    }
+    let git_dir = match (inside_work_tree || bare, lines.next()) {
+        (true, Some(git_dir)) => PathBuf::from(git_dir),
+        _ => return Err(not_a_repository()),
+    };
     let toplevel = lines.next().filter(|_| inside_work_tree).map(PathBuf::from);
     Ok((toplevel, git_dir))
 }
@@ -2127,7 +2110,7 @@ pub struct FilesSnapshot {
 }
 
 impl FilesSnapshot {
-    pub fn load(work_tree: &Path, git_dir: Option<&Path>) -> Self {
+    pub fn load(work_tree: &Path, git_dir: &Path) -> Self {
         let changes = load_local_changes(work_tree);
         let stamp = files_stamp(work_tree, git_dir, &changes);
         FilesSnapshot { changes, stamp }
@@ -2137,7 +2120,7 @@ impl FilesSnapshot {
 // A fingerprint of the local changes and what they are made of: the index, and each changed file's
 // size and time of change, which an edit to an already changed file changes without changing its
 // status.
-pub fn files_stamp(work_tree: &Path, git_dir: Option<&Path>, changes: &LocalChanges) -> u64 {
+pub fn files_stamp(work_tree: &Path, git_dir: &Path, changes: &LocalChanges) -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = rustc_hash::FxBuildHasher.build_hasher();
     let mut stat = |path: &Path| match std::fs::symlink_metadata(path) {
@@ -2147,9 +2130,7 @@ pub fn files_stamp(work_tree: &Path, git_dir: Option<&Path>, changes: &LocalChan
         }
         Err(_) => hasher.write_u8(0),
     };
-    if let Some(git_dir) = git_dir {
-        stat(&git_dir.join("index"));
-    }
+    stat(&git_dir.join("index"));
     for file in changes.unstaged.iter().chain(&changes.staged) {
         stat(&work_tree.join(&file.path));
     }
@@ -3060,11 +3041,11 @@ mod tests {
         // from a subdirectory: the top of the working tree, and the git directory
         let (toplevel, git_dir) = locate_repository(&path.join("wt/sub")).unwrap();
         assert_eq!(toplevel, Some(path.join("wt")));
-        assert_eq!(git_dir, Some(path.join("wt/.git")));
+        assert_eq!(git_dir, path.join("wt/.git"));
         // a bare repository has no working tree
         let (toplevel, git_dir) = locate_repository(&path.join("bare.git")).unwrap();
         assert_eq!(toplevel, None);
-        assert_eq!(git_dir, Some(path.join("bare.git")));
+        assert_eq!(git_dir, path.join("bare.git"));
         assert!(locate_repository(&path).is_err());
     }
 
@@ -3103,7 +3084,7 @@ mod tests {
         git.commit("init", "2024-01-01");
         std::fs::write(path.join("a"), "b\n").unwrap();
         let git_dir = path.join(".git");
-        let load = || FilesSnapshot::load(path, Some(&git_dir));
+        let load = || FilesSnapshot::load(path, &git_dir);
 
         let before = load();
         assert_eq!(load(), before);

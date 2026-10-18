@@ -27,7 +27,7 @@ use crate::{
             mark_selected_row, panel_block, panel_title, render_panel_scrollbar, HalfPage,
             ListCursor,
         },
-        tree_query::{find_around, QueryChange, QueryKind, SearchDirection, TreeQuery},
+        tree_query::{find_around, QueryKind, SearchDirection, TreeQuery},
     },
 };
 
@@ -111,7 +111,7 @@ impl TimelineView {
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         if self.query.is_editing() {
             let kind = self.query_kind();
-            if type_query(&self.ctx, &mut self.query, key, kind) == QueryChange::Search {
+            if type_query(&self.ctx, &mut self.query, key, kind) == Some(QueryKind::Search) {
                 self.search(SearchDirection::Current, repository);
             }
             self.update_query_status();
@@ -121,7 +121,7 @@ impl TimelineView {
         match event {
             // the search, then out of the lines and hunks, then closes
             UserEvent::Cancel => {
-                if self.query.clear() != QueryChange::None {
+                if self.query.clear().is_some() {
                     self.update_query_status();
                 } else if !self.pane.back() {
                     self.tx.send(AppEvent::CloseOverlay);

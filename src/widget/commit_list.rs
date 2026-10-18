@@ -146,7 +146,6 @@ pub struct CommitListState<'a> {
     // the checked-out branch, its label in its own color; a detached HEAD gets a label
     head: Head,
     cursor: ListCursor,
-    total: usize,
     scrolloff: usize,
 }
 
@@ -159,8 +158,8 @@ impl<'a> CommitListState<'a> {
         search_options: Rc<Cell<SearchOptions>>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
-        let total = commits.len();
         let commit_hash_set = commits.iter().map(|c| &c.commit.commit_hash).collect();
+        let search_matches = vec![false; commits.len()];
         CommitListState {
             commits,
             commit_hash_set,
@@ -170,12 +169,11 @@ impl<'a> CommitListState<'a> {
             query: TreeQuery::default(),
             search_start: 0,
             search_options,
-            search_matches: vec![false; total],
+            search_matches,
             picked_commit_hashes: Vec::new(),
             filter_note: None,
             head: Head::None,
             cursor: ListCursor::default(),
-            total,
             scrolloff,
         }
     }
@@ -193,7 +191,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn toggle_pick(&mut self) {
-        if self.total == 0 {
+        if self.commits.is_empty() {
             return;
         }
         let selected = self.selected_commit_hash().clone();
@@ -220,7 +218,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn update_height(&mut self, height: usize) {
-        self.cursor.fit(height, self.total, self.scrolloff);
+        self.cursor.fit(height, self.commits.len(), self.scrolloff);
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
@@ -266,38 +264,41 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn scroll_down(&mut self) {
-        self.cursor.scroll_lines(1, self.total);
+        self.cursor.scroll_lines(1, self.commits.len());
     }
 
     pub fn scroll_up(&mut self) {
-        self.cursor.scroll_lines(-1, self.total);
+        self.cursor.scroll_lines(-1, self.commits.len());
     }
 
     pub fn scroll_down_page(&mut self) {
-        self.cursor.scroll_pages(1, self.total);
+        self.cursor.scroll_pages(1, self.commits.len());
     }
 
     pub fn scroll_up_page(&mut self) {
-        self.cursor.scroll_pages(-1, self.total);
+        self.cursor.scroll_pages(-1, self.commits.len());
     }
 
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
-        if let Some(index) = self.cursor.moved_to(event, self.total, HalfPage::List) {
+        if let Some(index) = self
+            .cursor
+            .moved_to(event, self.commits.len(), HalfPage::List)
+        {
             self.select_visible_index(index);
         }
     }
 
     // Selects the commit at `index` near the top, the scrolloff above it: a match jumped to.
     fn select_index(&mut self, index: usize) {
-        if index < self.total {
+        if index < self.commits.len() {
             let margin = self.cursor.margin();
-            self.cursor.select_at(index, margin, self.total);
+            self.cursor.select_at(index, margin, self.commits.len());
         }
     }
 
     fn select_visible_index(&mut self, index: usize) {
-        self.cursor.select(index, self.total);
+        self.cursor.select(index, self.commits.len());
     }
 
     // Selects the next (or previous) picked commit, wrapping around.
@@ -320,7 +321,9 @@ impl<'a> CommitListState<'a> {
     // Selects the commit at `from` when the search matches it (`SearchDirection::Current`), else
     // the next or previous one it matches.
     fn select_match_from(&mut self, from: usize, direction: SearchDirection) {
-        if let Some(index) = find_around(self.total, from, direction, |i| self.search_matches[i]) {
+        if let Some(index) = find_around(self.commits.len(), from, direction, |i| {
+            self.search_matches[i]
+        }) {
             self.select_index(index);
         }
     }
@@ -345,7 +348,7 @@ impl<'a> CommitListState<'a> {
 
     // The selected commit, counting from 1, and how many there are.
     pub fn position(&self) -> (usize, usize) {
-        (self.cursor.selected() + 1, self.total)
+        (self.cursor.selected() + 1, self.commits.len())
     }
 
     // The selected commit and the commits shown.
@@ -360,7 +363,7 @@ impl<'a> CommitListState<'a> {
     // Shows the selected commit at `row` of those shown, where it can be.
     pub fn restore_selected_row(&mut self, row: usize) {
         let index = self.cursor.selected();
-        self.cursor.select_at(index, row, self.total);
+        self.cursor.select_at(index, row, self.commits.len());
     }
 
     pub fn set_filter_note(&mut self, note: Option<String>) {
@@ -1059,7 +1062,6 @@ mod tests {
         keybind::KeyBind,
         protocol::ImageProtocol,
         view::ListRefreshViewContext,
-        widget::tree_query::QueryChange,
     };
 
     use super::*;
@@ -1098,19 +1100,12 @@ mod tests {
                 ..Commit::default()
             })
             .collect();
-        let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
-        let commit_map = commits
-            .into_iter()
-            .map(|c| (c.commit_hash.clone(), c))
-            .collect();
         let repository = Repository::new(
             PathBuf::new(),
-            commit_map,
-            FxHashMap::default(),
-            FxHashMap::default(),
+            PathBuf::new(),
+            commits,
             FxHashMap::default(),
             Head::None,
-            commit_hashes,
         );
         let graph = calc_graph(&repository, None, &Default::default());
         let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
@@ -1146,7 +1141,7 @@ mod tests {
 
     // A key typed into the search, as the commit list's view does.
     fn type_key(state: &mut CommitListState<'_>, key: KeyEvent) {
-        if state.query_mut().handle_key(key) != QueryChange::None {
+        if state.query_mut().handle_key(key).is_some() {
             state.search_changed();
         }
     }

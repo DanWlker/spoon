@@ -691,9 +691,6 @@ impl App<'_> {
                     _ => layout.release(),
                 }
             }
-            AppEvent::Resize(w, h) => {
-                let _ = (w, h);
-            }
             AppEvent::Quit => {
                 // quitting would kill the git command half done (a stash never popped), so it
                 // waits; asking again quits right away
@@ -722,8 +719,8 @@ impl App<'_> {
                 self.run_external(&command);
             }
             AppEvent::StartTask(task) => self.start_task(task),
-            AppEvent::TaskFinished { task, result } => {
-                if self.finish_task(task, result) {
+            AppEvent::TaskFinished(result) => {
+                if self.finish_task(result) {
                     self.ec.send(AppEvent::Quit);
                 }
             }
@@ -737,7 +734,7 @@ impl App<'_> {
             // checked again on the next tick
             AppEvent::FilesTick(_) | AppEvent::RefsSnapshot(_) => {}
             // only redraws
-            AppEvent::SpinnerTick => {}
+            AppEvent::SpinnerTick | AppEvent::Resize => {}
             AppEvent::OpenHelp => {
                 let help = HelpView::new(self.ctx.clone(), self.ec.sender());
                 self.shell.overlay = Some(Overlay::Help(help));
@@ -2016,7 +2013,7 @@ impl App<'_> {
             let result = run_task(&path, &task);
             self.ec.resume();
             self.shell.app_status.pending_clear = PendingClear::Screen;
-            self.ec.send(AppEvent::TaskFinished { task, result });
+            self.ec.send(AppEvent::TaskFinished(result));
             return;
         }
         let tx = self.ec.sender();
@@ -2031,20 +2028,26 @@ impl App<'_> {
             });
             let result = run_task(&path, &task);
             drop(done);
-            tx.send(AppEvent::TaskFinished { task, result });
+            tx.send(AppEvent::TaskFinished(result));
         });
     }
 
     // Shows what the git command did; returns whether quitting waited for it.
-    fn finish_task(&mut self, task: GitTask, mut result: Result<(), String>) -> bool {
-        let running = self.ctx.running_task.borrow_mut().take();
-        let quit = running.as_ref().is_some_and(|running| running.quit_after);
+    fn finish_task(&mut self, mut result: Result<(), String>) -> bool {
+        // set by `start_task` before the command runs
+        let Some(RunningTask {
+            task,
+            head_before_commit,
+            quit_after: quit,
+        }) = self.ctx.running_task.borrow_mut().take()
+        else {
+            return false;
+        };
         if let (Err(_), Some(failed)) = (&result, &task.failed) {
             result = Err(failed.clone());
         }
         // the message is committed, even when going on with a rebase stopped afterwards
-        let committed = running
-            .and_then(|running| running.head_before_commit)
+        let committed = head_before_commit
             .is_some_and(|before| self.repository.head_commit().unwrap_or_default() != before);
         if committed {
             match &mut self.view {

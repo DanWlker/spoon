@@ -29,8 +29,7 @@ use crate::{
         file_text::{FileText, LineCursor},
         style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
         tree_query::{
-            find_around, highlighted_text, name_matches, QueryChange, QueryKind, SearchDirection,
-            TreeQuery,
+            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
         },
     },
 };
@@ -155,7 +154,7 @@ impl BlameView {
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         if self.query.is_editing() {
             let kind = self.query_kind();
-            if type_query(&self.ctx, &mut self.query, key, kind) == QueryChange::Search {
+            if type_query(&self.ctx, &mut self.query, key, kind) == Some(QueryKind::Search) {
                 self.search(SearchDirection::Current);
             }
             self.update_query_status();
@@ -165,7 +164,7 @@ impl BlameView {
         match event {
             // the search, then up from the lines to the commit shown, then closes, like the timeline
             UserEvent::Cancel => {
-                if self.query.clear() != QueryChange::None {
+                if self.query.clear().is_some() {
                     self.update_query_status();
                 } else if body {
                     self.focus = BlameFocus::Revision;

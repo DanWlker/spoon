@@ -37,7 +37,7 @@ use crate::{
             render_panel_scrollbar, tree_panel_width,
         },
         text_area::{Caret, Lines, TextArea},
-        tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
+        tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
 };
 
@@ -64,7 +64,6 @@ struct ConflictPanel {
     item: ConflictItem,
 }
 
-// An interactive program for the view to run in place of the app.
 // What the state asks the app for, once the event is handled: a git command run in the
 // background (like continuing a rebase), a popup confirming one (like a commit), or an editor
 // or merge tool run in place of the app.
@@ -101,7 +100,7 @@ pub struct CommitDraft {
 struct Amend {
     base: String,
     // HEAD when amending started: once it moves, the amend was of another commit
-    head: Option<CommitHash>,
+    head: CommitHash,
     // the message typed before amending, restored when amending is turned off
     message_before: (TextArea, TextArea),
     of: AmendOf,
@@ -117,7 +116,7 @@ enum AmendOf {
 
 impl CommitDraft {
     // Amends the commit after `base`, its `message` in place of the typed one.
-    fn start_amend(&mut self, base: String, head: Option<CommitHash>, message: &str, of: AmendOf) {
+    fn start_amend(&mut self, base: String, head: CommitHash, message: &str, of: AmendOf) {
         let message_before = (self.summary.clone(), self.description.clone());
         self.amend = Some(Amend {
             base,
@@ -818,7 +817,7 @@ impl<'a> LocalChangesState<'a> {
         } else {
             let base = self.repository.amend_base()?;
             let message = self.repository.head_commit_message()?;
-            let head = self.repository.head_commit();
+            let head = self.repository.head_commit().ok_or("No commit to amend")?;
             self.draft
                 .start_amend(base, head, &message, AmendOf::LastCommit);
         }
@@ -851,7 +850,7 @@ impl<'a> LocalChangesState<'a> {
             .draft
             .amend
             .as_ref()
-            .is_some_and(|amend| amend.head != head);
+            .is_some_and(|amend| Some(&amend.head) != head.as_ref());
         if moved {
             self.draft.stop_amend();
         }
@@ -862,9 +861,10 @@ impl<'a> LocalChangesState<'a> {
                 match (
                     self.repository.amend_base(),
                     self.repository.head_commit_message(),
+                    head,
                 ) {
                     // amending the last commit before, it's the commit stopped at now
-                    (Ok(base), Ok(message)) => {
+                    (Ok(base), Ok(message), Some(head)) => {
                         self.draft.stop_amend();
                         self.draft
                             .start_amend(base, head, &message, AmendOf::EditStop);
@@ -1534,7 +1534,7 @@ impl<'a> LocalChangesState<'a> {
 
     pub fn handle_query_key(&mut self, key: KeyEvent, options: SearchOptions) {
         if self.diff_query.is_editing() {
-            if self.diff_query.handle_key(key) == QueryChange::Search {
+            if self.diff_query.handle_key(key) == Some(QueryKind::Search) {
                 self.search_diff(SearchDirection::Current, options);
             }
             return;
@@ -1547,12 +1547,12 @@ impl<'a> LocalChangesState<'a> {
     pub fn clear_query(&mut self, options: SearchOptions) -> bool {
         let change = self.query_mut().clear();
         self.apply_query_change(change, options);
-        change != QueryChange::None
+        change.is_some()
     }
 
     // Clears the search of the diff while it has the focus. Returns false when there was none.
     pub fn clear_diff_query(&mut self) -> bool {
-        self.is_diff_focused() && self.diff_query.clear() != QueryChange::None
+        self.is_diff_focused() && self.diff_query.clear().is_some()
     }
 
     // Returns false when the search matched nothing, see `active_query`.
@@ -1579,13 +1579,13 @@ impl<'a> LocalChangesState<'a> {
         self.pane.selected_text().filter(|_| self.is_diff_focused())
     }
 
-    fn apply_query_change(&mut self, change: QueryChange, options: SearchOptions) {
+    fn apply_query_change(&mut self, change: Option<QueryKind>, options: SearchOptions) {
         match change {
-            QueryChange::None => {}
-            QueryChange::Search => {
+            None => {}
+            Some(QueryKind::Search) => {
                 self.search(SearchDirection::Current, options);
             }
-            QueryChange::Filter => {
+            Some(QueryKind::Filter) => {
                 // only the focused section is filtered
                 let filter = self.query().filter().map(String::from);
                 self.update_tree(|tree| tree.set_filter(filter.as_deref(), options));

@@ -196,7 +196,7 @@ enum DialogKind {
     DeleteRemoteBranches {
         branches: Vec<RemoteBranch>,
     },
-    // `upstream` is like "origin/main", empty when there is none
+    // `upstream` is like "origin/main"
     // `upstreams` are the choices of the upstream field after None, the current one among them
     EditBranch {
         name: String,

@@ -21,7 +21,7 @@ use crate::{
         diff_pane::DiffPane,
         file_tree::{Entry, FileTreeRow},
         style::ListCursor,
-        tree_query::{highlighted_text, name_matches, QueryChange, TreeQuery},
+        tree_query::{highlighted_text, name_matches, QueryKind, TreeQuery},
     },
 };
 
@@ -307,7 +307,7 @@ pub fn type_query(
     query: &mut TreeQuery,
     key: KeyEvent,
     kind: SearchKind,
-) -> QueryChange {
+) -> Option<QueryKind> {
     if toggle_search_option(ctx, &key, kind) {
         query.editing_change()
     } else {

@@ -25,10 +25,7 @@ mod mailmap_tests;
 #[cfg(test)]
 mod test_support;
 
-use std::{
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{path::PathBuf, rc::Rc};
 
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
@@ -273,7 +270,7 @@ fn main() -> Result<()> {
             ec.set_refresher(refresher::spawn(
                 ec.sender(),
                 repository.path().to_path_buf(),
-                repository.git_dir().map(Path::to_path_buf),
+                repository.git_dir().to_path_buf(),
                 REFS_INTERVAL,
                 FILES_INTERVAL,
             ));

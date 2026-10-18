@@ -16,7 +16,6 @@ use crate::{
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::DetailTab,
-        tree_query::QueryChange,
     },
 };
 
@@ -312,7 +311,7 @@ pub fn type_commit_search(
     key: KeyEvent,
 ) {
     // enter only keeps it
-    if type_query(ctx, state.query_mut(), key, SearchKind::Commits) != QueryChange::None {
+    if type_query(ctx, state.query_mut(), key, SearchKind::Commits).is_some() {
         state.search_changed();
     }
     if state.is_typing_search() {
