@@ -715,7 +715,7 @@ impl GitDialog {
             message,
         };
         let mut dialog = Self::with(" Stash ", "stash", intro, kind, form);
-        dialog.editing = true;
+        dialog.editing = dialog.can_edit();
         dialog
     }
 
@@ -1304,7 +1304,7 @@ impl GitDialog {
             checkout,
         };
         let mut dialog = Self::with(" New branch ", "create", vec![], kind, form);
-        dialog.editing = true;
+        dialog.editing = dialog.can_edit();
         dialog
     }
 
@@ -1438,7 +1438,7 @@ impl GitDialog {
             new_upstream,
         };
         let mut dialog = Self::with(" Edit branch ", "save", vec![], kind, form);
-        dialog.editing = true;
+        dialog.editing = dialog.can_edit();
         dialog
     }
 
@@ -1495,7 +1495,7 @@ impl GitDialog {
             fields,
         };
         let mut dialog = Self::with(" Edit remote ", "save", vec![], kind, form);
-        dialog.editing = true;
+        dialog.editing = dialog.can_edit();
         dialog
     }
 
@@ -1529,7 +1529,7 @@ impl GitDialog {
         let mut form = Form::default();
         let kind = DialogKind::AddRemote(RemoteFields::new(&mut form, "", ""));
         let mut dialog = Self::with(" New remote ", "add", vec![], kind, form);
-        dialog.editing = true;
+        dialog.editing = dialog.can_edit();
         dialog
     }
 
@@ -1565,7 +1565,7 @@ impl GitDialog {
         form.fixed("At", at.label());
         let kind = DialogKind::CreateTag { at, name, message };
         let mut dialog = Self::with(" New tag ", "create", vec![], kind, form);
-        dialog.editing = true;
+        dialog.editing = dialog.can_edit();
         dialog
     }
 
@@ -2731,6 +2731,22 @@ mod tests {
     use rustc_hash::FxHashMap;
 
     use super::*;
+
+    #[test]
+    fn test_typing_popups_open_typing_into_text() {
+        let hash = CommitHash::from("0123456789abcdef0123456789abcdef01234567");
+        let dialogs = [
+            GitDialog::stash("x".into(), vec![]),
+            GitDialog::create_branch_from(NamedRef::Branch("main".into()), vec![]),
+            GitDialog::edit_branch("main", None, vec![]),
+            GitDialog::edit_remote("origin", "url"),
+            GitDialog::add_remote(),
+            GitDialog::create_tag(StartPoint::Commit(hash)),
+        ];
+        for dialog in dialogs {
+            assert!(dialog.is_editing() && dialog.can_edit(), "{}", dialog.title);
+        }
+    }
 
     #[test]
     fn test_popups_look_alike() {
