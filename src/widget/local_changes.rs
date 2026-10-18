@@ -179,10 +179,10 @@ enum Focus {
     Diff,
     // the choices of the conflict panel, shown instead of the diff of a conflicted file
     Conflict(ConflictItem),
-    // the commit section
-    Commit,
-    // typing the message in the commit section, in the box of `commit_field`
-    Typing,
+    // the commit section, on one of its boxes; back in it, the summary is selected
+    Commit(CommitField),
+    // typing the message into a box of the commit section
+    Typing(CommitField),
 }
 
 // What the diff beside the files shows: the row under the cursor, or all the picked files, to
@@ -263,8 +263,6 @@ pub struct LocalChangesState<'a> {
 
     // the message, and amending
     draft: CommitDraft,
-    // the box of the message selected in the commit section
-    commit_field: CommitField,
     // what the view is to ask the app for once the event is handled, see `take_request`
     request: Option<Request>,
     // the cursor moved to another row, whose diff loads once used, see `move_cursor`
@@ -304,7 +302,6 @@ impl<'a> LocalChangesState<'a> {
             diff_source: DiffSource::Row,
             diff_query: TreeQuery::default(),
             draft: CommitDraft::default(),
-            commit_field: CommitField::Summary,
             request: None,
             diff_stale: false,
             files_stamp,
@@ -364,11 +361,11 @@ impl<'a> LocalChangesState<'a> {
     // Focuses the commit section, typing the message right away when there is none yet.
     pub fn focus_commit(&mut self) {
         self.focus_files();
-        let empty = self.draft.is_empty();
-        if empty {
-            self.commit_field = CommitField::Summary;
-        }
-        self.focus = if empty { Focus::Typing } else { Focus::Commit };
+        self.focus = if self.draft.is_empty() {
+            Focus::Typing(CommitField::Summary)
+        } else {
+            Focus::Commit(CommitField::Summary)
+        };
     }
 
     // A rebase stopped to edit a commit, which committing amends before going on, see
@@ -381,27 +378,38 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn is_editing(&self) -> bool {
-        self.focus == Focus::Typing
+        matches!(self.focus, Focus::Typing(_))
+    }
+
+    // The box selected in the commit section, while it has the focus.
+    fn commit_field(&self) -> Option<CommitField> {
+        match self.focus {
+            Focus::Commit(field) | Focus::Typing(field) => Some(field),
+            _ => None,
+        }
     }
 
     // Handles a key typed into the commit message: Esc stops editing, Tab and Shift-Tab switch
     // between the summary and the description, Enter in the one-line summary goes on below.
     pub fn handle_text_key(&mut self, key: KeyEvent) {
-        match (key.code, self.commit_field) {
-            (KeyCode::Esc, _) => self.focus = Focus::Commit,
-            (KeyCode::Tab | KeyCode::BackTab, field) => {
-                self.commit_field = match field {
-                    CommitField::Summary => CommitField::Description,
-                    CommitField::Description => CommitField::Summary,
-                };
+        let Focus::Typing(field) = self.focus else {
+            return;
+        };
+        match (key.code, field) {
+            (KeyCode::Esc, _) => self.focus = Focus::Commit(field),
+            (KeyCode::Tab | KeyCode::BackTab, CommitField::Summary)
+            | (KeyCode::Enter, CommitField::Summary) => {
+                self.focus = Focus::Typing(CommitField::Description);
             }
-            (KeyCode::Enter, CommitField::Summary) => self.commit_field = CommitField::Description,
+            (KeyCode::Tab | KeyCode::BackTab, CommitField::Description) => {
+                self.focus = Focus::Typing(CommitField::Summary);
+            }
             (_, field) => self.draft.field_mut(field).handle_key(key),
         }
     }
 
     pub fn is_commit_focused(&self) -> bool {
-        matches!(self.focus, Focus::Commit | Focus::Typing)
+        matches!(self.focus, Focus::Commit(_) | Focus::Typing(_))
     }
 
     // Selecting hunks or lines in the diff.
@@ -437,17 +445,19 @@ impl<'a> LocalChangesState<'a> {
             return Ok(());
         }
         if self.draft.summary.text().trim().is_empty() {
-            self.commit_field = CommitField::Summary;
-            self.edit_message();
+            self.focus_files();
+            self.focus = Focus::Typing(CommitField::Summary);
             return Ok(());
         }
         self.request_commit()
     }
 
-    // Focuses the commit section and starts typing in the selected box.
+    // Focuses the commit section and starts typing in the selected box, the summary when it
+    // didn't have the focus.
     pub fn edit_message(&mut self) {
+        let field = self.commit_field().unwrap_or_default();
         self.focus_files();
-        self.focus = Focus::Typing;
+        self.focus = Focus::Typing(field);
     }
 
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
@@ -709,7 +719,7 @@ impl<'a> LocalChangesState<'a> {
     pub fn request_discard(&mut self) -> Result<(), String> {
         if matches!(
             self.focus,
-            Focus::Commit | Focus::Typing | Focus::Conflict(_)
+            Focus::Commit(_) | Focus::Typing(_) | Focus::Conflict(_)
         ) || self.section != LocalChangesSection::Unstaged
         {
             return Ok(());
@@ -887,7 +897,7 @@ impl<'a> LocalChangesState<'a> {
         use UserEvent::*;
         let files = |v: &Self| v.focus == Focus::Files;
         let diff = |v: &Self| v.focus == Focus::Diff;
-        let commit = |v: &Self| v.focus == Focus::Commit;
+        let commit = |v: &Self| matches!(v.focus, Focus::Commit(_));
         let conflict = |v: &Self| v.is_conflict_focused();
         let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
         let empty = |v: &Self| v.files().is_empty();
@@ -994,7 +1004,7 @@ impl<'a> LocalChangesState<'a> {
             availability(commits(v), v)
         })
         .short(commit_word);
-        let not_typing = |v: &Self| v.focus != Focus::Typing;
+        let not_typing = |v: &Self| !v.is_editing();
         k.add_where(&[Commit], "commit", COMMIT, move |v| {
             availability(not_typing(v), v)
         })
@@ -1125,7 +1135,7 @@ impl<'a> LocalChangesState<'a> {
             return crate::view::typing_keys(self.query_kind());
         }
         let mut keys = Keys::of(self);
-        if self.focus == Focus::Typing {
+        if self.is_editing() {
             // every other key is typed
             Self::register_typing_message(&mut keys);
         } else {
@@ -1217,7 +1227,7 @@ impl<'a> LocalChangesState<'a> {
     // In the commit section, starts editing the message; in the conflict panel, runs the choice.
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus {
-            Focus::Commit | Focus::Typing => self.commit_or_continue()?,
+            Focus::Commit(_) | Focus::Typing(_) => self.commit_or_continue()?,
             Focus::Conflict(item) => self.activate_conflict_item(item)?,
             Focus::Files if self.conflict.is_some() && self.picked().is_empty() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
@@ -1255,8 +1265,8 @@ impl<'a> LocalChangesState<'a> {
     // panel to the files. Returns false when already at the files.
     pub fn back(&mut self) -> bool {
         match self.focus {
-            Focus::Typing => self.focus = Focus::Commit,
-            Focus::Commit | Focus::Conflict(_) => self.focus = Focus::Files,
+            Focus::Typing(field) => self.focus = Focus::Commit(field),
+            Focus::Commit(_) | Focus::Conflict(_) => self.focus = Focus::Files,
             Focus::Diff if self.pane.is_selecting_lines() => {
                 self.pane.back();
             }
@@ -1283,11 +1293,12 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(self.focus != Focus::Files);
             }
             (Focus::Diff | Focus::Conflict(_), Direction::Down) => self.focus_commit(),
-            (Focus::Diff | Focus::Conflict(_) | Focus::Commit | Focus::Typing, Direction::Left) => {
-                self.focus_files()
-            }
+            (
+                Focus::Diff | Focus::Conflict(_) | Focus::Commit(_) | Focus::Typing(_),
+                Direction::Left,
+            ) => self.focus_files(),
             // into the diff of the selected file, else its files
-            (Focus::Commit | Focus::Typing, Direction::Up) => {
+            (Focus::Commit(_) | Focus::Typing(_), Direction::Up) => {
                 self.focus_files();
                 if !self.files().is_empty() {
                     self.enter()?;
@@ -1328,10 +1339,14 @@ impl<'a> LocalChangesState<'a> {
         match self.focus {
             Focus::Diff => self.pane.step(step),
             // the summary, or the description under it
-            Focus::Commit | Focus::Typing => {
-                self.commit_field = match step {
+            Focus::Commit(_) | Focus::Typing(_) => {
+                let field = match step {
                     Step::Next | Step::Last => CommitField::Description,
                     _ => CommitField::Summary,
+                };
+                self.focus = match self.focus {
+                    Focus::Typing(_) => Focus::Typing(field),
+                    _ => Focus::Commit(field),
                 };
             }
             _ => self.move_cursor(row(self)),
@@ -1355,7 +1370,7 @@ impl<'a> LocalChangesState<'a> {
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
     pub fn toggle_stage(&mut self) -> Result<(), String> {
         let result = match self.focus {
-            Focus::Commit | Focus::Typing => {
+            Focus::Commit(_) | Focus::Typing(_) => {
                 self.edit_message();
                 return Ok(());
             }
@@ -2109,6 +2124,7 @@ impl LocalChangesPanel<'_> {
             Constraint::Min(0),
         ])
         .areas(area);
+        let selected = state.commit_field();
         let editing = state.is_editing();
         let boxes = [
             (
@@ -2125,7 +2141,7 @@ impl LocalChangesPanel<'_> {
             ),
         ];
         for (field, text, empty, box_area) in boxes {
-            let typing = editing && state.commit_field == field;
+            let typing = editing && selected == Some(field);
             if text.is_empty() && !typing {
                 placeholder(empty, theme).render(box_area, buf);
             } else {
@@ -2139,7 +2155,7 @@ impl LocalChangesPanel<'_> {
                 text.render(box_area, buf, style, caret, lines);
             }
             let focused = self.focused && state.is_commit_focused();
-            if focused && state.commit_field == field && box_area.height > 0 && area.x > 0 {
+            if focused && selected == Some(field) && box_area.height > 0 && area.x > 0 {
                 mark_selected_bar(buf, area.x - 1, box_area.y, true, theme);
             }
         }
@@ -2378,9 +2394,14 @@ mod tests {
         state.focus_commit();
         assert!(!state.is_editing());
         state.select_next();
-        assert_eq!(state.commit_field, CommitField::Description);
+        assert_eq!(state.commit_field(), Some(CommitField::Description));
         state.select_prev();
-        assert_eq!(state.commit_field, CommitField::Summary);
+        assert_eq!(state.commit_field(), Some(CommitField::Summary));
+        // leaving the section forgets the box: back in it, the summary is selected
+        state.select_next();
+        state.focus_files();
+        state.focus_commit();
+        assert_eq!(state.commit_field(), Some(CommitField::Summary));
 
         // a message splits at its first line, without the blank lines between
         state.draft.set_message("subject\n\n\nbody");
