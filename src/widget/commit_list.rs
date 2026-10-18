@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::widget::tree_query::Toward;
 use crate::{
@@ -609,8 +610,6 @@ pub fn commit_list_inner_height(height: u16) -> usize {
     height.saturating_sub(2) as usize
 }
 
-// The commit list as the first panel of the graph: under a top border titled with its number,
-// which stands out while it has the focus, and the count of picked commits.
 // A commit's date as the commit list shows it, see `[ui.list]` in the config.
 pub fn format_date(ctx: &AppContext, date: &chrono::DateTime<chrono::FixedOffset>) -> String {
     let format = &ctx.ui_config.list.date_format;
@@ -623,6 +622,8 @@ pub fn format_date(ctx: &AppContext, date: &chrono::DateTime<chrono::FixedOffset
     }
 }
 
+// The commit list as the first panel of the graph: under a top border titled with its number,
+// which stands out while it has the focus, and the count of picked commits.
 pub fn render_commit_list_panel<'a>(
     f: &mut Frame,
     area: Rect,
@@ -924,11 +925,19 @@ fn highlighted_cut(
     options: SearchOptions,
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
-    if console::measure_text_width(text) <= width {
+    if text.width() <= width {
         return highlighted_text(text, text.len(), style, search, options, theme);
     }
-    let cut = console::truncate_str(text, width, ELLIPSIS);
-    let shown = cut.len() - ELLIPSIS.len();
+    // the bytes of the first chars that fit before the ellipsis, measured as ratatui draws them
+    let limit = width.saturating_sub(ELLIPSIS.len());
+    let mut used = 0;
+    let shown = text
+        .char_indices()
+        .find(|(_, c)| {
+            used += c.width().unwrap_or(0);
+            used > limit
+        })
+        .map_or(text.len(), |(i, _)| i);
     let mut spans = highlighted_text(text, shown, style, search, options, theme);
     spans.push(Span::styled(ELLIPSIS, style));
     spans
@@ -1979,6 +1988,8 @@ mod tests {
         assert_eq!(highlight("Müller", 10, "ül", true), "ül");
         // cut with an ellipsis, the match within what is shown
         assert_eq!(highlight("Müller Straße", 6, "ller", false), "l");
+        // an escape code after the cut doesn't move it off a char boundary
+        assert_eq!(highlight("abcdé\x1b[mxyz", 5, "abc", false), "ab");
     }
 
     #[test]

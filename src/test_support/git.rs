@@ -1,6 +1,8 @@
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+
+use crate::git::git_command;
 
 pub struct GitRepository<'a> {
     path: &'a Path,
@@ -95,7 +97,7 @@ impl<'a> GitRepository<'a> {
     }
 
     fn run(&self, args: &[&str], datetime_str: &str) -> std::process::Output {
-        let output = Command::new("git")
+        let output = git_command()
             .args(args)
             .current_dir(self.path)
             .env("GIT_AUTHOR_NAME", &self.author_name)
@@ -104,8 +106,6 @@ impl<'a> GitRepository<'a> {
             .env("GIT_COMMITTER_NAME", &self.committer_name)
             .env("GIT_COMMITTER_EMAIL", &self.committer_email)
             .env("GIT_COMMITTER_DATE", datetime_str)
-            .env("GIT_CONFIG_NOSYSTEM", "true")
-            .env("HOME", "/dev/null")
             .output()
             .unwrap_or_else(|error| panic!("failed to execute git {}: {error}", args.join(" ")));
 
@@ -132,11 +132,7 @@ fn parse_date(date: &str) -> DateTime<Utc> {
 
 // Runs git in `dir`, as it is set up there, returning what it prints.
 pub fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap();
+    let output = git_command().args(args).current_dir(dir).output().unwrap();
     assert!(output.status.success(), "git {args:?}: {output:?}");
     String::from_utf8(output.stdout).unwrap()
 }

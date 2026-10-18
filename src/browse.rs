@@ -163,13 +163,10 @@ pub fn links(
     target: &LinkTarget,
 ) -> Result<Vec<PageLink>, String> {
     let info = repository.remote_info();
-    // the upstream remote of the branch, else origin, else the first; then the others
+    // the default remote of the branch, then the others
     let remotes_of = |branch: Option<&str>| -> Result<Vec<String>, String> {
-        let first = branch
-            .and_then(|b| info.upstreams.get(b))
-            .map(|(remote, _)| remote)
-            .or_else(|| info.remotes.iter().find(|r| *r == "origin"))
-            .or_else(|| info.remotes.first())
+        let first = info
+            .default_remote(branch)
             .ok_or_else(|| "There is no remote to link to".to_string())?;
         let others = info.remotes.iter().filter(|r| *r != first);
         Ok(std::iter::once(first).chain(others).cloned().collect())
@@ -221,16 +218,18 @@ pub fn links(
     let mut links = vec![];
     let mut error = None;
     for remote in remotes {
+        // read for each remote, not each page: `get-url` rewrites it by `url.*.insteadOf`
+        let url = repository.remote_url(&remote);
         let made: Result<Vec<PageLink>, String> = pages
             .iter()
             .map(|(label, page)| {
-                let url = repository
-                    .remote_url(&remote)
+                let url = url
+                    .as_deref()
                     .ok_or_else(|| format!("The remote {remote} has no URL"))?;
                 Ok(PageLink {
                     remote: remote.clone(),
                     page: label.to_string(),
-                    url: web_link(&url, services, page)?,
+                    url: web_link(url, services, page)?,
                 })
             })
             .collect();

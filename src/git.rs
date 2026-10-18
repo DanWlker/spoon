@@ -130,6 +130,14 @@ impl NamedRef {
     }
 }
 
+// The name of a branch, remote branch or tag without its `refs/…/`, as the sidebar shows it.
+pub fn short_ref_name(name: &str) -> &str {
+    ["refs/heads/", "refs/remotes/", "refs/tags/"]
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .unwrap_or(name)
+}
+
 #[derive(Debug, Clone)]
 pub enum Head {
     Branch { name: String },
@@ -747,7 +755,16 @@ impl Repository {
                 })
             })
             .collect();
-        let args = ["log", "-1", "--format=%H", start.as_str(), "--", path];
+        // walked as the history is, which leaves out merges
+        let args = [
+            "log",
+            "-1",
+            "--follow",
+            "--format=%H",
+            start.as_str(),
+            "--",
+            path,
+        ];
         let last = git_output(&self.path, &args)?;
         let index = history
             .iter()
@@ -799,6 +816,12 @@ impl Repository {
         untracked: &[&str],
         conflicted: &[&str],
     ) -> std::result::Result<Vec<Vec<String>>, String> {
+        // git status lists an untracked repository inside as `nested/`, which `clean -f` skips
+        if let Some(path) = untracked.iter().find(|path| path.ends_with('/')) {
+            return Err(format!(
+                "{path} is a repository of its own, delete it yourself"
+            ));
+        }
         let mut tracked = tracked.to_vec();
         let mut untracked = untracked.to_vec();
         let command = |args: &[&str], paths: &[&str]| -> Vec<String> {
@@ -1165,14 +1188,14 @@ impl Repository {
     }
 }
 
-// The .gitignore line matching only `path` from the top: the characters git reads as a pattern
-// escaped, and a directory ending with "/".
 // A message git prepared, without its comment lines; None when nothing is left.
 fn without_comments(content: &str) -> Option<String> {
     let message: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
     Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
 }
 
+// The .gitignore line matching only `path` from the top: the characters git reads as a pattern
+// escaped, and a directory ending with "/".
 fn gitignore_pattern(path: &str, dir: bool) -> String {
     let mut pattern = String::from("/");
     for c in path.chars() {
@@ -1941,6 +1964,16 @@ pub struct RemoteInfo {
 }
 
 impl RemoteInfo {
+    // The upstream remote of `branch`, else origin, else the first one; None without remotes.
+    pub fn default_remote(&self, branch: Option<&str>) -> Option<&String> {
+        branch
+            .and_then(|branch| self.upstreams.get(branch))
+            .map(|(remote, _)| remote)
+            .filter(|remote| self.remotes.contains(remote))
+            .or_else(|| self.remotes.iter().find(|r| *r == "origin"))
+            .or_else(|| self.remotes.first())
+    }
+
     // Whether pulling stashes local changes by default, by the config of how it pulls.
     pub fn auto_stash(&self, rebase: bool) -> bool {
         if rebase {
@@ -2191,8 +2224,6 @@ impl GitTask {
     }
 }
 
-// A sed expression turning the pick of the commit (a full hash) in a rebase todo list into
-// `action`, like "squash" or "drop".
 // Whether the git command moves or rewrites HEAD, see `GitTask::moves_head`.
 pub fn moves_head_command(command: &str) -> bool {
     matches!(
@@ -2201,12 +2232,22 @@ pub fn moves_head_command(command: &str) -> bool {
     )
 }
 
+// A sed expression turning the pick of the commit (a full hash) in a rebase todo list into
+// `action`, like "squash" or "drop".
 pub fn todo_action(hash: &str, action: &str) -> String {
     format!("s/^(pick|p) {hash} /{action} {hash} /")
 }
 
 // Runs the command of a task, between stashing and reapplying the local changes if it says so.
 pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> {
+    // one remote command at a time, like lazygit's sync mutex: a pull waits for the fetch on
+    // launch instead of both locking the same remote refs
+    static REMOTE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _remote = task.remote.then(|| {
+        REMOTE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    });
     // stashed when the stash changed: git stashes nothing for some changes it lists, like those
     // in a submodule, and popping then would take an older stash
     let stash_top = || git_output(path, &["rev-parse", "--verify", "--quiet", "refs/stash"]).ok();
@@ -2408,16 +2449,20 @@ fn empty_tree(path: &Path) -> std::result::Result<String, String> {
 }
 
 // A git command of the app, taking no lock it can do without, like `git status` refreshing the
-// index, which would make the user's own git commands fail meanwhile.
-fn git_command() -> Command {
+// index, which would make the user's own git commands fail meanwhile. In tests, the git config of
+// the user's home and system is left out, so the tests behave alike everywhere.
+pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    #[cfg(test)]
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
     cmd
 }
 
 // Paths of files or directories for git, taken as they are, not as patterns: a file named
 // `*.log` is only that file. The root of the repository stays ":/".
-fn pathspecs(paths: &[&str]) -> Vec<String> {
+pub fn pathspecs(paths: &[&str]) -> Vec<String> {
     paths
         .iter()
         .map(|path| match *path {
@@ -2553,6 +2598,40 @@ mod tests {
         };
         assert_eq!(name, "stash@{0}");
         assert!(repository.commit(target).is_some());
+    }
+
+    #[test]
+    fn test_file_history_from_a_resolving_merge() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("f"), "base\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("side");
+        std::fs::write(path.join("f"), "side\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("side", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), "master\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("master", "2024-01-03");
+        // the merge conflicts, its resolution the last change of f
+        let _ = git_command()
+            .args(["merge", "side"])
+            .current_dir(path)
+            .output();
+        std::fs::write(path.join("f"), "resolved\n").unwrap();
+        git(path, &["commit", "-qam", "merge"]);
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let (history, index) = repository.file_history(&head, "f").unwrap();
+        assert!(!history.is_empty());
+        assert!(index < history.len());
     }
 
     #[test]

@@ -650,6 +650,16 @@ fn compare_feat() -> Vec<Step> {
 }
 
 #[test]
+fn test_compare_takes_the_branch_not_its_tag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // a tag with the branch's name, at master: git takes the tag for the short name
+    git(&path, &["tag", "feat", "master"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![compare_feat()]);
+}
+
+#[test]
 fn test_compare_follows_the_reloads_until_closed() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -815,7 +825,7 @@ fn test_no_file_keys_on_a_commit_without_changes() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     // the newest, first in the graph
-    let status = std::process::Command::new("git")
+    let status = crate::git::git_command()
         .args(["commit", "-q", "--allow-empty", "-m", "empty"])
         .env("GIT_COMMITTER_DATE", "2099-01-01 00:00:00 +0000")
         .env("GIT_AUTHOR_DATE", "2099-01-01 00:00:00 +0000")

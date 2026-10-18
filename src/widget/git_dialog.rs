@@ -15,8 +15,8 @@ use crate::{
     color::ColorTheme,
     event::{AppEvent, UserEvent},
     git::{
-        parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus, CommitHash, Conflict,
-        FileChange, GitTask, NamedRef, RemoteInfo, MAX_CONFLICT_STEPS,
+        parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
+        Conflict, FileChange, GitTask, NamedRef, RemoteInfo, MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
     widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
@@ -402,12 +402,12 @@ impl GitDialog {
         }
     }
 
-    // The event its key confirms it with besides Enter, like the key that opened it.
     // Typing into a text field, which takes every key.
     pub fn is_editing(&self) -> bool {
         self.editing
     }
 
+    // The event its key confirms it with besides Enter, like the key that opened it.
     pub fn trigger(&self) -> Option<UserEvent> {
         self.trigger
     }
@@ -1423,8 +1423,11 @@ impl GitDialog {
         };
         let mut commands: Vec<Vec<String>> = vec![];
         if let Some(path) = absent {
-            let args = ["rm", "-q", "-f", "--ignore-unmatch", "--", path];
-            commands.push(args.map(String::from).to_vec());
+            let mut args = ["rm", "-q", "-f", "--ignore-unmatch", "--"]
+                .map(String::from)
+                .to_vec();
+            args.extend(pathspecs(&[path]));
+            commands.push(args);
         }
         if let Some(path) = present {
             let args = [
@@ -1434,9 +1437,10 @@ impl GitDialog {
                 "--staged",
                 "--worktree",
                 "--",
-                path,
             ];
-            commands.push(args.map(String::from).to_vec());
+            let mut args = args.map(String::from).to_vec();
+            args.extend(pathspecs(&[path]));
+            commands.push(args);
         }
         let name = present.or(absent).cloned().unwrap_or_default();
         let at = if before { "before" } else { "at" };
@@ -1473,15 +1477,12 @@ impl GitDialog {
         self.fields.push((id, label.into(), Field::Check(checked)));
     }
 
-    // The upstream remote of the branch, else origin, else the first one.
+    // See `RemoteInfo::default_remote`; the remote popups open with remotes.
     fn default_remote(&self, branch: Option<&str>) -> String {
-        let info = self.info();
-        branch
-            .and_then(|branch| info.upstreams.get(branch))
-            .map(|(remote, _)| remote.clone())
-            .filter(|remote| info.remotes.contains(remote))
-            .or_else(|| info.remotes.iter().find(|r| *r == "origin").cloned())
-            .unwrap_or_else(|| info.remotes[0].clone())
+        self.info()
+            .default_remote(branch)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn field(&self, id: FieldId) -> Option<&Field> {
@@ -2129,7 +2130,6 @@ fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line
     lines
 }
 
-// A full commit hash is shown short.
 // A full hash shortened, also before a suffix like "^"; other arguments as they are.
 fn shorten_hash(arg: &str) -> std::borrow::Cow<'_, str> {
     let is_hash = |hash: &str| hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit());
@@ -2507,6 +2507,22 @@ mod tests {
         assert_eq!(reset(1, Delete { path: path_of("a") }, true), "A  a\n");
         // the root has no parent: what it added goes
         assert_eq!(reset(4, Add { path: path_of("m") }, true), "D  m\n");
+        // a path is no glob: resetting `[b]` leaves the edit of `b` it would match
+        write("b", "1\n");
+        write("[b]", "1\n");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-q", "-m", "c5"]);
+        write("b", "2\n");
+        assert_eq!(
+            reset(
+                0,
+                Modify {
+                    path: path_of("[b]")
+                },
+                true
+            ),
+            "D  [b]\n M b\n"
+        );
     }
 
     #[test]

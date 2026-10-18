@@ -58,7 +58,6 @@ impl CommandLogState {
         self.output.offset = 0;
     }
 
-    // Scrolls the output by the scroll keys; returns whether `event` was one.
     // The keys of the command log, see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
@@ -89,6 +88,7 @@ impl CommandLogState {
         k.add(&[Cancel, CommandLog], "close", "Close the command log");
     }
 
+    // Scrolls the output by the scroll keys; returns whether `event` was one.
     pub fn scroll_output(&mut self, event: UserEvent) -> bool {
         self.output.handle_scroll(event)
     }

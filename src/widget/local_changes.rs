@@ -15,7 +15,7 @@ use crate::{
     app::AppContext,
     event::UserEvent,
     git::{
-        AfterTask, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
+        AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
         LocalChangeStatus, LocalChanges, Operation, PatchAction, Repository,
     },
     keys::{Availability, KeyList, Keys},
@@ -91,6 +91,8 @@ pub struct CommitDraft {
 #[derive(Debug, Clone)]
 struct Amend {
     base: String,
+    // HEAD when amending started: once it moves, the amend was of another commit
+    head: Option<CommitHash>,
     // the message typed before amending, restored when amending is turned off
     message_before: (TextArea, TextArea),
     of: AmendOf,
@@ -106,10 +108,11 @@ enum AmendOf {
 
 impl CommitDraft {
     // Amends the commit after `base`, its `message` in place of the typed one.
-    fn start_amend(&mut self, base: String, message: &str, of: AmendOf) {
+    fn start_amend(&mut self, base: String, head: Option<CommitHash>, message: &str, of: AmendOf) {
         let message_before = (self.summary.clone(), self.description.clone());
         self.amend = Some(Amend {
             base,
+            head,
             message_before,
             of,
         });
@@ -179,8 +182,10 @@ enum Focus {
     Lines,
     // the choices of the conflict panel, shown instead of the diff of a conflicted file
     Conflict,
-    // the commit section, `editing` while typing the message, in the box of `commit_field`
-    Commit { editing: bool },
+    // the commit section
+    Commit,
+    // typing the message in the commit section, in the box of `commit_field`
+    Typing,
 }
 
 // What the diff beside the files shows: the row under the cursor, or all the picked files, to
@@ -325,7 +330,7 @@ impl<'a> LocalChangesState<'a> {
         }
         // after the draft, filling the message only when it is empty, like MERGE_MSG on conflicts
         state.prepare_message();
-        state.sync_edit_stop();
+        state.sync_amend();
         state.load_diff();
         state
     }
@@ -368,11 +373,11 @@ impl<'a> LocalChangesState<'a> {
         if empty {
             self.commit_field = CommitField::Summary;
         }
-        self.focus = Focus::Commit { editing: empty };
+        self.focus = if empty { Focus::Typing } else { Focus::Commit };
     }
 
     // A rebase stopped to edit a commit, which committing amends before going on, see
-    // `sync_edit_stop`.
+    // `sync_amend`.
     fn editing_commit(&self) -> bool {
         self.draft
             .amend
@@ -381,14 +386,14 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn is_editing(&self) -> bool {
-        self.focus == Focus::Commit { editing: true }
+        self.focus == Focus::Typing
     }
 
     // Handles a key typed into the commit message: Esc stops editing, Tab and Shift-Tab switch
     // between the summary and the description, Enter in the one-line summary goes on below.
     pub fn handle_text_key(&mut self, key: KeyEvent) {
         match (key.code, self.commit_field) {
-            (KeyCode::Esc, _) => self.focus = Focus::Commit { editing: false },
+            (KeyCode::Esc, _) => self.focus = Focus::Commit,
             (KeyCode::Tab | KeyCode::BackTab, field) => {
                 self.commit_field = match field {
                     CommitField::Summary => CommitField::Description,
@@ -401,7 +406,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn is_commit_focused(&self) -> bool {
-        matches!(self.focus, Focus::Commit { .. })
+        matches!(self.focus, Focus::Commit | Focus::Typing)
     }
 
     // Selecting hunks or lines in the diff.
@@ -441,7 +446,7 @@ impl<'a> LocalChangesState<'a> {
     // Focuses the commit section and starts typing in the selected box.
     pub fn edit_message(&mut self) {
         self.focus_files();
-        self.focus = Focus::Commit { editing: true };
+        self.focus = Focus::Typing;
     }
 
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
@@ -701,7 +706,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Asks for confirmation to discard the selected unstaged line, hunk, file or directory.
     pub fn request_discard(&mut self) -> Result<(), String> {
-        if matches!(self.focus, Focus::Commit { .. } | Focus::Conflict)
+        if matches!(self.focus, Focus::Commit | Focus::Typing | Focus::Conflict)
             || self.section != LocalChangesSection::Unstaged
         {
             return Ok(());
@@ -793,7 +798,9 @@ impl<'a> LocalChangesState<'a> {
         } else {
             let base = self.repository.amend_base()?;
             let message = self.repository.head_commit_message()?;
-            self.draft.start_amend(base, &message, AmendOf::LastCommit);
+            let head = self.repository.head_commit();
+            self.draft
+                .start_amend(base, head, &message, AmendOf::LastCommit);
         }
         self.reload();
         Ok(())
@@ -816,29 +823,41 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // A rebase stopped to edit a commit turns amending on, with the message of that commit, and
-    // amending goes off again once the rebase goes on or is aborted.
-    fn sync_edit_stop(&mut self) {
+    // amending goes off again once the rebase goes on or is aborted, or once HEAD moves, by a
+    // checkout or a commit made outside the app.
+    fn sync_amend(&mut self) {
+        let head = self.repository.head_commit();
+        let moved = self
+            .draft
+            .amend
+            .as_ref()
+            .is_some_and(|amend| amend.head != head);
+        if moved {
+            self.draft.stop_amend();
+        }
         let stopped =
             self.operation == Some(Operation::Rebase) && self.repository.rebase_stopped_to_edit();
-        let changed = if stopped && !self.editing_commit() {
-            match (
-                self.repository.amend_base(),
-                self.repository.head_commit_message(),
-            ) {
-                // amending the last commit before, it's the commit stopped at now
-                (Ok(base), Ok(message)) => {
-                    self.draft.stop_amend();
-                    self.draft.start_amend(base, &message, AmendOf::EditStop);
-                    true
+        let changed = moved
+            | if stopped && !self.editing_commit() {
+                match (
+                    self.repository.amend_base(),
+                    self.repository.head_commit_message(),
+                ) {
+                    // amending the last commit before, it's the commit stopped at now
+                    (Ok(base), Ok(message)) => {
+                        self.draft.stop_amend();
+                        self.draft
+                            .start_amend(base, head, &message, AmendOf::EditStop);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            }
-        } else if !stopped && self.editing_commit() {
-            self.draft.stop_amend();
-            true
-        } else {
-            false
-        };
+            } else if !stopped && self.editing_commit() {
+                self.draft.stop_amend();
+                true
+            } else {
+                false
+            };
         if changed {
             self.reload_staged();
         }
@@ -864,13 +883,12 @@ impl<'a> LocalChangesState<'a> {
         Ok(())
     }
 
-    // The keys of what has the focus, for the status bar; not the ones moving around.
     // The keys of the local changes page, see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
         let files = |v: &Self| v.focus == Focus::Files;
         let diff = |v: &Self| matches!(v.focus, Focus::Hunks | Focus::Lines);
-        let commit = |v: &Self| v.focus == Focus::Commit { editing: false };
+        let commit = |v: &Self| v.focus == Focus::Commit;
         let conflict = |v: &Self| v.focus == Focus::Conflict;
         let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
         let empty = |v: &Self| v.files().is_empty();
@@ -975,7 +993,7 @@ impl<'a> LocalChangesState<'a> {
             availability(commits(v), v)
         })
         .short(commit_word);
-        let not_typing = |v: &Self| !matches!(v.focus, Focus::Commit { editing: true });
+        let not_typing = |v: &Self| v.focus != Focus::Typing;
         k.add_where(&[Commit], "commit", COMMIT, move |v| {
             availability(not_typing(v), v)
         })
@@ -1100,12 +1118,13 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // The keys of what has the focus, for the status bar; not the ones moving around.
     pub fn keys(&self) -> KeyList {
         if self.is_typing_query() {
             return crate::view::typing_keys(self.query_kind());
         }
         let mut keys = Keys::of(self);
-        if self.focus == (Focus::Commit { editing: true }) {
+        if self.focus == Focus::Typing {
             // every other key is typed
             Self::register_typing_message(&mut keys);
         } else {
@@ -1196,7 +1215,7 @@ impl<'a> LocalChangesState<'a> {
     // In the commit section, starts editing the message; in the conflict panel, runs the choice.
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus {
-            Focus::Commit { .. } => self.commit_or_continue()?,
+            Focus::Commit | Focus::Typing => self.commit_or_continue()?,
             Focus::Conflict => self.activate_conflict_item()?,
             Focus::Files if self.conflict.is_some() && self.picked().is_empty() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
@@ -1238,8 +1257,8 @@ impl<'a> LocalChangesState<'a> {
     // panel to the files. Returns false when already at the files.
     pub fn back(&mut self) -> bool {
         match self.focus {
-            Focus::Commit { editing: true } => self.focus = Focus::Commit { editing: false },
-            Focus::Commit { editing: false } | Focus::Conflict => self.focus = Focus::Files,
+            Focus::Typing => self.focus = Focus::Commit,
+            Focus::Commit | Focus::Conflict => self.focus = Focus::Files,
             Focus::Lines => {
                 self.focus = Focus::Hunks;
                 self.cursor.leave_lines(&self.diff);
@@ -1260,19 +1279,23 @@ impl<'a> LocalChangesState<'a> {
                 self.focus_section(Staged)
             }
             (Focus::Files, Direction::Up) if self.section == Staged => self.focus_section(Unstaged),
+            // a focus key only moves the focus: with no files, on to the message without committing
+            (Focus::Files, Direction::Right) if self.files().is_empty() => self.focus_commit(),
             (Focus::Files, Direction::Right) => {
                 self.enter()?;
                 return Ok(self.focus != Focus::Files);
             }
             (Focus::Hunks | Focus::Lines | Focus::Conflict, Direction::Down) => self.focus_commit(),
             (
-                Focus::Hunks | Focus::Lines | Focus::Conflict | Focus::Commit { .. },
+                Focus::Hunks | Focus::Lines | Focus::Conflict | Focus::Commit | Focus::Typing,
                 Direction::Left,
             ) => self.focus_files(),
             // into the diff of the selected file, else its files
-            (Focus::Commit { .. }, Direction::Up) => {
+            (Focus::Commit | Focus::Typing, Direction::Up) => {
                 self.focus_files();
-                self.enter()?;
+                if !self.files().is_empty() {
+                    self.enter()?;
+                }
             }
             _ => return Ok(false),
         }
@@ -1309,7 +1332,7 @@ impl<'a> LocalChangesState<'a> {
             Focus::Lines => self.cursor.move_line(&self.diff, step),
             Focus::Hunks => self.cursor.move_hunk(&self.diff, step),
             // the summary, or the description under it
-            Focus::Commit { .. } => {
+            Focus::Commit | Focus::Typing => {
                 self.commit_field = match step {
                     Step::Next | Step::Last => CommitField::Description,
                     _ => CommitField::Summary,
@@ -1337,7 +1360,7 @@ impl<'a> LocalChangesState<'a> {
     // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
     pub fn toggle_stage(&mut self) -> Result<(), String> {
         let result = match self.focus {
-            Focus::Commit { .. } => {
+            Focus::Commit | Focus::Typing => {
                 self.edit_message();
                 return Ok(());
             }
@@ -1415,7 +1438,7 @@ impl<'a> LocalChangesState<'a> {
         self.changes = self.with_amend(changes);
         self.operation = self.repository.operation_in_progress();
         self.prepare_message();
-        self.sync_edit_stop();
+        self.sync_amend();
         let files = [&self.changes.unstaged, &self.changes.staged];
         for (section, files) in self.sections.iter_mut().zip(files) {
             section.tree.set_tree(file_tree(files));
@@ -2730,6 +2753,35 @@ mod tests {
     }
 
     #[test]
+    fn test_amend_stops_when_head_moves() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        git.commit("first", "2024-01-01");
+        git_stdout(repo_path, &["branch", "other"]);
+        fs::write(repo_path.join("a.txt"), "b\n")?;
+        git.add(&["a.txt"]);
+        git.commit("second", "2024-01-02");
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.draft.set_message("draft");
+        state.toggle_amend()?;
+        assert_eq!(paths(&state.changes.staged), vec!["a.txt"]);
+
+        // another branch checked out: its HEAD isn't what was amended, the typed message is back
+        git.checkout("other");
+        let state = LocalChangesState::restore(&repository, Some(state.snapshot()));
+        assert!(state.draft.amend.is_none());
+        assert!(state.changes.staged.is_empty());
+        assert_eq!(state.draft.message(), "draft");
+        Ok(())
+    }
+
+    #[test]
     fn test_edit_stop_amends_the_commit() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -2750,7 +2802,7 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         // amending the last commit, then a rebase stops to edit it: the stop's amend takes over
         state.toggle_amend()?;
-        let status = std::process::Command::new("git")
+        let status = crate::git::git_command()
             .args(["rebase", "-q", "-i", "HEAD~1"])
             .env("GIT_SEQUENCE_EDITOR", "sed -i 1s/^pick/edit/")
             .current_dir(repo_path)
@@ -2787,7 +2839,7 @@ mod tests {
     }
 
     fn git_stdout(repo_path: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = crate::git::git_command()
             .args(args)
             .current_dir(repo_path)
             .output()
@@ -3423,6 +3475,26 @@ mod tests {
     }
 
     #[test]
+    fn test_focus_keys_never_continue() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = conflicting_rebase(repo_path);
+        fs::write(repo_path.join("a.txt"), "resolved\n")?;
+        git_stdout(repo_path, &["add", "a.txt"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert!(state.changes.unstaged.is_empty());
+
+        // right from the empty unstaged files, and up from the message, only move the focus
+        assert!(state.move_focus(Direction::Right)?);
+        assert!(state.is_commit_focused());
+        assert!(state.move_focus(Direction::Up)?);
+        assert!(state.take_request().is_none());
+        Ok(())
+    }
+
+    #[test]
     fn test_rebase_abort() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -3521,6 +3593,31 @@ mod tests {
         state.reload_if_changed(files());
         assert_eq!(state.cursor.scroll.offset, 0);
         assert!(state.diff.raw.contains("+three"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_repository() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        let nested = repo_path.join("nested");
+        fs::create_dir(&nested)?;
+        GitRepository::new(&nested).init();
+        fs::write(nested.join("n.txt"), "n\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        // listed by git as `nested/`, a row named after it, not an empty name under it
+        let rows: Vec<String> = state.rows().iter().map(|r| r.name.clone()).collect();
+        assert_eq!(rows, vec!["/", "nested"]);
+        // `clean -f` would skip it, saying it discarded it
+        select_row(&mut state, "nested");
+        let err = state.request_discard().unwrap_err();
+        assert!(err.contains("repository of its own"), "{err}");
+        assert!(nested.join("n.txt").exists());
         Ok(())
     }
 

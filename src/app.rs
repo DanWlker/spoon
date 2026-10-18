@@ -29,8 +29,8 @@ use crate::{
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
-        NamedRef, Ref, Repository,
+        run_task, short_ref_name, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
+        GitTask, Head, NamedRef, Ref, Repository,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -128,7 +128,6 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    // Why the repository can't be changed now: a git command is running in the background.
     // The keys of the events for a hint, see `KeyBind::short_keys`, found once for each.
     pub fn short_keys(&self, events: &[UserEvent]) -> String {
         let mut names = self.key_names.borrow_mut();
@@ -138,6 +137,7 @@ impl AppContext {
             .clone()
     }
 
+    // Why the repository can't be changed now: a git command is running in the background.
     pub fn busy_message(&self) -> Option<String> {
         let running = self.running_task.borrow();
         running
@@ -356,7 +356,11 @@ impl AppShell {
                     .or_else(|| repository.current_branch())
                     .unwrap_or_else(|| "HEAD".into())
             )),
-            GraphFilter::Compare { refs, .. } => Some(format!("{} ↔ {}", refs.base, refs.target)),
+            GraphFilter::Compare { refs, .. } => Some(format!(
+                "{} ↔ {}",
+                short_ref_name(&refs.base),
+                short_ref_name(&refs.target)
+            )),
         }
     }
 
@@ -1563,7 +1567,7 @@ impl App<'_> {
                 if self.shell.sidebar_mode == SidebarMode::Focused {
                     self.shell.sidebar_mode = SidebarMode::Collapsed;
                 } else {
-                    self.set_sidebar_focused(true);
+                    self.focus_sidebar();
                 }
             }
             UserEvent::RefList => self.switch_page(),
@@ -1622,7 +1626,7 @@ impl App<'_> {
             UserEvent::Confirm => {
                 // a folder opens or closes, else back to the page showing what is selected
                 if !self.shell.sidebar.toggle_node() {
-                    self.set_sidebar_focused(false);
+                    self.blur_sidebar();
                 }
             }
             // the picked refs are cleared first
@@ -1630,7 +1634,7 @@ impl App<'_> {
                 self.shell.sidebar.clear_picks();
             }
             UserEvent::Cancel => {
-                self.set_sidebar_focused(false);
+                self.blur_sidebar();
             }
             // on a ref, see `ref_command_applies`
             UserEvent::ToggleSelect => {
@@ -1664,7 +1668,7 @@ impl App<'_> {
             }
             UserEvent::FocusPanel(_) => {
                 // a panel of the page
-                self.set_sidebar_focused(false);
+                self.blur_sidebar();
                 self.view.handle_event(event, key);
             }
             event if event.home_scope() == Scope::Graph => self.handle_sidebar_graph_event(event),
@@ -1814,15 +1818,17 @@ impl App<'_> {
         ref_command_applies(self.repository, event, &selection, picked)
     }
 
-    // Focuses the sidebar, growing it back when shrunk, or gives the focus back to the page.
-    fn set_sidebar_focused(&mut self, focused: bool) {
-        if focused && !self.sidebar_shown() {
-            return;
-        }
-        if focused {
+    // Focuses the sidebar where the page has one, growing it back when collapsed.
+    fn focus_sidebar(&mut self) {
+        if self.sidebar_shown() {
             self.shell.sidebar_mode = SidebarMode::Focused;
             self.view.blur();
-        } else if self.shell.sidebar_mode == SidebarMode::Focused {
+        }
+    }
+
+    // Gives the focus back to the page from the sidebar.
+    fn blur_sidebar(&mut self) {
+        if self.shell.sidebar_mode == SidebarMode::Focused {
             self.shell.sidebar_mode = SidebarMode::Shown;
         }
     }
@@ -1846,7 +1852,7 @@ impl App<'_> {
         if matches!(self.view, View::LocalChanges(_)) {
             self.show_graph_page();
         }
-        self.set_sidebar_focused(false);
+        self.blur_sidebar();
         if !self.view.select_commit(commit) {
             let message = format!("{} isn't shown in the graph", commit.as_short_hash());
             self.ec.send(AppEvent::NotifyWarn(message));
@@ -1860,7 +1866,7 @@ impl App<'_> {
         } else {
             self.show_local_changes_page();
         }
-        self.set_sidebar_focused(false);
+        self.blur_sidebar();
     }
 
     // Shows the commit list alone, from a view showing it; returns whether it did.
@@ -2037,9 +2043,9 @@ impl App<'_> {
     }
 
     // Fetches all remotes in the background like lazygit, without taking the place of the git
-    // command running, so the commands of the user are not held back by it. Nothing is said when
-    // it fails, offline say, but in the command log; the remote branches it moved show once the
-    // refs are next checked, see `check_refs`.
+    // command running; a fetch, pull or push of the user waits for it, see `run_task`. Nothing is
+    // said when it fails, offline say, but in the command log; the remote branches it moved show
+    // once the refs are next checked, see `check_refs`.
     fn fetch_on_launch(&self) {
         let path = self.repository.path().to_path_buf();
         let task = GitTask {
@@ -2165,7 +2171,7 @@ impl App<'_> {
                     list_context: context.list_context().clone(),
                     local_changes_context: snapshot,
                 };
-                self.set_sidebar_focused(false);
+                self.blur_sidebar();
             }
             self.ec.send(AppEvent::Refresh(context));
         }
@@ -2299,10 +2305,10 @@ impl App<'_> {
             window.move_focus(direction);
         } else if self.shell.sidebar_focused() {
             if direction == Direction::Right {
-                self.set_sidebar_focused(false);
+                self.blur_sidebar();
             }
         } else if !self.view.move_focus(direction) && direction == Direction::Left {
-            self.set_sidebar_focused(true);
+            self.focus_sidebar();
         }
     }
 
@@ -2347,7 +2353,7 @@ impl App<'_> {
         let head = || {
             self.repository
                 .current_branch()
-                .unwrap_or_else(|| "HEAD".into())
+                .map_or_else(|| "HEAD".into(), |branch| format!("refs/heads/{branch}"))
         };
         let (base, target) = match names {
             [one] => (head(), one.clone()),
@@ -2356,7 +2362,8 @@ impl App<'_> {
         };
         if base == target {
             return Err(format!(
-                "{base} is checked out, there is nothing to compare"
+                "{} is checked out, there is nothing to compare",
+                short_ref_name(&base)
             ));
         }
         Ok(RefCompare { base, target })
@@ -2381,14 +2388,18 @@ impl App<'_> {
         let shown = Compare {
             base: compare.base.clone(),
             target: compare.target.clone(),
-            title: format!("Diff {} → {}", compare.base, compare.target),
+            title: format!(
+                "Diff {} → {}",
+                short_ref_name(&compare.base),
+                short_ref_name(&compare.target)
+            ),
         };
         self.shell.graph_filter = GraphFilter::Compare {
             refs: compare,
             before,
         };
         self.shell.sidebar.clear_picks();
-        self.set_sidebar_focused(false);
+        self.blur_sidebar();
         self.ec.send(AppEvent::Refresh(RefreshViewContext::Detail {
             list_context: context.list_context().clone(),
             tab: DetailTab::Changes,
@@ -2452,7 +2463,7 @@ impl App<'_> {
     // Shows the local changes page with the last commit being amended.
     fn amend_on_local_changes(&mut self) {
         self.show_local_changes_page();
-        self.set_sidebar_focused(false);
+        self.blur_sidebar();
         if let View::LocalChanges(view) = &mut self.view {
             if let Err(err) = view.start_amend() {
                 self.ec.send(AppEvent::NotifyError(err));
@@ -2473,7 +2484,8 @@ impl App<'_> {
             // gone meanwhile, like a ref deleted
             self.ec.send(AppEvent::NotifyError(format!(
                 "Cannot diff {} and {}, one of them is gone",
-                compare.base, compare.target
+                short_ref_name(&compare.base),
+                short_ref_name(&compare.target)
             )));
             return;
         };

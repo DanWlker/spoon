@@ -132,8 +132,8 @@ impl<'a> CommitChangesState<'a> {
         self.files.iter().map(|f| f.path.as_str()).collect()
     }
 
-    // The path of the selected file or directory, relative to the top of the repository.
-    // The selected path, and whether it is a directory.
+    // The path of the selected file or directory, relative to the top of the repository, and
+    // whether it is a directory.
     pub fn selected_entry(&self) -> Option<(&str, bool)> {
         let row = self.tree.selected()?;
         Some((row.path.as_str(), row.file_index.is_none()))
@@ -248,8 +248,10 @@ impl<'a> CommitChangesState<'a> {
 // The contents of the file selected in the files tab.
 #[derive(Debug)]
 enum FilePreview {
-    // the lines of a file, in `CommitFilesState::text`, `focused` while the selection moves in them
-    Text { focused: bool },
+    // the lines of a file, in `CommitFilesState::text`, the files keeping the focus
+    Text,
+    // the same, the selection moving in its lines
+    TextFocused,
     Binary,
     Directory,
     Error(String),
@@ -275,8 +277,8 @@ pub struct CommitFilesState<'a> {
 }
 
 impl<'a> CommitFilesState<'a> {
-    // The path of the selected file or directory, relative to the top of the repository.
-    // The selected path, and whether it is a directory.
+    // The path of the selected file or directory, relative to the top of the repository, and
+    // whether it is a directory.
     pub fn selected_entry(&self) -> Option<(&str, bool)> {
         let row = self.tree.as_ref()?.selected()?;
         Some((row.path.as_str(), row.file_index.is_none()))
@@ -371,23 +373,24 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn is_preview_focused(&self) -> bool {
-        matches!(self.preview, Some(FilePreview::Text { focused: true }))
+        matches!(self.preview, Some(FilePreview::TextFocused))
     }
 
-    // Whether the preview has the focus, which only a file with text can.
-    fn preview_focus(&mut self) -> Option<&mut bool> {
-        match &mut self.preview {
-            Some(FilePreview::Text { focused }) if !self.text.lines().is_empty() => Some(focused),
-            _ => None,
-        }
+    // Whether the preview can have the focus, which only a file with text can.
+    fn has_text(&self) -> bool {
+        matches!(
+            self.preview,
+            Some(FilePreview::Text | FilePreview::TextFocused)
+        ) && !self.text.lines().is_empty()
     }
 
     // Moves the focus into the preview of a file, on the first line shown; false when it has no text.
     pub fn enter(&mut self) -> bool {
-        let Some(focused) = self.preview_focus() else {
+        if !self.has_text() {
             return false;
-        };
-        if !std::mem::replace(focused, true) {
+        }
+        if !self.is_preview_focused() {
+            self.preview = Some(FilePreview::TextFocused);
             self.text.select_shown();
         }
         true
@@ -395,11 +398,15 @@ impl<'a> CommitFilesState<'a> {
 
     // Moves the focus back to the files; false when it is there.
     pub fn back(&mut self) -> bool {
-        self.preview_focus().is_some_and(std::mem::take)
+        let focused = self.is_preview_focused();
+        if focused {
+            self.preview = Some(FilePreview::Text);
+        }
+        focused
     }
 
     pub fn step(&mut self, step: Step) {
-        if self.preview_focus().is_some() {
+        if self.has_text() {
             self.text.step(step);
         }
     }
@@ -424,12 +431,10 @@ impl<'a> CommitFilesState<'a> {
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
-        if self.preview_focus().is_none() || !self.text.search(query, direction, options) {
+        if !self.has_text() || !self.text.search(query, direction, options) {
             return false;
         }
-        if let Some(focused) = self.preview_focus() {
-            *focused = true;
-        }
+        self.preview = Some(FilePreview::TextFocused);
         true
     }
 
@@ -454,7 +459,7 @@ impl<'a> CommitFilesState<'a> {
                 let text = String::from_utf8_lossy(&bytes);
                 self.text
                     .set_lines(text.lines().map(String::from).collect());
-                FilePreview::Text { focused: false }
+                FilePreview::Text
             }
             Err(err) => FilePreview::Error(err),
         };
@@ -567,12 +572,13 @@ impl CommitTab {
 
         let dim = |text: String| vec![placeholder(text, theme)];
         let lines = match &state.preview {
-            Some(FilePreview::Text { focused }) => {
+            Some(preview @ (FilePreview::Text | FilePreview::TextFocused)) => {
                 let search = self.pane_search.as_deref();
                 let ctx = &self.ctx;
+                let selecting = matches!(preview, FilePreview::TextFocused);
                 state
                     .text
-                    .render(preview_area, buf, ctx, self.focused, *focused, search);
+                    .render(preview_area, buf, ctx, self.focused, selecting, search);
                 return;
             }
             Some(FilePreview::Binary) => dim("Binary file".into()),
@@ -655,7 +661,7 @@ mod tests {
         git.add(&["src/a.rs", "README", "image.bin"]);
         git.commit("first", "2024-01-01");
         fs::write(repo_path.join("src/a.rs"), "a\nchanged\n")?;
-        std::process::Command::new("git")
+        crate::git::git_command()
             .args(["mv", "README", "DOC.md"])
             .current_dir(repo_path)
             .output()?;
@@ -707,8 +713,10 @@ mod tests {
         state.update_tree(FileTreeState::select_next);
         assert_eq!(selected(state.tree.as_ref().unwrap()), "src/a.rs");
         assert!(
-            matches!(&state.preview, Some(FilePreview::Text { .. }))
-                && state.text.lines() == ["a", "changed"]
+            matches!(
+                &state.preview,
+                Some(FilePreview::Text | FilePreview::TextFocused)
+            ) && state.text.lines() == ["a", "changed"]
         );
         state.update_tree(FileTreeState::select_last);
         assert!(matches!(state.preview, Some(FilePreview::Binary)));
@@ -725,7 +733,10 @@ mod tests {
             vec!["src", "src/a.rs", "README", "image.bin"]
         );
         assert_eq!(selected(tree), "src/a.rs");
-        assert!(matches!(&state.preview, Some(FilePreview::Text { .. })));
+        assert!(matches!(
+            &state.preview,
+            Some(FilePreview::Text | FilePreview::TextFocused)
+        ));
         assert_eq!(state.text.lines(), ["a"]);
 
         Ok(())
@@ -750,7 +761,7 @@ mod tests {
         fs::remove_file(path.join("b"))?;
         git.add(&["dir/c", "b"]);
         git.commit("add dir/c, delete b", "2024-01-03");
-        std::process::Command::new("git")
+        crate::git::git_command()
             .args(["mv", "a", "x"])
             .current_dir(path)
             .output()?;

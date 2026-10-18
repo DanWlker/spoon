@@ -47,6 +47,20 @@ pub fn graph_command(
     } else {
         picked.clone()
     };
+    // git needs to be told which parent the changes of a merge are from
+    let applied = match event {
+        UserEvent::CherryPick => Some("cherry-picked"),
+        UserEvent::Revert => Some("reverted"),
+        _ => None,
+    };
+    if let Some(what) = applied {
+        if let Err(err) = targets
+            .iter()
+            .try_for_each(|hash| single_parent(repository, hash, what).map(drop))
+        {
+            return Some(Err(err));
+        }
+    }
     let dialog = match event {
         UserEvent::Diff => return Some(compare(repository, selected, picked)),
         UserEvent::Rebase => single("Rebase").and_then(|_| {
@@ -567,6 +581,32 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_commits_are_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        git.commit("base", "2024-01-01");
+        git.checkout_b("side");
+        git.commit("side", "2024-01-02");
+        git.checkout("master");
+        git.merge(&["side"], "2024-01-03");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let merge = repository.head_commit().unwrap();
+        for (event, what) in [
+            (UserEvent::CherryPick, "cherry-picked"),
+            (UserEvent::Revert, "reverted"),
+        ] {
+            let err = args(command(&repository, event, &merge, &[]));
+            let expected = format!(
+                "{} is a merge commit, it can't be {what}",
+                merge.as_short_hash()
+            );
+            assert_eq!(err, expected);
+        }
+    }
+
+    #[test]
     fn test_graph_commands() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
@@ -628,7 +668,7 @@ mod tests {
         assert!(merge.contains("is checked out"), "{merge}");
         // with one, by its name, for "Merge branch 'topic'" as the message
         let git_in = |git_args: &[&str]| {
-            let status = std::process::Command::new("git")
+            let status = crate::git::git_command()
                 .args(git_args)
                 .current_dir(path)
                 .status()
@@ -676,7 +716,7 @@ mod tests {
             git.commit(&format!("c{}", i + 1), date);
         }
         let output = |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::git::git_command()
                 .args(args)
                 .current_dir(path)
                 .output()
@@ -739,7 +779,7 @@ mod tests {
             git.commit(&format!("c{}", i + 1), date);
         }
         let output = move |args: &[&str]| {
-            let out = std::process::Command::new("git")
+            let out = crate::git::git_command()
                 .args(args)
                 .current_dir(&path)
                 .output()

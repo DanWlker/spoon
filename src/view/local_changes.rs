@@ -64,6 +64,11 @@ impl<'a> LocalChangesView<'a> {
         }
         self.last_event = Some(event);
         self.handle_event_inner(event, key);
+        self.send_request();
+    }
+
+    // Asks the app for what the state queued, so no request waits for an unrelated later key.
+    fn send_request(&mut self) {
         match self.local_changes_state.take_request() {
             // continuing a rebase runs in the background, the app refreshing once it is done
             Some(Request::Task(task)) => self.tx.send(AppEvent::StartTask(task)),
@@ -289,6 +294,7 @@ impl<'a> LocalChangesView<'a> {
         let result = self.local_changes_state.move_focus(direction);
         let moved = *result.as_ref().unwrap_or(&true);
         self.after_action(result.map(|_| ()));
+        self.send_request();
         moved
     }
 
@@ -309,7 +315,9 @@ impl<'a> LocalChangesView<'a> {
 
     // Turns amending on, with the message of the last commit in the commit section.
     pub fn start_amend(&mut self) -> Result<(), String> {
-        self.local_changes_state.start_amend()
+        let result = self.local_changes_state.start_amend();
+        self.send_request();
+        result
     }
 
     // Another panel takes the focus, leaving the diff and the message.
@@ -377,6 +385,7 @@ impl<'a> LocalChangesView<'a> {
     // Reloads the changes, keeping the selection, for those made outside the app.
     pub fn reload_files(&mut self, files: FilesSnapshot) {
         self.local_changes_state.reload_if_changed(files);
+        self.send_request();
     }
 
     // Empties the message box once its commit is made.

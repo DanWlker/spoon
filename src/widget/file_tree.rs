@@ -77,7 +77,8 @@ impl FileTree {
     pub fn new<'p>(paths: impl IntoIterator<Item = &'p str>) -> Self {
         let mut root = DirNode::default();
         for (index, path) in paths.into_iter().enumerate() {
-            let mut parts: Vec<&str> = path.split('/').collect();
+            // an untracked repository inside is listed as `nested/`, a file named `nested`
+            let mut parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
             let name = parts.pop().unwrap_or_default();
             let mut node = &mut root;
             for part in parts {

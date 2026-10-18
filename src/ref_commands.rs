@@ -63,15 +63,22 @@ pub fn ref_command_applies(
     }
 }
 
-// The refs `D` diffs in the sidebar: the picked ones, else the selected branch, remote branch or
-// tag; None for stashes and the rows that are no ref.
+// The refs `D` diffs in the sidebar, by full name as a tag may have a branch's name: the picked
+// ones, else the selected branch, remote branch or tag; None for stashes and the rows that are no
+// ref.
 pub fn diff_refs(selection: &RefSelection, picked: &RefPicks) -> Option<Vec<String>> {
     let (section, names) = match selection {
         _ if !picked.is_empty() => (picked.section, picked.names.clone()),
         RefSelection::Ref(section, name) => (*section, vec![name.clone()]),
         _ => return None,
     };
-    (section != RefSection::Stashes).then_some(names)
+    let prefix = match section {
+        RefSection::Branches => "refs/heads/",
+        RefSection::Remotes => "refs/remotes/",
+        RefSection::Tags => "refs/tags/",
+        RefSection::Stashes => return None,
+    };
+    Some(names.iter().map(|name| format!("{prefix}{name}")).collect())
 }
 
 // The popup of `event` on the selected row, where `ref_command_applies`; None for other events.
@@ -188,12 +195,7 @@ fn delete_refs(
         }
         RefSection::Tags => {
             let info = repository.remote_info();
-            let remote = info
-                .remotes
-                .iter()
-                .find(|r| *r == "origin")
-                .or(info.remotes.first())
-                .cloned();
+            let remote = info.default_remote(info.current_branch.as_deref()).cloned();
             Ok(GitDialog::delete_tags(names, remote))
         }
         RefSection::Stashes => {
