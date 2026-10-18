@@ -1701,7 +1701,7 @@ impl App<'_> {
         let applies = |event| move |app: &Self| app.sidebar_command_applies(event);
         let picks = |app: &Self| !app.shell.sidebar.picked().is_empty();
         let on_stash = |app: &Self| {
-            app.shell.sidebar.picked().section == Stashes
+            app.shell.sidebar.picked().section() == Some(Stashes)
                 || matches!(app.shell.sidebar.selection(), RefSelection::Stash(_))
         };
         k.add(
@@ -2403,7 +2403,7 @@ impl App<'_> {
     ) {
         match command {
             None => {}
-            Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(dialog)),
+            Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(*dialog)),
             Some(Ok(GraphCommand::AmendHead)) => self.amend_on_local_changes(),
             Some(Ok(GraphCommand::Compare(compare))) => self.open_compare(compare),
             // the popups tell first that a command is running

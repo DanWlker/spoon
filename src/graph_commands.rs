@@ -13,7 +13,7 @@ use crate::{
 
 pub enum GraphCommand {
     // a popup confirming a git command
-    Dialog(GitDialog),
+    Dialog(Box<GitDialog>),
     // the last commit amended on the local changes page
     AmendHead,
     // the changes from one commit to another, shown in the details
@@ -126,7 +126,7 @@ pub fn graph_command(
         }
         _ => return None,
     };
-    Some(dialog.map(GraphCommand::Dialog))
+    Some(dialog.map(|dialog| GraphCommand::Dialog(Box::new(dialog))))
 }
 
 // The command of `event` on a branch, remote branch or tag selected in the refs sidebar: rebase
@@ -202,7 +202,7 @@ pub fn ref_graph_command(
         UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Ref(selected.clone()))),
         _ => return graph_command(repository, event, target, vec![]),
     };
-    Some(dialog.map(GraphCommand::Dialog))
+    Some(dialog.map(|dialog| GraphCommand::Dialog(Box::new(dialog))))
 }
 
 // A new branch from `from`, or another local branch chosen instead.
@@ -457,7 +457,7 @@ fn amend(
         rebase_auto_stash(repository),
     );
     let pushed = repository.upstream_containing(commit.as_str());
-    Ok(GraphCommand::Dialog(dialog.pushed(pushed)))
+    Ok(GraphCommand::Dialog(Box::new(dialog.pushed(pushed))))
 }
 
 // The changes between two commits: the checked out commit and the selected (or picked) one,

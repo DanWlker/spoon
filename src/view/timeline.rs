@@ -183,8 +183,8 @@ impl TimelineView {
             }
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
-                    let line = self.pane.is_selecting_lines();
-                    self.tx.send(copy_selection(text, line));
+                    self.tx
+                        .send(copy_selection(text, self.pane.selected_part()));
                 }
             }
             // the file at the commit, at the selected lines

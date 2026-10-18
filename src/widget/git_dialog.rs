@@ -16,8 +16,8 @@ use crate::{
     event::{AppEvent, UserEvent},
     git::{
         parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
-        Conflict, FileChange, GitArgs, GitCommand, GitTask, NamedRef, Operation, RemoteInfo,
-        MAX_CONFLICT_STEPS,
+        Conflict, FileChange, GitArgs, GitCommand, GitTask, NamedRef, Operation, RemoteBranch,
+        RemoteInfo, MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
     widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
@@ -72,60 +72,88 @@ pub struct DialogCommit {
 
 #[derive(Debug)]
 enum DialogKind {
-    Remote(RemoteAction, Box<RemoteInfo>),
+    Fetch {
+        remote: Pick,
+    },
+    Pull {
+        info: Box<RemoteInfo>,
+        fields: PullFields,
+        auto_stash_follows: AutoStashFollows,
+    },
+    Push {
+        info: Box<RemoteInfo>,
+        fields: PushFields,
+    },
     Rebase {
         onto: String,
         description: String,
+        auto_stash: Check,
     },
     Merge {
         source: String,
         description: String,
+        merge_type: Choose<MergeType>,
     },
     Checkout {
         targets: Vec<CheckoutTarget>,
+        target: Pick,
+        local_changes: Choose<LocalChanges>,
     },
     CherryPick {
         commits: Vec<DialogCommit>,
+        commit: Check,
+        append_origin: Check,
     },
     Squash {
         commits: Vec<DialogCommit>,
         base: Option<String>,
+        messages: Choose<SquashMessages>,
+        auto_stash: Check,
     },
     Revert {
         commits: Vec<DialogCommit>,
+        commit: Check,
     },
     Reset {
         commit: DialogCommit,
         branch: String,
+        mode: Choose<ResetMode>,
     },
     // a file as `change` changed it in `commit`
     ResetFile {
         commit: DialogCommit,
         change: Box<FileChange>,
+        state: Choose<FileState>,
     },
     // `base` is where the rebase starts, None from the root
     Edit {
         commit: DialogCommit,
         base: Option<String>,
+        auto_stash: Check,
     },
     Drop {
         commits: Vec<DialogCommit>,
         base: Option<String>,
+        auto_stash: Check,
     },
-    // where it may start, the first chosen
+    // where it may start, chosen with `from`
     CreateBranch {
         starts: Vec<StartPoint>,
+        name: Text,
+        from: Pick,
+        checkout: Check,
     },
     // local branches, with those whose commits are on no other branch, and their upstreams
-    // still on their remotes, as (remote, branch), which may be deleted too
+    // still on their remotes, which may be deleted too when there are some
     DeleteBranches {
         names: Vec<String>,
         unmerged: Vec<String>,
-        upstreams: Vec<(String, String)>,
+        upstreams: Vec<RemoteBranch>,
+        also_upstreams: Option<Check>,
     },
     // branches on their remotes, as (remote, branch)
     DeleteRemoteBranches {
-        branches: Vec<(String, String)>,
+        branches: Vec<RemoteBranch>,
     },
     // `upstream` is like "origin/main", empty when there is none
     // `upstreams` are the choices of the upstream field after None, the current one among them
@@ -133,35 +161,45 @@ enum DialogKind {
         name: String,
         upstream: Option<String>,
         upstreams: Vec<String>,
+        new_name: Text,
+        new_upstream: Pick,
     },
     EditRemote {
         name: String,
         url: String,
+        fields: RemoteFields,
     },
-    AddRemote,
+    AddRemote(RemoteFields),
     RemoveRemote {
         name: String,
     },
     CreateTag {
         at: StartPoint,
+        name: Text,
+        message: Text,
     },
-    // `remote` is where they may be deleted too
+    // `remote` is where they may be deleted too, when checked
     DeleteTags {
         names: Vec<String>,
-        remote: Option<String>,
+        remote: Option<(String, Check)>,
     },
     // a stash like "stash@{0}"
     ApplyStash {
         name: String,
+        index: Check,
+        pop: Check,
     },
     // stashes like "stash@{0}"
     DropStashes {
         names: Vec<String>,
     },
     // links to open in the browser, or to copy: the pages of each remote
+    // the remote and the page are chosen when there are several
     OpenLink {
         links: Vec<Vec<PageLink>>,
         action: LinkAction,
+        remote: Option<Pick>,
+        page: Option<Pick>,
     },
     // a command made beforehand, like discarding changes, and what it loses
     Prepared {
@@ -176,7 +214,50 @@ enum DialogKind {
     Stash {
         paths: Vec<String>,
         target: String,
+        message: Text,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PullFields {
+    remote: Pick,
+    branch: Pick,
+    rebase: Check,
+    auto_stash: Check,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PushFields {
+    local_branch: Pick,
+    remote: Pick,
+    remote_branch: Text,
+    tags: Check,
+    force: Check,
+    no_verify: Check,
+}
+
+// The name and URL of a remote.
+#[derive(Debug, Clone, Copy)]
+struct RemoteFields {
+    name: Text,
+    url: Text,
+}
+
+impl RemoteFields {
+    fn new(form: &mut Form, name: &str, url: &str) -> Self {
+        RemoteFields {
+            name: form.text("Name", name, vec![], Need::Required),
+            url: form.text("URL", url, vec![], Need::Required),
+        }
+    }
+}
+
+// Whether stashing on pull follows rebase.autoStash and merge.autoStash as rebasing is checked, or
+// was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoStashFollows {
+    Config,
+    Chosen,
 }
 
 // The commit to make, shown in the popup confirming it.
@@ -195,43 +276,231 @@ pub struct CommitPreview {
 // The lines of the message, and the files, shown in the popup confirming a commit.
 const COMMIT_PREVIEW_LINES: usize = 6;
 
+// The fields of a popup are made with it, the handles below kept by its kind: a command can only
+// read the fields of its own popup, see `Form`.
+
+// A checkbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FieldId {
-    Remote,
-    Branch,
-    LocalBranch,
-    RemoteBranch,
-    Rebase,
-    AutoStash,
-    Tags,
-    Force,
-    MergeType,
-    Target,
-    LocalChanges,
-    Commit,
-    AppendOrigin,
-    ResetMode,
-    FileState,
-    Messages,
-    Name,
-    From,
-    Message,
-    Upstream,
-    At,
-    Index,
-    Checkout,
-    Pop,
-    Url,
-    Link,
-    NoVerify,
+struct Check(usize);
+
+// A text field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Text(usize);
+
+// One of a list of names, like the remotes, or a value that can't change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pick(usize);
+
+// One of the options of `C`.
+#[derive(Debug, PartialEq, Eq)]
+struct Choose<C>(usize, std::marker::PhantomData<C>);
+
+impl<C> Clone for Choose<C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C> Copy for Choose<C> {}
+
+// The options of a choice field, in the order shown.
+trait Choice: Copy + PartialEq + 'static {
+    const ALL: &'static [Self];
+    fn label(self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeType {
+    FastForward,
+    MergeCommit,
+    FastForwardOnly,
+    Squash,
+    NoCommit,
+}
+
+impl Choice for MergeType {
+    const ALL: &'static [Self] = &[
+        MergeType::FastForward,
+        MergeType::MergeCommit,
+        MergeType::FastForwardOnly,
+        MergeType::Squash,
+        MergeType::NoCommit,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            MergeType::FastForward => "Fast-forward if possible",
+            MergeType::MergeCommit => "Always create a merge commit",
+            MergeType::FastForwardOnly => "Fast-forward only",
+            MergeType::Squash => "Squash (commit in local changes)",
+            MergeType::NoCommit => "Don't commit (edit in local changes)",
+        }
+    }
+}
+
+impl MergeType {
+    fn args(self) -> &'static [&'static str] {
+        match self {
+            MergeType::FastForward => &["--ff", "--no-edit"],
+            MergeType::MergeCommit => &["--no-ff", "--no-edit"],
+            MergeType::FastForwardOnly => &["--ff-only"],
+            MergeType::Squash => &["--squash"],
+            MergeType::NoCommit => &["--no-ff", "--no-commit"],
+        }
+    }
+
+    // Whether it leaves the changes to commit on the local changes page.
+    fn leaves_changes(self) -> bool {
+        matches!(self, MergeType::Squash | MergeType::NoCommit)
+    }
+}
+
+// What a checkout does with the local changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalChanges {
+    Keep,
+    Stash,
+    Discard,
+}
+
+impl Choice for LocalChanges {
+    const ALL: &'static [Self] = &[
+        LocalChanges::Keep,
+        LocalChanges::Stash,
+        LocalChanges::Discard,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            LocalChanges::Keep => "Keep",
+            LocalChanges::Stash => "Stash and reapply",
+            LocalChanges::Discard => "Discard",
+        }
+    }
+}
+
+// The message of a commit squashed into its parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SquashMessages {
+    Combine,
+    Fixup,
+}
+
+impl Choice for SquashMessages {
+    const ALL: &'static [Self] = &[SquashMessages::Combine, SquashMessages::Fixup];
+
+    fn label(self) -> &'static str {
+        match self {
+            SquashMessages::Combine => "Combine the messages",
+            SquashMessages::Fixup => "Keep the parent's message (fixup)",
+        }
+    }
+}
+
+// How a file is reset from a commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileState {
+    AtCommit,
+    BeforeCommit,
+}
+
+impl Choice for FileState {
+    const ALL: &'static [Self] = &[FileState::AtCommit, FileState::BeforeCommit];
+
+    fn label(self) -> &'static str {
+        match self {
+            FileState::AtCommit => "At the commit",
+            FileState::BeforeCommit => "Before the commit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResetMode {
+    Mixed,
+    Soft,
+    Hard,
+}
+
+impl Choice for ResetMode {
+    const ALL: &'static [Self] = &[ResetMode::Mixed, ResetMode::Soft, ResetMode::Hard];
+
+    fn label(self) -> &'static str {
+        match self {
+            ResetMode::Mixed => "Mixed: keep the changes, unstaged",
+            ResetMode::Soft => "Soft: keep the changes, staged",
+            ResetMode::Hard => "Hard: discard the changes",
+        }
+    }
+}
+
+impl ResetMode {
+    fn flag(self) -> &'static str {
+        match self {
+            ResetMode::Mixed => "--mixed",
+            ResetMode::Soft => "--soft",
+            ResetMode::Hard => "--hard",
+        }
+    }
+}
+
+// Whether a text field must be filled before the command runs, see `GitDialog::missing_field`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Required,
+    Optional,
+}
+
+// The fields of a popup as it is made, giving the handles its kind keeps.
+#[derive(Debug, Default)]
+struct Form(Vec<(String, Field)>);
+
+impl Form {
+    fn push(&mut self, label: &str, field: Field) -> usize {
+        self.0.push((label.into(), field));
+        self.0.len() - 1
+    }
+
+    fn check(&mut self, label: &str, checked: bool) -> Check {
+        Check(self.push(label, Field::Check(checked)))
+    }
+
+    // A text field, `options` completing it.
+    fn text(&mut self, label: &str, value: &str, options: Vec<String>, need: Need) -> Text {
+        Text(self.push(label, Field::text(value, options, need)))
+    }
+
+    // `value` chosen among `options`, else the first.
+    fn pick(&mut self, label: &str, options: Vec<String>, value: &str) -> Pick {
+        let index = options.iter().position(|o| o == value).unwrap_or(0);
+        Pick(self.push(label, Field::Choice { options, index }))
+    }
+
+    fn fixed(&mut self, label: &str, value: String) -> Pick {
+        Pick(self.push(label, Field::Fixed(value)))
+    }
+
+    fn choose<C: Choice>(&mut self, label: &str, value: C) -> Choose<C> {
+        let options = C::ALL.iter().map(|c| c.label().to_string()).collect();
+        let index = C::ALL.iter().position(|c| *c == value).unwrap_or(0);
+        let field = Field::Choice { options, index };
+        Choose(self.push(label, field), std::marker::PhantomData)
+    }
 }
 
 #[derive(Debug)]
 enum Field {
     // one of the options, changed with left/right
-    Choice { options: Vec<String>, index: usize },
+    Choice {
+        options: Vec<String>,
+        index: usize,
+    },
     // any text, or one of the options with left/right
-    Text { input: Input, options: Vec<String> },
+    Text {
+        input: Input,
+        options: Vec<String>,
+        need: Need,
+    },
     Check(bool),
     // a value that can't change, like the commit a branch starts from
     Fixed(String),
@@ -247,26 +516,6 @@ pub enum DialogOutcome {
     Error(String),
 }
 
-const MERGE_TYPES: [&str; 5] = [
-    "Fast-forward if possible",
-    "Always create a merge commit",
-    "Fast-forward only",
-    "Squash (commit in local changes)",
-    "Don't commit (edit in local changes)",
-];
-
-const LOCAL_CHANGES_OPTIONS: [&str; 3] = ["Keep", "Stash and reapply", "Discard"];
-
-const SQUASH_MESSAGES: [&str; 2] = ["Combine the messages", "Keep the parent's message (fixup)"];
-
-const FILE_STATES: [&str; 2] = ["At the commit", "Before the commit"];
-
-const RESET_MODES: [&str; 3] = [
-    "Mixed: keep the changes, unstaged",
-    "Soft: keep the changes, staged",
-    "Hard: discard the changes",
-];
-
 // The popup confirming a git command, with its options: fetch, pull and push, and the commands
 // on the commit graph like merge or checkout.
 #[derive(Debug)]
@@ -279,12 +528,10 @@ pub struct GitDialog {
     kind: DialogKind,
     // the event that opened the popup, which runs the command too, so a double press runs it
     trigger: Option<UserEvent>,
-    fields: Vec<(FieldId, String, Field)>,
+    fields: Vec<(String, Field)>,
     selected: usize,
     // typing into the selected text field
     editing: bool,
-    // the stash checkbox was changed, so it no longer follows the config of how to pull
-    auto_stash_changed: bool,
     // the commit to select once the command is done, see `GitTask::select`
     select: Option<String>,
     // the conflicts git would stop at, shown in the warning color
@@ -294,16 +541,21 @@ pub struct GitDialog {
 }
 
 impl GitDialog {
-    fn with(title: &'static str, verb: &'static str, intro: Vec<String>, kind: DialogKind) -> Self {
+    fn with(
+        title: &'static str,
+        verb: &'static str,
+        intro: Vec<String>,
+        kind: DialogKind,
+        form: Form,
+    ) -> Self {
         GitDialog {
             title,
             verb,
             intro,
             kind,
-            fields: vec![],
+            fields: form.0,
             selected: 0,
             editing: false,
-            auto_stash_changed: false,
             trigger: None,
             select: None,
             conflicts: None,
@@ -330,7 +582,13 @@ impl GitDialog {
             task: Box::new(task),
             warning: "The changes are lost.",
         };
-        Self::with(" Discard changes ", "discard", vec![prompt], kind)
+        Self::with(
+            " Discard changes ",
+            "discard",
+            vec![prompt],
+            kind,
+            Form::default(),
+        )
     }
 
     // Aborts the rebase, merge, cherry-pick or revert in progress.
@@ -349,7 +607,7 @@ impl GitDialog {
             task: Box::new(task),
             warning: "What was done since it started is lost.",
         };
-        Self::with(" Abort ", "abort", intro, kind)
+        Self::with(" Abort ", "abort", intro, kind, Form::default())
     }
 
     // Commits as `preview` shows; the commit key confirms it too.
@@ -363,7 +621,7 @@ impl GitDialog {
             preview: Box::new(preview),
             task: Box::new(task),
         };
-        let mut dialog = Self::with(title, verb, vec![], kind);
+        let mut dialog = Self::with(title, verb, vec![], kind, Form::default());
         dialog.trigger = Some(UserEvent::Commit);
         dialog
     }
@@ -371,20 +629,26 @@ impl GitDialog {
     // Stashes the changes of `paths`, all of them when empty, described as `target`.
     pub fn stash(target: String, paths: Vec<String>) -> Self {
         let intro = vec![format!("Stash {target}")];
-        let mut dialog = Self::with(
-            " Stash ",
-            "stash",
-            intro,
-            DialogKind::Stash { paths, target },
-        );
-        dialog.push_text(FieldId::Message, "Message", "", vec![]);
+        let mut form = Form::default();
+        let message = form.text("Message", "", vec![], Need::Optional);
+        let kind = DialogKind::Stash {
+            paths,
+            target,
+            message,
+        };
+        let mut dialog = Self::with(" Stash ", "stash", intro, kind, form);
         dialog.editing = true;
         dialog
     }
 
-    fn stash_command(&self, paths: &[String], target: &str) -> Result<GitTask, String> {
+    fn stash_command(
+        &self,
+        paths: &[String],
+        target: &str,
+        message: Text,
+    ) -> Result<GitTask, String> {
         Ok(GitTask {
-            commands: vec![stash_args(paths, self.value(FieldId::Message).trim())],
+            commands: vec![stash_args(paths, &self.text(message))],
             running: format!("Stashing {target}"),
             done: format!("Stashed {target}"),
             ..Default::default()
@@ -442,29 +706,23 @@ impl GitDialog {
         if info.remotes.is_empty() {
             return Err("No remotes configured".into());
         }
-        // git would merge into the detached HEAD, a commit no branch keeps
-        if action == RemoteAction::Pull && info.current_branch.is_none() {
-            return Err("Check out a branch to pull into it".into());
-        }
-        let (title, verb, trigger) = match action {
-            RemoteAction::Fetch => (" Fetch ", "fetch", UserEvent::Fetch),
-            RemoteAction::Pull => (" Pull ", "pull", UserEvent::Pull),
-            RemoteAction::Push => (" Push ", "push", UserEvent::Push),
-        };
-        let mut dialog = Self::with(
-            title,
-            verb,
-            vec![],
-            DialogKind::Remote(action, Box::new(info.clone())),
-        );
-        dialog.trigger = Some(trigger);
         let current = info.current_branch.clone();
-        match action {
+        let default_remote = info
+            .default_remote(current.as_deref())
+            .cloned()
+            .unwrap_or_default();
+        let mut form = Form::default();
+        let (title, verb, trigger, kind) = match action {
             RemoteAction::Fetch => {
-                let remote = dialog.default_remote(current.as_deref());
-                dialog.push_choice(FieldId::Remote, "Remote", info.remotes.clone(), &remote);
+                let remote = form.pick("Remote", info.remotes.clone(), &default_remote);
+                let kind = DialogKind::Fetch { remote };
+                (" Fetch ", "fetch", UserEvent::Fetch, kind)
             }
             RemoteAction::Pull => {
+                // git would merge into the detached HEAD, a commit no branch keeps
+                if current.is_none() {
+                    return Err("Check out a branch to pull into it".into());
+                }
                 // only the remotes with a branch to pull, as fetched
                 let remotes: Vec<String> = info
                     .remotes
@@ -475,131 +733,136 @@ impl GitDialog {
                 if remotes.is_empty() {
                     return Err("No remote has a branch to pull, fetch first".into());
                 }
-                let remote = dialog.default_remote(current.as_deref());
-                dialog.push_choice(FieldId::Remote, "Remote", remotes, &remote);
-                dialog.push_choice(FieldId::Branch, "Branch", vec![], "");
-                dialog.update_pull_branch(None);
-                dialog.push_check(FieldId::Rebase, "Rebase instead of merge", info.pull_rebase);
+                let remote = form.pick("Remote", remotes, &default_remote);
+                let branch = form.pick("Branch", vec![], "");
+                let rebase = form.check("Rebase instead of merge", info.pull_rebase);
                 let auto_stash = info.auto_stash(info.pull_rebase);
-                dialog.push_check(
-                    FieldId::AutoStash,
-                    "Stash and reapply local changes",
-                    auto_stash,
-                );
+                let auto_stash = form.check("Stash and reapply local changes", auto_stash);
+                let kind = DialogKind::Pull {
+                    info: Box::new(info),
+                    fields: PullFields {
+                        remote,
+                        branch,
+                        rebase,
+                        auto_stash,
+                    },
+                    auto_stash_follows: AutoStashFollows::Config,
+                };
+                (" Pull ", "pull", UserEvent::Pull, kind)
             }
             RemoteAction::Push => {
                 if info.branches.is_empty() {
                     return Err("No local branches to push".into());
                 }
                 let current = current.unwrap_or_default();
-                dialog.push_choice(
-                    FieldId::LocalBranch,
-                    "Branch",
-                    info.branches.clone(),
-                    &current,
-                );
-                dialog.push_choice(FieldId::Remote, "To remote", info.remotes.clone(), "");
-                dialog.push_text(FieldId::RemoteBranch, "As branch", "", vec![]);
-                dialog.push_check(FieldId::Tags, "Push all tags", false);
-                dialog.push_check(FieldId::Force, "Force push (with lease)", false);
-                dialog.push_check(
-                    FieldId::NoVerify,
-                    "Skip the pre-push hook (--no-verify)",
-                    false,
-                );
-                dialog.update_push_remote();
+                let local_branch = form.pick("Branch", info.branches.clone(), &current);
+                let remote = form.pick("To remote", info.remotes.clone(), "");
+                let remote_branch = form.text("As branch", "", vec![], Need::Required);
+                let tags = form.check("Push all tags", false);
+                let force = form.check("Force push (with lease)", false);
+                let no_verify = form.check("Skip the pre-push hook (--no-verify)", false);
+                let kind = DialogKind::Push {
+                    info: Box::new(info),
+                    fields: PushFields {
+                        local_branch,
+                        remote,
+                        remote_branch,
+                        tags,
+                        force,
+                        no_verify,
+                    },
+                };
+                (" Push ", "push", UserEvent::Push, kind)
             }
-        }
+        };
+        let mut dialog = Self::with(title, verb, vec![], kind, form);
+        dialog.trigger = Some(trigger);
+        dialog.update_pull_branch(None);
+        dialog.update_push_remote();
         Ok(dialog)
     }
 
-    fn remote_command(&self, action: RemoteAction) -> Result<GitTask, String> {
-        let remote = self.value(FieldId::Remote);
-        let mut branch_status = None;
-        let (args, running, done) = match action {
-            RemoteAction::Fetch => (
-                GitCommand::Fetch.args([remote.clone()]),
-                format!("Fetching {remote}"),
-                format!("Fetched {remote}"),
-            ),
-            RemoteAction::Pull => {
-                let branch = self.value(FieldId::Branch);
-                let mut args = vec![];
-                // explicit, so the checkbox wins over pull.rebase
-                args.push(if self.checked(FieldId::Rebase) {
-                    "--rebase".into()
-                } else {
-                    "--no-rebase".into()
-                });
-                // explicit too, so the checkbox wins over rebase.autoStash and merge.autoStash
-                args.push(if self.checked(FieldId::AutoStash) {
-                    "--autostash".into()
-                } else {
-                    "--no-autostash".into()
-                });
-                args.extend([remote.clone(), branch.clone()]);
-                // pulling merges into the checked-out branch
-                branch_status = self
-                    .info()
-                    .current_branch
-                    .clone()
-                    .map(|branch| BranchStatus {
-                        branch,
-                        label: "Pulling".into(),
-                        short: "↓",
-                    });
-                (
-                    GitCommand::Pull.args(args),
-                    format!("Pulling {remote}/{branch}"),
-                    format!("Pulled {remote}/{branch}"),
-                )
-            }
-            RemoteAction::Push => {
-                let branch = self.value(FieldId::LocalBranch);
-                let remote_branch = self.value(FieldId::RemoteBranch);
-                if remote_branch.is_empty() {
-                    return Err("Choose a branch to push to".into());
-                }
-                let mut args = vec![];
-                if self.checked(FieldId::Force) {
-                    args.push("--force-with-lease".into());
-                }
-                if self.checked(FieldId::Tags) {
-                    args.push("--tags".into());
-                }
-                if self.checked(FieldId::NoVerify) {
-                    args.push("--no-verify".into());
-                }
-                // a branch without an upstream tracks the branch it is pushed to
-                if !self.info().upstreams.contains_key(&branch) {
-                    args.push("--set-upstream".into());
-                }
-                args.extend([
-                    remote.clone(),
-                    format!("refs/heads/{branch}:refs/heads/{remote_branch}"),
-                ]);
-                let force = if self.checked(FieldId::Force) {
-                    "Force pushing"
-                } else {
-                    "Pushing"
-                };
-                branch_status = Some(BranchStatus {
-                    branch: branch.clone(),
-                    label: force.into(),
-                    short: "↑",
-                });
-                (
-                    GitCommand::Push.args(args),
-                    format!("{force} {branch} to {remote}/{remote_branch}"),
-                    format!("Pushed {branch} to {remote}/{remote_branch}"),
-                )
-            }
-        };
+    fn fetch_command(&self, remote: Pick) -> Result<GitTask, String> {
+        let remote = self.pick_value(remote);
+        Ok(GitTask::new(
+            GitCommand::Fetch,
+            &[&remote],
+            format!("Fetching {remote}"),
+            format!("Fetched {remote}"),
+        ))
+    }
+
+    fn pull_command(&self, info: &RemoteInfo, fields: &PullFields) -> Result<GitTask, String> {
+        let remote = self.pick_value(fields.remote);
+        let branch = self.pick_value(fields.branch);
+        let args = [
+            // explicit, so the checkbox wins over pull.rebase
+            if self.checked(fields.rebase) {
+                "--rebase"
+            } else {
+                "--no-rebase"
+            },
+            // explicit too, so the checkbox wins over rebase.autoStash and merge.autoStash
+            if self.checked(fields.auto_stash) {
+                "--autostash"
+            } else {
+                "--no-autostash"
+            },
+            &remote,
+            &branch,
+        ];
         Ok(GitTask {
-            commands: vec![args],
-            running,
-            done,
-            branch_status,
+            // pulling merges into the checked-out branch
+            branch_status: info.current_branch.clone().map(|branch| BranchStatus {
+                branch,
+                label: "Pulling".into(),
+                short: "↓",
+            }),
+            ..GitTask::new(
+                GitCommand::Pull,
+                &args,
+                format!("Pulling {remote}/{branch}"),
+                format!("Pulled {remote}/{branch}"),
+            )
+        })
+    }
+
+    fn push_command(&self, info: &RemoteInfo, fields: &PushFields) -> Result<GitTask, String> {
+        let branch = self.pick_value(fields.local_branch);
+        let remote = self.pick_value(fields.remote);
+        let remote_branch = self.text(fields.remote_branch);
+        if remote_branch.is_empty() {
+            return Err("Choose a branch to push to".into());
+        }
+        let force = self.checked(fields.force);
+        let mut args = vec![];
+        if force {
+            args.push("--force-with-lease".to_string());
+        }
+        if self.checked(fields.tags) {
+            args.push("--tags".into());
+        }
+        if self.checked(fields.no_verify) {
+            args.push("--no-verify".into());
+        }
+        // a branch without an upstream tracks the branch it is pushed to
+        if !info.upstreams.contains_key(&branch) {
+            args.push("--set-upstream".into());
+        }
+        args.extend([
+            remote.clone(),
+            format!("refs/heads/{branch}:refs/heads/{remote_branch}"),
+        ]);
+        let pushing = if force { "Force pushing" } else { "Pushing" };
+        Ok(GitTask {
+            commands: vec![GitCommand::Push.args(args)],
+            running: format!("{pushing} {branch} to {remote}/{remote_branch}"),
+            done: format!("Pushed {branch} to {remote}/{remote_branch}"),
+            branch_status: Some(BranchStatus {
+                branch,
+                label: pushing.into(),
+                short: "↑",
+            }),
             ..Default::default()
         })
     }
@@ -609,19 +872,23 @@ impl GitDialog {
     pub fn rebase(branch: &str, onto: String, onto_label: &str, auto_stash: bool) -> Self {
         let description = format!("Rebased {branch} onto {onto_label}");
         let intro = vec![format!("Rebase {branch} onto {onto_label}")];
-        let kind = DialogKind::Rebase { onto, description };
-        let mut dialog = Self::with(" Rebase ", "rebase", intro, kind);
-        dialog.push_check(
-            FieldId::AutoStash,
-            "Stash and reapply local changes",
+        let mut form = Form::default();
+        let auto_stash = form.check("Stash and reapply local changes", auto_stash);
+        let kind = DialogKind::Rebase {
+            onto,
+            description,
             auto_stash,
-        );
-        dialog
+        };
+        Self::with(" Rebase ", "rebase", intro, kind, form)
     }
 
-    fn rebase_command(&self, onto: &str, description: &str) -> Result<GitTask, String> {
-        let auto_stash = self.checked(FieldId::AutoStash);
-        let stash = if auto_stash {
+    fn rebase_command(
+        &self,
+        onto: &str,
+        description: &str,
+        auto_stash: Check,
+    ) -> Result<GitTask, String> {
+        let stash = if self.checked(auto_stash) {
             "--autostash"
         } else {
             "--no-autostash"
@@ -638,37 +905,38 @@ impl GitDialog {
     pub fn merge(branch: &str, source: String, source_label: &str, merge_ff: Option<&str>) -> Self {
         let description = format!("Merged {source_label} into {branch}");
         let intro = vec![format!("Merge {source_label} into {branch}")];
+        let default = match merge_ff {
+            Some("only") => MergeType::FastForwardOnly,
+            Some(value) if parse_git_bool(value) == Some(false) => MergeType::MergeCommit,
+            _ => MergeType::FastForward,
+        };
+        let mut form = Form::default();
+        let merge_type = form.choose("Type", default);
         let kind = DialogKind::Merge {
             source,
             description,
+            merge_type,
         };
-        let mut dialog = Self::with(" Merge ", "merge", intro, kind);
-        let types = MERGE_TYPES.map(String::from).to_vec();
-        let default = match merge_ff {
-            Some("only") => MERGE_TYPES[2],
-            Some(value) if parse_git_bool(value) == Some(false) => MERGE_TYPES[1],
-            _ => MERGE_TYPES[0],
-        };
-        dialog.push_choice(FieldId::MergeType, "Type", types, default);
-        dialog
+        Self::with(" Merge ", "merge", intro, kind, form)
     }
 
-    fn merge_command(&self, source: &str, description: &str) -> Result<GitTask, String> {
-        let mut args = vec![];
-        args.extend_from_slice(match self.choice(FieldId::MergeType) {
-            0 => &["--ff", "--no-edit"][..],
-            1 => &["--no-ff", "--no-edit"],
-            2 => &["--ff-only"],
-            3 => &["--squash"],
-            _ => &["--no-ff", "--no-commit"],
-        });
+    fn merge_command(
+        &self,
+        source: &str,
+        description: &str,
+        merge_type: Choose<MergeType>,
+    ) -> Result<GitTask, String> {
+        let merge_type = self.chosen(merge_type);
+        let mut args = merge_type.args().to_vec();
         args.push(source);
-        let done = match self.choice(FieldId::MergeType) {
-            3 | 4 => format!("{description}, commit it in local changes"),
-            _ => description.to_string(),
+        let leaves_changes = merge_type.leaves_changes();
+        let done = if leaves_changes {
+            format!("{description}, commit it in local changes")
+        } else {
+            description.to_string()
         };
         Ok(GitTask {
-            after: if self.choice(FieldId::MergeType) >= 3 {
+            after: if leaves_changes {
                 AfterTask::LocalChanges
             } else {
                 AfterTask::Reload
@@ -684,29 +952,33 @@ impl GitDialog {
 
     pub fn checkout(targets: Vec<CheckoutTarget>) -> Self {
         let options = targets.iter().map(|t| t.label.clone()).collect();
-        let mut dialog = Self::with(
-            " Checkout ",
-            "check out",
-            vec![],
-            DialogKind::Checkout { targets },
-        );
-        dialog.push_choice(FieldId::Target, "Check out", options, "");
-        let options = LOCAL_CHANGES_OPTIONS.map(String::from).to_vec();
-        dialog.push_choice(FieldId::LocalChanges, "Local changes", options, "");
-        dialog
+        let mut form = Form::default();
+        let target = form.pick("Check out", options, "");
+        let local_changes = form.choose("Local changes", LocalChanges::Keep);
+        let kind = DialogKind::Checkout {
+            targets,
+            target,
+            local_changes,
+        };
+        Self::with(" Checkout ", "check out", vec![], kind, form)
     }
 
-    fn checkout_command(&self, targets: &[CheckoutTarget]) -> Result<GitTask, String> {
-        let target = &targets[self.choice(FieldId::Target)];
-        let local_changes = self.choice(FieldId::LocalChanges);
+    fn checkout_command(
+        &self,
+        targets: &[CheckoutTarget],
+        target: Pick,
+        local_changes: Choose<LocalChanges>,
+    ) -> Result<GitTask, String> {
+        let target = &targets[self.pick_index(target)];
+        let local_changes = self.chosen(local_changes);
         let mut args = vec![];
-        if local_changes == 2 {
+        if local_changes == LocalChanges::Discard {
             args.push("--force".into());
         }
         args.extend(target.args.iter().cloned());
         Ok(GitTask {
             commands: vec![GitCommand::Checkout.args(args)],
-            stash: local_changes == 1,
+            stash: local_changes == LocalChanges::Stash,
             running: format!("Checking out {}", target.label),
             done: format!("Checked out {}", target.label),
             ..Default::default()
@@ -716,23 +988,32 @@ impl GitDialog {
     // `commits` are the oldest first, the order they are applied in.
     pub fn cherry_pick(branch: &str, commits: Vec<DialogCommit>) -> Self {
         let intro = commits_intro(&format!("Cherry-pick onto {branch}"), &commits);
-        let kind = DialogKind::CherryPick { commits };
-        let mut dialog = Self::with(" Cherry-pick ", "cherry-pick", intro, kind);
-        dialog.push_check(FieldId::Commit, "Commit (else edit in local changes)", true);
-        dialog.push_check(
-            FieldId::AppendOrigin,
+        let mut form = Form::default();
+        let commit = form.check("Commit (else edit in local changes)", true);
+        let append_origin = form.check(
             "Append \"(cherry picked from commit …)\" to the messages",
             false,
         );
-        dialog
+        let kind = DialogKind::CherryPick {
+            commits,
+            commit,
+            append_origin,
+        };
+        Self::with(" Cherry-pick ", "cherry-pick", intro, kind, form)
     }
 
-    fn cherry_pick_command(&self, commits: &[DialogCommit]) -> Result<GitTask, String> {
+    fn cherry_pick_command(
+        &self,
+        commits: &[DialogCommit],
+        commit: Check,
+        append_origin: Check,
+    ) -> Result<GitTask, String> {
+        let commit = self.checked(commit);
         let mut args = vec![];
-        if !self.checked(FieldId::Commit) {
+        if !commit {
             args.push("--no-commit".into());
         }
-        if self.checked(FieldId::AppendOrigin) {
+        if self.checked(append_origin) {
             args.push("-x".into());
         }
         args.extend(commits.iter().map(|c| c.hash.as_str().to_string()));
@@ -742,7 +1023,7 @@ impl GitDialog {
             running: format!("Cherry-picking {n}"),
             done: format!("Cherry-picked {n}"),
             uses_picks: true,
-            after: if self.checked(FieldId::Commit) {
+            after: if commit {
                 AfterTask::Reload
             } else {
                 AfterTask::LocalChanges
@@ -760,26 +1041,30 @@ impl GitDialog {
         auto_stash: bool,
     ) -> Self {
         let intro = commits_intro(&format!("Squash into their parents, on {branch}"), &commits);
-        let kind = DialogKind::Squash { commits, base };
-        let mut dialog = Self::with(" Squash ", "squash", intro, kind);
-        let messages = SQUASH_MESSAGES.map(String::from).to_vec();
-        dialog.push_choice(FieldId::Messages, "Messages", messages, "");
-        dialog.push_check(
-            FieldId::AutoStash,
-            "Stash and reapply local changes",
+        let mut form = Form::default();
+        let messages = form.choose("Messages", SquashMessages::Combine);
+        let auto_stash = form.check("Stash and reapply local changes", auto_stash);
+        let kind = DialogKind::Squash {
+            commits,
+            base,
+            messages,
             auto_stash,
-        );
-        dialog
+        };
+        Self::with(" Squash ", "squash", intro, kind, form)
     }
 
     fn squash_command(
         &self,
         commits: &[DialogCommit],
         base: Option<&str>,
+        messages: Choose<SquashMessages>,
+        auto_stash: Check,
     ) -> Result<GitTask, String> {
-        let auto_stash = self.checked(FieldId::AutoStash);
-        let fixup = self.choice(FieldId::Messages) == 1;
-        let action = if fixup { "fixup" } else { "squash" };
+        let auto_stash = self.checked(auto_stash);
+        let action = match self.chosen(messages) {
+            SquashMessages::Combine => "squash",
+            SquashMessages::Fixup => "fixup",
+        };
         let todo: Vec<String> = commits
             .iter()
             .map(|c| todo_action(c.hash.as_str(), action))
@@ -796,15 +1081,16 @@ impl GitDialog {
     // `commits` are the newest first, the order they are reverted in.
     pub fn revert(branch: &str, commits: Vec<DialogCommit>) -> Self {
         let intro = commits_intro(&format!("Revert on {branch}"), &commits);
-        let kind = DialogKind::Revert { commits };
-        let mut dialog = Self::with(" Revert ", "revert", intro, kind);
-        dialog.push_check(FieldId::Commit, "Commit (else edit in local changes)", true);
-        dialog
+        let mut form = Form::default();
+        let commit = form.check("Commit (else edit in local changes)", true);
+        let kind = DialogKind::Revert { commits, commit };
+        Self::with(" Revert ", "revert", intro, kind, form)
     }
 
-    fn revert_command(&self, commits: &[DialogCommit]) -> Result<GitTask, String> {
+    fn revert_command(&self, commits: &[DialogCommit], commit: Check) -> Result<GitTask, String> {
+        let commit = self.checked(commit);
         let mut args = vec!["--no-edit".to_string()];
-        if !self.checked(FieldId::Commit) {
+        if !commit {
             args.push("--no-commit".into());
         }
         args.extend(commits.iter().map(|c| c.hash.as_str().to_string()));
@@ -814,7 +1100,7 @@ impl GitDialog {
             running: format!("Reverting {n}"),
             done: format!("Reverted {n}"),
             uses_picks: true,
-            after: if self.checked(FieldId::Commit) {
+            after: if commit {
                 AfterTask::Reload
             } else {
                 AfterTask::LocalChanges
@@ -834,18 +1120,23 @@ impl GitDialog {
             format!("Edit on {branch}, amending it on the local changes page"),
             format!("  {}", commit.line),
         ];
-        let kind = DialogKind::Edit { commit, base };
-        let mut dialog = Self::with(" Edit commit ", "edit", intro, kind);
-        dialog.push_check(
-            FieldId::AutoStash,
-            "Stash and reapply local changes",
+        let mut form = Form::default();
+        let auto_stash = form.check("Stash and reapply local changes", auto_stash);
+        let kind = DialogKind::Edit {
+            commit,
+            base,
             auto_stash,
-        );
-        dialog
+        };
+        Self::with(" Edit commit ", "edit", intro, kind, form)
     }
 
-    fn edit_command(&self, commit: &DialogCommit, base: Option<&str>) -> Result<GitTask, String> {
-        let auto_stash = self.checked(FieldId::AutoStash);
+    fn edit_command(
+        &self,
+        commit: &DialogCommit,
+        base: Option<&str>,
+        auto_stash: Check,
+    ) -> Result<GitTask, String> {
+        let auto_stash = self.checked(auto_stash);
         let todo = [todo_action(commit.hash.as_str(), "edit")];
         let short = commit.hash.as_short_hash();
         Ok(GitTask {
@@ -864,22 +1155,23 @@ impl GitDialog {
         auto_stash: bool,
     ) -> Self {
         let intro = commits_intro(&format!("Drop from {branch}"), &commits);
-        let kind = DialogKind::Drop { commits, base };
-        let mut dialog = Self::with(" Drop ", "drop", intro, kind);
-        dialog.push_check(
-            FieldId::AutoStash,
-            "Stash and reapply local changes",
+        let mut form = Form::default();
+        let auto_stash = form.check("Stash and reapply local changes", auto_stash);
+        let kind = DialogKind::Drop {
+            commits,
+            base,
             auto_stash,
-        );
-        dialog
+        };
+        Self::with(" Drop ", "drop", intro, kind, form)
     }
 
     fn drop_command(
         &self,
         commits: &[DialogCommit],
         base: Option<&str>,
+        auto_stash: Check,
     ) -> Result<GitTask, String> {
-        let auto_stash = self.checked(FieldId::AutoStash);
+        let auto_stash = self.checked(auto_stash);
         let todo: Vec<String> = commits
             .iter()
             .map(|c| todo_action(c.hash.as_str(), "drop"))
@@ -917,18 +1209,30 @@ impl GitDialog {
 
     // `from` is the field choosing among `starts`.
     fn create_branch(starts: Vec<StartPoint>, from: Field) -> Self {
-        let kind = DialogKind::CreateBranch { starts };
-        let mut dialog = Self::with(" New branch ", "create", vec![], kind);
-        dialog.push_text(FieldId::Name, "Name", "", vec![]);
-        dialog.fields.push((FieldId::From, "From".into(), from));
-        dialog.push_check(FieldId::Checkout, "Check it out", true);
+        let mut form = Form::default();
+        let name = form.text("Name", "", vec![], Need::Required);
+        let from = Pick(form.push("From", from));
+        let checkout = form.check("Check it out", true);
+        let kind = DialogKind::CreateBranch {
+            starts,
+            name,
+            from,
+            checkout,
+        };
+        let mut dialog = Self::with(" New branch ", "create", vec![], kind, form);
         dialog.editing = true;
         dialog
     }
 
-    fn create_branch_command(&self, starts: &[StartPoint]) -> Result<GitTask, String> {
-        let name = self.value(FieldId::Name);
-        let start = &starts[self.choice(FieldId::From)];
+    fn create_branch_command(
+        &self,
+        starts: &[StartPoint],
+        name: Text,
+        from: Pick,
+        checkout: Check,
+    ) -> Result<GitTask, String> {
+        let name = self.text(name);
+        let start = &starts[self.pick_index(from)];
         let from = start.revision();
         if name.is_empty() {
             return Err("Type a name for the branch".into());
@@ -938,7 +1242,7 @@ impl GitDialog {
             return Err("A branch name can't start with -".into());
         }
         // tracking `from` when it is a remote branch, either way
-        let (command, args): (_, &[&str]) = if self.checked(FieldId::Checkout) {
+        let (command, args): (_, &[&str]) = if self.checked(checkout) {
             (GitCommand::Checkout, &["-b", &name, &from])
         } else {
             (GitCommand::Branch, &[&name, &from])
@@ -952,12 +1256,12 @@ impl GitDialog {
     }
 
     // Local branches; `unmerged` are those whose commits are on no other branch, which it warns
-    // about, as their commits may be lost. `upstreams` (remote, branch) are their upstreams still on
+    // about, as their commits may be lost. `upstreams` are their upstreams still on
     // their remotes, which a checkbox deletes too.
     pub fn delete_branches(
         names: Vec<String>,
         unmerged: Vec<String>,
-        upstreams: Vec<(String, String)>,
+        upstreams: Vec<RemoteBranch>,
     ) -> Self {
         let intro = names_intro("Delete the branch", "Delete the branches", &names);
         let label = match upstreams.len() {
@@ -965,30 +1269,26 @@ impl GitDialog {
             1 if names.len() == 1 => Some("Delete its upstream on the remote too"),
             _ => Some("Delete their upstreams on the remotes too"),
         };
+        let mut form = Form::default();
+        let also_upstreams = label.map(|label| form.check(label, false));
         let kind = DialogKind::DeleteBranches {
             names,
             unmerged,
             upstreams,
+            also_upstreams,
         };
-        let mut dialog = Self::with(" Delete branch ", "delete", intro, kind);
-        if let Some(label) = label {
-            dialog.push_check(FieldId::Force, label, false);
-        }
-        dialog
+        Self::with(" Delete branch ", "delete", intro, kind, form)
     }
 
     // confirmed with the warning when it isn't merged
     fn delete_branches_command(
         &self,
         names: &[String],
-        upstreams: &[(String, String)],
+        upstreams: &[RemoteBranch],
+        also_upstreams: Option<Check>,
     ) -> Result<GitTask, String> {
-        let args = GitCommand::Branch.args(
-            ["-D"]
-                .into_iter()
-                .map(String::from)
-                .chain(names.iter().cloned()),
-        );
+        let args =
+            GitCommand::Branch.args(std::iter::once("-D").chain(names.iter().map(String::as_str)));
         let what = names_label("branch", "branches", names);
         let mut task = GitTask {
             commands: vec![args],
@@ -996,7 +1296,7 @@ impl GitDialog {
             done: format!("Deleted {what}"),
             ..Default::default()
         };
-        if self.checked(FieldId::Force) {
+        if also_upstreams.is_some_and(|check| self.checked(check)) {
             // the remote first: should it fail, offline say, nothing is deleted yet to retry it
             task.commands.splice(0..0, delete_on_remotes(upstreams));
             task.done = format!("Deleted {what}, also on the remote");
@@ -1005,23 +1305,20 @@ impl GitDialog {
     }
 
     // Branches on their remotes, as (remote, branch).
-    pub fn delete_remote_branches(branches: Vec<(String, String)>) -> Self {
-        let names: Vec<String> = branches.iter().map(|(r, b)| format!("{r}/{b}")).collect();
+    pub fn delete_remote_branches(branches: Vec<RemoteBranch>) -> Self {
+        let names: Vec<String> = branches.iter().map(ToString::to_string).collect();
         let intro = names_intro(
             "Delete from its remote the branch",
             "Delete from their remotes the branches",
             &names,
         );
         let kind = DialogKind::DeleteRemoteBranches { branches };
-        Self::with(" Delete branch ", "delete", intro, kind)
+        Self::with(" Delete branch ", "delete", intro, kind, Form::default())
     }
 
-    fn delete_remote_branches_command(
-        &self,
-        branches: &[(String, String)],
-    ) -> Result<GitTask, String> {
+    fn delete_remote_branches_command(&self, branches: &[RemoteBranch]) -> Result<GitTask, String> {
         let commands = delete_on_remotes(branches);
-        let names: Vec<String> = branches.iter().map(|(r, b)| format!("{r}/{b}")).collect();
+        let names: Vec<String> = branches.iter().map(ToString::to_string).collect();
         let what = names_label("branch", "branches", &names);
         Ok(GitTask {
             commands,
@@ -1046,18 +1343,17 @@ impl GitDialog {
             .as_ref()
             .and_then(|u| upstreams.iter().position(|o| o == u))
             .map_or(0, |i| i + 1);
+        let mut form = Form::default();
+        let new_name = form.text("Name", name, vec![], Need::Required);
+        let new_upstream = Pick(form.push("Upstream", Field::Choice { options, index }));
         let kind = DialogKind::EditBranch {
             name: name.to_string(),
             upstream,
             upstreams,
+            new_name,
+            new_upstream,
         };
-        let mut dialog = Self::with(" Edit branch ", "save", vec![], kind);
-        dialog.push_text(FieldId::Name, "Name", name, vec![]);
-        dialog.fields.push((
-            FieldId::Upstream,
-            "Upstream".into(),
-            Field::Choice { options, index },
-        ));
+        let mut dialog = Self::with(" Edit branch ", "save", vec![], kind, form);
         dialog.editing = true;
         dialog
     }
@@ -1067,13 +1363,15 @@ impl GitDialog {
         name: &str,
         upstream: &Option<String>,
         upstreams: &[String],
+        new_name: Text,
+        new_upstream: Pick,
     ) -> Result<GitTask, String> {
         // the first choice is None
         let new_upstream = self
-            .choice(FieldId::Upstream)
+            .pick_index(new_upstream)
             .checked_sub(1)
             .map(|i| upstreams[i].clone());
-        let new_name = self.value(FieldId::Name);
+        let new_name = self.text(new_name);
         if new_name.is_empty() {
             return Err("Type a name for the branch".into());
         }
@@ -1105,17 +1403,25 @@ impl GitDialog {
 
     // Renames a remote or changes its URL.
     pub fn edit_remote(name: &str, url: &str) -> Self {
+        let mut form = Form::default();
+        let fields = RemoteFields::new(&mut form, name, url);
         let kind = DialogKind::EditRemote {
             name: name.to_string(),
             url: url.to_string(),
+            fields,
         };
-        let mut dialog = Self::remote_form(" Edit remote ", "save", kind, name, url);
+        let mut dialog = Self::with(" Edit remote ", "save", vec![], kind, form);
         dialog.editing = true;
         dialog
     }
 
-    fn edit_remote_command(&self, name: &str, url: &str) -> Result<GitTask, String> {
-        let (new_name, new_url) = self.remote_values()?;
+    fn edit_remote_command(
+        &self,
+        name: &str,
+        url: &str,
+        fields: RemoteFields,
+    ) -> Result<GitTask, String> {
+        let (new_name, new_url) = self.remote_values(fields)?;
         let mut commands = vec![];
         if new_name != *name {
             commands.push(GitCommand::Remote.args(["rename", name, &new_name]));
@@ -1136,13 +1442,15 @@ impl GitDialog {
 
     // A new remote, fetched once added, like lazygit.
     pub fn add_remote() -> Self {
-        let mut dialog = Self::remote_form(" New remote ", "add", DialogKind::AddRemote, "", "");
+        let mut form = Form::default();
+        let kind = DialogKind::AddRemote(RemoteFields::new(&mut form, "", ""));
+        let mut dialog = Self::with(" New remote ", "add", vec![], kind, form);
         dialog.editing = true;
         dialog
     }
 
-    fn add_remote_command(&self) -> Result<GitTask, String> {
-        let (name, url) = self.remote_values()?;
+    fn add_remote_command(&self, fields: RemoteFields) -> Result<GitTask, String> {
+        let (name, url) = self.remote_values(fields)?;
         Ok(GitTask {
             commands: vec![
                 GitCommand::Remote.args(["add", &name, &url]),
@@ -1154,24 +1462,10 @@ impl GitDialog {
         })
     }
 
-    // The name and URL of a remote.
-    fn remote_form(
-        title: &'static str,
-        verb: &'static str,
-        kind: DialogKind,
-        name: &str,
-        url: &str,
-    ) -> Self {
-        let mut dialog = Self::with(title, verb, vec![], kind);
-        dialog.push_text(FieldId::Name, "Name", name, vec![]);
-        dialog.push_text(FieldId::Url, "URL", url, vec![]);
-        dialog
-    }
-
     // The name and URL typed for a remote.
-    fn remote_values(&self) -> Result<(String, String), String> {
-        let name = self.value(FieldId::Name);
-        let url = self.value(FieldId::Url);
+    fn remote_values(&self, fields: RemoteFields) -> Result<(String, String), String> {
+        let name = self.text(fields.name);
+        let url = self.text(fields.url);
         if name.is_empty() || url.is_empty() {
             return Err("Type a name and a URL for the remote".into());
         }
@@ -1180,21 +1474,25 @@ impl GitDialog {
 
     // A tag at `at`, annotated when it has a message.
     pub fn create_tag(at: StartPoint) -> Self {
-        let label = at.label();
-        let mut dialog = Self::with(" New tag ", "create", vec![], DialogKind::CreateTag { at });
-        dialog.push_text(FieldId::Name, "Name", "", vec![]);
-        dialog.push_text(FieldId::Message, "Message", "", vec![]);
+        let mut form = Form::default();
+        let name = form.text("Name", "", vec![], Need::Required);
+        let message = form.text("Message", "", vec![], Need::Optional);
         // where the cursor is, nothing else to choose
-        dialog
-            .fields
-            .push((FieldId::At, "At".into(), Field::Fixed(label)));
+        form.fixed("At", at.label());
+        let kind = DialogKind::CreateTag { at, name, message };
+        let mut dialog = Self::with(" New tag ", "create", vec![], kind, form);
         dialog.editing = true;
         dialog
     }
 
-    fn create_tag_command(&self, at: &StartPoint) -> Result<GitTask, String> {
-        let name = self.value(FieldId::Name);
-        let message = self.value(FieldId::Message);
+    fn create_tag_command(
+        &self,
+        at: &StartPoint,
+        name: Text,
+        message: Text,
+    ) -> Result<GitTask, String> {
+        let name = self.text(name);
+        let message = self.text(message);
         let (label, at) = (at.label(), at.revision());
         if name.is_empty() {
             return Err("Type a name for the tag".into());
@@ -1222,28 +1520,26 @@ impl GitDialog {
         let kind = DialogKind::RemoveRemote {
             name: name.to_string(),
         };
-        Self::with(" Remove remote ", "remove", intro, kind)
+        Self::with(" Remove remote ", "remove", intro, kind, Form::default())
     }
 
     // `remote` is where they may be deleted too, when there are remotes.
     pub fn delete_tags(names: Vec<String>, remote: Option<String>) -> Self {
         let intro = names_intro("Delete the tag", "Delete the tags", &names);
-        // named, as it may not be the remote meant: origin, else the first one
-        let label = remote
-            .as_ref()
-            .map(|remote| format!("Delete them from {remote} too"));
+        let mut form = Form::default();
+        // named, as it may not be the remote meant
+        let remote = remote.map(|remote| {
+            let check = form.check(&format!("Delete them from {remote} too"), false);
+            (remote, check)
+        });
         let kind = DialogKind::DeleteTags { names, remote };
-        let mut dialog = Self::with(" Delete tag ", "delete", intro, kind);
-        if let Some(label) = label {
-            dialog.push_check(FieldId::Force, &label, false);
-        }
-        dialog
+        Self::with(" Delete tag ", "delete", intro, kind, form)
     }
 
     fn delete_tags_command(
         &self,
         names: &[String],
-        remote: Option<&str>,
+        remote: &Option<(String, Check)>,
     ) -> Result<GitTask, String> {
         let mut args = vec!["-d".to_string()];
         args.extend(names.iter().cloned());
@@ -1254,7 +1550,8 @@ impl GitDialog {
             done: format!("Deleted {what}"),
             ..Default::default()
         };
-        if let Some(remote) = remote.filter(|_| self.checked(FieldId::Force)) {
+        let remote = remote.as_ref().filter(|(_, check)| self.checked(*check));
+        if let Some((remote, _)) = remote {
             let mut push = vec![remote.to_string(), "--delete".into()];
             push.extend(names.iter().map(|name| format!("refs/tags/{name}")));
             // the remote first: should it fail, offline say, nothing is deleted yet to retry it
@@ -1267,20 +1564,22 @@ impl GitDialog {
     // `name` is like "stash@{0}", `message` what it says.
     pub fn apply_stash(name: &str, message: &str) -> Self {
         let intro = vec![format!("Apply {name}"), format!("  {message}")];
+        let mut form = Form::default();
+        let index = form.check("Restore what was staged as staged", false);
+        let pop = form.check("Drop it once applied (pop)", false);
         let kind = DialogKind::ApplyStash {
             name: name.to_string(),
+            index,
+            pop,
         };
-        let mut dialog = Self::with(" Apply stash ", "apply", intro, kind);
-        dialog.push_check(FieldId::Index, "Restore what was staged as staged", false);
-        dialog.push_check(FieldId::Pop, "Drop it once applied (pop)", false);
-        dialog
+        Self::with(" Apply stash ", "apply", intro, kind, form)
     }
 
-    fn apply_stash_command(&self, name: &str) -> Result<GitTask, String> {
+    fn apply_stash_command(&self, name: &str, index: Check, pop: Check) -> Result<GitTask, String> {
         // popping drops it once applied, git keeps it when it stops on conflicts
-        let pop = self.checked(FieldId::Pop);
+        let pop = self.checked(pop);
         let mut args = vec![if pop { "pop" } else { "apply" }];
-        if self.checked(FieldId::Index) {
+        if self.checked(index) {
             args.push("--index");
         }
         args.push(name);
@@ -1303,12 +1602,8 @@ impl GitDialog {
         let lines: Vec<String> = stashes.iter().map(|(n, m)| format!("{n} {m}")).collect();
         let intro = names_intro("Drop", "Drop the stashes", &lines);
         let names = stashes.into_iter().map(|(name, _)| name).collect();
-        Self::with(
-            " Drop stash ",
-            "drop",
-            intro,
-            DialogKind::DropStashes { names },
-        )
+        let kind = DialogKind::DropStashes { names };
+        Self::with(" Drop stash ", "drop", intro, kind, Form::default())
     }
 
     fn drop_stashes_command(&self, names: &[String]) -> Result<GitTask, String> {
@@ -1340,31 +1635,39 @@ impl GitDialog {
             .collect();
         let remotes: Vec<String> = links.iter().map(|pages| pages[0].remote.clone()).collect();
         let pages: Vec<String> = links[0].iter().map(|link| link.page.clone()).collect();
-        let mut dialog = Self::with(title, verb, vec![], DialogKind::OpenLink { links, action });
-        if remotes.len() > 1 {
-            dialog.push_choice(FieldId::Remote, "Remote", remotes, "");
-        }
-        if pages.len() > 1 {
-            dialog.push_choice(FieldId::Link, "Page", pages, "");
-        }
+        let mut form = Form::default();
+        let remote = (remotes.len() > 1).then(|| form.pick("Remote", remotes, ""));
+        let page = (pages.len() > 1).then(|| form.pick("Page", pages, ""));
+        let kind = DialogKind::OpenLink {
+            links,
+            action,
+            remote,
+            page,
+        };
+        let mut dialog = Self::with(title, verb, vec![], kind, form);
         dialog.trigger = Some(trigger);
         dialog
     }
 
     pub fn reset(branch: &str, commit: DialogCommit) -> Self {
         let intro = vec![format!("Reset {branch} to"), format!("  {}", commit.line)];
+        let mut form = Form::default();
+        let mode = form.choose("Mode", ResetMode::Mixed);
         let kind = DialogKind::Reset {
             commit,
             branch: branch.to_string(),
+            mode,
         };
-        let mut dialog = Self::with(" Reset ", "reset", intro, kind);
-        let modes = RESET_MODES.map(String::from).to_vec();
-        dialog.push_choice(FieldId::ResetMode, "Mode", modes, "");
-        dialog
+        Self::with(" Reset ", "reset", intro, kind, form)
     }
 
-    fn reset_command(&self, commit: &DialogCommit, branch: &str) -> Result<GitTask, String> {
-        let mode = ["--mixed", "--soft", "--hard"][self.choice(FieldId::ResetMode)];
+    fn reset_command(
+        &self,
+        commit: &DialogCommit,
+        branch: &str,
+        mode: Choose<ResetMode>,
+    ) -> Result<GitTask, String> {
+        let mode = self.chosen(mode).flag();
         let short = commit.hash.as_short_hash();
         Ok(GitTask::new(
             GitCommand::Reset,
@@ -1384,37 +1687,38 @@ impl GitDialog {
             FileChange::Move { to, .. } => to,
         };
         let intro = vec![format!("Reset {path} to"), format!("  {}", commit.line)];
+        let mut form = Form::default();
+        let state = form.choose("State", FileState::AtCommit);
         let kind = DialogKind::ResetFile {
             commit,
             change: Box::new(change),
+            state,
         };
-        let mut dialog = Self::with(" Reset file ", "reset", intro, kind);
-        let states = FILE_STATES.map(String::from).to_vec();
-        dialog.push_choice(FieldId::FileState, "State", states, "");
-        dialog
+        Self::with(" Reset file ", "reset", intro, kind, form)
     }
 
     fn reset_file_command(
         &self,
         commit: &DialogCommit,
         change: &FileChange,
+        state: Choose<FileState>,
     ) -> Result<GitTask, String> {
         use FileChange::*;
-        let before = self.choice(FieldId::FileState) == 1;
+        use FileState::*;
+        let state = self.chosen(state);
         // the path the file has then, and the one it doesn't, removed: before the commit added
         // it, after it deleted it, and either name of a renamed file
-        let (present, absent) = match (change, before) {
-            (Modify { path }, _) | (Add { path }, false) | (Delete { path }, true) => {
+        let (present, absent) = match (change, state) {
+            (Modify { path }, _) | (Add { path }, AtCommit) | (Delete { path }, BeforeCommit) => {
                 (Some(path), None)
             }
-            (Add { path }, true) | (Delete { path }, false) => (None, Some(path)),
-            (Move { from, to }, false) => (Some(to), Some(from)),
-            (Move { from, to }, true) => (Some(from), Some(to)),
+            (Add { path }, BeforeCommit) | (Delete { path }, AtCommit) => (None, Some(path)),
+            (Move { from, to }, AtCommit) => (Some(to), Some(from)),
+            (Move { from, to }, BeforeCommit) => (Some(from), Some(to)),
         };
-        let source = if before {
-            format!("{}^", commit.hash.as_str())
-        } else {
-            commit.hash.as_str().to_string()
+        let source = match state {
+            AtCommit => commit.hash.as_str().to_string(),
+            BeforeCommit => format!("{}^", commit.hash.as_str()),
         };
         let mut commands = vec![];
         if let Some(path) = absent {
@@ -1429,7 +1733,10 @@ impl GitDialog {
             commands.push(args);
         }
         let name = present.or(absent).cloned().unwrap_or_default();
-        let at = if before { "before" } else { "at" };
+        let at = match state {
+            AtCommit => "at",
+            BeforeCommit => "before",
+        };
         let short = commit.hash.as_short_hash();
         Ok(GitTask {
             commands,
@@ -1440,121 +1747,93 @@ impl GitDialog {
         })
     }
 
-    fn info(&self) -> &RemoteInfo {
-        match &self.kind {
-            DialogKind::Remote(_, info) => info,
-            _ => unreachable!("only the remote popups have remote info"),
+    fn checked(&self, check: Check) -> bool {
+        matches!(self.fields[check.0].1, Field::Check(true))
+    }
+
+    fn text(&self, text: Text) -> String {
+        match &self.fields[text.0].1 {
+            Field::Text { input, .. } => input.value().trim().to_string(),
+            _ => unreachable!("a text handle is made for a text field"),
         }
     }
 
-    fn push_choice(&mut self, id: FieldId, label: &str, options: Vec<String>, value: &str) {
-        let index = options.iter().position(|o| o == value).unwrap_or(0);
-        self.fields
-            .push((id, label.into(), Field::Choice { options, index }));
-    }
-
-    // A text field, `options` completing it.
-    fn push_text(&mut self, id: FieldId, label: &str, value: &str, options: Vec<String>) {
-        self.fields
-            .push((id, label.into(), Field::text(value, options)));
-    }
-
-    fn push_check(&mut self, id: FieldId, label: &str, checked: bool) {
-        self.fields.push((id, label.into(), Field::Check(checked)));
-    }
-
-    // See `RemoteInfo::default_remote`; the remote popups open with remotes.
-    fn default_remote(&self, branch: Option<&str>) -> String {
-        self.info()
-            .default_remote(branch)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    fn field(&self, id: FieldId) -> Option<&Field> {
-        self.fields.iter().find(|(i, ..)| *i == id).map(|(.., f)| f)
-    }
-
-    fn field_mut(&mut self, id: FieldId) -> Option<&mut Field> {
-        self.fields
-            .iter_mut()
-            .find(|(i, ..)| *i == id)
-            .map(|(.., f)| f)
-    }
-
-    // The text of a text or choice field the popup has; its command reads only those.
-    fn value(&self, id: FieldId) -> String {
-        match self.field(id) {
-            Some(Field::Choice { options, index }) => options[*index].clone(),
-            Some(Field::Text { input, .. }) => input.value().trim().to_string(),
-            Some(Field::Fixed(value)) => value.clone(),
-            _ => panic!("the popup has no text or choice field {id:?}"),
+    // The option chosen, 0 for a value that can't change.
+    fn pick_index(&self, pick: Pick) -> usize {
+        match &self.fields[pick.0].1 {
+            Field::Choice { index, .. } => *index,
+            _ => 0,
         }
     }
 
-    // The option chosen in a choice field the popup has.
-    fn choice(&self, id: FieldId) -> usize {
-        match self.field(id) {
-            Some(Field::Choice { index, .. }) => *index,
-            // the only value
-            Some(Field::Fixed(_)) => 0,
-            _ => panic!("the popup has no choice field {id:?}"),
+    fn pick_value(&self, pick: Pick) -> String {
+        match &self.fields[pick.0].1 {
+            Field::Choice { options, index } => options.get(*index).cloned().unwrap_or_default(),
+            Field::Fixed(value) => value.clone(),
+            _ => unreachable!("a pick handle is made for a choice"),
         }
     }
 
-    // A checkbox not offered, like deleting on a remote when there is none, isn't checked.
-    fn checked(&self, id: FieldId) -> bool {
-        matches!(self.field(id), Some(Field::Check(true)))
-    }
-
-    fn remote_branches(&self, remote: &str) -> Vec<String> {
-        self.info()
-            .remote_branches
-            .get(remote)
-            .cloned()
-            .unwrap_or_default()
+    fn chosen<C: Choice>(&self, choose: Choose<C>) -> C {
+        C::ALL[self.pick_index(Pick(choose.0))]
     }
 
     // The branch to pull from the chosen remote: the one chosen before when the remote has it too,
     // else the upstream of the current branch, else the current branch, else the first one.
     fn update_pull_branch(&mut self, previous: Option<String>) {
-        let remote = self.value(FieldId::Remote);
-        let options = self.remote_branches(&remote);
-        let current = self.info().current_branch.clone();
+        let DialogKind::Pull { info, fields, .. } = &self.kind else {
+            return;
+        };
+        let remote = self.pick_value(fields.remote);
+        let options = info
+            .remote_branches
+            .get(&remote)
+            .cloned()
+            .unwrap_or_default();
+        let current = info.current_branch.clone();
         let upstream = current
             .as_ref()
-            .and_then(|branch| self.info().upstreams.get(branch))
-            .filter(|(r, _)| *r == remote)
-            .map(|(_, branch)| branch.clone());
+            .and_then(|branch| info.upstreams.get(branch))
+            .filter(|upstream| upstream.remote == remote)
+            .map(|upstream| upstream.branch.clone());
         let value = previous
             .filter(|branch| options.contains(branch))
             .or(upstream)
             .or_else(|| current.filter(|branch| options.contains(branch)))
             .or_else(|| options.first().cloned())
             .unwrap_or_default();
-        if let Some(field) = self.field_mut(FieldId::Branch) {
-            let index = options.iter().position(|o| *o == value).unwrap_or(0);
-            *field = Field::Choice { options, index };
-        }
+        let index = options.iter().position(|o| *o == value).unwrap_or(0);
+        let branch = fields.branch;
+        self.fields[branch.0].1 = Field::Choice { options, index };
     }
 
     // Stashing follows rebase.autoStash when rebasing and merge.autoStash when merging,
     // until it is changed.
     fn update_pull_auto_stash(&mut self) {
-        if self.auto_stash_changed {
+        let DialogKind::Pull {
+            info,
+            fields,
+            auto_stash_follows: AutoStashFollows::Config,
+        } = &self.kind
+        else {
             return;
-        }
-        let default = self.info().auto_stash(self.checked(FieldId::Rebase));
-        if let Some(Field::Check(checked)) = self.field_mut(FieldId::AutoStash) {
-            *checked = default;
-        }
+        };
+        let default = info.auto_stash(self.checked(fields.rebase));
+        let auto_stash = fields.auto_stash;
+        self.fields[auto_stash.0].1 = Field::Check(default);
     }
 
     // The remote to push the chosen branch to, then the branch on it.
     fn update_push_remote(&mut self) {
-        let branch = self.value(FieldId::LocalBranch);
-        let remote = self.default_remote(Some(&branch));
-        if let Some(Field::Choice { options, index }) = self.field_mut(FieldId::Remote) {
+        let DialogKind::Push { info, fields } = &self.kind else {
+            return;
+        };
+        let branch = self.pick_value(fields.local_branch);
+        let remote = info
+            .default_remote(Some(&branch))
+            .cloned()
+            .unwrap_or_default();
+        if let Field::Choice { options, index } = &mut self.fields[fields.remote.0].1 {
             *index = options.iter().position(|o| *o == remote).unwrap_or(0);
         }
         self.update_push_remote_branch();
@@ -1562,19 +1841,24 @@ impl GitDialog {
 
     // The upstream branch when pushing to the upstream remote, else the same name.
     fn update_push_remote_branch(&mut self) {
-        let branch = self.value(FieldId::LocalBranch);
-        let remote = self.value(FieldId::Remote);
-        let value = self
-            .info()
+        let DialogKind::Push { info, fields } = &self.kind else {
+            return;
+        };
+        let branch = self.pick_value(fields.local_branch);
+        let remote = self.pick_value(fields.remote);
+        let value = info
             .upstreams
             .get(&branch)
-            .filter(|(r, _)| *r == remote)
-            .map(|(_, b)| b.clone())
+            .filter(|upstream| upstream.remote == remote)
+            .map(|upstream| upstream.branch.clone())
             .unwrap_or_else(|| branch.clone());
-        let options = self.remote_branches(&remote);
-        if let Some(field) = self.field_mut(FieldId::RemoteBranch) {
-            *field = Field::text(&value, options);
-        }
+        let options = info
+            .remote_branches
+            .get(&remote)
+            .cloned()
+            .unwrap_or_default();
+        let remote_branch = fields.remote_branch;
+        self.fields[remote_branch.0].1 = Field::text(&value, options, Need::Required);
     }
 
     // `event` is what the key is bound to, keys are typed as they are while editing a text field.
@@ -1588,7 +1872,7 @@ impl GitDialog {
                 },
                 KeyCode::Esc => self.editing = false,
                 _ => {
-                    if let Field::Text { input, .. } = &mut self.fields[self.selected].2 {
+                    if let Field::Text { input, .. } = &mut self.fields[self.selected].1 {
                         input.handle_event(&Event::Key(key));
                     }
                 }
@@ -1659,12 +1943,12 @@ impl GitDialog {
         let len = self.fields.len();
         (1..=len)
             .map(|step| (self.selected + step) % len)
-            .find(|&index| match &self.fields[index] {
-                (
-                    FieldId::Name | FieldId::Url | FieldId::RemoteBranch,
-                    _,
-                    Field::Text { input, .. },
-                ) => input.value().trim().is_empty(),
+            .find(|&index| match &self.fields[index].1 {
+                Field::Text {
+                    input,
+                    need: Need::Required,
+                    ..
+                } => input.value().trim().is_empty(),
                 _ => false,
             })
     }
@@ -1734,25 +2018,30 @@ impl GitDialog {
     // Whether the selected field is a checkbox, or has options to go through.
     fn can_toggle(&self) -> bool {
         match self.fields.get(self.selected) {
-            Some((_, _, Field::Check(_))) => true,
+            Some((_, Field::Check(_))) => true,
             // a single option is fixed, like where a branch starts from a commit
-            Some((_, _, Field::Choice { options, .. })) => options.len() > 1,
-            Some((_, _, Field::Text { options, .. })) => !options.is_empty(),
-            Some((_, _, Field::Fixed(_))) | None => false,
+            Some((_, Field::Choice { options, .. })) => options.len() > 1,
+            Some((_, Field::Text { options, .. })) => !options.is_empty(),
+            Some((_, Field::Fixed(_))) | None => false,
         }
     }
 
     fn can_edit(&self) -> bool {
         matches!(
             self.fields.get(self.selected),
-            Some((_, _, Field::Text { .. }))
+            Some((_, Field::Text { .. }))
         )
     }
 
     fn run(&self) -> DialogOutcome {
         let event = match &self.kind {
-            DialogKind::OpenLink { links, action } => AppEvent::OpenUrl {
-                url: self.chosen_link(links).url.clone(),
+            DialogKind::OpenLink {
+                links,
+                action,
+                remote,
+                page,
+            } => AppEvent::OpenUrl {
+                url: self.chosen_link(links, *remote, *page).url.clone(),
                 action: *action,
             },
             _ => match self.command() {
@@ -1765,29 +2054,33 @@ impl GitDialog {
     }
 
     // The link on the remote and the page chosen, either the only one when it has no field.
-    fn chosen_link<'l>(&self, links: &'l [Vec<PageLink>]) -> &'l PageLink {
+    fn chosen_link<'l>(
+        &self,
+        links: &'l [Vec<PageLink>],
+        remote: Option<Pick>,
+        page: Option<Pick>,
+    ) -> &'l PageLink {
         // without a field, the only remote or page
-        let index = |id| match self.field(id) {
-            Some(Field::Choice { index, .. }) => *index,
-            _ => 0,
-        };
-        &links[index(FieldId::Remote)][index(FieldId::Link)]
+        let index = |pick: Option<Pick>| pick.map_or(0, |pick| self.pick_index(pick));
+        &links[index(remote)][index(page)]
     }
 
     // Changes the selected field to its next or previous option, or toggles it.
     fn change(&mut self, toward: Toward) {
         // the branch to pull, kept on another remote having it too
-        let previous_branch = matches!(self.kind, DialogKind::Remote(RemoteAction::Pull, _))
-            .then(|| self.value(FieldId::Branch));
-        let Some((id, _, field)) = self.fields.get_mut(self.selected) else {
+        let previous_branch = match &self.kind {
+            DialogKind::Pull { fields, .. } => Some(self.pick_value(fields.branch)),
+            _ => None,
+        };
+        let selected = self.selected;
+        let Some((_, field)) = self.fields.get_mut(selected) else {
             return;
         };
-        let id = *id;
         match field {
             Field::Choice { options, index } => {
                 *index = toward.around(Some(*index), options.len());
             }
-            Field::Text { input, options } => {
+            Field::Text { input, options, .. } => {
                 if options.is_empty() {
                     return;
                 }
@@ -1799,18 +2092,24 @@ impl GitDialog {
             Field::Fixed(_) => {}
         }
         // the fields that follow the one changed
-        let action = match &self.kind {
-            DialogKind::Remote(action, _) => Some(*action),
-            _ => None,
-        };
-        match (action, id) {
-            (Some(RemoteAction::Pull), FieldId::Remote) => {
+        match &mut self.kind {
+            DialogKind::Pull { fields, .. } if selected == fields.remote.0 => {
                 self.update_pull_branch(previous_branch);
             }
-            (Some(RemoteAction::Push), FieldId::LocalBranch) => self.update_push_remote(),
-            (Some(RemoteAction::Push), FieldId::Remote) => self.update_push_remote_branch(),
-            (Some(RemoteAction::Pull), FieldId::Rebase) => self.update_pull_auto_stash(),
-            (_, FieldId::AutoStash) => self.auto_stash_changed = true,
+            DialogKind::Pull { fields, .. } if selected == fields.rebase.0 => {
+                self.update_pull_auto_stash();
+            }
+            DialogKind::Pull {
+                fields,
+                auto_stash_follows,
+                ..
+            } if selected == fields.auto_stash.0 => *auto_stash_follows = AutoStashFollows::Chosen,
+            DialogKind::Push { fields, .. } if selected == fields.local_branch.0 => {
+                self.update_push_remote();
+            }
+            DialogKind::Push { fields, .. } if selected == fields.remote.0 => {
+                self.update_push_remote_branch();
+            }
             _ => {}
         }
     }
@@ -1828,65 +2127,112 @@ impl GitDialog {
 
     // The git commands of the popup, built by the command of each kind next to its constructor.
     fn kind_command(&self) -> Option<Result<GitTask, String>> {
+        use DialogKind as K;
         Some(match &self.kind {
-            DialogKind::OpenLink { .. } => return None,
-            DialogKind::Remote(action, _) => self.remote_command(*action),
-            DialogKind::Rebase { onto, description } => self.rebase_command(onto, description),
-            DialogKind::Merge {
+            K::OpenLink { .. } => return None,
+            K::Fetch { remote, .. } => self.fetch_command(*remote),
+            K::Pull { info, fields, .. } => self.pull_command(info, fields),
+            K::Push { info, fields } => self.push_command(info, fields),
+            K::Rebase {
+                onto,
+                description,
+                auto_stash,
+            } => self.rebase_command(onto, description, *auto_stash),
+            K::Merge {
                 source,
                 description,
-            } => self.merge_command(source, description),
-            DialogKind::Checkout { targets } => self.checkout_command(targets),
-            DialogKind::CherryPick { commits } => self.cherry_pick_command(commits),
-            DialogKind::Squash { commits, base } => self.squash_command(commits, base.as_deref()),
-            DialogKind::Edit { commit, base } => self.edit_command(commit, base.as_deref()),
-            DialogKind::Drop { commits, base } => self.drop_command(commits, base.as_deref()),
-            DialogKind::CreateBranch { starts } => self.create_branch_command(starts),
-            DialogKind::DeleteBranches {
-                names, upstreams, ..
-            } => self.delete_branches_command(names, upstreams),
-            DialogKind::DeleteRemoteBranches { branches } => {
-                self.delete_remote_branches_command(branches)
-            }
-            DialogKind::EditBranch {
+                merge_type,
+            } => self.merge_command(source, description, *merge_type),
+            K::Checkout {
+                targets,
+                target,
+                local_changes,
+            } => self.checkout_command(targets, *target, *local_changes),
+            K::CherryPick {
+                commits,
+                commit,
+                append_origin,
+            } => self.cherry_pick_command(commits, *commit, *append_origin),
+            K::Squash {
+                commits,
+                base,
+                messages,
+                auto_stash,
+            } => self.squash_command(commits, base.as_deref(), *messages, *auto_stash),
+            K::Edit {
+                commit,
+                base,
+                auto_stash,
+            } => self.edit_command(commit, base.as_deref(), *auto_stash),
+            K::Drop {
+                commits,
+                base,
+                auto_stash,
+            } => self.drop_command(commits, base.as_deref(), *auto_stash),
+            K::CreateBranch {
+                starts,
+                name,
+                from,
+                checkout,
+            } => self.create_branch_command(starts, *name, *from, *checkout),
+            K::DeleteBranches {
+                names,
+                upstreams,
+                also_upstreams,
+                ..
+            } => self.delete_branches_command(names, upstreams, *also_upstreams),
+            K::DeleteRemoteBranches { branches } => self.delete_remote_branches_command(branches),
+            K::EditBranch {
                 name,
                 upstream,
                 upstreams,
-            } => self.edit_branch_command(name, upstream, upstreams),
-            DialogKind::EditRemote { name, url } => self.edit_remote_command(name, url),
-            DialogKind::AddRemote => self.add_remote_command(),
-            DialogKind::RemoveRemote { name } => Ok(GitTask::new(
+                new_name,
+                new_upstream,
+            } => self.edit_branch_command(name, upstream, upstreams, *new_name, *new_upstream),
+            K::EditRemote { name, url, fields } => self.edit_remote_command(name, url, *fields),
+            K::AddRemote(fields) => self.add_remote_command(*fields),
+            K::RemoveRemote { name } => Ok(GitTask::new(
                 GitCommand::Remote,
                 &["remove", name],
                 format!("Removing {name}"),
                 format!("Removed {name}"),
             )),
-            DialogKind::CreateTag { at } => self.create_tag_command(at),
-            DialogKind::DeleteTags { names, remote } => {
-                self.delete_tags_command(names, remote.as_deref())
-            }
-            DialogKind::Prepared { task, .. } | DialogKind::Commit { task, .. } => {
-                Ok(*task.clone())
-            }
-            DialogKind::Stash { paths, target } => self.stash_command(paths, target),
-            DialogKind::ApplyStash { name } => self.apply_stash_command(name),
-            DialogKind::DropStashes { names } => self.drop_stashes_command(names),
-            DialogKind::Revert { commits } => self.revert_command(commits),
-            DialogKind::Reset { commit, branch } => self.reset_command(commit, branch),
-            DialogKind::ResetFile { commit, change } => self.reset_file_command(commit, change),
+            K::CreateTag { at, name, message } => self.create_tag_command(at, *name, *message),
+            K::DeleteTags { names, remote } => self.delete_tags_command(names, remote),
+            K::Prepared { task, .. } | K::Commit { task, .. } => Ok(*task.clone()),
+            K::Stash {
+                paths,
+                target,
+                message,
+            } => self.stash_command(paths, target, *message),
+            K::ApplyStash { name, index, pop } => self.apply_stash_command(name, *index, *pop),
+            K::DropStashes { names } => self.drop_stashes_command(names),
+            K::Revert { commits, commit } => self.revert_command(commits, *commit),
+            K::Reset {
+                commit,
+                branch,
+                mode,
+            } => self.reset_command(commit, branch, *mode),
+            K::ResetFile {
+                commit,
+                change,
+                state,
+            } => self.reset_file_command(commit, change, *state),
         })
     }
 
     // What the chosen options lose, shown in the warning color.
     fn warning(&self) -> Option<String> {
         let warning = match &self.kind {
-            DialogKind::Reset { .. } if self.choice(FieldId::ResetMode) == 2 => {
+            DialogKind::Reset { mode, .. } if self.chosen(*mode) == ResetMode::Hard => {
                 Some("The local changes are lost.")
             }
-            DialogKind::Checkout { .. } if self.choice(FieldId::LocalChanges) == 2 => {
+            DialogKind::Checkout { local_changes, .. }
+                if self.chosen(*local_changes) == LocalChanges::Discard =>
+            {
                 Some("Changes to tracked files are lost, untracked files are kept.")
             }
-            DialogKind::Remote(RemoteAction::Push, _) if self.checked(FieldId::Force) => {
+            DialogKind::Push { fields, .. } if self.checked(fields.force) => {
                 Some("Commits only on the remote branch are lost.")
             }
             DialogKind::ResetFile { .. } => Some("Its local changes are lost."),
@@ -1904,6 +2250,7 @@ impl GitDialog {
                 names,
                 unmerged,
                 upstreams,
+                also_upstreams,
             } => {
                 let unmerged = match (names.len(), unmerged.as_slice()) {
                     (_, []) => None,
@@ -1917,9 +2264,8 @@ impl GitDialog {
                     )),
                 };
                 // the upstream may be another branch, like main
-                let remote = self.checked(FieldId::Force).then(|| {
-                    let names: Vec<String> =
-                        upstreams.iter().map(|(r, b)| format!("{r}/{b}")).collect();
+                let remote = also_upstreams.is_some_and(|c| self.checked(c)).then(|| {
+                    let names: Vec<String> = upstreams.iter().map(ToString::to_string).collect();
                     format!("Deletes {} for everyone.", names.join(", "))
                 });
                 // the remote first, which can't be undone here
@@ -1938,8 +2284,14 @@ impl GitDialog {
 
     // The git commands it will run, under the fields.
     fn summary(&self) -> String {
-        if let DialogKind::OpenLink { links, .. } = &self.kind {
-            return self.chosen_link(links).url.clone();
+        if let DialogKind::OpenLink {
+            links,
+            remote,
+            page,
+            ..
+        } = &self.kind
+        {
+            return self.chosen_link(links, *remote, *page).url.clone();
         }
         let task = match self.command() {
             Some(Ok(task)) => task,
@@ -1965,10 +2317,11 @@ impl GitDialog {
 }
 
 impl Field {
-    fn text(value: &str, options: Vec<String>) -> Field {
+    fn text(value: &str, options: Vec<String>, need: Need) -> Field {
         Field::Text {
             input: Input::new(value.to_string()),
             options,
+            need,
         }
     }
 }
@@ -2024,8 +2377,8 @@ fn names_label(one: &str, many: &str, names: &[String]) -> String {
 }
 
 // Deletes the branches on their remotes, as (remote, branch): one push for those of each remote.
-fn delete_on_remotes(branches: &[(String, String)]) -> Vec<GitArgs> {
-    let mut remotes: Vec<&String> = branches.iter().map(|(r, _)| r).collect();
+fn delete_on_remotes(branches: &[RemoteBranch]) -> Vec<GitArgs> {
+    let mut remotes: Vec<&String> = branches.iter().map(|b| &b.remote).collect();
     remotes.sort();
     remotes.dedup();
     remotes
@@ -2035,9 +2388,9 @@ fn delete_on_remotes(branches: &[(String, String)]) -> Vec<GitArgs> {
             args.extend(
                 branches
                     .iter()
-                    .filter(|(r, _)| r == remote)
+                    .filter(|b| b.remote == *remote)
                     // in full, as a tag of the same name makes the short one ambiguous
-                    .map(|(_, b)| format!("refs/heads/{b}")),
+                    .map(|b| format!("refs/heads/{}", b.branch)),
             );
             GitCommand::Push.args(args)
         })
@@ -2171,7 +2524,7 @@ impl Widget for GitDialogWidget<'_> {
         }
         let mut cursor = None;
         let mut checks_started = false;
-        for (i, (_, label, field)) in dialog.fields.iter().enumerate() {
+        for (i, (label, field)) in dialog.fields.iter().enumerate() {
             let selected = i == dialog.selected;
             // the field being changed has a bar beside it, like huh's forms
             let bar = if selected {
@@ -2203,7 +2556,7 @@ impl Widget for GitDialogWidget<'_> {
                         Span::styled(more, dim),
                     ])
                 }
-                Field::Text { input, options } => {
+                Field::Text { input, options, .. } => {
                     let value = input.value();
                     let known = options.iter().any(|o| o == value.trim());
                     // a value not among the options, like a new remote branch
@@ -2382,7 +2735,11 @@ mod tests {
         remote_branches.insert("origin".into(), vec!["main".into(), "dev".into()]);
         remote_branches.insert("fork".into(), vec!["topic".into()]);
         let mut upstreams = FxHashMap::default();
-        upstreams.insert("main".into(), ("origin".into(), "main".into()));
+        let origin_main = RemoteBranch {
+            remote: "origin".into(),
+            branch: "main".into(),
+        };
+        upstreams.insert("main".into(), origin_main);
         RemoteInfo {
             current_branch: Some("main".into()),
             remotes: vec!["fork".into(), "origin".into()],
@@ -2584,7 +2941,7 @@ mod tests {
     #[test]
     fn test_delete_tags_names_the_remote() {
         let dialog = GitDialog::delete_tags(vec!["v1".into()], Some("fork".into()));
-        assert_eq!(dialog.fields[0].1, "Delete them from fork too");
+        assert_eq!(dialog.fields[0].0, "Delete them from fork too");
         let dialog = GitDialog::delete_tags(vec!["v1".into()], None);
         assert!(dialog.fields.is_empty());
 
@@ -2599,7 +2956,10 @@ mod tests {
             commands(&dialog),
             ["push fork --delete refs/tags/v1", "tag -d v1"]
         );
-        let upstreams = vec![("origin".into(), "a".into())];
+        let upstreams = vec![RemoteBranch {
+            remote: "origin".into(),
+            branch: "a".into(),
+        }];
         let mut dialog = GitDialog::delete_branches(vec!["a".into()], vec![], upstreams);
         press(&mut dialog, UserEvent::DialogToggle);
         assert_eq!(
@@ -2644,9 +3004,9 @@ mod tests {
         );
         // from a commit, or a tag at it, where the cursor is
         let dialog = GitDialog::create_branch_at("a".repeat(40).as_str().into());
-        assert!(matches!(&dialog.fields[1].2, Field::Fixed(_)));
+        assert!(matches!(&dialog.fields[1].1, Field::Fixed(_)));
         let dialog = GitDialog::create_tag(StartPoint::Commit("a".repeat(40).as_str().into()));
-        assert!(matches!(&dialog.fields[2].2, Field::Fixed(_)));
+        assert!(matches!(&dialog.fields[2].1, Field::Fixed(_)));
         let mut dialog = GitDialog::create_tag(StartPoint::Ref(NamedRef::Tag("v1".into())));
         dialog.handle_key(None, key(KeyCode::Char('-')));
         dialog.handle_key(None, key(KeyCode::Char('d')));
@@ -2777,7 +3137,7 @@ mod tests {
         // like enter, it goes to a required field left empty instead of failing
         let mut dialog = GitDialog::remote(RemoteAction::Push, info()).unwrap();
         dialog.selected = 2;
-        dialog.fields[2].2 = Field::text("", vec![]);
+        dialog.fields[2].1 = Field::text("", vec![], Need::Required);
         assert!(matches!(
             press(&mut dialog, UserEvent::Push),
             DialogOutcome::None

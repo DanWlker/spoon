@@ -12,8 +12,8 @@ use crate::{
     keys::KeyList,
     layout::{Direction, Panel},
     view::{
-        copy_path, copy_selection, query_status, toggle_search_option, ListRefreshViewContext,
-        RefreshViewContext,
+        copy_path, copy_selection, query_status, toggle_search_option, CopyForm,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_list::CommitListState,
@@ -102,8 +102,8 @@ impl<'a> LocalChangesView<'a> {
         // `Scope::LocalChangesDiff`
         if self.local_changes_state.is_diff_focused() && event == UserEvent::ShortCopy {
             if let Some(text) = self.local_changes_state.selected_diff_text() {
-                let line = self.local_changes_state.is_selecting_lines();
-                self.tx.send(copy_selection(text, line));
+                let part = self.local_changes_state.selected_diff_part();
+                self.tx.send(copy_selection(text, part));
             }
             return;
         }
@@ -269,10 +269,10 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::ShortCopy | UserEvent::FullCopy
                 if !self.local_changes_state.is_commit_focused() =>
             {
-                if let Some(path) = self.local_changes_state.selected_path() {
-                    let full = event == UserEvent::FullCopy;
+                if let Some(row) = self.local_changes_state.selected_row() {
                     let repository = self.local_changes_state.repository();
-                    self.tx.send(copy_path(repository, &path, full));
+                    self.tx
+                        .send(copy_path(repository, row, CopyForm::of(event)));
                 }
             }
             UserEvent::Ignore if self.local_changes_state.is_files_focused() => {

@@ -16,6 +16,13 @@ use crate::{
     },
 };
 
+// Whether the selected line of a text shows, while the selection moves in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineCursor {
+    Shown,
+    Hidden,
+}
+
 // The lines of a file at a commit, with a selected line moving in them and a search: the preview of
 // the files tab, and the text of the blame.
 #[derive(Debug, Default)]
@@ -107,7 +114,7 @@ impl FileText {
         true
     }
 
-    // Draws the lines with their numbers, the selected one highlighted when `selected`, and the
+    // Draws the lines with their numbers, the selected one highlighted with `cursor`, and the
     // scrollbar on the column right of `area`; returns the line shown on each row of `area`, which
     // differ from the rows when long lines are wrapped.
     pub fn render(
@@ -116,7 +123,7 @@ impl FileText {
         buf: &mut Buffer,
         ctx: &AppContext,
         focused: bool,
-        selected: bool,
+        cursor: LineCursor,
         search: Option<&str>,
     ) -> Vec<usize> {
         let theme = &ctx.color_theme;
@@ -127,10 +134,9 @@ impl FileText {
         let border = Rect::new(area.right(), area.y, 1, area.height);
         render_scrollbar(buf, border, lines.len(), range.start, focused, theme);
         let highlight_style = Style::default().bg(theme.list_selected_bg);
-        let selected = if selected {
-            self.cursor.line..self.cursor.line + 1
-        } else {
-            0..0
+        let selected = match cursor {
+            LineCursor::Shown => self.cursor.line..self.cursor.line + 1,
+            LineCursor::Hidden => 0..0,
         };
         let visible = lines[range.start.min(lines.len())..]
             .iter()

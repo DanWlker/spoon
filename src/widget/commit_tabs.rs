@@ -13,15 +13,15 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     event::UserEvent,
-    git::{Commit, CommitHash, FileChange, Repository},
+    git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
     layout::{fit_size, Edge, Panel},
     search::SearchOptions,
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
-        file_text::FileText,
-        file_tree::{render_tree, FileTree, FileTreeState, TreeShape},
+        file_text::{FileText, LineCursor},
+        file_tree::{render_tree, FileTree, FileTreeRow, FileTreeState, TreeShape},
         tree_query::SearchDirection,
     },
 };
@@ -132,11 +132,8 @@ impl<'a> CommitChangesState<'a> {
         self.files.iter().map(|f| f.path.as_str()).collect()
     }
 
-    // The path of the selected file or directory, relative to the top of the repository, and
-    // whether it is a directory.
-    pub fn selected_entry(&self) -> Option<(&str, bool)> {
-        let row = self.tree.selected()?;
-        Some((row.path.as_str(), row.file_index.is_none()))
+    pub fn selected_row(&self) -> Option<&FileTreeRow> {
+        self.tree.selected()
     }
 
     pub fn new(
@@ -277,11 +274,8 @@ pub struct CommitFilesState<'a> {
 }
 
 impl<'a> CommitFilesState<'a> {
-    // The path of the selected file or directory, relative to the top of the repository, and
-    // whether it is a directory.
-    pub fn selected_entry(&self) -> Option<(&str, bool)> {
-        let row = self.tree.as_ref()?.selected()?;
-        Some((row.path.as_str(), row.file_index.is_none()))
+    pub fn selected_row(&self) -> Option<&FileTreeRow> {
+        self.tree.as_ref()?.selected()
     }
 
     pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {
@@ -305,15 +299,15 @@ impl<'a> CommitFilesState<'a> {
         let hash = &commit.commit_hash;
         let first_parent = commit.parent_commit_hashes.first();
         let step = if first_parent == Some(&self.commit_hash) {
-            Some((changes, true))
+            Some((changes, PatchDirection::Forward))
         } else if self.first_parent.as_ref() == Some(hash) {
-            Some((&self.changes[..], false))
+            Some((&self.changes[..], PatchDirection::Reverse))
         } else {
             None
         };
         let same_paths = match (self.paths.take(), step) {
-            (Some(mut paths), Some((changes, forward))) => {
-                let changed = apply_changes(&mut paths, changes, forward);
+            (Some(mut paths), Some((changes, direction))) => {
+                let changed = apply_changes(&mut paths, changes, direction);
                 self.paths = Some(paths);
                 !changed
             }
@@ -467,9 +461,13 @@ impl<'a> CommitFilesState<'a> {
     }
 }
 
-// Applies the changes of a commit to the files of its parent (`forward`), or takes them back from
-// the files of the commit; returns whether a file was added, deleted or moved.
-fn apply_changes(paths: &mut BTreeSet<String>, changes: &[FileChange], forward: bool) -> bool {
+// Applies the changes of a commit to the files of its parent (forward), or takes them back from
+// the files of the commit (in reverse); returns whether a file was added, deleted or moved.
+fn apply_changes(
+    paths: &mut BTreeSet<String>,
+    changes: &[FileChange],
+    direction: PatchDirection,
+) -> bool {
     let mut changed = false;
     for change in changes {
         let (added, removed) = match change {
@@ -478,10 +476,9 @@ fn apply_changes(paths: &mut BTreeSet<String>, changes: &[FileChange], forward: 
             FileChange::Delete { path } => (None, Some(path)),
             FileChange::Move { from, to } => (Some(to), Some(from)),
         };
-        let (added, removed) = if forward {
-            (added, removed)
-        } else {
-            (removed, added)
+        let (added, removed) = match direction {
+            PatchDirection::Forward => (added, removed),
+            PatchDirection::Reverse => (removed, added),
         };
         if let Some(path) = removed {
             paths.remove(path);
@@ -576,10 +573,13 @@ impl CommitTab {
             Some(preview @ (FilePreview::Text | FilePreview::TextFocused)) => {
                 let search = self.pane_search.as_deref();
                 let ctx = &self.ctx;
-                let selecting = matches!(preview, FilePreview::TextFocused);
+                let cursor = match preview {
+                    FilePreview::TextFocused => LineCursor::Shown,
+                    _ => LineCursor::Hidden,
+                };
                 state
                     .text
-                    .render(preview_area, buf, ctx, self.focused, selecting, search);
+                    .render(preview_area, buf, ctx, self.focused, cursor, search);
                 return;
             }
             Some(FilePreview::Binary) => dim("Binary file".into()),

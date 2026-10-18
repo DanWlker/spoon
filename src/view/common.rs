@@ -15,7 +15,8 @@ use crate::{
         commit_list::format_date,
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
-        file_tree::ROOT_PATH,
+        diff::DiffPart,
+        file_tree::{Entry, FileTreeRow},
         tree_query::{highlighted_text, name_matches, QueryChange, TreeQuery},
     },
 };
@@ -135,12 +136,28 @@ pub fn typing_keys(kind: SearchKind) -> KeyList {
     keys.list()
 }
 
-// Copies a commit hash: short, or in full with `full`.
-pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
-    let (name, value) = if full {
-        ("Commit SHA", hash.as_str())
-    } else {
-        ("Commit SHA (short)", hash.as_short_hash())
+// What y and Y copy: a short form, like a relative path, or the full one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyForm {
+    Short,
+    Full,
+}
+
+impl CopyForm {
+    pub fn of(event: UserEvent) -> Self {
+        if event == UserEvent::FullCopy {
+            CopyForm::Full
+        } else {
+            CopyForm::Short
+        }
+    }
+}
+
+// Copies a commit hash, short or in full.
+pub fn copy_hash(hash: &CommitHash, form: CopyForm) -> AppEvent {
+    let (name, value) = match form {
+        CopyForm::Full => ("Commit SHA", hash.as_str()),
+        CopyForm::Short => ("Commit SHA (short)", hash.as_short_hash()),
     };
     AppEvent::copy(name, value)
 }
@@ -149,9 +166,7 @@ pub fn copy_hash(hash: &CommitHash, full: bool) -> AppEvent {
 // it out and selecting it on the graph.
 pub fn commit_event(event: UserEvent, commit: &CommitHash) -> Option<AppEvent> {
     match event {
-        UserEvent::ShortCopy | UserEvent::FullCopy => {
-            Some(copy_hash(commit, event == UserEvent::FullCopy))
-        }
+        UserEvent::ShortCopy | UserEvent::FullCopy => Some(copy_hash(commit, CopyForm::of(event))),
         UserEvent::OpenInBrowser | UserEvent::CopyLink => Some(AppEvent::Link {
             target: LinkTarget::Commit(commit.clone()),
             action: LinkAction::of(event),
@@ -316,21 +331,26 @@ pub fn status_input(typed: Option<(String, u16)>, metadata: String) -> AppEvent 
     }
 }
 
-// Copies the selected part of a diff or a file: a line, or else a hunk.
-pub fn copy_selection(text: String, line: bool) -> AppEvent {
-    AppEvent::copy(if line { "Line" } else { "Hunk" }, text)
+// Copies the selected part of a diff or a file.
+pub fn copy_selection(text: String, part: DiffPart) -> AppEvent {
+    let name = match part {
+        DiffPart::Line => "Line",
+        DiffPart::Hunk => "Hunk",
+    };
+    AppEvent::copy(name, text)
 }
 
-// Copies the path of a file in the repository: relative to its top, or absolute with `full`.
-pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
-    // the root row of the local changes stands for the whole repository
-    let relative = if path == ROOT_PATH { "." } else { path };
-    if full {
-        let absolute = repository.path().join(relative);
-        let absolute = absolute.to_string_lossy();
-        AppEvent::copy("Absolute Path", absolute.trim_end_matches("/."))
-    } else {
-        AppEvent::copy("Path", relative)
+// Copies the path of a file in the repository: relative to its top, or absolute in full.
+pub fn copy_path(repository: &Repository, row: &FileTreeRow, form: CopyForm) -> AppEvent {
+    // the root row stands for the whole repository
+    let relative = row.entry().map_or(".", Entry::path);
+    match form {
+        CopyForm::Full => {
+            let absolute = repository.path().join(relative);
+            let absolute = absolute.to_string_lossy();
+            AppEvent::copy("Absolute Path", absolute.trim_end_matches("/."))
+        }
+        CopyForm::Short => AppEvent::copy("Path", relative),
     }
 }
 

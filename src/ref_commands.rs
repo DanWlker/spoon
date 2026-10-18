@@ -3,7 +3,7 @@
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, NamedRef, Ref, Repository},
+    git::{split_remote_branch, NamedRef, Ref, RemoteBranch, Repository},
     keybind::Scope,
     widget::{
         git_dialog::GitDialog,
@@ -68,13 +68,13 @@ pub fn ref_command_applies(
 // The refs `D` diffs in the sidebar: the picked ones, else the selected branch, remote branch or
 // tag; None for stashes and the rows that are no ref.
 pub fn diff_refs(selection: &RefSelection, picked: &RefPicks) -> Option<Vec<NamedRef>> {
-    match selection {
-        _ if !picked.is_empty() => picked
-            .names
+    match (selection, picked.section()) {
+        (_, Some(section)) => picked
+            .names()
             .iter()
-            .map(|name| picked.section.named(name.clone()))
+            .map(|name| section.named(name.clone()))
             .collect(),
-        RefSelection::Ref(named) => Some(vec![named.clone()]),
+        (RefSelection::Ref(named), None) => Some(vec![named.clone()]),
         _ => None,
     }
 }
@@ -93,8 +93,8 @@ pub fn ref_command(
         (UserEvent::CreateRef, _) if adds_remote(repository, selection) => {
             Ok(GitDialog::add_remote())
         }
-        (UserEvent::DeleteRef, _) if !picked.is_empty() => {
-            delete_refs(repository, picked.section, &picked.names)
+        (UserEvent::DeleteRef, _) if let Some(section) = picked.section() => {
+            delete_refs(repository, section, picked.names())
         }
         (UserEvent::DeleteRef, RefSelection::Folder(Remotes, name))
             if repository.remotes().contains(name) =>
@@ -111,10 +111,7 @@ pub fn ref_command(
         }
         (UserEvent::EditRef, RefSelection::Ref(NamedRef::Branch(name))) => {
             let info = repository.remote_info();
-            let upstream = info
-                .upstreams
-                .get(name)
-                .map(|(remote, branch)| format!("{remote}/{branch}"));
+            let upstream = info.upstreams.get(name).map(ToString::to_string);
             let mut remote_branches: Vec<String> = info
                 .remote_branches
                 .iter()
@@ -170,13 +167,13 @@ fn delete_refs(
             let unmerged = repository.unmerged_branches(&names);
             // the upstreams still on their remotes
             let info = repository.remote_info();
-            let mut upstreams: Vec<(String, String)> = names
+            let mut upstreams: Vec<RemoteBranch> = names
                 .iter()
                 .filter_map(|name| info.upstreams.get(name))
-                .filter(|(remote, branch)| {
+                .filter(|upstream| {
                     info.remote_branches
-                        .get(remote)
-                        .is_some_and(|branches| branches.contains(branch))
+                        .get(&upstream.remote)
+                        .is_some_and(|branches| branches.contains(&upstream.branch))
                 })
                 .cloned()
                 .collect();
@@ -190,7 +187,10 @@ fn delete_refs(
                 .iter()
                 .map(|name| {
                     split_remote_branch(&info.remotes, name)
-                        .map(|(remote, branch)| (remote.to_string(), branch.to_string()))
+                        .map(|(remote, branch)| RemoteBranch {
+                            remote: remote.to_string(),
+                            branch: branch.to_string(),
+                        })
                         .ok_or_else(|| format!("No remote has {name}"))
                 })
                 .collect::<Result<_, String>>()?;
@@ -383,9 +383,8 @@ mod tests {
             );
         }
         use RefSection::*;
-        let picks = |section, names: &[&str]| RefPicks {
-            section,
-            names: names.iter().map(|n| n.to_string()).collect(),
+        let picks = |section, names: &[&str]| {
+            RefPicks::new(section, names.iter().map(|n| n.to_string()).collect())
         };
         let delete = |picked: RefPicks| {
             let repository =
@@ -648,10 +647,7 @@ mod tests {
             &none
         ));
         // with picks, deleting and diffing them, not the commands on the selected ref
-        let picks = RefPicks {
-            section: Branches,
-            names: vec!["main".into(), "topic".into()],
-        };
+        let picks = RefPicks::new(Branches, vec!["main".into(), "topic".into()]);
         assert!(applies(UserEvent::DeleteRef, main(), &picks));
         assert!(applies(UserEvent::Diff, main(), &picks));
         assert!(!applies(UserEvent::Checkout, main(), &picks));

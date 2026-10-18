@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+pub use crate::git::Entry;
 use crate::{
     app::AppContext,
     color::ColorTheme,
@@ -28,10 +29,20 @@ use crate::{
 pub struct FileTreeRow {
     pub depth: usize,
     pub name: String,
-    // full path of the file or directory
+    // the full path of the file or directory, or `ROOT_PATH` for the root row; git takes it as a
+    // pathspec, and the tree keeps its selection and open directories by it
     pub path: String,
-    // index of the file in the paths the tree was built from, None for directories
-    pub file_index: Option<usize>,
+    pub kind: RowKind,
+}
+
+// What a row of a file tree is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKind {
+    // the "/" row standing for everything, see `FileTreeRow::root`
+    Root,
+    Dir,
+    // a file, by its index in the paths the tree was built from
+    File(usize),
 }
 
 // The path of the row standing for the whole repository: git's pathspec for the top directory.
@@ -44,16 +55,33 @@ impl FileTreeRow {
             depth: 0,
             name: "/".into(),
             path: ROOT_PATH.into(),
-            file_index: None,
+            kind: RowKind::Root,
         }
     }
 
     pub fn is_root(&self) -> bool {
-        self.path == ROOT_PATH
+        self.kind == RowKind::Root
     }
 
+    // A directory, or the root row containing them all.
     pub fn is_dir(&self) -> bool {
-        self.file_index.is_none()
+        !matches!(self.kind, RowKind::File(_))
+    }
+
+    pub fn file_index(&self) -> Option<usize> {
+        match self.kind {
+            RowKind::File(index) => Some(index),
+            RowKind::Root | RowKind::Dir => None,
+        }
+    }
+
+    // The file or directory, None for the root row.
+    pub fn entry(&self) -> Option<Entry<'_>> {
+        match self.kind {
+            RowKind::Root => None,
+            RowKind::Dir => Some(Entry::Dir(&self.path)),
+            RowKind::File(_) => Some(Entry::File(&self.path)),
+        }
     }
 
     // Whether `path` is this file, or is inside this directory.
@@ -494,7 +522,7 @@ fn collect_rows(
             depth,
             name: name.clone(),
             path,
-            file_index: None,
+            kind: RowKind::Dir,
         });
         rows.extend(child_rows);
     }
@@ -509,7 +537,7 @@ fn collect_rows(
                 depth,
                 name: name.clone(),
                 path,
-                file_index: Some(*index),
+                kind: RowKind::File(*index),
             });
         }
     }
@@ -587,7 +615,7 @@ pub fn render_tree(
         .take(height)
         .map(|(index, row)| {
             let guide = tree.guide(index);
-            let Some(file) = row.file_index else {
+            let Some(file) = row.file_index() else {
                 return dir_line(row, guide, tree.is_open(&row.path), search, options, theme);
             };
             let mut spans = vec![guide_span(guide, theme)];
@@ -657,11 +685,16 @@ mod tests {
     }
 
     fn row(depth: usize, name: &str, path: &str, file_index: Option<usize>) -> FileTreeRow {
+        let kind = match file_index {
+            _ if path == ROOT_PATH => RowKind::Root,
+            Some(index) => RowKind::File(index),
+            None => RowKind::Dir,
+        };
         FileTreeRow {
             depth,
             name: name.into(),
             path: path.into(),
-            file_index,
+            kind,
         }
     }
 

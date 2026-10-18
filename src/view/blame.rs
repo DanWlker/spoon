@@ -24,8 +24,9 @@ use crate::{
     },
     widget::{
         commit_list::{format_date, ELLIPSIS},
+        diff::DiffPart,
         diff::Step,
-        file_text::FileText,
+        file_text::{FileText, LineCursor},
         style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
         tree_query::{
             find_around, highlighted_text, name_matches, QueryChange, QueryKind, SearchDirection,
@@ -203,7 +204,7 @@ impl BlameView {
             BlameFocus::Text => match event {
                 UserEvent::ShortCopy => {
                     if let Some(text) = self.text.selected_text() {
-                        self.tx.send(copy_selection(text, true));
+                        self.tx.send(copy_selection(text, DiffPart::Line));
                     }
                 }
                 // the file at the commit shown, on the line
@@ -430,9 +431,14 @@ impl BlameView {
         let search_in = |focus| self.query.search().filter(|_| self.focus == focus);
         let text_search = search_in(BlameFocus::Text);
         let search = search_in(BlameFocus::Commit);
-        let rows = self
-            .text
-            .render(text_area, buf, &ctx, focused, true, text_search);
+        let rows = self.text.render(
+            text_area,
+            buf,
+            &ctx,
+            focused,
+            LineCursor::Shown,
+            text_search,
+        );
 
         let selected = self.text.selected_line();
         let selected_style = Style::default().bg(theme.list_selected_bg);

@@ -23,10 +23,11 @@ use crate::{
     search::{SearchKind, SearchOptions},
     widget::{
         conflict::ConflictView,
-        diff::{parse_diff, Step, CONVERTED_DIFF},
+        diff::{parse_diff, DiffPart, Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
         file_tree::{
-            find_next, path_contains, render_tree, FileTree, FileTreeRow, FileTreeState, TreeShape,
+            find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
+            TreeShape,
         },
         git_dialog::{CommitPreview, GitDialog},
         style::{
@@ -177,7 +178,7 @@ enum Focus {
     // the hunks or lines of the diff, see `DiffPane`
     Diff,
     // the choices of the conflict panel, shown instead of the diff of a conflicted file
-    Conflict,
+    Conflict(ConflictItem),
     // the commit section
     Commit,
     // typing the message in the commit section, in the box of `commit_field`
@@ -272,7 +273,6 @@ pub struct LocalChangesState<'a> {
     files_stamp: u64,
     // the two sides of the conflicted file under the cursor, shown instead of its diff
     conflict: Option<ConflictView>,
-    conflict_item: ConflictItem,
     // a rebase, merge, cherry-pick or revert stopped and waits to be finished (or aborted)
     operation: Option<Operation>,
 }
@@ -309,7 +309,6 @@ impl<'a> LocalChangesState<'a> {
             diff_stale: false,
             files_stamp,
             conflict: None,
-            conflict_item: ConflictItem::Existing,
             operation: repository.operation_in_progress(),
         };
         if let Some(snapshot) = snapshot {
@@ -352,8 +351,10 @@ impl<'a> LocalChangesState<'a> {
 
     // The path of the selected file, not a directory.
     pub fn selected_file(&self) -> Option<&str> {
-        let row = self.selected_row()?;
-        row.file_index.and(Some(row.path.as_str()))
+        match self.selected_row()?.entry()? {
+            Entry::File(path) => Some(path),
+            Entry::Dir(_) => None,
+        }
     }
 
     pub fn selected_path(&self) -> Option<String> {
@@ -408,8 +409,14 @@ impl<'a> LocalChangesState<'a> {
         self.focus == Focus::Diff
     }
 
-    pub fn is_selecting_lines(&self) -> bool {
+    #[cfg(test)]
+    fn is_selecting_lines(&self) -> bool {
         self.is_diff_focused() && self.pane.is_selecting_lines()
+    }
+
+    // What `selected_diff_text` is of.
+    pub fn selected_diff_part(&self) -> DiffPart {
+        self.pane.selected_part()
     }
 
     // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
@@ -700,8 +707,10 @@ impl<'a> LocalChangesState<'a> {
 
     // Asks for confirmation to discard the selected unstaged line, hunk, file or directory.
     pub fn request_discard(&mut self) -> Result<(), String> {
-        if matches!(self.focus, Focus::Commit | Focus::Typing | Focus::Conflict)
-            || self.section != LocalChangesSection::Unstaged
+        if matches!(
+            self.focus,
+            Focus::Commit | Focus::Typing | Focus::Conflict(_)
+        ) || self.section != LocalChangesSection::Unstaged
         {
             return Ok(());
         }
@@ -862,7 +871,7 @@ impl<'a> LocalChangesState<'a> {
         let Some(row) = self.selected_row() else {
             return Ok(());
         };
-        let Some(file) = row.file_index.and_then(|i| self.files().get(i)) else {
+        let Some(file) = row.file_index().and_then(|i| self.files().get(i)) else {
             return Err("Select a file to edit".into());
         };
         let path = self.repository.path().join(&file.path);
@@ -879,7 +888,7 @@ impl<'a> LocalChangesState<'a> {
         let files = |v: &Self| v.focus == Focus::Files;
         let diff = |v: &Self| v.focus == Focus::Diff;
         let commit = |v: &Self| v.focus == Focus::Commit;
-        let conflict = |v: &Self| v.focus == Focus::Conflict;
+        let conflict = |v: &Self| v.is_conflict_focused();
         let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
         let empty = |v: &Self| v.files().is_empty();
         let picks = |v: &Self| !v.picked().is_empty();
@@ -1139,12 +1148,10 @@ impl<'a> LocalChangesState<'a> {
 
     // Adds the selected file or directory to .gitignore; returns what to tell.
     pub fn ignore_selected(&mut self) -> Result<String, String> {
-        let Some(row) = self.selected_row().filter(|row| !row.is_root()) else {
+        let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) else {
             return Ok(String::new());
         };
-        let message = self
-            .repository
-            .ignore_path(&row.path, row.file_index.is_none())?;
+        let message = self.repository.ignore_path(entry)?;
         self.reload();
         Ok(message)
     }
@@ -1162,13 +1169,16 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn is_conflict_focused(&self) -> bool {
-        self.focus == Focus::Conflict
+        matches!(self.focus, Focus::Conflict(_))
     }
 
     // Moves between the sides (side by side) and the tools below them.
     pub fn move_conflict_item(&mut self, direction: Direction) {
         use ConflictItem::*;
-        self.conflict_item = match (self.conflict_item, direction) {
+        let Focus::Conflict(item) = &mut self.focus else {
+            return;
+        };
+        *item = match (*item, direction) {
             (Existing, Direction::Right) => Incoming,
             (Incoming, Direction::Left) => Existing,
             (Existing | Incoming, Direction::Down) => MergeTool,
@@ -1179,11 +1189,11 @@ impl<'a> LocalChangesState<'a> {
         };
     }
 
-    fn activate_conflict_item(&mut self) -> Result<(), String> {
+    fn activate_conflict_item(&mut self, item: ConflictItem) -> Result<(), String> {
         let Some(path) = self.selected_path() else {
             return Ok(());
         };
-        let side = match self.conflict_item {
+        let side = match item {
             ConflictItem::Existing => ConflictSide::Ours,
             ConflictItem::Incoming => ConflictSide::Theirs,
             ConflictItem::MergeTool => {
@@ -1208,11 +1218,10 @@ impl<'a> LocalChangesState<'a> {
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus {
             Focus::Commit | Focus::Typing => self.commit_or_continue()?,
-            Focus::Conflict => self.activate_conflict_item()?,
+            Focus::Conflict(item) => self.activate_conflict_item(item)?,
             Focus::Files if self.conflict.is_some() && self.picked().is_empty() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
-                self.focus = Focus::Conflict;
-                self.conflict_item = ConflictItem::Existing;
+                self.focus = Focus::Conflict(ConflictItem::Existing);
             }
             // nothing here to open: on from the unstaged files to committing, from the staged
             // ones back to the unstaged, as nothing staged commits nothing
@@ -1247,7 +1256,7 @@ impl<'a> LocalChangesState<'a> {
     pub fn back(&mut self) -> bool {
         match self.focus {
             Focus::Typing => self.focus = Focus::Commit,
-            Focus::Commit | Focus::Conflict => self.focus = Focus::Files,
+            Focus::Commit | Focus::Conflict(_) => self.focus = Focus::Files,
             Focus::Diff if self.pane.is_selecting_lines() => {
                 self.pane.back();
             }
@@ -1273,8 +1282,8 @@ impl<'a> LocalChangesState<'a> {
                 self.enter()?;
                 return Ok(self.focus != Focus::Files);
             }
-            (Focus::Diff | Focus::Conflict, Direction::Down) => self.focus_commit(),
-            (Focus::Diff | Focus::Conflict | Focus::Commit | Focus::Typing, Direction::Left) => {
+            (Focus::Diff | Focus::Conflict(_), Direction::Down) => self.focus_commit(),
+            (Focus::Diff | Focus::Conflict(_) | Focus::Commit | Focus::Typing, Direction::Left) => {
                 self.focus_files()
             }
             // into the diff of the selected file, else its files
@@ -1350,7 +1359,7 @@ impl<'a> LocalChangesState<'a> {
                 self.edit_message();
                 return Ok(());
             }
-            Focus::Conflict => return Ok(()),
+            Focus::Conflict(_) => return Ok(()),
             Focus::Diff => {
                 // the patch is made and applied the same way
                 let direction = self.patch_direction();
@@ -1642,7 +1651,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Whether the keys moving in the files apply to them: the conflict panel is beside them.
     fn focus_on_files(&self) -> bool {
-        matches!(self.focus, Focus::Files | Focus::Conflict)
+        matches!(self.focus, Focus::Files | Focus::Conflict(_))
     }
 
     fn current(&self) -> &Section {
@@ -1710,7 +1719,7 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    fn selected_row(&self) -> Option<&FileTreeRow> {
+    pub fn selected_row(&self) -> Option<&FileTreeRow> {
         self.tree().selected()
     }
 
@@ -1742,7 +1751,7 @@ impl<'a> LocalChangesState<'a> {
         self.selected_row()
             .map(|row| {
                 let untracked = row
-                    .file_index
+                    .file_index()
                     .is_some_and(|i| self.files()[i].status == LocalChangeStatus::Untracked);
                 // a directory shows only the files passing the filter
                 let paths = if row.is_dir() && self.query().filter().is_some() {
@@ -1763,7 +1772,7 @@ impl<'a> LocalChangesState<'a> {
     // The two sides of the selected file, when it is conflicted.
     fn load_conflict(&self) -> Option<ConflictView> {
         self.selected_row()
-            .and_then(|row| row.file_index)
+            .and_then(FileTreeRow::file_index)
             .and_then(|i| self.files().get(i))
             .filter(|f| {
                 f.status == LocalChangeStatus::Conflicted && self.diff_source == DiffSource::Row
@@ -1999,11 +2008,11 @@ impl LocalChangesPanel<'_> {
         let [ours_area, theirs_area] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(sides_area);
-        let (panel_focused, selected_item) = (
-            self.focused && state.is_conflict_focused(),
-            state.conflict_item,
-        );
-        let focused = |item| panel_focused && selected_item == item;
+        let selected_item = match state.focus {
+            Focus::Conflict(item) if self.focused => Some(item),
+            _ => None,
+        };
+        let focused = |item| selected_item == Some(item);
 
         let label = |name: &str, label: &str| {
             if label.is_empty() {

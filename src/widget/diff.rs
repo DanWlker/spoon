@@ -267,6 +267,13 @@ impl Step {
     }
 }
 
+// What is selected in a diff, to copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffPart {
+    Hunk,
+    Line,
+}
+
 // The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
 // commit changes select the same way.
 #[derive(Debug, Default, Clone)]

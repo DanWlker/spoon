@@ -160,6 +160,34 @@ impl Rev {
     }
 }
 
+// A branch on a remote: "origin" and "main" for origin/main.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RemoteBranch {
+    pub remote: String,
+    pub branch: String,
+}
+
+impl std::fmt::Display for RemoteBranch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.remote, self.branch)
+    }
+}
+
+// A file or directory of the repository, by its path from the top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry<'a> {
+    Dir(&'a str),
+    File(&'a str),
+}
+
+impl<'a> Entry<'a> {
+    pub fn path(self) -> &'a str {
+        match self {
+            Entry::Dir(path) | Entry::File(path) => path,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Head {
     Branch { name: String },
@@ -885,11 +913,11 @@ impl Repository {
         Ok(commands)
     }
 
-    // Adds the file or directory (`dir`) at `path` to the .gitignore at the top of the working
-    // tree, anchored there. Returns what to tell: a tracked path stays tracked, ignoring only
-    // keeps untracked files out.
-    pub fn ignore_path(&self, path: &str, dir: bool) -> std::result::Result<String, String> {
-        let pattern = gitignore_pattern(path, dir);
+    // Adds the file or directory to the .gitignore at the top of the working tree, anchored
+    // there. Returns what to tell: a tracked path stays tracked, ignoring only keeps untracked
+    // files out.
+    pub fn ignore_path(&self, entry: Entry) -> std::result::Result<String, String> {
+        let pattern = gitignore_pattern(entry);
         let file = self.path.join(".gitignore");
         let content = std::fs::read_to_string(&file).unwrap_or_default();
         if content.lines().any(|line| line == pattern) {
@@ -902,7 +930,7 @@ impl Repository {
         };
         std::fs::write(&file, format!("{content}{separator}{pattern}\n"))
             .map_err(|e| format!("failed to write .gitignore: {e}"))?;
-        let specs = pathspecs(&[path]);
+        let specs = pathspecs(&[entry.path()]);
         let tracked =
             git_output(&self.path, &["ls-files", "--", &specs[0]]).is_ok_and(|out| !out.is_empty());
         Ok(if tracked {
@@ -995,8 +1023,11 @@ impl Repository {
                 branches.push(name.to_string());
                 if let Some(branch) = remote_ref.strip_prefix("refs/heads/") {
                     if !remote.is_empty() {
-                        upstreams
-                            .insert(name.to_string(), (remote.to_string(), branch.to_string()));
+                        let upstream = RemoteBranch {
+                            remote: remote.to_string(),
+                            branch: branch.to_string(),
+                        };
+                        upstreams.insert(name.to_string(), upstream);
                     }
                 }
             } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
@@ -1229,9 +1260,9 @@ fn without_comments(content: &str) -> Option<String> {
 
 // The .gitignore line matching only `path` from the top: the characters git reads as a pattern
 // escaped, and a directory ending with "/".
-fn gitignore_pattern(path: &str, dir: bool) -> String {
+fn gitignore_pattern(entry: Entry) -> String {
     let mut pattern = String::from("/");
-    for c in path.chars() {
+    for c in entry.path().chars() {
         if matches!(c, '*' | '?' | '[' | '\\' | '!' | '#') {
             pattern.push('\\');
         }
@@ -1241,7 +1272,7 @@ fn gitignore_pattern(path: &str, dir: bool) -> String {
     let spaces = pattern.len() - pattern.trim_end_matches(' ').len();
     pattern.truncate(pattern.len() - spaces);
     pattern.push_str(&"\\ ".repeat(spaces));
-    if dir {
+    if let Entry::Dir(_) = entry {
         pattern.push('/');
     }
     pattern
@@ -1989,7 +2020,7 @@ pub struct RemoteInfo {
     pub remote_branches: FxHashMap<String, Vec<String>>,
     pub branches: Vec<String>,
     // local branch -> (remote, branch on the remote)
-    pub upstreams: FxHashMap<String, (String, String)>,
+    pub upstreams: FxHashMap<String, RemoteBranch>,
     pub pull_rebase: bool,
     // whether pulling stashes local changes, when rebasing and when merging
     pub rebase_auto_stash: bool,
@@ -2001,7 +2032,7 @@ impl RemoteInfo {
     pub fn default_remote(&self, branch: Option<&str>) -> Option<&String> {
         branch
             .and_then(|branch| self.upstreams.get(branch))
-            .map(|(remote, _)| remote)
+            .map(|upstream| &upstream.remote)
             .filter(|remote| self.remotes.contains(remote))
             .or_else(|| self.remotes.iter().find(|r| *r == "origin"))
             .or_else(|| self.remotes.first())
@@ -3305,10 +3336,7 @@ mod tests {
         assert_eq!(info.remotes, vec!["origin"]);
         assert_eq!(info.branches, vec!["master"]);
         assert_eq!(info.remote_branches["origin"], vec!["main"]);
-        assert_eq!(
-            info.upstreams["master"],
-            ("origin".to_string(), "main".to_string())
-        );
+        assert_eq!(info.upstreams["master"].to_string(), "origin/main");
 
         // the reason is reported, not the hints after it
         let err = run(GitCommand::Fetch, &["nowhere"]).unwrap_err();
@@ -3573,18 +3601,18 @@ mod tests {
         repo.commit("t", "2024-01-01");
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
-        repository.ignore_path("a[1].txt", false).unwrap();
-        repository.ignore_path("build", true).unwrap();
-        let tracked = repository.ignore_path("t.txt", false).unwrap();
+        repository.ignore_path(Entry::File("a[1].txt")).unwrap();
+        repository.ignore_path(Entry::Dir("build")).unwrap();
+        let tracked = repository.ignore_path(Entry::File("t.txt")).unwrap();
         assert!(tracked.contains("tracked"), "{tracked}");
-        let again = repository.ignore_path("build", true).unwrap();
+        let again = repository.ignore_path(Entry::Dir("build")).unwrap();
         assert!(again.contains("already"), "{again}");
         let content = std::fs::read_to_string(path.join(".gitignore")).unwrap();
         assert_eq!(content, "*.log\n/a\\[1].txt\n/build/\n/t.txt\n");
         // git ignores exactly them: keep.txt shows, a[1].txt and build/ don't
         let status = git_output(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert_eq!(status, "?? .gitignore\n?? keep.txt\n");
-        assert_eq!(gitignore_pattern("#x ", false), "/\\#x\\ ");
+        assert_eq!(gitignore_pattern(Entry::File("#x ")), "/\\#x\\ ");
     }
 
     #[test]

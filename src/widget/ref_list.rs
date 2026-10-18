@@ -95,33 +95,42 @@ impl RefSection {
 }
 
 // The refs picked in the sidebar, all of one section so the commands on them make sense, in the
-// order they were picked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefPicks {
-    pub section: RefSection,
-    pub names: Vec<String>,
-}
-
-impl Default for RefPicks {
-    fn default() -> Self {
-        Self {
-            section: RefSection::Branches,
-            names: vec![],
-        }
-    }
-}
+// order they were picked; None while nothing is picked, the names never empty.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RefPicks(Option<(RefSection, Vec<String>)>);
 
 impl RefPicks {
+    // The refs `names` of `section`, picked.
+    pub fn new(section: RefSection, names: Vec<String>) -> Self {
+        RefPicks((!names.is_empty()).then_some((section, names)))
+    }
+
+    pub fn section(&self) -> Option<RefSection> {
+        self.0.as_ref().map(|(section, _)| *section)
+    }
+
+    pub fn names(&self) -> &[String] {
+        self.0.as_ref().map_or(&[], |(_, names)| names)
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.0.is_none()
     }
 
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.names().len()
     }
 
     fn contains(&self, section: RefSection, name: &str) -> bool {
-        self.section == section && self.names.iter().any(|n| n == name)
+        self.section() == Some(section) && self.names().iter().any(|n| n == name)
+    }
+
+    // Keeps the names `keep` is true for.
+    fn retain(&mut self, keep: impl Fn(RefSection, &str) -> bool) {
+        if let Some((section, names)) = self.0.take() {
+            let names = names.into_iter().filter(|n| keep(section, n)).collect();
+            *self = RefPicks::new(section, names);
+        }
     }
 }
 
@@ -218,26 +227,29 @@ impl RefListState {
     // Picks or unpicks a ref, the selected one; refs of another section than the picked ones
     // can't be picked with them.
     pub fn toggle_pick(&mut self, section: RefSection, name: String) -> Result<(), String> {
-        if self.picked.is_empty() {
-            self.picked.section = section;
-        } else if self.picked.section != section {
-            return Err(format!(
-                "Only {} can be picked with the picked {}, esc clears them",
-                self.picked.section.plural(),
-                self.picked.section.plural()
-            ));
-        }
-        match self.picked.names.iter().position(|n| *n == name) {
-            Some(i) => {
-                self.picked.names.remove(i);
+        let mut names = match self.picked.0.take() {
+            None => vec![],
+            Some((picked, names)) if picked == section => names,
+            Some(picks) => {
+                let plural = picks.0.plural();
+                self.picked = RefPicks(Some(picks));
+                return Err(format!(
+                    "Only {plural} can be picked with the picked {plural}, esc clears them"
+                ));
             }
-            None => self.picked.names.push(name),
+        };
+        match names.iter().position(|n| *n == name) {
+            Some(i) => {
+                names.remove(i);
+            }
+            None => names.push(name),
         }
+        self.picked = RefPicks::new(section, names);
         Ok(())
     }
 
     pub fn clear_picks(&mut self) {
-        self.picked.names.clear();
+        self.picked = RefPicks::default();
     }
 
     pub fn select_next(&mut self) {
@@ -382,28 +394,29 @@ impl RefListState {
         let offset = self.offset;
         let mut picked = std::mem::take(&mut self.picked);
         // a picked stash by its commit, as stash@{0} names another once one is stashed
-        if picked.section == RefSection::Stashes {
+        if picked.section() == Some(RefSection::Stashes) {
             let targets: Vec<_> = picked
-                .names
+                .names()
                 .iter()
                 .filter_map(|name| self.stash_targets.get(name).cloned())
                 .collect();
-            picked.names = refs
+            let names = refs
                 .iter()
                 .filter(|r| matches!(r, Ref::Stash { .. }) && targets.contains(r.target()))
                 .map(|r| r.name().to_string())
                 .collect();
+            picked = RefPicks::new(RefSection::Stashes, names);
         }
         *self = Self::new(refs, remotes);
         // the row of a detached HEAD, before the selection looks for it
         self.set_head(head);
         self.reset_tree_status(selected, opened);
         self.offset = offset;
-        picked.names.retain(|name| {
+        picked.retain(|section, name| {
             refs.iter().any(|r| {
                 r.name() == name
                     && matches!(
-                        (r, picked.section),
+                        (r, section),
                         (Ref::Branch { .. }, RefSection::Branches)
                             | (Ref::RemoteBranch { .. }, RefSection::Remotes)
                             | (Ref::Tag { .. }, RefSection::Tags)
@@ -950,7 +963,7 @@ mod tests {
         pick(&mut state).unwrap();
         state.select_next();
         pick(&mut state).unwrap();
-        assert_eq!(state.picked().names, ["a", "b"]);
+        assert_eq!(state.picked().names(), ["a", "b"]);
         // a tag can't be picked with branches
         state.reset_tree_status(
             vec![NodeId::Section(RefSection::Tags), NodeId::Name("v1".into())],
@@ -959,10 +972,10 @@ mod tests {
         assert!(pick(&mut state).unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
         state.set_refs(&[&a, &tag], &[], &Head::None);
-        assert_eq!(state.picked().names, ["a"]);
+        assert_eq!(state.picked().names(), ["a"]);
         state.clear_picks();
         pick(&mut state).unwrap();
-        assert_eq!(state.picked().section, RefSection::Tags);
+        assert_eq!(state.picked().section(), Some(RefSection::Tags));
     }
 
     #[test]
@@ -1011,7 +1024,7 @@ mod tests {
         pick(&mut state).unwrap();
         // a new stash takes stash@{0}, the picked one is stash@{1} now
         state.set_refs(&[&stash(0, 'b'), &stash(1, 'a')], &[], &Head::None);
-        assert_eq!(state.picked().names, ["stash@{1}"]);
+        assert_eq!(state.picked().names(), ["stash@{1}"]);
     }
 
     #[test]

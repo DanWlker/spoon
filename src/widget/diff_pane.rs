@@ -7,7 +7,8 @@ use crate::{
     search::SearchOptions,
     widget::{
         diff::{
-            diff_line_count, diff_lines, render_diff_lines, DiffCursor, DiffHunk, ParsedDiff, Step,
+            diff_line_count, diff_lines, render_diff_lines, DiffCursor, DiffHunk, DiffPart,
+            ParsedDiff, Step,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -106,6 +107,15 @@ impl DiffPane {
 
     pub fn is_selecting_lines(&self) -> bool {
         self.focus == DiffFocus::Lines
+    }
+
+    // What `selected_text` is of.
+    pub fn selected_part(&self) -> DiffPart {
+        if self.is_selecting_lines() {
+            DiffPart::Line
+        } else {
+            DiffPart::Hunk
+        }
     }
 
     // The lines of the selected hunk or line in the file at the commit, (first, last); None

@@ -205,7 +205,7 @@ pub fn links(
         // its upstream branch, else a branch of the same name
         LinkTarget::Branch(branch) => {
             let (remotes, name) = match info.upstreams.get(branch) {
-                Some((remote, upstream)) => (vec![remote.clone()], upstream.clone()),
+                Some(upstream) => (vec![upstream.remote.clone()], upstream.branch.clone()),
                 None => (remotes_of(None)?, branch.clone()),
             };
             let pages = vec![
