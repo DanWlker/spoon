@@ -50,8 +50,8 @@ enum Step {
     WaitFor(Box<dyn Fn(&Path) -> bool>),
     // time passing without a key, for what the app shows after a while
     Sleep(Duration),
-    // a frame drawn, placing the borders that ctrl and the arrow keys move
-    Draw,
+    // a frame drawn, placing the borders that ctrl and the arrow keys move, then its text checked
+    Draw(Box<dyn FnOnce(&str)>),
     Check(Box<dyn FnOnce(&App)>),
 }
 
@@ -94,7 +94,12 @@ fn check(f: impl FnOnce(&App) + 'static) -> Vec<Step> {
 }
 
 fn draw() -> Vec<Step> {
-    vec![Step::Draw]
+    screen(|_| {})
+}
+
+// A frame drawn, its rows one per line.
+fn screen(f: impl FnOnce(&str) + 'static) -> Vec<Step> {
+    vec![Step::Draw(Box::new(f))]
 }
 
 fn sleep(millis: u64) -> Vec<Step> {
@@ -223,11 +228,16 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
             }
         }
         Step::Sleep(duration) => std::thread::sleep(duration),
-        Step::Draw => {
+        Step::Draw(f) => {
             let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
             let keys = app.keys_popup_keys();
-            terminal.draw(|f| app.render(f, &keys)).unwrap();
+            let frame = terminal.draw(|f| app.render(f, &keys)).unwrap();
+            let rows = frame.buffer.content.chunks(SIZE.0 as usize);
+            let text: Vec<String> = rows
+                .map(|r| r.iter().map(|c| c.symbol()).collect())
+                .collect();
+            f(&text.join("\n"));
         }
         Step::Check(f) => f(app),
     }
@@ -1292,6 +1302,36 @@ fn test_diff_keys_alike_on_every_page() {
             keys("shift-h enter shift-h"),
             // already on the lines, enter does nothing
             named(None, "copy line", to),
+        ]);
+    }
+}
+
+#[test]
+fn test_search_shown_in_the_title_of_its_panel() {
+    // the keys to the panel searched, the page they are on, and its title
+    let panels = [
+        ("3 enter", StartPage::Graph, "[2] Info"),
+        ("4 shift-t", StartPage::Graph, "[0] Commits"),
+        ("4 shift-t l", StartPage::Graph, "[1] Diff"),
+        ("4 shift-b l", StartPage::Graph, "[1] Blame"),
+        ("enter", StartPage::LocalChanges, "╭ / "),
+    ];
+    for (to, page, label) in panels {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "a\nchanged\nc\n").unwrap();
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        harness.run(vec![
+            keys(to),
+            keys("/ c enter"),
+            screen(move |screen| {
+                let title = screen.lines().find_map(|l| l.split_once(label));
+                let title = title.map(|(_, rest)| rest.split('╮').next().unwrap());
+                assert!(
+                    title.is_some_and(|t| t.contains(" /c ")),
+                    "{label}: {title:?}\n{screen}"
+                );
+            }),
         ]);
     }
 }

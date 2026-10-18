@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
+    color::ColorTheme,
     event::UserEvent,
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
@@ -723,9 +724,8 @@ impl<'a> LocalChangesState<'a> {
             row.path.clone()
         };
         let target = match self.focus {
-            Focus::Diff if self.pane.is_selecting_lines() => "this line of",
-            Focus::Diff => "this hunk of",
-            _ => "all changes to",
+            Focus::Diff => format!("this {} of", self.pane.selected_part().name()),
+            _ => "all changes to".into(),
         };
         let Some(task) = self.discard_task()? else {
             return Ok(());
@@ -1787,6 +1787,11 @@ impl<'a> LocalChangesState<'a> {
     }
 }
 
+// A state shown after a title in the warning color, like amending or rebasing.
+fn warn_note(text: &str, theme: &ColorTheme) -> Span<'static> {
+    Span::raw(format!(" · {text} ")).fg(theme.status_warn_fg)
+}
+
 fn picked_files_label(count: usize) -> String {
     if count == 1 {
         "1 picked file".into()
@@ -1883,21 +1888,17 @@ impl LocalChangesPanel<'_> {
         let active = state.section == section;
         let focused = active && self.focused && state.focus_on_files();
         let mut extras = vec![];
-        if section == LocalChangesSection::Staged && state.draft.amend.is_some() {
-            extras.push("amending".to_string());
-        }
         if !picked.is_empty() {
             extras.push(format!("{} picked", picked.len()));
         }
         extras.extend(state.query_of(section).indicator());
         let label = format!("[{number}] {name} ({})", files.len());
-        let inner = render_panel(
-            buf,
-            area,
-            panel_title(&label, &extras.join(" · "), focused, &self.ctx.color_theme),
-            focused,
-            &self.ctx.color_theme,
-        );
+        let theme = &self.ctx.color_theme;
+        let mut title = panel_title(&label, &extras.join(" · "), focused, theme);
+        if section == LocalChangesSection::Staged && state.draft.amend.is_some() {
+            title.push_span(warn_note("amending", theme));
+        }
+        let inner = render_panel(buf, area, title, focused, theme);
 
         let empty = if files.is_empty() {
             "No changes"
@@ -1935,13 +1936,9 @@ impl LocalChangesPanel<'_> {
             Some(row) => row.path.clone(),
             None => String::new(),
         };
-        let mode = match state.focus {
-            Focus::Diff if state.pane.is_selecting_lines() => "select lines",
-            Focus::Diff => "select hunks",
-            _ => "",
-        };
+        let indicator = state.diff_query.indicator().unwrap_or_default();
         let diff_focused = self.focused && state.is_diff_focused();
-        let title = panel_title(&title, mode, diff_focused, &self.ctx.color_theme);
+        let title = panel_title(&title, &indicator, diff_focused, &self.ctx.color_theme);
         let search = state.diff_query.search();
         let inner = state
             .pane
@@ -1963,7 +1960,7 @@ impl LocalChangesPanel<'_> {
         // amending and rebasing have no controls of their own, the title shows them
         let mut title = panel_title("[3] Commit", "", focused, theme).spans;
         if state.draft.amend.is_some() {
-            title.push(Span::raw(" · amending ").fg(theme.status_warn_fg));
+            title.push(warn_note("amending", theme));
         }
         if let Some(operation) = state.operation {
             let doing = match operation {
@@ -1972,7 +1969,7 @@ impl LocalChangesPanel<'_> {
                 Operation::CherryPick => "cherry-picking",
                 Operation::Revert => "reverting",
             };
-            title.push(Span::raw(format!(" · {doing} ")).fg(theme.status_warn_fg));
+            title.push(warn_note(doing, theme));
         }
         let text_area = render_panel(buf, area, Line::from(title), focused, theme);
         self.render_message(state, text_area, buf);
@@ -2688,6 +2685,22 @@ mod tests {
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt", "c.txt"]);
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt"]);
+
+        // the staged and the commit titles say so alike
+        let area = Rect::new(0, 0, 120, 20);
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+            .render(area, &mut buf, &mut state);
+        let mut notes = vec![];
+        for y in 0..area.height {
+            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+            for (i, _) in row.match_indices("· amending") {
+                let x = row[..i].chars().count() as u16;
+                notes.push(buf[(x, y)].style());
+            }
+        }
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert_eq!(notes[0], notes[1]);
 
         // an operation starting meanwhile leaves A to stop amending, not to start it
         state.operation = Some(Operation::Merge);

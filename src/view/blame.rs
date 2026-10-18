@@ -433,9 +433,12 @@ impl BlameView {
 
         // the lines, each run of lines of a commit headed by it
         let focused = !focused;
+        // the search applies to the text or the commits, both in this panel
+        let mut path = vec![revision.path.clone()];
+        path.extend(self.query.indicator());
         let block = panel_block(focused, theme).title(panel_title(
             "[1] Blame",
-            &revision.path,
+            &path.join(" · "),
             focused,
             theme,
         ));

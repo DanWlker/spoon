@@ -343,10 +343,13 @@ impl TimelineView {
         // the commits, the selected one with the bar
         let focused = !self.pane.is_focused();
         let count = self.history.len();
-        let position = format!("{}/{count}", count - self.cursor.selected());
+        // the search in the title of the panel it applies to, like its highlights
+        let indicator = |shown: bool| self.query.indicator().filter(|_| shown);
+        let mut position = vec![format!("{}/{count}", count - self.cursor.selected())];
+        position.extend(indicator(focused));
         let block = panel_block(focused, theme).title(panel_title(
             "[0] Commits",
-            &position,
+            &position.join(" · "),
             focused,
             theme,
         ));
@@ -367,8 +370,9 @@ impl TimelineView {
         render_panel_scrollbar(buf, list_area, count, offset, focused, theme);
 
         // the file's changes in it
-        let path = &self.history[self.cursor.selected()].path;
-        let title = panel_title("[1] Diff", path, !focused, theme);
+        let mut path = vec![self.history[self.cursor.selected()].path.clone()];
+        path.extend(indicator(!focused));
+        let title = panel_title("[1] Diff", &path.join(" · "), !focused, theme);
         let search = self.query.search().filter(|_| !focused);
         self.pane
             .render_panel(diff_area, title, buf, &ctx, !focused, search);

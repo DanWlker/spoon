@@ -76,7 +76,7 @@ pub fn render_tab_titles(
             if *tab == current && focused {
                 focused_title(title, theme)
             } else if *tab == current {
-                Span::raw(title).fg(theme.fg).bold()
+                Span::raw(title).fg(theme.fg)
             } else {
                 Span::raw(title).fg(theme.muted_fg)
             }
@@ -655,6 +655,22 @@ mod tests {
 
     fn selected(tree: &FileTreeState) -> &str {
         &tree.selected().unwrap().path
+    }
+
+    #[test]
+    fn test_current_tab_titled_like_the_other_panels() {
+        let theme = ColorTheme::default();
+        for focused in [true, false] {
+            let area = Rect::new(0, 0, 60, 1);
+            let mut buf = Buffer::empty(area);
+            render_tab_titles(DetailTab::Changes, focused, None, &theme, area, &mut buf);
+            let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+            let x = row.find("[3] Changes").unwrap() as u16;
+            // the same title drawn like the other panels'
+            let mut expected = Buffer::empty(area);
+            panel_title("[3] Changes", "", focused, &theme).render(area, &mut expected);
+            assert_eq!(buf[(x, 0)], expected[(1, 0)], "focused: {focused}");
+        }
     }
 
     #[test]
