@@ -6,3 +6,4 @@ TODO:
 1. Move commits (do we really need this?)...
 1. draw an architecture diagram showing which calls what, split by call layers. I want each file to list their functions and a short description of what it does,
 1. `+` and `-` on diff panel when viewing a single file only to show more around the context of the change
+1. Check how state management is done and reloaded, cause things seem to be on different checks and ticks
