@@ -36,7 +36,7 @@ pub enum View<'a> {
 
 // Calls the same method on whichever page is shown, `default` without one.
 macro_rules! on_page {
-    ($view:expr, $page:ident => $call:expr, $default:expr) => {
+    ($view:expr_2021, $page:ident => $call:expr_2021, $default:expr_2021) => {
         match $view {
             View::Default => $default,
             View::List($page) => $call,
