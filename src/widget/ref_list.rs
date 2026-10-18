@@ -198,7 +198,7 @@ impl RefListState {
     // Marks the checked-out branch; a detached HEAD gets a row of its own, first in the branches.
     pub fn set_head(&mut self, head: &Head) {
         self.head = match head {
-            Head::Branch { name } => Some(NodeId::Name(name.clone())),
+            Head::Branch { name, .. } => Some(NodeId::Name(name.clone())),
             Head::Detached { target } => {
                 let name = format!("HEAD (detached at {})", target.as_short_hash());
                 let node = RefTreeNode::new(NodeId::DetachedHead, name, Vec::new());
@@ -965,6 +965,7 @@ mod tests {
         let mut state = RefListState::new(&[&branch], &[]);
         state.set_head(&Head::Branch {
             name: "main".into(),
+            target: "a".repeat(40).as_str().into(),
         });
         let names = |state: &RefListState| -> Vec<String> {
             state.visible_rows.iter().map(|r| r.name.clone()).collect()

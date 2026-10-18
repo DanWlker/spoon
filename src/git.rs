@@ -220,7 +220,8 @@ impl<'a> Entry<'a> {
 
 #[derive(Debug, Clone)]
 pub enum Head {
-    Branch { name: String },
+    // `target` is the commit checked out
+    Branch { name: String, target: CommitHash },
     Detached { target: CommitHash },
     None,
 }
@@ -251,8 +252,8 @@ pub struct Repository {
     running: std::rc::Rc<std::cell::RefCell<Option<RunningTask>>>,
     // the fingerprint of the refs when loaded, see `refs_snapshot`
     refs_snapshot: Option<String>,
-    // HEAD when loaded, see `check_head`
-    loaded_head: HeadState,
+    // the operation stopped and waiting when loaded, see `operation_in_progress`
+    operation: Option<Operation>,
     // the upstream of each local branch having one when loaded, see `branch_tracking`
     tracking: FxHashMap<String, Tracking>,
     commit_map: CommitMap,
@@ -299,7 +300,7 @@ impl Repository {
             let remotes = scope.spawn(|| load_remotes(path));
             let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
             let refs_snapshot = scope.spawn(|| refs_snapshot(path, &git_dir).ok());
-            let loaded_head = scope.spawn(|| HeadState::read(path));
+            let operation = scope.spawn(|| read_operation(&git_dir));
             let tracking = scope.spawn(|| load_branch_tracking(path));
             let mut repository =
                 Self::load_commits(path, git_dir.clone(), sort, max_count, mailmap, revisions)?;
@@ -308,7 +309,7 @@ impl Repository {
             repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
             repository.loaded_local_changes = local_changes.join().ok().into();
             repository.refs_snapshot = refs_snapshot.join().unwrap_or_default();
-            repository.loaded_head = loaded_head.join().unwrap_or_default();
+            repository.operation = operation.join().unwrap_or_default();
             repository.tracking = tracking.join().unwrap_or_default();
             Ok(repository)
         })
@@ -361,7 +362,7 @@ impl Repository {
             loaded_local_changes: Default::default(),
             running: Default::default(),
             refs_snapshot: None,
-            loaded_head: HeadState::default(),
+            operation: None,
             tracking: Default::default(),
             commit_map,
             parents_map,
@@ -443,7 +444,7 @@ impl Repository {
     // The loaded commits on the history of HEAD.
     pub fn head_history(&self) -> rustc_hash::FxHashSet<&CommitHash> {
         let tip = match &self.head {
-            Head::Branch { name } => self.ref_map.values().flatten().find_map(|r| match r {
+            Head::Branch { name, .. } => self.ref_map.values().flatten().find_map(|r| match r {
                 Ref::Branch { name: n, target } if n == name => Some(target),
                 _ => None,
             }),
@@ -469,7 +470,7 @@ impl Repository {
     // The branch checked out, None when HEAD is detached.
     pub fn current_branch(&self) -> Option<String> {
         match &self.head {
-            Head::Branch { name } => Some(name.clone()),
+            Head::Branch { name, .. } => Some(name.clone()),
             _ => None,
         }
     }
@@ -592,10 +593,12 @@ impl Repository {
     }
 
     // The commit checked out, None in a repository without commits.
+    // The commit checked out, as loaded.
     pub fn head_commit(&self) -> Option<CommitHash> {
-        git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD"])
-            .ok()
-            .map(|hash| CommitHash::from(hash.trim()))
+        match &self.head {
+            Head::Branch { target, .. } | Head::Detached { target } => Some(target.clone()),
+            Head::None => None,
+        }
     }
 
     // Orders commits as in the commit list, newest first, in one pass over the list;
@@ -975,9 +978,10 @@ impl Repository {
         })
     }
 
-    // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
+    // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if
+    // any, as loaded.
     pub fn operation_in_progress(&self) -> Option<Operation> {
-        operation_in_progress(&self.git_dir)
+        self.operation
     }
 
     // The commits each local branch with an upstream has that it lacks (ahead, to push) and the
@@ -1103,19 +1107,6 @@ impl Repository {
             stdin,
             None,
         )
-    }
-
-    // An error once HEAD moved since it was loaded, from outside the app: what the app shows, like
-    // the branch a popup names, is then no longer what a git command would change.
-    pub fn check_head(&self) -> std::result::Result<(), String> {
-        let now = HeadState::read(&self.path);
-        if now == self.loaded_head {
-            return Ok(());
-        }
-        Err(format!(
-            "HEAD moved from {} to {now} outside the app, nothing was run",
-            self.loaded_head
-        ))
     }
 
     // An error while a git command runs in the background, which a change could fail on (its
@@ -1621,7 +1612,10 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
         if refs == "HEAD" {
             head = if let Some(branch) = get_current_branch(path) {
-                Head::Branch { name: branch }
+                Head::Branch {
+                    name: branch,
+                    target: hash.into(),
+                }
             } else {
                 Head::Detached {
                     target: hash.into(),
@@ -1708,38 +1702,14 @@ fn load_remotes(path: &Path) -> Vec<String> {
     remotes
 }
 
+// The commit checked out now, see `Repository::head_commit` for the one loaded.
+pub fn read_head_commit(path: &Path) -> Option<CommitHash> {
+    git_output(path, &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .ok()
+        .map(|hash| CommitHash::from(hash.trim()))
+}
+
 // None on a detached HEAD.
-// HEAD as git has it: the branch checked out, None when detached, and its commit.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct HeadState {
-    branch: Option<String>,
-    commit: Option<CommitHash>,
-}
-
-impl HeadState {
-    fn read(path: &Path) -> Self {
-        let commit = git_output(path, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
-        HeadState {
-            branch: get_current_branch(path),
-            commit: commit.map(|hash| CommitHash::from(hash.trim())),
-        }
-    }
-}
-
-// "main at 1a2b3c4", or the commit alone when detached.
-impl std::fmt::Display for HeadState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let commit = self
-            .commit
-            .as_ref()
-            .map_or("no commit", CommitHash::as_short_hash);
-        match &self.branch {
-            Some(branch) => write!(f, "{branch} at {commit}"),
-            None => write!(f, "{commit}"),
-        }
-    }
-}
-
 fn get_current_branch(path: &Path) -> Option<String> {
     let out = git_output(path, &["branch", "--show-current"]).ok()?;
     Some(out.trim().to_string()).filter(|branch| !branch.is_empty())
@@ -2164,8 +2134,9 @@ pub struct Tracking {
     pub behind: usize,
 }
 
-// The operation stopped in the repository of `git_dir`, see `Repository::operation_in_progress`.
-fn operation_in_progress(git_dir: &Path) -> Option<Operation> {
+// The operation stopped in the repository of `git_dir` now, see `Repository::operation_in_progress`
+// for the one loaded.
+pub fn read_operation(git_dir: &Path) -> Option<Operation> {
     let exists = |name: &str| git_dir.join(name).exists();
     // rebase-apply is also used by `git am`, which does not leave the "rebasing" file
     if exists("rebase-merge") || exists("rebase-apply/rebasing") {
@@ -2202,7 +2173,7 @@ pub fn refs_snapshot(path: &Path, git_dir: &Path) -> std::result::Result<String,
         .unwrap_or_default();
     // older stashes are only in the reflog of refs/stash, which for-each-ref doesn't see
     let stashes = git_output(path, &["stash", "list", "--format=%H"]).unwrap_or_default();
-    let operation = format!("{:?}", operation_in_progress(git_dir));
+    let operation = format!("{:?}", read_operation(git_dir));
     Ok(refs + &head + &stashes + &operation)
 }
 
@@ -3671,7 +3642,7 @@ mod tests {
         git_output(path, &["add", "new.txt"]).unwrap();
         git_output(path, &["commit", "-q", "-m", "rename"]).unwrap();
         std::fs::write(path.join("new.txt"), &numbers).unwrap();
-        let head = repository.head_commit().unwrap();
+        let head = read_head_commit(path).unwrap();
         let base = format!("{}~1", head.as_str());
         let diff = parse_diff(&repository.diff_between(&base, head.as_str(), &[]));
         // to the working tree, as `git apply` does from the changes of a commit

@@ -7,3 +7,6 @@ TODO:
 1. draw an architecture diagram showing which calls what, split by call layers. I want each file to list their functions and a short description of what it does,
 1. `+` and `-` on diff panel when viewing a single file only to show more around the context of the change
 1. Check how state management is done and reloaded, cause things seem to be on different checks and ticks
+   - whole app should agree on one state (including keys)
+   - when a command runs, it should still check with git live, so that if the state is not expected, it should reload
+   - stale state is ok as long as all ui state is stale, but commands when running should guard the commands and not rely on state to do stuff

@@ -905,7 +905,7 @@ pub fn refs_spans(
         spans.push(Span::raw(" "));
     }
     let head_branch = match head {
-        Head::Branch { name } => Some(name.as_str()),
+        Head::Branch { name, .. } => Some(name.as_str()),
         _ => None,
     };
     for r in &commit_info.refs {

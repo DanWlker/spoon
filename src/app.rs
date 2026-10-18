@@ -29,8 +29,8 @@ use crate::{
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitCommand, GitTask,
-        Head, NamedRef, Ref, Repository, Rev, RunningTask,
+        read_head_commit, read_operation, run_task, AfterTask, Commit, CommitHash, FileChange,
+        FilesSnapshot, GitCommand, GitTask, Head, NamedRef, Ref, Repository, Rev, RunningTask,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -208,6 +208,8 @@ pub struct AppShell {
     notices: Vec<Notice>,
     // the merge commits folded in the graph, see `UserEvent::NavigateLeft`
     folded_merges: FxHashSet<CommitHash>,
+    // a check of the refs or the files came while reloading was paused, see `handle_event`
+    missed_check: bool,
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
@@ -436,7 +438,7 @@ impl<'a> App<'a> {
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
-                Head::Branch { name } => {
+                Head::Branch { name, .. } => {
                     commit_list_state.select_ref(&NamedRef::Branch(name.clone()).full_name())
                 }
                 Head::Detached { target } => {
@@ -475,6 +477,7 @@ impl<'a> App<'a> {
                 overlay: None,
                 notices: Vec::new(),
                 folded_merges: FxHashSet::default(),
+                missed_check: false,
             },
         };
         // gone, like after a rebase
@@ -581,8 +584,19 @@ impl App<'_> {
         }
     }
 
-    // Handles one event; returns what ends the app or reloads it.
+    // Handles one event; returns what ends the app or reloads it. A check of the refs or the files
+    // skipped meanwhile, while reloading was paused, is made again once it isn't, so the repository
+    // as loaded keeps up as well as it can.
     fn handle_event(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
+        let ret = self.handle(event)?;
+        if self.shell.missed_check && !self.refresh_paused() {
+            self.shell.missed_check = false;
+            self.ec.refresh_now();
+        }
+        Ok(ret)
+    }
+
+    fn handle(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
         match event {
             AppEvent::Key(key) => {
                 match self.shell.app_status.status_line {
@@ -731,8 +745,8 @@ impl App<'_> {
             AppEvent::RefsSnapshot(snapshot) if !self.refresh_paused() => {
                 self.check_refs(snapshot);
             }
-            // checked again on the next tick
-            AppEvent::FilesTick(_) | AppEvent::RefsSnapshot(_) => {}
+            // checked again once reloading isn't paused, see `handle_event`
+            AppEvent::FilesTick(_) | AppEvent::RefsSnapshot(_) => self.shell.missed_check = true,
             // only redraws
             AppEvent::SpinnerTick | AppEvent::Resize => {}
             AppEvent::OpenHelp => {
@@ -1156,7 +1170,7 @@ impl App<'_> {
                         left.push(Span::raw(format!("󰉋 {path}")).fg(theme.status_bar_fg));
                         // the checked-out branch, as the sidebar is on the graph only
                         let head = match self.repository.head() {
-                            Head::Branch { name } => Some(name.clone()),
+                            Head::Branch { name, .. } => Some(name.clone()),
                             Head::Detached { target } => {
                                 Some(format!("detached at {}", target.as_short_hash()))
                             }
@@ -1986,20 +2000,15 @@ impl App<'_> {
         if self.blocked_by_operation(&task) {
             return;
         }
-        // the command was chosen from what the app shows, which no longer is how git has it
-        if let Err(err) = self.repository.check_head() {
-            self.ec.send(AppEvent::NotifyError(err));
-            self.view.refresh();
-            return;
-        }
         // a checkout from the blame or the timeline shows the graph
         if task.moves_head() && matches!(self.shell.overlay, Some(Overlay::File(_))) {
             self.shell.overlay = None;
         }
-        // a commit made clears the message box, see `finish_task`
+        // a commit made clears the message box, see `finish_task`; read from git, as what the
+        // command does is measured
         let head_before_commit = task
             .commits()
-            .then(|| self.repository.head_commit().unwrap_or_default());
+            .then(|| read_head_commit(self.repository.path()).unwrap_or_default());
         *self.ctx.running_task.borrow_mut() = Some(RunningTask {
             task: task.clone(),
             head_before_commit,
@@ -2047,8 +2056,9 @@ impl App<'_> {
             result = Err(failed.clone());
         }
         // the message is committed, even when going on with a rebase stopped afterwards
-        let committed = head_before_commit
-            .is_some_and(|before| self.repository.head_commit().unwrap_or_default() != before);
+        let committed = head_before_commit.is_some_and(|before| {
+            read_head_commit(self.repository.path()).unwrap_or_default() != before
+        });
         if committed {
             match &mut self.view {
                 View::LocalChanges(view) => view.clear_draft(),
@@ -2072,9 +2082,10 @@ impl App<'_> {
         if result.is_ok() && task.uses_picks {
             self.view.clear_picked_commits();
         }
-        // what is left to resolve or commit is on the local changes page
+        // what is left to resolve or commit is on the local changes page; read from git, as the
+        // command may have stopped on conflicts
         let to_local_changes = (result.is_ok() && task.after == AfterTask::LocalChanges)
-            || self.repository.operation_in_progress().is_some();
+            || read_operation(self.repository.git_dir()).is_some();
         // the command may have changed files or stopped on conflicts, even when it failed;
         // refreshing would interrupt typing, so then it waits for the refs to be checked once
         // typing stopped, see `check_refs`

@@ -852,11 +852,14 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
     let listed = |app: &App, short: &str| app.view.keys().hints().iter().any(|(_, s)| s == short);
     harness.run(vec![
         check(move |app| assert!(listed(app, "checkout"))),
-        // a merge stopped, as git leaves it: seen right away, before any reload
+        // a merge stopped, as git leaves it: the keys follow the repository as loaded, which the
+        // next check of the refs reloads
         outside(|path| {
             let head = git(path, &["rev-parse", "HEAD"]);
             std::fs::write(path.join(".git/MERGE_HEAD"), head).unwrap();
         }),
+        check(move |app| assert!(listed(app, "checkout"))),
+        vec![Step::RefsTick],
         check(move |app| {
             assert!(!listed(app, "checkout"));
             // the others stay
@@ -891,6 +894,27 @@ fn test_operation_started_outside_reloads_on_the_refs_check() {
 }
 
 #[test]
+fn test_checks_skipped_under_a_popup_run_once_it_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    // the pokes asking the refresher to check right away
+    let (poke, poked) = std::sync::mpsc::channel();
+    harness.ec.set_refresher(poke);
+    let poked = Rc::new(poked);
+    let (before, after) = (poked.clone(), poked);
+    harness.run(vec![
+        // the popup of a reset pauses reloading, the check of the refs and files is skipped
+        keys("G shift-u"),
+        tick(),
+        check(move |_| assert!(before.try_recv().is_err())),
+        // closing it checks again right away, rather than on the next tick
+        keys("esc"),
+        check(move |_| assert!(after.try_recv().is_ok())),
+    ]);
+}
+
+#[test]
 fn test_repository_refuses_changes_while_the_app_runs_a_command() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -917,47 +941,6 @@ fn test_repository_refuses_changes_while_the_app_runs_a_command() {
             app.repository.stage_paths(&["f.txt"]).unwrap();
         }),
     ]);
-}
-
-#[test]
-fn test_commands_refused_once_head_moved_outside() {
-    // a popup open on master, while feat is checked out in another terminal
-    let dir = tempfile::tempdir().unwrap();
-    let path = repository(dir.path());
-    let (master, feat) = (
-        git(&path, &["rev-parse", "master"]),
-        git(&path, &["rev-parse", "feat"]),
-    );
-    let mut harness = Harness::new(&path, launch());
-    harness.run(vec![
-        keys("G shift-u"),
-        outside_git(&["checkout", "-q", "feat"]),
-        keys("enter"),
-        check(|app| assert_notice(app, "HEAD moved from master at")),
-    ]);
-    assert_eq!(git(&path, &["rev-parse", "master"]), master);
-    assert_eq!(git(&path, &["rev-parse", "feat"]), feat);
-
-    // amending, while a commit is made in another terminal: it isn't the one amended
-    let dir = tempfile::tempdir().unwrap();
-    let path = repository(dir.path());
-    std::fs::write(path.join("g.txt"), "g\n").unwrap();
-    git(&path, &["add", "g.txt"]);
-    let launch = Launch {
-        page: StartPage::LocalChanges,
-        ..launch()
-    };
-    let mut harness = Harness::new(&path, launch);
-    harness.run(vec![
-        keys("shift-a"),
-        outside_git(&["commit", "-q", "--allow-empty", "-m", "elsewhere"]),
-        keys("c enter"),
-        check(|app| assert_notice(app, "HEAD moved from master at")),
-    ]);
-    assert_eq!(
-        git(&path, &["log", "-1", "--format=%s"]).trim(),
-        "elsewhere"
-    );
 }
 
 #[test]

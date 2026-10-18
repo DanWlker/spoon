@@ -194,8 +194,9 @@ Like lazygit, the app picks up changes made elsewhere, in an editor or another t
 - every 2 seconds, it checks where the local branches and `HEAD` point, and whether a rebase, merge, cherry-pick or revert is in progress; when that changed (a commit, a checkout, or a merge stopped on conflicts in another terminal), everything is reloaded, like <kbd>R</kbd>.
 - when the terminal gets the focus back, both are checked right away.
 
-Nothing is reloaded while a git command runs, a popup is open, or something is being typed or confirmed; the next check catches up.
-When `HEAD` moved meanwhile, outside the app, a git command started from what the app still shows is refused and everything is reloaded: a popup that says "Reset main" doesn't reset the branch checked out since, and amending doesn't rewrite a commit made elsewhere.
+Nothing is reloaded while a git command runs, a popup is open, or something is being typed or confirmed; a check skipped meanwhile runs again as soon as that ends.
+
+Everything the app shows, its keys included, is the repository as last loaded. A command runs on what you chose from it, without checking git again first: a change made outside since, before the next check, is not caught, so a popup that says "Reset main" resets whatever is checked out by then.
 
 #### Picking files
 
