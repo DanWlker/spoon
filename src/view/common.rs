@@ -15,7 +15,7 @@ use crate::{
     search::{SearchKind, SearchOptions},
     widget::{
         commit_list::format_date,
-        commit_list::{CommitListState, SearchRefreshContext},
+        commit_list::{CommitListState, SearchOutcome, SearchRefreshContext},
         commit_tabs::DetailTab,
         diff::DiffPart,
         file_tree::{Entry, FileTreeRow},
@@ -315,22 +315,24 @@ pub fn revision_spans(
     spans
 }
 
-// The status line showing what is `typed` in a search of `kind`, with its options, cleared when
-// nothing is typed.
-pub fn query_status(ctx: &AppContext, typed: Option<(String, u16)>, kind: SearchKind) -> AppEvent {
-    status_input(typed, ctx.search_options.get().status_string(kind))
-}
-
-// The status line showing what is `typed`, with its cursor, and `metadata` on the right, like
-// a search; cleared when nothing is typed.
-pub fn status_input(typed: Option<(String, u16)>, metadata: String) -> AppEvent {
-    match typed {
+// The status line showing the `query` being typed, a search of `kind`, with its cursor and its
+// options on the right; cleared when nothing is typed.
+pub fn query_status(ctx: &AppContext, query: &TreeQuery, kind: SearchKind) -> AppEvent {
+    match query.status_input() {
         Some((message, cursor_position)) => AppEvent::UpdateStatusInput {
             message,
             cursor_position,
-            metadata,
+            metadata: ctx.search_options.get().status_string(kind),
         },
         None => AppEvent::ClearStatusLine,
+    }
+}
+
+// The status line telling the search for `query`, of `kind`, matched nothing, alike on every page.
+pub fn not_found(ctx: &AppContext, query: String, kind: SearchKind) -> AppEvent {
+    AppEvent::UpdateSearchResult {
+        outcome: SearchOutcome::NotFound { query },
+        options: ctx.search_options.get().status_string(kind),
     }
 }
 

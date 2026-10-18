@@ -38,7 +38,7 @@ With the mouse captured, the terminal selects text while Shift is held.
 <kbd>f</kbd>, <kbd>p</kbd> and <kbd>P</kbd> open a popup over any page but the help:
 
 - Fetch: the remote to fetch from.
-- Pull: the remote and the branch to pull, chosen among those fetched (only the remotes with fetched branches; with none, it asks to fetch first), whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing and `merge.autoStash` when merging, until you change it).
+- Pull: the remote and the branch to pull, chosen among those fetched (only the remotes with fetched branches; with none, it asks to fetch first), whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing, or by default when it is not set, and by `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, whether to force push (`--force-with-lease`), and whether to skip the pre-push hook (`--no-verify`). A branch without an upstream starts tracking the branch it is pushed to.
 
 In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branch to push to cycles through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types into a text field, like a new branch to push to (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name, a URL, the branch to push to) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
@@ -303,7 +303,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd>  | Clear the search, then close                                 | `cancel`                |
+| <kbd>Esc</kbd>  | Clear the search, back to the commit shown, then close       | `cancel`                |
 | <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_0` `focus_panel_1` `focus_up` `focus_down` |
 | <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |

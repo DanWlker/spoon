@@ -323,11 +323,7 @@ pub fn type_commit_search(
         state.search_changed();
     }
     if state.is_typing_search() {
-        tx.send(query_status(
-            ctx,
-            state.search_status_input(),
-            SearchKind::Commits,
-        ));
+        tx.send(query_status(ctx, state.query(), SearchKind::Commits));
     } else {
         update_matched_message(state, tx);
     }
@@ -345,11 +341,7 @@ pub fn handle_search_event(
     match event {
         UserEvent::Search => {
             state.start_search();
-            tx.send(query_status(
-                ctx,
-                state.search_status_input(),
-                SearchKind::Commits,
-            ));
+            tx.send(query_status(ctx, state.query(), SearchKind::Commits));
         }
         UserEvent::SearchTargetToggle => {
             state.toggle_search_target();

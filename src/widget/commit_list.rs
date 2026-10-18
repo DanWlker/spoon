@@ -250,11 +250,11 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_next(&mut self) {
-        self.select_visible_index(self.current_selected_index() + 1);
+        self.select_visible_index(self.cursor.selected() + 1);
     }
 
     pub fn select_prev(&mut self) {
-        self.select_visible_index(self.current_selected_index().saturating_sub(1));
+        self.select_visible_index(self.cursor.selected().saturating_sub(1));
     }
 
     pub fn select_first(&mut self) {
@@ -291,9 +291,7 @@ impl<'a> CommitListState<'a> {
     // Selects the commit at `index` near the top, the scrolloff above it: a match jumped to.
     fn select_index(&mut self, index: usize) {
         if index < self.total {
-            let margin = self
-                .scrolloff
-                .min(self.cursor.height().saturating_sub(1) / 2);
+            let margin = self.cursor.margin();
             self.cursor.select_at(index, margin, self.total);
         }
     }
@@ -305,7 +303,7 @@ impl<'a> CommitListState<'a> {
     // Selects the next (or previous) picked commit, wrapping around.
     pub fn select_next_pick(&mut self, toward: Toward) {
         let direction = SearchDirection::from(toward);
-        let current = self.current_selected_index();
+        let current = self.cursor.selected();
         let target = find_around(self.commits.len(), current, direction, |i| {
             self.is_picked(&self.commits[i].commit.commit_hash)
         });
@@ -316,7 +314,7 @@ impl<'a> CommitListState<'a> {
 
     // Selects the next (or previous) commit the search matches, wrapping around.
     pub fn select_next_match(&mut self, toward: Toward) {
-        self.select_match_from(self.current_selected_index(), SearchDirection::from(toward));
+        self.select_match_from(self.cursor.selected(), SearchDirection::from(toward));
     }
 
     // Selects the commit at `from` when the search matches it (`SearchDirection::Current`), else
@@ -342,18 +340,12 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
-        &self.commits[self.current_selected_index()]
-            .commit
-            .commit_hash
-    }
-
-    fn current_selected_index(&self) -> usize {
-        self.cursor.selected()
+        &self.commits[self.cursor.selected()].commit.commit_hash
     }
 
     // The selected commit, counting from 1, and how many there are.
     pub fn position(&self) -> (usize, usize) {
-        (self.current_selected_index() + 1, self.total)
+        (self.cursor.selected() + 1, self.total)
     }
 
     // The selected commit and the commits shown.
@@ -367,7 +359,7 @@ impl<'a> CommitListState<'a> {
 
     // Shows the selected commit at `row` of those shown, where it can be.
     pub fn restore_selected_row(&mut self, row: usize) {
-        let index = self.current_selected_index();
+        let index = self.cursor.selected();
         self.cursor.select_at(index, row, self.total);
     }
 
@@ -421,7 +413,7 @@ impl<'a> CommitListState<'a> {
     // Starts typing the search, from the applied one, looking for matches from the selection.
     pub fn start_search(&mut self) {
         if !self.query.is_editing() {
-            self.search_start = self.current_selected_index();
+            self.search_start = self.cursor.selected();
             self.query.start(QueryKind::Search);
         }
     }
@@ -438,9 +430,8 @@ impl<'a> CommitListState<'a> {
         &mut self.query
     }
 
-    // The search as typed, for the status line.
-    pub fn search_status_input(&self) -> Option<(String, u16)> {
-        self.query.status_input()
+    pub fn query(&self) -> &TreeQuery {
+        &self.query
     }
 
     // Finds the matches again once the search or its options changed: while typing, the first
@@ -449,7 +440,7 @@ impl<'a> CommitListState<'a> {
         let from = if self.query.is_editing() {
             self.search_start
         } else {
-            self.current_selected_index()
+            self.cursor.selected()
         };
         self.update_search_matches();
         self.select_match_from(from, SearchDirection::Current);
@@ -522,7 +513,7 @@ impl<'a> CommitListState<'a> {
         if total == 0 {
             return Some(SearchOutcome::NotFound { query });
         }
-        let selected = self.current_selected_index();
+        let selected = self.cursor.selected();
         let index = if self.search_matches[selected] {
             self.search_matches[..=selected]
                 .iter()
@@ -1176,7 +1167,7 @@ mod tests {
     }
 
     fn typed(state: &CommitListState<'_>) -> Option<String> {
-        state.search_status_input().map(|(text, _)| text)
+        state.query().status_input().map(|(text, _)| text)
     }
 
     #[test]
@@ -1343,13 +1334,13 @@ mod tests {
             }
             state.select_index(0);
             state.select_next_pick(Toward::Next);
-            assert_eq!(state.current_selected_index(), 1);
+            assert_eq!(state.cursor.selected(), 1);
             state.select_next_pick(Toward::Next);
-            assert_eq!(state.current_selected_index(), 3);
+            assert_eq!(state.cursor.selected(), 3);
             state.select_next_pick(Toward::Next);
-            assert_eq!(state.current_selected_index(), 1);
+            assert_eq!(state.cursor.selected(), 1);
             state.select_next_pick(Toward::Previous);
-            assert_eq!(state.current_selected_index(), 3);
+            assert_eq!(state.cursor.selected(), 3);
         });
     }
 
@@ -1533,7 +1524,7 @@ mod tests {
 
             state.restore_selected_row(7);
             assert_eq!(status(state), (7, 8, 10));
-            assert_eq!(state.current_selected_index(), 15);
+            assert_eq!(state.cursor.selected(), 15);
         });
     }
 
@@ -1581,7 +1572,7 @@ mod tests {
 
             assert_eq!(state.search_refresh_context(), Some(context.clone()));
             assert_eq!(
-                state.commits[state.current_selected_index()].commit.subject,
+                state.commits[state.cursor.selected()].commit.subject,
                 "unrelated"
             );
 
@@ -1591,7 +1582,7 @@ mod tests {
                 Some(("Match 1 of 2 (query: \"fx\")".into(), true))
             );
             assert_eq!(
-                state.commits[state.current_selected_index()].commit.subject,
+                state.commits[state.cursor.selected()].commit.subject,
                 "FIX new"
             );
 
@@ -1601,7 +1592,7 @@ mod tests {
                 Some(("Match 2 of 2 (query: \"fx\")".into(), true))
             );
             assert_eq!(
-                state.commits[state.current_selected_index()].commit.subject,
+                state.commits[state.cursor.selected()].commit.subject,
                 "fix parser"
             );
         });
@@ -1690,7 +1681,7 @@ mod tests {
             state.start_search();
 
             assert_eq!(typed(state), Some("/fx".into()));
-            assert_eq!(state.search_status_input().unwrap().1, 3);
+            assert_eq!(state.query().status_input().unwrap().1, 3);
             assert_eq!(state.search_options(), options);
             assert_eq!(status(state), position);
             assert_eq!(state.search_matches, matches);
@@ -1709,13 +1700,13 @@ mod tests {
                 input_search_query(state, "fix");
                 apply_search(state);
                 state.select_next_match(Toward::Next);
-                assert_eq!(state.current_selected_index(), 1);
+                assert_eq!(state.cursor.selected(), 1);
 
                 state.start_search();
                 for c in " parser".chars() {
                     type_key(state, KeyEvent::from(KeyCode::Char(c)));
                 }
-                assert_eq!(state.current_selected_index(), 2);
+                assert_eq!(state.cursor.selected(), 2);
                 assert!(!state.search_matches[1]);
                 assert!(state.search_matches[2]);
 
@@ -1743,7 +1734,7 @@ mod tests {
             apply_search(state);
 
             assert_eq!(status(state), position);
-            assert_eq!(state.current_selected_index(), 1);
+            assert_eq!(state.cursor.selected(), 1);
             assert_eq!(matched(state), result);
         });
     }
@@ -1828,7 +1819,7 @@ mod tests {
 
             state.start_search();
             assert_eq!(typed(state), Some(format!("/{query}")));
-            assert_eq!(state.search_status_input().unwrap().1, 161);
+            assert_eq!(state.query().status_input().unwrap().1, 161);
             type_key(state, KeyEvent::from(KeyCode::Char('追')));
             assert_eq!(typed(state), Some(format!("/{query}追")));
         });
@@ -1987,10 +1978,7 @@ mod tests {
             apply_search(state);
             state.toggle_smart_case();
 
-            assert_eq!(
-                state.commits[state.current_selected_index()].commit.subject,
-                "fix"
-            );
+            assert_eq!(state.commits[state.cursor.selected()].commit.subject, "fix");
             assert_eq!(
                 matched(state),
                 Some(("Match 2 of 2 (query: \"fix\")".into(), true))
@@ -2006,10 +1994,7 @@ mod tests {
             apply_search(state);
             state.toggle_smart_case();
 
-            assert_eq!(
-                state.commits[state.current_selected_index()].commit.subject,
-                "fix"
-            );
+            assert_eq!(state.commits[state.cursor.selected()].commit.subject, "fix");
             assert_eq!(
                 matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
@@ -2023,11 +2008,11 @@ mod tests {
             state.toggle_fuzzy();
             input_search_query(state, "fx");
             apply_search(state);
-            let selected = state.current_selected_index();
+            let selected = state.cursor.selected();
 
             state.toggle_fuzzy();
 
-            assert_eq!(state.current_selected_index(), selected);
+            assert_eq!(state.cursor.selected(), selected);
             assert_eq!(
                 matched(state),
                 Some(("No matches found (query: \"fx\")".into(), false))

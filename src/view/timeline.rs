@@ -16,7 +16,7 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_selection, file_link, query_status, register_commit_keys,
+        commit_event, copy_selection, file_link, not_found, query_status, register_commit_keys,
         register_moving_keys, revision_matches, revision_spans, type_query, typing_keys,
     },
     widget::{
@@ -214,15 +214,14 @@ impl TimelineView {
         };
         // while typing, the status line shows the query instead
         if !found && !self.query.is_editing() {
-            let message = format!("No match for {search}");
-            self.tx.send(AppEvent::NotifyWarn(message));
+            self.tx
+                .send(not_found(&self.ctx, search, self.query_kind()));
         }
     }
 
     fn update_query_status(&self) {
-        let typed = self.query.status_input();
         self.tx
-            .send(query_status(&self.ctx, typed, self.query_kind()));
+            .send(query_status(&self.ctx, &self.query, self.query_kind()));
     }
 
     // The text or the diff is searched as text, the commits by name.

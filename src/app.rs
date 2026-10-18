@@ -71,7 +71,6 @@ enum StatusLine {
         outcome: SearchOutcome,
         options: String,
     },
-    NotificationInfo(String),
     NotificationSuccess(String),
 }
 
@@ -614,7 +613,6 @@ impl App<'_> {
                     }
                     StatusLine::Transient(_)
                     | StatusLine::SearchResult { .. }
-                    | StatusLine::NotificationInfo(_)
                     | StatusLine::NotificationSuccess(_) => {
                         // Clear message and pass key input as is
                         self.clear_status_line();
@@ -834,9 +832,6 @@ impl App<'_> {
             }
             AppEvent::UpdateSearchResult { outcome, options } => {
                 self.shell.app_status.status_line = StatusLine::SearchResult { outcome, options };
-            }
-            AppEvent::NotifyInfo(msg) => {
-                self.shell.app_status.status_line = StatusLine::NotificationInfo(msg);
             }
             AppEvent::NotifySuccess(msg) => {
                 self.shell.app_status.status_line = StatusLine::NotificationSuccess(msg);
@@ -1228,9 +1223,6 @@ impl App<'_> {
                     SearchOutcome::NotFound { .. } => span.fg(theme.status_warn_fg).bold(),
                 });
                 right.push(Span::raw(format!("{options} ")).fg(theme.muted_fg));
-            }
-            StatusLine::NotificationInfo(msg) => {
-                left.push(Span::raw(msg.clone()).fg(theme.status_info_fg));
             }
             StatusLine::NotificationSuccess(msg) => {
                 left.push(
@@ -2169,19 +2161,6 @@ impl App<'_> {
         quit
     }
 
-    // The selected commit and the picked ones, on the commit graph.
-    fn graph_selection(&self) -> Option<(CommitHash, Vec<CommitHash>)> {
-        let state = match &self.view {
-            View::List(view) => view.as_list_state(),
-            View::Detail(view) => view.as_list_state(),
-            _ => return None,
-        };
-        Some((
-            state.selected_commit_hash().clone(),
-            state.picked_commit_hashes().to_vec(),
-        ))
-    }
-
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
         if self.refused_while_diffing(event) {
@@ -2196,9 +2175,11 @@ impl App<'_> {
             self.view.refresh();
             return;
         }
-        let Some((selected, picked)) = self.graph_selection() else {
+        let Some(state) = self.view.as_list_state() else {
             return;
         };
+        let selected = state.selected_commit_hash().clone();
+        let picked = state.picked_commit_hashes().to_vec();
         let command = graph_command(self.repository, event, selected, picked);
         self.run_graph_command(event, command);
     }

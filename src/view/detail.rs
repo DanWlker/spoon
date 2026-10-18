@@ -20,9 +20,9 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_path, copy_selection, file_link, handle_search_event, query_status,
-        register_commit_list_keys, type_commit_search, type_query, typing_keys, Compare, CopyForm,
-        ListFacts, ListRefreshViewContext, RefreshViewContext,
+        commit_event, copy_path, copy_selection, file_link, handle_search_event, not_found,
+        query_status, register_commit_list_keys, type_commit_search, type_query, typing_keys,
+        Compare, CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -983,7 +983,11 @@ impl<'a> DetailView<'a> {
             // ctrl-d and ctrl-u too, the preview being what is read, see `HalfPage::Pane`
             _ if state.scroll_preview(event) => {}
             _ if preview_focused => return false,
-            _ => return handle_tree_event(event, |f| state.update_tree(f)),
+            _ => {
+                return handle_tree_event(event, |f| {
+                    state.update_tree(f);
+                })
+            }
         }
         true
     }
@@ -1079,9 +1083,10 @@ impl<'a> DetailView<'a> {
                     DetailTab::Changes => self
                         .changes_state
                         .update_tree(|t| t.set_filter(filter, options)),
-                    DetailTab::Files => self
-                        .files_state
-                        .update_tree(|t| t.set_filter(filter, options)),
+                    DetailTab::Files => {
+                        self.files_state
+                            .update_tree(|t| t.set_filter(filter, options));
+                    }
                 }
             }
         }
@@ -1092,35 +1097,37 @@ impl<'a> DetailView<'a> {
             return;
         };
         let options = self.ctx.search_options.get();
-        if self.is_pane_focused() {
-            let found = match self.tab {
-                DetailTab::Changes => self.changes_state.pane.search(&search, direction, options),
-                DetailTab::Files => self.files_state.search_preview(&search, direction, options),
-                DetailTab::Info => true,
-            };
-            // while typing, the status line shows the query instead
-            if !found && !self.is_typing_query() {
-                self.tx
-                    .send(AppEvent::NotifyWarn(format!("No match for {search}")));
+        let found = match (self.tab, self.is_pane_focused()) {
+            (DetailTab::Info, _) => true,
+            (DetailTab::Changes, true) => {
+                self.changes_state.pane.search(&search, direction, options)
             }
-            return;
-        }
-        match self.tab {
-            DetailTab::Info => {}
-            DetailTab::Changes => self
+            (DetailTab::Files, true) => {
+                self.files_state.search_preview(&search, direction, options)
+            }
+            (DetailTab::Changes, false) => self
                 .changes_state
                 .update_tree(|t| t.search(&search, direction, options)),
-            DetailTab::Files => self
+            (DetailTab::Files, false) => self
                 .files_state
-                .update_tree(|t| t.search(&search, direction, options)),
+                .update_tree(|t| t.search(&search, direction, options))
+                .unwrap_or(true),
+        };
+        // while typing, the status line shows the query instead
+        if !found && !self.is_typing_query() {
+            self.tx
+                .send(not_found(&self.ctx, search, self.query_kind()));
         }
     }
 
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
-        let typed = self.query().and_then(TreeQuery::status_input);
-        self.tx
-            .send(query_status(&self.ctx, typed, self.query_kind()));
+        // the info tab has no search
+        let event = match self.query() {
+            Some(query) => query_status(&self.ctx, query, self.query_kind()),
+            None => AppEvent::ClearStatusLine,
+        };
+        self.tx.send(event);
     }
 
     // The diff or preview is searched as text, the file trees by name.

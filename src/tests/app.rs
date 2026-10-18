@@ -26,7 +26,7 @@ use crate::{
     protocol::ImageProtocol,
     test_support::{git::git, ui::test_ctx},
     view::View,
-    widget::ref_list::RefSelection,
+    widget::{commit_list::SearchOutcome, ref_list::RefSelection},
     Loader, Refresh,
 };
 
@@ -452,7 +452,8 @@ fn test_page_bar_names_the_window_over_the_pages() {
         keys("esc 4 shift-b"),
         named("Blame"),
         named("f.txt"),
-        keys("esc shift-t"),
+        // back to the commit shown, then closed
+        keys("esc esc shift-t"),
         named("Timeline"),
     ]);
 }
@@ -1100,9 +1101,9 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
             "show on graph",
             "checkout",
             "search",
-            "close",
+            "back",
         ]),
-        keys("esc shift-t"),
+        keys("esc esc shift-t"),
         popup_has(&["into the diff", "copy hash", "move", "focus panel"]),
         // typing a search, the popup gives way
         keys("/"),
@@ -1154,10 +1155,9 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("4 shift-b l /"),
-        typing("zzz"),
-        keys("enter n"),
-        check(|app| assert_notice(app, "No match for zzz")),
+        keys("4 shift-b l"),
+        vec![Step::Event(Box::new(AppEvent::NotifyWarn("warned".into())))],
+        check(|app| assert_notice(app, "warned")),
         // dismissed, and the long lines wrapped, without closing the blame
         keys(", w"),
         overlay("blame"),
@@ -1179,7 +1179,7 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
             assert!(shown.iter().any(|d| d == "to the lines"), "{shown:?}");
         }),
         // and in the timeline, into the diff
-        keys("shift-h esc esc shift-t"),
+        keys("shift-h esc shift-t"),
         draw(),
         keys("ctrl-left alt-right shift-h"),
         overlay("timeline"),
@@ -1193,6 +1193,44 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
             assert!(shown.iter().any(|d| d == "select lines"), "{shown:?}");
         }),
     ]);
+}
+
+#[test]
+fn test_no_match_said_alike_on_every_page() {
+    // the keys to a search, and the page they are on
+    let pages = [
+        ("", StartPage::Graph),
+        ("4", StartPage::Graph),
+        ("4 shift-b l", StartPage::Graph),
+        ("4 shift-t", StartPage::Graph),
+        ("", StartPage::LocalChanges),
+    ];
+    for (to_search, page) in pages {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        let mut steps = vec![];
+        if !to_search.is_empty() {
+            steps.push(keys(to_search));
+        }
+        steps.extend([
+            keys("/"),
+            typing("zzz"),
+            keys("enter n"),
+            check(move |app| {
+                let said = &app.shell.app_status.status_line;
+                assert!(
+                    matches!(said, StatusLine::SearchResult {
+                        outcome: SearchOutcome::NotFound { query },
+                        ..
+                    } if query == "zzz"),
+                    "{to_search:?} {said:?}"
+                );
+            }),
+        ]);
+        harness.run(steps);
+    }
 }
 
 #[test]

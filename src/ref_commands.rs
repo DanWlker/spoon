@@ -88,13 +88,14 @@ pub fn ref_command(
     picked: &RefPicks,
 ) -> Option<Result<GitDialog, String>> {
     use RefSection::*;
+    // deleting works on the picked refs, when there are
+    if let (UserEvent::DeleteRef, Some(section)) = (event, picked.section()) {
+        return Some(delete_refs(repository, section, picked.names()));
+    }
     let dialog = match (event, selection) {
         // remotes only: branches and tags are created with the commands of the graph
         (UserEvent::CreateRef, _) if adds_remote(repository, selection) => {
             Ok(GitDialog::add_remote())
-        }
-        (UserEvent::DeleteRef, _) if let Some(section) = picked.section() => {
-            delete_refs(repository, section, picked.names())
         }
         (UserEvent::DeleteRef, RefSelection::Folder(Remotes, name))
             if repository.remotes().contains(name) =>

@@ -248,12 +248,19 @@ impl FileTreeState {
             .is_none_or(|(filter, options)| name_matches(path, filter, *options))
     }
 
-    // Selects the next match of `query`, expanding the directories that hide it.
-    pub fn search(&mut self, query: &str, direction: SearchDirection, options: SearchOptions) {
+    // Selects the next match of `query`, expanding the directories that hide it. Returns whether
+    // there was one.
+    pub fn search(
+        &mut self,
+        query: &str,
+        direction: SearchDirection,
+        options: SearchOptions,
+    ) -> bool {
         let all_rows = self.all_rows();
         let current = self.selected().map(|r| r.path.as_str());
         let path = find_match(&all_rows, current, query, direction, options);
         self.reveal(path.as_deref());
+        path.is_some()
     }
 
     // Selects `path`, expanding the directories that hide it.

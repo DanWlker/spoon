@@ -1077,7 +1077,8 @@ impl Repository {
             upstreams,
             // pull.rebase may also be "merges" or "interactive", which rebase too
             pull_rebase: setting("pull.rebase").is_some_and(|v| parse_git_bool(v) != Some(false)),
-            rebase_auto_stash: setting("rebase.autostash").and_then(parse_git_bool) == Some(true),
+            // rebasing stashes unless told not to, like lazygit, which always does
+            rebase_auto_stash: setting("rebase.autostash").and_then(parse_git_bool) != Some(false),
             merge_auto_stash: setting("merge.autostash").and_then(parse_git_bool) == Some(true),
         }
     }
@@ -3354,6 +3355,10 @@ mod tests {
         assert_eq!(info.branches, vec!["master"]);
         assert_eq!(info.remote_branches["origin"], vec!["main"]);
         assert_eq!(info.upstreams["master"].to_string(), "origin/main");
+        // unset, rebasing stashes and merging doesn't; set, they follow it
+        assert!(info.rebase_auto_stash && !info.merge_auto_stash);
+        git_output(&work, &["config", "rebase.autoStash", "false"]).unwrap();
+        assert!(!repository.remote_info().rebase_auto_stash);
 
         // the reason is reported, not the hints after it
         let err = run(GitCommand::Fetch, &["nowhere"]).unwrap_err();

@@ -1494,15 +1494,18 @@ impl<'a> LocalChangesState<'a> {
         self.query().is_editing() || self.diff_query.is_editing()
     }
 
-    pub fn query_status_input(&self) -> Option<(String, u16)> {
-        self.diff_query
-            .status_input()
-            .or_else(|| self.query().status_input())
+    // The search of the diff while it has the focus, else that of the focused section.
+    pub fn active_query(&self) -> &TreeQuery {
+        if self.is_diff_focused() {
+            &self.diff_query
+        } else {
+            self.query()
+        }
     }
 
     // The diff is searched as text, the files by name.
     pub fn query_kind(&self) -> SearchKind {
-        if self.diff_query.is_editing() {
+        if self.is_diff_focused() {
             SearchKind::Text
         } else {
             SearchKind::Names
@@ -1542,24 +1545,23 @@ impl<'a> LocalChangesState<'a> {
         self.is_diff_focused() && self.diff_query.clear() != QueryChange::None
     }
 
-    pub fn search_next(&mut self, toward: Toward, options: SearchOptions) {
+    // Returns false when the search matched nothing, see `active_query`.
+    pub fn search_next(&mut self, toward: Toward, options: SearchOptions) -> bool {
         let direction = SearchDirection::from(toward);
         if self.is_diff_focused() {
-            self.search_diff(direction, options);
+            self.search_diff(direction, options)
         } else {
-            self.search(direction, options);
+            self.search(direction, options)
         }
     }
 
-    // Selects the match of the diff search: the changed line it is on, else its hunk.
-    fn search_diff(&mut self, direction: SearchDirection, options: SearchOptions) {
-        let Some(query) = self.diff_query.search() else {
-            return;
+    // Selects the match of the diff search: the changed line it is on, else its hunk. Returns
+    // false when there is none.
+    fn search_diff(&mut self, direction: SearchDirection, options: SearchOptions) -> bool {
+        let Some(query) = self.diff_query.search().map(String::from) else {
+            return true;
         };
-        let query = query.to_string();
-        if self.pane.search(&query, direction, options) {
-            self.focus = Focus::Diff;
-        }
+        self.pane.search(&query, direction, options)
     }
 
     // The selected line as in the file, or the selected hunk as a diff, to copy.
@@ -1570,7 +1572,9 @@ impl<'a> LocalChangesState<'a> {
     fn apply_query_change(&mut self, change: QueryChange, options: SearchOptions) {
         match change {
             QueryChange::None => {}
-            QueryChange::Search => self.search(SearchDirection::Current, options),
+            QueryChange::Search => {
+                self.search(SearchDirection::Current, options);
+            }
             QueryChange::Filter => {
                 // only the focused section is filtered
                 let filter = self.query().filter().map(String::from);
@@ -1580,11 +1584,12 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Selects the match of the search in the current section, expanding the directories hiding it.
-    fn search(&mut self, direction: SearchDirection, options: SearchOptions) {
+    // Returns false when there is none.
+    fn search(&mut self, direction: SearchDirection, options: SearchOptions) -> bool {
         let Some(query) = self.query().search().map(String::from) else {
-            return;
+            return true;
         };
-        self.update_tree(|tree| tree.search(&query, direction, options));
+        self.update_tree(|tree| tree.search(&query, direction, options))
     }
 
     // Moves the cursor to the next (or previous) picked row, wrapping around.
@@ -1626,12 +1631,13 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Applies a tree operation, reloading the diff when the selection changed.
-    fn update_tree(&mut self, f: impl FnOnce(&mut FileTreeState)) {
+    fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.selected_path();
-        f(self.tree_mut());
+        let result = f(self.tree_mut());
         if self.selected_path() != before || self.pane.diff().is_none_or(|d| d.raw.is_empty()) {
             self.load_diff();
         }
+        result
     }
 
     pub fn expand(&mut self) {

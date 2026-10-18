@@ -65,10 +65,13 @@ pub fn graph_command(
             not_head(repository, &selected, "rebase onto")?;
             let Onto { arg, label } = onto_target(repository, Rev::Commit(selected.clone()));
             let conflict = rebase_conflict(repository, &arg);
-            Ok(
-                GitDialog::rebase(&branch, arg, &label, rebase_auto_stash(repository))
-                    .conflicting(conflict),
+            Ok(GitDialog::rebase(
+                &branch,
+                arg,
+                &label,
+                repository.remote_info().rebase_auto_stash,
             )
+            .conflicting(conflict))
         }),
         UserEvent::Merge => single("Merge").and_then(|_| {
             not_head(repository, &selected, "merge")?;
@@ -152,10 +155,13 @@ pub fn ref_graph_command(
         UserEvent::Rebase => checked_out().and_then(|_| {
             let branch = branch.clone().ok_or("Check out a branch to rebase it")?;
             let conflict = rebase_conflict(repository, &onto);
-            Ok(
-                GitDialog::rebase(&branch, onto, name, rebase_auto_stash(repository))
-                    .conflicting(conflict),
+            Ok(GitDialog::rebase(
+                &branch,
+                onto,
+                name,
+                repository.remote_info().rebase_auto_stash,
             )
+            .conflicting(conflict))
         }),
         UserEvent::Merge => checked_out().map(|_| {
             let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
@@ -289,11 +295,6 @@ fn merge_conflict(repository: &Repository, source: &str) -> Option<Conflict> {
     repository.first_conflict("HEAD", &[(None, source.to_string())])
 }
 
-// Whether rebasing stashes local changes by default: rebase.autoStash, on when it is not set.
-fn rebase_auto_stash(repository: &Repository) -> bool {
-    repository.config_bool("rebase.autoStash").unwrap_or(true)
-}
-
 // The branches at the commit to check out, and the commit itself.
 fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutTarget> {
     let current = repository.current_branch();
@@ -400,7 +401,13 @@ fn squash(
     let base = base.map(|h| h.as_str().to_string());
     // the parent is squashed into too, so it is rewritten as well
     let pushed = repository.upstream_containing(parent.as_str());
-    Ok(GitDialog::squash(branch, commits, base, rebase_auto_stash(repository)).pushed(pushed))
+    Ok(GitDialog::squash(
+        branch,
+        commits,
+        base,
+        repository.remote_info().rebase_auto_stash,
+    )
+    .pushed(pushed))
 }
 
 // Drops the commits, rebasing from the parent of the oldest one.
@@ -432,7 +439,7 @@ fn drop_commits(
         repository.replay_conflict(base, &[&range], &dropped)
     });
     let pushed = repository.upstream_containing(oldest.as_str());
-    let auto_stash = rebase_auto_stash(repository);
+    let auto_stash = repository.remote_info().rebase_auto_stash;
     let dialog = GitDialog::drop(branch, commits, base, auto_stash, behind_head);
     Ok(dialog.conflicting(conflict).pushed(pushed))
 }
@@ -461,7 +468,7 @@ fn amend(
         branch,
         dialog_commit(repository, commit),
         base,
-        rebase_auto_stash(repository),
+        repository.remote_info().rebase_auto_stash,
     );
     let pushed = repository.upstream_containing(commit.as_str());
     Ok(GraphCommand::Dialog(Box::new(dialog.pushed(pushed))))

@@ -1,6 +1,7 @@
 // The looks shared by the panels, after Charm's tools (lipgloss, huh, bubbles): the title of the
 // focused panel as a badge, key hints, and a mark beside the selected row.
 
+use std::ops::Range;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ratatui::{
@@ -337,23 +338,21 @@ pub fn half_page_jump(
 }
 
 // The first row shown of a list of `total` rows, `height` high, moved as little as can be from
-// `offset` to show the `selected` row with `scrolloff` rows above and below it where there are,
-// like vim's; at most half the height, and never past the last row.
+// `offset` to show `rows` (the selected row, or a hunk) with `scrolloff` rows above and below
+// them where there are, like vim's: at most half the height, their top first when they don't fit,
+// and never past the last row.
 pub fn scroll_to(
     offset: usize,
-    selected: usize,
+    rows: Range<usize>,
     height: usize,
     total: usize,
     scrolloff: usize,
 ) -> usize {
     let height = height.max(1);
     let margin = scrolloff.min((height - 1) / 2);
-    let bottom = height - 1 - margin;
     offset
-        .clamp(
-            selected.saturating_sub(bottom),
-            selected.saturating_sub(margin),
-        )
+        .max((rows.end + margin).saturating_sub(height))
+        .min(rows.start.saturating_sub(margin))
         .min(total.saturating_sub(height))
 }
 
@@ -403,7 +402,7 @@ impl ListCursor {
         // before the first drawing the rows shown are unknown, which `fit` scrolls to then
         if self.height > 0 {
             let (offset, height) = (self.offset, self.height);
-            self.offset = scroll_to(offset, self.selected, height, total, self.scrolloff);
+            self.offset = scroll_to(offset, self.row_range(), height, total, self.scrolloff);
         }
     }
 
@@ -462,7 +461,7 @@ impl ListCursor {
         if self.offset != 0 && self.offset != last_offset {
             self.offset = scroll_to(
                 self.offset,
-                self.selected,
+                self.row_range(),
                 self.height,
                 total,
                 self.scrolloff,
@@ -475,11 +474,15 @@ impl ListCursor {
         self.height = height;
         self.scrolloff = scrolloff;
         self.selected = self.selected.min(total.saturating_sub(1));
-        self.offset = scroll_to(self.offset, self.selected, height, total, scrolloff);
+        self.offset = scroll_to(self.offset, self.row_range(), height, total, scrolloff);
         self.offset
     }
 
-    fn margin(&self) -> usize {
+    fn row_range(&self) -> Range<usize> {
+        self.selected..self.selected + 1
+    }
+
+    pub fn margin(&self) -> usize {
         self.scrolloff.min(self.height.saturating_sub(1) / 2)
     }
 }
@@ -540,7 +543,8 @@ mod tests {
                 for selected in 0..total.max(1) {
                     for offset in 0..10 {
                         for scrolloff in 0..8 {
-                            let o = scroll_to(offset, selected, height, total, scrolloff);
+                            let o =
+                                scroll_to(offset, selected..selected + 1, height, total, scrolloff);
                             let shown = height.max(1);
                             assert!(o <= total.saturating_sub(shown));
                             if total > 0 {
@@ -568,17 +572,22 @@ mod tests {
 
     #[test]
     fn test_scroll_to() {
-        assert_eq!(scroll_to(5, 2, 10, 20, 0), 2); // above: scrolls up to it
-        assert_eq!(scroll_to(0, 12, 10, 20, 0), 3); // below: the last row shown
-        assert_eq!(scroll_to(3, 7, 10, 20, 0), 3); // shown: stays
-        assert_eq!(scroll_to(3, 7, 0, 20, 0), 7);
+        assert_eq!(scroll_to(5, 2..2 + 1, 10, 20, 0), 2); // above: scrolls up to it
+        assert_eq!(scroll_to(0, 12..12 + 1, 10, 20, 0), 3); // below: the last row shown
+        assert_eq!(scroll_to(3, 7..7 + 1, 10, 20, 0), 3); // shown: stays
+        assert_eq!(scroll_to(3, 7..7 + 1, 0, 20, 0), 7);
         // with rows kept around it: 2 above, 2 below
-        assert_eq!(scroll_to(5, 6, 10, 20, 2), 4);
-        assert_eq!(scroll_to(0, 8, 10, 20, 2), 1);
-        assert_eq!(scroll_to(3, 7, 10, 20, 2), 3);
+        assert_eq!(scroll_to(5, 6..6 + 1, 10, 20, 2), 4);
+        assert_eq!(scroll_to(0, 8..8 + 1, 10, 20, 2), 1);
+        assert_eq!(scroll_to(3, 7..7 + 1, 10, 20, 2), 3);
         // never past the last row, never more than half the height
-        assert_eq!(scroll_to(0, 19, 10, 20, 2), 10);
-        assert_eq!(scroll_to(0, 5, 4, 20, 9), 3); // 1 row kept in 4: rows 3 to 6
+        assert_eq!(scroll_to(0, 19..19 + 1, 10, 20, 2), 10);
+        assert_eq!(scroll_to(0, 5..5 + 1, 4, 20, 9), 3); // 1 row kept in 4: rows 3 to 6
+                                                         // a hunk: whole with the rows around it, else from its top with the margin above it
+        assert_eq!(scroll_to(0, 12..15, 10, 50, 2), 7);
+        assert_eq!(scroll_to(30, 12..15, 10, 50, 2), 10);
+        assert_eq!(scroll_to(0, 40..60, 10, 100, 3), 37);
+        assert_eq!(scroll_to(0, 40..60, 0, 100, 3), 40);
     }
 
     #[test]

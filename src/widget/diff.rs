@@ -21,7 +21,7 @@ use crate::{
     git::{PatchDirection, Repository},
     search::SearchOptions,
     widget::{
-        style::{divider, half_page_jump, mark_selected_bar, placeholder, ScrollState},
+        style::{divider, half_page_jump, mark_selected_bar, placeholder, scroll_to, ScrollState},
         tree_query::{find_around, match_range, patch_range, SearchDirection},
     },
 };
@@ -424,24 +424,16 @@ impl DiffCursor {
         row.is_some()
     }
 
-    // Scrolls as little as can be to show `rows` with `scrolloff` rows around them, like the lists
-    // (see `style::scroll_to`); their top first when they don't fit.
+    // Scrolls as little as can be to show `rows` with `scrolloff` rows around them, see
+    // `style::scroll_to`.
     pub fn scroll_to(&mut self, rows: Range<usize>) {
         let ScrollState {
             offset,
             height,
             scrolloff,
-        } = &mut self.scroll;
-        // before the first render the height is unknown, no margin then
-        let margin = (*scrolloff).min(height.saturating_sub(1) / 2);
-        let top = rows.start.saturating_sub(margin);
-        let bottom = rows.end + margin;
-        if bottom > *offset + *height {
-            *offset = bottom - *height;
-        }
-        if top < *offset {
-            *offset = top;
-        }
+        } = self.scroll;
+        // the rows aren't counted here: rendering keeps the offset within them, see `fit`
+        self.scroll.offset = scroll_to(offset, rows, height, usize::MAX, scrolloff);
     }
 
     // The rows highlighted: the selected line, or the selected hunk.
@@ -1146,24 +1138,6 @@ mod tests {
                 ("uno dos three cuatro", vec![]),
             ]
         );
-    }
-
-    #[test]
-    fn test_selection_keeps_scrolloff_like_the_lists() {
-        use crate::widget::style::scroll_to;
-        let mut cursor = DiffCursor::default();
-        cursor.scroll.height = 10;
-        cursor.scroll.scrolloff = 3;
-        // a row at a time, down then up: the offset the lists would have
-        let mut offset = 0;
-        for row in (0..30).chain((0..30).rev()) {
-            cursor.scroll_to(row..row + 1);
-            offset = scroll_to(offset, row, 10, usize::MAX, 3);
-            assert_eq!(cursor.scroll.offset, offset, "row {row}");
-        }
-        // a hunk taller than the rows shown: from its top, with the margin above it
-        cursor.scroll_to(40..60);
-        assert_eq!(cursor.scroll.offset, 37);
     }
 
     #[test]

@@ -102,8 +102,6 @@ pub enum AppEvent {
         outcome: SearchOutcome,
         options: String,
     },
-    #[expect(dead_code)]
-    NotifyInfo(String),
     NotifySuccess(String),
     NotifyWarn(String),
     NotifyError(String),

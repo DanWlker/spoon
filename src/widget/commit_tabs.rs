@@ -225,13 +225,14 @@ impl<'a> CommitChangesState<'a> {
     }
 
     // Applies a tree operation, reloading the diff when the selection changed.
-    pub fn update_tree(&mut self, f: impl FnOnce(&mut FileTreeState)) {
+    pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
-        f(&mut self.tree);
+        let result = f(&mut self.tree);
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
             self.pane.set_diff(None);
             self.ensure_loaded();
         }
+        result
     }
 
     // Whether hunks were left out of the diff of the selected file, see
@@ -348,16 +349,16 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    // Applies a tree operation, reloading the preview when the selection changed.
-    pub fn update_tree(&mut self, f: impl FnOnce(&mut FileTreeState)) {
-        let Some(tree) = self.tree.as_mut() else {
-            return;
-        };
+    // Applies a tree operation, reloading the preview when the selection changed; None before the
+    // tree is loaded.
+    pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> Option<R> {
+        let tree = self.tree.as_mut()?;
         let before = tree.selected().map(|r| r.path.clone());
-        f(tree);
+        let result = f(tree);
         if tree.selected().map(|r| &r.path) != before.as_ref() {
             self.load_preview();
         }
+        Some(result)
     }
 
     // Scrolls the preview by the scroll keys, or moves the selected line half a page; returns

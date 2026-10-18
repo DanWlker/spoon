@@ -19,7 +19,7 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_selection, file_link, query_status, register_commit_keys,
+        commit_event, copy_selection, file_link, not_found, query_status, register_commit_keys,
         register_moving_keys, revision_spans, type_query, typing_keys,
     },
     widget::{
@@ -163,10 +163,16 @@ impl BlameView {
         }
         let body = self.focus != BlameFocus::Revision;
         match event {
-            UserEvent::Cancel => match self.query.clear() {
-                QueryChange::None => self.tx.send(AppEvent::CloseOverlay),
-                _ => self.update_query_status(),
-            },
+            // the search, then up from the lines to the commit shown, then closes, like the timeline
+            UserEvent::Cancel => {
+                if self.query.clear() != QueryChange::None {
+                    self.update_query_status();
+                } else if body {
+                    self.focus = BlameFocus::Revision;
+                } else {
+                    self.tx.send(AppEvent::CloseOverlay);
+                }
+            }
             UserEvent::FocusPanel(0) => self.focus = BlameFocus::Revision,
             UserEvent::FocusPanel(1) if !body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateLeft if body => self.focus = BlameFocus::Commit,
@@ -279,15 +285,14 @@ impl BlameView {
         };
         // while typing, the status line shows the query instead
         if !found && !self.query.is_editing() {
-            let message = format!("No match for {search}");
-            self.tx.send(AppEvent::NotifyWarn(message));
+            self.tx
+                .send(not_found(&self.ctx, search, self.query_kind()));
         }
     }
 
     fn update_query_status(&self) {
-        let typed = self.query.status_input();
         self.tx
-            .send(query_status(&self.ctx, typed, self.query_kind()));
+            .send(query_status(&self.ctx, &self.query, self.query_kind()));
     }
 
     // The text or the diff is searched as text, the commits by name.
@@ -381,7 +386,18 @@ impl BlameView {
             &[FocusPanel(0), FocusPanel(1)],
             "Focus the commit shown (also up from the first line)/the lines",
         );
-        k.add(&[Cancel], "close", "Clear the search, then close");
+        k.add(
+            &[Cancel],
+            "back",
+            "Clear the search, back to the commit shown, then close",
+        )
+        .when(body);
+        k.add(
+            &[Cancel],
+            "close",
+            "Clear the search, back to the commit shown, then close",
+        )
+        .when(on(Revision));
     }
 
     pub fn keys(&self) -> KeyList {
@@ -619,7 +635,11 @@ mod tests {
             (view.focus, view.text.selected_line()),
             (BlameFocus::Commit, 1)
         );
+        // esc: the search, then up to the commit shown, then closes
         press(&mut view, UserEvent::Cancel);
+        assert_eq!(view.focus, BlameFocus::Commit);
+        press(&mut view, UserEvent::Cancel);
+        assert_eq!(view.focus, BlameFocus::Revision);
 
         // from an older commit not changing the file, as of the last one changing it
         let view = BlameView::new(&repository, &c2, "a", None, test_ctx(), ec.sender()).unwrap();

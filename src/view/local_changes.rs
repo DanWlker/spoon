@@ -12,7 +12,7 @@ use crate::{
     keys::KeyList,
     layout::{Direction, Panel},
     view::{
-        copy_path, copy_selection, query_status, toggle_search_option, CopyForm,
+        copy_path, copy_selection, not_found, query_status, toggle_search_option, CopyForm,
         ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
@@ -215,12 +215,17 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.start_query(QueryKind::Filter);
                 self.update_query_status();
             }
-            UserEvent::GoToNext => {
-                self.local_changes_state.search_next(Toward::Next, options);
-            }
-            UserEvent::GoToPrevious => {
-                self.local_changes_state
-                    .search_next(Toward::Previous, options);
+            UserEvent::GoToNext | UserEvent::GoToPrevious => {
+                let state = &mut self.local_changes_state;
+                if !state.search_next(Toward::of(event, UserEvent::GoToNext), options) {
+                    let search = state
+                        .active_query()
+                        .search()
+                        .unwrap_or_default()
+                        .to_string();
+                    self.tx
+                        .send(not_found(&self.ctx, search, state.query_kind()));
+                }
             }
             UserEvent::Confirm => {
                 let result = self.local_changes_state.enter();
@@ -353,9 +358,9 @@ impl<'a> LocalChangesView<'a> {
 
     // Shows the search or filter being typed in the status line.
     fn update_query_status(&self) {
-        let typed = self.local_changes_state.query_status_input();
-        let kind = self.local_changes_state.query_kind();
-        self.tx.send(query_status(&self.ctx, typed, kind));
+        let state = &self.local_changes_state;
+        let event = query_status(&self.ctx, state.active_query(), state.query_kind());
+        self.tx.send(event);
     }
 
     fn after_action(&mut self, result: Result<(), String>) {

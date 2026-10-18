@@ -557,7 +557,13 @@ impl StatefulWidget for RefList {
                     state.visible_rows.len(),
                     self.ctx.ui_config.common.scrolloff,
                 );
-                state.offset = scroll_to(state.offset, index, height, total, scrolloff as usize);
+                state.offset = scroll_to(
+                    state.offset,
+                    index..index + 1,
+                    height,
+                    total,
+                    scrolloff as usize,
+                );
             }
             state.scroll_to_selection = false;
         }
