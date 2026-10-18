@@ -126,8 +126,8 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | ------------------------------------ | ------------------------------- | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; move the selected line with it, or jump a page between hunks | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up; move the selected line with it, or jump half a page between hunks | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
@@ -284,12 +284,12 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up; move the selected line with it, or jump a page between hunks | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up; move the selected line with it, or jump half a page between hunks | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up; jump half page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
-While selecting lines the page keys move the selected line by the same rows as the window, like the file preview; it keeps its place on screen while the window scrolls, and still moves when the window has nowhere to scroll. It can come to rest on a context line; only a change (an added or removed line) has a patch to stage or discard. While selecting hunks, a hunk taller than the page is read a page at a time, and the page jumps to the next or previous hunk once it passes its end.
+While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end.
 
 <kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section, or on an empty unstaged section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.

@@ -976,7 +976,7 @@ impl<'a> LocalChangesState<'a> {
             "stage",
             "Stage/unstage the file, directory, hunk or line, or the picked files",
         )
-        .when(|v| diff(v) && v.pane.selected_is_change())
+        .when(diff)
         .short(|v| format!("{} {}", stage(v), what(v)));
         k.add(
             &[Confirm],
@@ -1008,7 +1008,7 @@ impl<'a> LocalChangesState<'a> {
             "discard",
             "Discard the unstaged file, directory, hunk or line",
         )
-        .when(|v| (row(v) || (diff(v) && v.pane.selected_is_change())) && unstaged(v));
+        .when(|v| (row(v) || diff(v)) && unstaged(v));
         // on the empty unstaged files enter commits too, see `enter`; with nothing to commit they
         // say so, unlisted
         let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));

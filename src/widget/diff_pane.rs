@@ -9,8 +9,8 @@ use crate::{
     search::SearchOptions,
     widget::{
         diff::{
-            diff_lines, render_diff_lines, DiffCursor, DiffHunk, DiffPart, DiffRow, ParsedDiff,
-            Step, WrapMap,
+            diff_lines, render_diff_lines, DiffCursor, DiffHunk, DiffPart, ParsedDiff, Step,
+            WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -160,20 +160,6 @@ impl DiffPane {
             None => {}
             Some(DiffPart::Hunk) => self.cursor.move_hunk(diff, step),
             Some(DiffPart::Line) => self.cursor.move_line(diff, step),
-        }
-    }
-
-    // Whether the selected hunk or line is a change, so staging or discarding it applies.
-    pub fn selected_is_change(&self) -> bool {
-        let Some(diff) = &self.diff else {
-            return false;
-        };
-        match self.selected_part() {
-            DiffPart::Hunk => self.cursor.selected_hunk(diff).is_some(),
-            DiffPart::Line => diff
-                .rows
-                .get(self.cursor.line)
-                .is_some_and(DiffRow::is_change),
         }
     }
 
