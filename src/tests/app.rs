@@ -476,6 +476,12 @@ fn test_help_and_command_log_cover_the_app_one_at_a_time() {
     harness.run(vec![
         keys("f1"),
         overlay("help"),
+        // one panel, like the command log's, scrolled with its scrollbar
+        screen(|screen| {
+            assert!(screen.contains("╭ Help "), "{screen}");
+            let thumb = screen.lines().any(|l| l.ends_with('█'));
+            assert!(thumb, "{screen}");
+        }),
         // the help takes the keys
         keys("@"),
         overlay("help"),

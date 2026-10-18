@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, StatefulWidget, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget},
 };
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -2010,44 +2010,33 @@ impl LocalChangesPanel<'_> {
         };
         let focused = |item| selected_item == Some(item);
 
-        let label = |name: &str, label: &str| {
-            if label.is_empty() {
-                format!(" {name} ")
-            } else {
-                format!(" {name} · {label} ")
-            }
-        };
         let sides = [
             (
                 ours_area,
                 ConflictItem::Existing,
-                label("Existing", &conflict.ours_label),
+                "Existing",
+                &conflict.ours_label,
                 &conflict.ours,
             ),
             (
                 theirs_area,
                 ConflictItem::Incoming,
-                label("Incoming", &conflict.theirs_label),
+                "Incoming",
+                &conflict.theirs_label,
                 &conflict.theirs,
             ),
         ];
         let mut height = 0;
-        for (side_area, item, title, lines) in sides {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .style(Style::default().fg(if focused(item) {
-                    theme.accent_fg
-                } else {
-                    theme.divider_fg
-                }))
-                .title(panel_title(title.trim(), [], focused(item), theme));
-            let content_area = block.inner(side_area);
-            block.render(side_area, buf);
+        for (side_area, item, name, label, lines) in sides {
+            // the name git put on the markers, like "HEAD"
+            let note = (!label.is_empty()).then(|| label.clone());
+            let title = panel_title(name, note, focused(item), theme);
+            let content_area = render_panel(buf, side_area, title, focused(item), theme);
             height = content_area.height as usize;
             let longest = conflict.ours.len().max(conflict.theirs.len());
             let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
             let range = state.pane.scroll_state().fit(longest, height, scrolloff);
+            render_panel_scrollbar(buf, side_area, longest, range.start, focused(item), theme);
             let lines: Vec<Line> = lines
                 .iter()
                 .skip(range.start)
@@ -3765,6 +3754,19 @@ mod tests {
         );
         assert_eq!(conflict.ours, ["── conflict 1 ──", "master"]);
         assert_eq!(conflict.theirs, ["── conflict 1 ──", "feature"]);
+        // drawn as panels, their text a column off the border
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+            .render(area, &mut buf, &mut state);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains("╭ Existing  HEAD ")),
+            "{rows:#?}"
+        );
+        assert!(rows.iter().any(|r| r.contains("│ master ")), "{rows:#?}");
 
         // the tools ask the view to run them
         state.enter()?;

@@ -19,7 +19,7 @@ use crate::{
         command_log::CommandLogState,
         git_dialog::GitDialog,
         local_changes::LocalChangesState,
-        style::{key_span, ScrollState},
+        style::{key_span, panel_title, render_panel, render_panel_scrollbar, ScrollState},
     },
 };
 
@@ -32,6 +32,7 @@ pub struct HelpView {
 
     scroll: ScrollState,
 
+    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
@@ -48,6 +49,7 @@ impl HelpView {
             help_value_lines,
             help_key_line_max_width,
             scroll: ScrollState::default(),
+            ctx,
             tx,
         }
     }
@@ -85,7 +87,22 @@ impl HelpView {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        // one panel, like the command log's
+        let ctx = self.ctx.clone();
+        let theme = &ctx.color_theme;
+        let title = panel_title("Help", [], true, theme);
+        let panel = area;
+        let area = render_panel(f.buffer_mut(), panel, title, true, theme);
         self.update_state(area);
+        let total = self.help_key_lines.len();
+        render_panel_scrollbar(
+            f.buffer_mut(),
+            panel,
+            total,
+            self.scroll.offset,
+            true,
+            theme,
+        );
 
         let [mut key_area, mut value_area] =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
