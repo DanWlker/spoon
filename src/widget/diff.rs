@@ -21,7 +21,7 @@ use crate::{
     git::{PatchDirection, Repository},
     search::SearchOptions,
     widget::{
-        style::{divider, half_page_jump, mark_selected_bar, placeholder, scroll_to, ScrollState},
+        style::{divider, mark_selected_bar, placeholder, scroll_to, ScrollState},
         tree_query::{find_around, match_range, patch_range, SearchDirection},
     },
 };
@@ -342,12 +342,24 @@ impl WrapMap {
         self.visual_start(rows.start)..self.visual_start(rows.end)
     }
 
-    // The first screen row of logical row `row`, the end of the diff past its last.
+    // The first screen row of logical row `row`, `row` itself when nothing has been measured
+    // yet; the end of the diff past its last.
     pub fn visual_start(&self, row: usize) -> usize {
+        if self.prefix.len() <= 1 {
+            return row;
+        }
         self.prefix
             .get(row)
             .copied()
             .unwrap_or_else(|| self.total())
+    }
+
+    // The logical row of screen row `screen`, `screen` itself when nothing has been measured yet.
+    pub fn logical_at(&self, screen: usize) -> usize {
+        if self.prefix.len() <= 1 {
+            return screen;
+        }
+        self.logical_rows(screen..screen + 1).start
     }
 
     // The logical rows whose screen rows overlap `visual`.
@@ -498,16 +510,24 @@ impl DiffCursor {
         }
     }
 
-    // Selects the changed line half a page from the selected one, see `half_page_jump`: the next
-    // one from there going down, else the last; the previous one going up, else the first. False
-    // for other events.
-    pub fn jump_half_page(&mut self, diff: &ParsedDiff, event: UserEvent) -> bool {
-        let Some(row) = half_page_jump(event, self.line, self.scroll.height, diff.rows.len())
-        else {
-            return false;
+    // Selects the changed line half a page or a page from the selected one, in `event`'s
+    // direction: the next changed line from the screen row that far away going down, else the
+    // last; the previous one going up, else the first. False for other events.
+    pub fn jump_page(&mut self, diff: &ParsedDiff, event: UserEvent) -> bool {
+        let down = matches!(event, UserEvent::HalfPageDown | UserEvent::PageDown);
+        let rows = match event {
+            UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.scroll.height / 2,
+            UserEvent::PageDown | UserEvent::PageUp => self.scroll.height,
+            _ => return false,
         };
+        let rows = rows.max(1) as isize;
+        let screen = self
+            .wrap
+            .visual_start(self.line)
+            .saturating_add_signed(if down { rows } else { -rows });
+        let row = self.wrap.logical_at(screen);
         let mut changed = changed_rows(diff);
-        let changed = if event == UserEvent::HalfPageDown {
+        let changed = if down {
             changed
                 .find(|&r| r >= row)
                 .or_else(|| changed_rows(diff).last())
@@ -1252,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_half_page_jumps_between_changed_lines() {
+    fn test_half_page_and_page_jumps_between_changed_lines() {
         let context = " x\n".repeat(10);
         let hunk = format!("@@ -1,23 +1,23 @@\n-a\n+A\n{context}-b\n{context}+c\n");
         let diff = parse_diff(&format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{hunk}"));
@@ -1264,7 +1284,7 @@ mod tests {
         cursor.scroll.height = 8;
         cursor.select_line(&diff, a);
         let mut jump = |event| {
-            assert!(cursor.jump_half_page(&diff, event));
+            assert!(cursor.jump_page(&diff, event));
             cursor.line
         };
         // 4 rows down is context, the next change after it
@@ -1275,7 +1295,38 @@ mod tests {
         assert_eq!(jump(UserEvent::HalfPageUp), b);
         assert_eq!(jump(UserEvent::HalfPageUp), big_a);
         assert_eq!(jump(UserEvent::HalfPageUp), a);
-        assert!(!cursor.jump_half_page(&diff, UserEvent::PageDown));
+        // a whole page goes further than half of one
+        assert_eq!(jump(UserEvent::PageDown), b);
+        assert_eq!(jump(UserEvent::PageUp), big_a);
+        // the scroll keys are not jumps
+        assert!(!cursor.jump_page(&diff, UserEvent::ScrollDown));
+    }
+
+    // The jump counts screen rows: half a page from -a lands on the long changed line that wraps
+    // over that screen row, not on the next one, which is where counting logical rows would land.
+    #[test]
+    fn test_jump_page_counts_screen_rows() {
+        let diff = parse_diff(&format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,1 +1,1 @@\n-a\n+{}\n+b\n",
+            "x".repeat(70)
+        ));
+        let changed: Vec<usize> = changed_rows(&diff).collect();
+        let [a, long, b] = changed[..] else {
+            panic!("{changed:?}")
+        };
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 4;
+        cursor.select_line(&diff, a);
+
+        // without a map, rows are screen rows: the long line is one of them, so the jump skips it
+        cursor.jump_page(&diff, UserEvent::HalfPageDown);
+        assert_eq!(cursor.line, b);
+
+        // with the widths measured, the jump lands on the screen row the long line covers
+        cursor.select_line(&diff, a);
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 20, true));
+        cursor.jump_page(&diff, UserEvent::HalfPageDown);
+        assert_eq!(cursor.line, long);
     }
 
     #[test]

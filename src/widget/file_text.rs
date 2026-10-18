@@ -233,8 +233,7 @@ impl FileText {
     // The first logical line of screen row `screen`, the last line past the end.
     fn logical_at(&self, screen: usize) -> usize {
         self.wrap
-            .logical_rows(screen..screen + 1)
-            .start
+            .logical_at(screen)
             .min(self.lines.len().saturating_sub(1))
     }
 }

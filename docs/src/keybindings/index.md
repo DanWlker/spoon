@@ -126,7 +126,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | ------------------------------------ | ------------------------------- | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up             | `page_down` `page_up`           |
+| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting lines or in a preview | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up; jump half page while selecting lines or in a preview | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
@@ -284,7 +284,7 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up                                     | `page_down` `page_up`           |
+| <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up; jump a page while selecting lines  | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up; jump half page while selecting lines | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
