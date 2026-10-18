@@ -564,10 +564,12 @@ impl Repository {
         })
     }
 
-    // The tree to compare the index to while amending: the parent of HEAD, or the empty tree for a root commit.
+    // The tree to compare the index to while amending: `HEAD^`, or the empty tree for a root
+    // commit. The name, not the resolved tree: the commands naming it read like the ones a user
+    // would type, see `GitArgs`.
     pub fn amend_base(&self) -> std::result::Result<String, String> {
         git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD^"])
-            .map(|s| s.trim().to_string())
+            .map(|_| "HEAD^".to_string())
             .or_else(|_| empty_tree(&self.path))
     }
 
@@ -863,18 +865,22 @@ impl Repository {
             .unwrap_or_default()
     }
 
+    // The message of the commit at HEAD, of which git leaves out the name: `log -1 --format=%B`.
     pub fn head_commit_message(&self) -> std::result::Result<String, String> {
         git_output(&self.path, &["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_string())
     }
 
+    // Stages the paths: `git add -- <paths>`, the command a user would type. It records the
+    // deletions and finds the new files under a directory already, `--all` would add nothing.
     pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {
-        let mut args = vec!["add", "--all", "--"];
+        let mut args = vec!["add", "--"];
         let paths = pathspecs(paths);
         args.extend(paths.iter().map(String::as_str));
         self.run(&args, None)
     }
 
-    // Resets the index entries of `paths` to `staged_base`, HEAD when None.
+    // Resets the index entries of `paths` to `staged_base`, HEAD when None: `git reset --quiet
+    // [HEAD^] -- <paths>`, the command a user would type, leaving out the name where git means it.
     pub fn unstage_paths(
         &self,
         paths: &[&str],
@@ -1359,7 +1365,8 @@ fn load_all_commits(
                 cmd.arg(stash.parent_commit_hashes[0].as_str());
             });
 
-            if !matches!(head, Head::None) {
+            // only a detached HEAD is left out of --branches; on a branch, HEAD would add nothing
+            if matches!(head, Head::Detached { .. }) {
                 cmd.arg("HEAD");
             }
         }
@@ -3702,7 +3709,7 @@ mod tests {
             .find(|e| e.command.contains("no-such-file-for-the-log"))
             .unwrap();
         assert!(!entry.ok);
-        assert!(entry.command.starts_with("git add --all -- "));
+        assert!(entry.command.starts_with("git add -- "));
         assert!(
             entry.output.contains("did not match any files"),
             "{}",
