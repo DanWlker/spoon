@@ -71,45 +71,47 @@ impl FileText {
         self.select_line(line);
     }
 
-    // Scrolls by the scroll keys, moving the selected line along when the edges would leave it
-    // out; returns whether `event` was one.
+    // Scrolls by the scroll keys, like vim: `Ctrl-e/y` scroll the window alone, the selected
+    // line staying (it may leave the window); `Ctrl-d/u` and `Ctrl-f/b` move it with the window by
+    // the same screen rows, so it keeps its place on screen. Returns whether `event` was one.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
         let height = self.scroll_state.height as isize;
         let rows = match event {
             UserEvent::ScrollDown => 1,
             UserEvent::ScrollUp => -1,
-            UserEvent::PageDown => height,
-            UserEvent::PageUp => -height,
             UserEvent::HalfPageDown => height / 2,
             UserEvent::HalfPageUp => -height / 2,
+            UserEvent::PageDown => height,
+            UserEvent::PageUp => -height,
             _ => return false,
         };
-        self.scroll_rows(rows);
+        // ctrl-e and ctrl-y scroll the window alone
+        if matches!(event, UserEvent::ScrollDown | UserEvent::ScrollUp) {
+            self.scroll_view(rows);
+        } else {
+            self.scroll_cursor(rows);
+        }
         true
     }
 
-    // Scrolls the view `rows` screen rows, keeping the selected line within the `scrolloff` rows at
-    // the edges, moving it along when it would leave them.
-    fn scroll_rows(&mut self, rows: isize) {
-        let height = self.scroll_state.height;
-        let total = self.wrap.total();
-        let offset = self
+    // Scrolls the window `rows` screen rows, the selected line staying put.
+    fn scroll_view(&mut self, rows: isize) {
+        let last = self.wrap.total().saturating_sub(self.scroll_state.height);
+        self.scroll_state.offset = self
             .scroll_state
             .offset
             .saturating_add_signed(rows)
-            .min(total.saturating_sub(height));
-        self.scroll_state.offset = offset;
-        let margin = self.margin();
-        let (top, bottom) = (
-            offset + margin,
-            (offset + height).saturating_sub(1 + margin),
-        );
-        let selected = self.wrap.visual_range(self.selected..self.selected + 1);
-        if selected.start < top {
-            self.selected = self.logical_at(top);
-        } else if selected.end > bottom + 1 {
-            self.selected = self.logical_at(bottom);
-        }
+            .min(last);
+    }
+
+    // Scrolls the window `rows` screen rows, the selected line moving as many, so it keeps its
+    // place on screen; at either end of the file both stop.
+    fn scroll_cursor(&mut self, rows: isize) {
+        let before = self.scroll_state.offset;
+        self.scroll_view(rows);
+        let moved = self.scroll_state.offset as isize - before as isize;
+        let screen = self.wrap.visual_start(self.selected) as isize + moved;
+        self.selected = self.logical_at(screen.max(0) as usize);
     }
 
     // Selects a line, the last one past the end.
@@ -235,12 +237,6 @@ impl FileText {
             .start
             .min(self.lines.len().saturating_sub(1))
     }
-
-    fn margin(&self) -> usize {
-        self.scroll_state
-            .scrolloff
-            .min(self.scroll_state.height.saturating_sub(1) / 2)
-    }
 }
 
 #[cfg(test)]
@@ -307,5 +303,37 @@ mod tests {
             text.scroll(UserEvent::PageDown);
         }
         assert_eq!(text.scroll_state.offset, last);
+    }
+
+    // Like vim: ctrl-e and ctrl-y scroll the window alone, the selected line staying; ctrl-d and
+    // ctrl-u, like ctrl-f and ctrl-b, move it with the window by the same rows.
+    #[test]
+    fn test_scroll_alone_and_with_the_selected_line() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 40, 10);
+        let lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+        let mut text = FileText::default();
+        text.set_lines(lines);
+        text.render(
+            area,
+            &mut Buffer::empty(area),
+            &ctx,
+            true,
+            LineCursor::Shown,
+            None,
+        );
+        text.select_line(20);
+        assert_eq!(text.selected_line(), 20);
+        let offset = text.scroll_state.offset;
+
+        // ctrl-e: the window moves, the line stays
+        text.scroll(UserEvent::ScrollDown);
+        assert_eq!(text.scroll_state.offset, offset + 1);
+        assert_eq!(text.selected_line(), 20);
+
+        // ctrl-d: both move half a page
+        text.scroll(UserEvent::HalfPageDown);
+        assert_eq!(text.scroll_state.offset, offset + 1 + 5);
+        assert_eq!(text.selected_line(), 25);
     }
 }
