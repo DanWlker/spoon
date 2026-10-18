@@ -42,7 +42,7 @@ use crate::{
     search::SearchOptions,
     view::{
         register_graph_commands, BlameView, Compare, HelpView, LocalChangesRefreshViewContext,
-        RefreshViewContext, TimelineView, View, ViewKind,
+        RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -858,7 +858,8 @@ impl App<'_> {
     fn prepare_render(&mut self, area: Rect) {
         let [_, view_area, _] = split_app_areas(area);
         let [sidebar_area, view_area] = self.split_sidebar(view_area);
-        self.shell.sidebar.set_height(sidebar_area);
+        let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
+        self.shell.sidebar.fit(sidebar_area, scrolloff);
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
@@ -898,7 +899,7 @@ impl App<'_> {
             keys.extend(self.app_keys());
             keys.hints()
         } else if self.shell.sidebar_focused() {
-            self.sidebar_hints()
+            self.sidebar_keys().hints()
         } else {
             self.view.keys().hints()
         }
@@ -911,12 +912,6 @@ impl App<'_> {
             .map(|(events, action)| KeyLabel::new(self.ctx.short_keys(&events), action))
             .filter(|label| !label.keys.is_empty())
             .collect()
-    }
-
-    // The keys working everywhere, for the status bar: the remotes, switching pages, the keys
-    // popup and the help.
-    fn global_hints(&self) -> Vec<KeyHint> {
-        self.app_keys().hints()
     }
 
     // Moves in the command log, scrolls the output of the selected command, copies it, or closes.
@@ -973,7 +968,7 @@ impl App<'_> {
         let keys = self.shown_keys(if self.keys_are_local() {
             self.local_hints()
         } else {
-            self.global_hints()
+            self.app_keys().hints()
         });
         let theme = &self.ctx.color_theme;
         // each hint and the " • " before it, see `key_hints`
@@ -1501,6 +1496,8 @@ impl App<'_> {
         })
     }
 
+    // The keys working everywhere, also in the status bar: the remotes, switching pages, the keys
+    // popup and the help.
     fn app_keys(&self) -> KeyList {
         let mut keys = Keys::of(self);
         Self::register_app_keys(&mut keys);
@@ -1554,26 +1551,7 @@ impl App<'_> {
             return;
         }
         match event {
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                self.shell.sidebar.select_next();
-                self.show_sidebar_selection();
-            }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                self.shell.sidebar.select_prev();
-                self.show_sidebar_selection();
-            }
-            UserEvent::GoToTop => {
-                self.shell.sidebar.select_first();
-                self.show_sidebar_selection();
-            }
-            UserEvent::GoToBottom => {
-                self.shell.sidebar.select_last();
-                self.show_sidebar_selection();
-            }
-            UserEvent::HalfPageDown | UserEvent::HalfPageUp => {
-                self.shell.sidebar.jump_half_page(event);
-                self.show_sidebar_selection();
-            }
+            _ if self.shell.sidebar.handle_move(event) => self.show_sidebar_selection(),
             UserEvent::NavigateRight => {
                 self.shell.sidebar.open_node();
                 self.show_sidebar_selection();
@@ -1776,10 +1754,6 @@ impl App<'_> {
         let mut keys = Keys::of(self);
         Self::register_sidebar_keys(&mut keys);
         keys.list()
-    }
-
-    fn sidebar_hints(&self) -> Vec<KeyHint> {
-        self.sidebar_keys().hints()
     }
 
     // Whether the event does something on the selected row of the sidebar, see
@@ -2125,9 +2099,7 @@ impl App<'_> {
                 _ => None,
             };
             if let Some(hash) = select.and_then(|revision| self.repository.resolve(&revision)) {
-                let list_context = context.list_context_mut();
-                list_context.commit_hash = hash.as_str().to_string();
-                list_context.scroll_to_top = false;
+                context.list_context_mut().select = Reselect::Commit(hash);
             }
             if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
                 // the details open again when coming back to the graph

@@ -18,8 +18,8 @@ use crate::{
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
-            fold_marker, half_page_jump, mark_picked_row, mark_selected_row, panel_title,
-            render_panel, render_panel_scrollbar, scroll_to, spinner,
+            fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
+            render_panel_scrollbar, spinner, HalfPage, ListCursor,
         },
     },
 };
@@ -155,10 +155,8 @@ pub struct RefListState {
     visible_rows: Vec<VisibleRefRow>,
     selected: Vec<NodeId>,
     opened: HashSet<Vec<NodeId>>,
-    offset: usize,
-    // the rows shown, see `set_height`
-    height: usize,
-    scroll_to_selection: bool,
+    // the row of `selected` and the rows shown, see `sync_cursor`
+    cursor: ListCursor,
     picked: RefPicks,
     // the commits to push and to pull of the local branches with an upstream, by name
     tracking: FxHashMap<String, Tracking>,
@@ -178,9 +176,7 @@ impl RefListState {
             visible_rows: Vec::new(),
             selected,
             opened,
-            offset: 0,
-            height: 0,
-            scroll_to_selection: true,
+            cursor: ListCursor::default(),
             picked: RefPicks::default(),
             tracking: FxHashMap::default(),
             head: None,
@@ -252,46 +248,22 @@ impl RefListState {
         self.picked = RefPicks::default();
     }
 
-    pub fn select_next(&mut self) {
-        let last = self.visible_rows.len().saturating_sub(1);
-        let next = self
-            .selected_index()
-            .map_or(0, |index| index.saturating_add(1))
-            .min(last);
-        self.select_visible_index(next);
+    // Fits the rows in `area`, the sidebar inside its borders, as laid out before the keys are
+    // handled, for ctrl-d and ctrl-u to know the rows shown before it is drawn.
+    pub fn fit(&mut self, area: Rect, scrolloff: usize) {
+        let height = area.height.saturating_sub(2) as usize;
+        self.cursor.fit(height, self.visible_rows.len(), scrolloff);
     }
 
-    pub fn select_prev(&mut self) {
-        let prev = self
-            .selected_index()
-            .map_or(self.visible_rows.len().saturating_sub(1), |index| {
-                index.saturating_sub(1)
-            });
-        self.select_visible_index(prev);
-    }
-
-    pub fn select_first(&mut self) {
-        self.select_visible_index(0);
-    }
-
-    // The rows shown inside the borders of `area`, the sidebar, as laid out before it is drawn.
-    pub fn set_height(&mut self, area: Rect) {
-        self.height = area.height.saturating_sub(2) as usize;
-    }
-
-    // See `half_page_jump`.
-    pub fn jump_half_page(&mut self, event: UserEvent) {
+    // Moves the selection by the movement keys, see `ListCursor::moved_to`; returns whether
+    // `event` was one of them.
+    pub fn handle_move(&mut self, event: UserEvent) -> bool {
         let total = self.visible_rows.len();
-        if let Some(index) = self
-            .selected_index()
-            .and_then(|selected| half_page_jump(event, selected, self.height, total))
-        {
-            self.select_visible_index(index);
-        }
-    }
-
-    pub fn select_last(&mut self) {
-        self.select_visible_index(self.visible_rows.len().saturating_sub(1));
+        let Some(index) = self.cursor.moved_to(event, total, HalfPage::List) else {
+            return false;
+        };
+        self.select_visible_index(index);
+        true
     }
 
     pub fn open_node(&mut self) {
@@ -302,7 +274,7 @@ impl RefListState {
             && self.opened.insert(self.selected.clone())
         {
             self.rebuild_visible_rows();
-            self.scroll_to_selection = true;
+            self.sync_cursor();
         }
     }
 
@@ -319,7 +291,7 @@ impl RefListState {
             self.opened.insert(self.selected.clone());
         }
         self.rebuild_visible_rows();
-        self.scroll_to_selection = true;
+        self.sync_cursor();
         true
     }
 
@@ -330,7 +302,7 @@ impl RefListState {
             self.selected.pop();
         }
         // The category roots always remain selectable.
-        self.scroll_to_selection = true;
+        self.sync_cursor();
     }
 
     // The ref selected as git names it, to find its commit in the graph: "refs/heads/main",
@@ -365,7 +337,7 @@ impl RefListState {
         self.selected = vec![identifier];
         self.opened.insert(self.selected.clone());
         self.rebuild_visible_rows();
-        self.scroll_to_selection = true;
+        self.sync_cursor();
     }
 
     pub fn selection(&self) -> RefSelection {
@@ -391,7 +363,7 @@ impl RefListState {
     // picked refs still there.
     pub fn set_refs(&mut self, refs: &[&Ref], remotes: &[String], head: &Head) {
         let (selected, opened) = self.current_tree_status();
-        let offset = self.offset;
+        let cursor = self.cursor;
         let mut picked = std::mem::take(&mut self.picked);
         // a picked stash by its commit, as stash@{0} names another once one is stashed
         if picked.section() == Some(RefSection::Stashes) {
@@ -410,8 +382,9 @@ impl RefListState {
         *self = Self::new(refs, remotes);
         // the row of a detached HEAD, before the selection looks for it
         self.set_head(head);
+        // the rows shown stay, around the selection kept
+        self.cursor = cursor;
         self.reset_tree_status(selected, opened);
-        self.offset = offset;
         picked.retain(|section, name| {
             refs.iter().any(|r| {
                 r.name() == name
@@ -441,7 +414,7 @@ impl RefListState {
         if self.selected.is_empty() {
             self.selected = vec![NodeId::Section(RefSection::Branches)];
         }
-        self.scroll_to_selection = true;
+        self.sync_cursor();
     }
 
     fn selected_index(&self) -> Option<usize> {
@@ -453,7 +426,14 @@ impl RefListState {
     fn select_visible_index(&mut self, index: usize) {
         if let Some(row) = self.visible_rows.get(index) {
             self.selected.clone_from(&row.identifier);
-            self.scroll_to_selection = true;
+            self.sync_cursor();
+        }
+    }
+
+    // Keeps the cursor on the row of `selected`, scrolling to it, once it moved or the rows changed.
+    fn sync_cursor(&mut self) {
+        if let Some(index) = self.selected_index() {
+            self.cursor.select(index, self.visible_rows.len());
         }
     }
 
@@ -550,25 +530,10 @@ impl StatefulWidget for RefList {
         }
 
         let height = inner.height as usize;
-        state.offset = state.offset.min(state.visible_rows.len().saturating_sub(1));
-        if state.scroll_to_selection {
-            if let Some(index) = state.selected_index() {
-                let (total, scrolloff) = (
-                    state.visible_rows.len(),
-                    self.ctx.ui_config.common.scrolloff,
-                );
-                state.offset = scroll_to(
-                    state.offset,
-                    index..index + 1,
-                    height,
-                    total,
-                    scrolloff as usize,
-                );
-            }
-            state.scroll_to_selection = false;
-        }
         let total = state.visible_rows.len();
-        render_panel_scrollbar(buf, area, total, state.offset, focused, theme);
+        let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
+        let offset = state.cursor.fit(height, total, scrolloff);
+        render_panel_scrollbar(buf, area, total, offset, focused, theme);
 
         let item_style = Style::default().fg(theme.fg);
         // the sections stand out from the refs in them
@@ -591,10 +556,10 @@ impl StatefulWidget for RefList {
         for ((line, row), guide) in state
             .visible_rows
             .iter()
-            .skip(state.offset)
+            .skip(offset)
             .take(height)
             .enumerate()
-            .zip(guides.iter().skip(state.offset))
+            .zip(guides.iter().skip(offset))
         {
             let y = inner.y + line as u16;
             // the checked-out branch, like `git branch`
@@ -913,12 +878,12 @@ mod tests {
 
     // Moves the selection to the row named `name`, from the top.
     fn select(state: &mut RefListState, name: &str) {
-        state.select_first();
+        state.handle_move(UserEvent::GoToTop);
         for _ in 0..50 {
             if state.selected.last().and_then(NodeId::name) == Some(name) {
                 return;
             }
-            state.select_next();
+            state.handle_move(UserEvent::NavigateDown);
         }
         panic!("no row {name}");
     }
@@ -971,9 +936,9 @@ mod tests {
         let (a, b) = (branch("a"), branch("b"));
         let refs = [&a, &b, &tag];
         let mut state = RefListState::new(&refs, &[]);
-        state.select_next();
+        state.handle_move(UserEvent::NavigateDown);
         pick(&mut state).unwrap();
-        state.select_next();
+        state.handle_move(UserEvent::NavigateDown);
         pick(&mut state).unwrap();
         assert_eq!(state.picked().names(), ["a", "b"]);
         // a tag can't be picked with branches
@@ -1009,7 +974,7 @@ mod tests {
         let head = Head::Detached { target };
         state.set_head(&head);
         assert!(names(&state).contains(&"HEAD (detached at aaaaaaa)".to_string()));
-        state.select_next();
+        state.handle_move(UserEvent::NavigateDown);
         let selection = RefSelection::DetachedHead;
         assert_eq!(state.selected_git_name().as_deref(), Some("HEAD"));
         assert_eq!(state.selection(), selection);
@@ -1091,10 +1056,10 @@ mod tests {
             state.selection(),
             RefSelection::Section(RefSection::Remotes)
         ) {
-            state.select_next();
+            state.handle_move(UserEvent::NavigateDown);
         }
         state.open_node();
-        state.select_next();
+        state.handle_move(UserEvent::NavigateDown);
         assert!(matches!(
             state.selection(),
             RefSelection::Folder(RefSection::Remotes, name) if name == "new"
@@ -1116,7 +1081,7 @@ mod tests {
         state.select_section(Toward::Next);
         assert_eq!(section(&state), Some(RefSection::Remotes));
         // opened: the remote under it is the next row
-        state.select_next();
+        state.handle_move(UserEvent::NavigateDown);
         assert!(matches!(
             state.selection(),
             RefSelection::Folder(RefSection::Remotes, name) if name == "origin"

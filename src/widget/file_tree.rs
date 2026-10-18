@@ -578,11 +578,20 @@ pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
     Span::raw(guide.to_string()).fg(theme.divider_fg)
 }
 
+// How the selected row of a tree is drawn: not at all, quieter while the tree doesn't have the
+// focus, or bright while it has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeCursor {
+    Hidden,
+    Dim,
+    Bright,
+}
+
 // Draws the rows of `tree` in `area`, like every file tree: the directories open or closed, the
 // files with their change letter from `symbol` (by their index) when they have one, the match of
-// `search` highlighted; the `picked` rows and, with `cursor` (whether the tree has the focus), the
-// selected one highlighted across the row, the lines of the tree keeping their color; `empty`
-// when there is no row. Returns the first row shown, for the scrollbar.
+// `search` highlighted; the `picked` rows and, unless the `cursor` is hidden, the selected one
+// highlighted across the row, the lines of the tree keeping their color; `empty` when there is
+// no row. Returns the first row shown, for the scrollbar.
 #[allow(clippy::too_many_arguments)]
 pub fn render_tree(
     buf: &mut Buffer,
@@ -591,7 +600,7 @@ pub fn render_tree(
     symbol: impl Fn(usize) -> Option<&'static str>,
     search: Option<&str>,
     picked: impl Fn(&str) -> bool,
-    cursor: Option<bool>,
+    cursor: TreeCursor,
     empty: &str,
     ctx: &AppContext,
 ) -> usize {
@@ -640,9 +649,9 @@ pub fn render_tree(
             mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);
         }
     }
-    if let Some(focused) = cursor {
+    if cursor != TreeCursor::Hidden {
         let y = area.y + (tree.cursor() - offset) as u16;
-        mark_selected_row(buf, area, y, focused, theme);
+        mark_selected_row(buf, area, y, cursor == TreeCursor::Bright, theme);
     }
     unhighlight_guides(buf, area, tree, offset, theme);
     offset
@@ -911,22 +920,14 @@ mod tests {
 
     // Draws `tree` in 20 columns and `height` rows, from column 1, the change letter "M" on each
     // file and `picked` highlighted.
-    fn draw_tree(tree: &FileTreeState, height: u16, focused: bool, picked: &str) -> Buffer {
+    fn draw_tree(tree: &FileTreeState, height: u16, cursor: TreeCursor, picked: &str) -> Buffer {
         let ctx = crate::test_support::ui::test_ctx();
         let mut buf = Buffer::empty(Rect::new(0, 0, 23, height));
         let area = Rect::new(1, 0, 20, height);
         let symbol = |_| Some("M");
         let is_picked = |path: &str| path == picked;
         render_tree(
-            &mut buf,
-            area,
-            tree,
-            symbol,
-            None,
-            is_picked,
-            Some(focused),
-            "",
-            &ctx,
+            &mut buf, area, tree, symbol, None, is_picked, cursor, "", &ctx,
         );
         buf
     }
@@ -938,11 +939,11 @@ mod tests {
             FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]),
             TreeShape::Rooted,
         );
-        for focused in [true, false] {
+        for cursor in [TreeCursor::Bright, TreeCursor::Dim] {
             tree.select_path("z.rs");
-            let plain = draw_tree(&tree, 5, focused, "");
+            let plain = draw_tree(&tree, 5, cursor, "");
             tree.select_path("a/x.rs");
-            let selected = draw_tree(&tree, 5, focused, "");
+            let selected = draw_tree(&tree, 5, cursor, "");
             // the change letter and the lines keep their colors, under the root row
             let row = Rect::new(1, 2, 20, 1);
             assert_row_bg(&selected, row, theme.list_selected_bg);
@@ -950,7 +951,7 @@ mod tests {
             assert_guides_keep_color(&selected, row, &theme);
         }
         // a picked row: across it too
-        let buf = draw_tree(&tree, 5, true, "a/y.rs");
+        let buf = draw_tree(&tree, 5, TreeCursor::Bright, "a/y.rs");
         let row = Rect::new(1, 3, 20, 1);
         assert_row_bg(&buf, row, theme.list_picked_bg);
         assert_guides_keep_color(&buf, row, &theme);
@@ -979,7 +980,7 @@ mod tests {
                     |_| None,
                     None,
                     |_| false,
-                    Some(true),
+                    TreeCursor::Bright,
                     "",
                     &ctx,
                 );
@@ -997,7 +998,7 @@ mod tests {
             FileTree::new(paths.iter().map(String::as_str)),
             TreeShape::Rooted,
         );
-        let top = |tree: &FileTreeState| row_text(&draw_tree(tree, 4, true, ""), 0);
+        let top = |tree: &FileTreeState| row_text(&draw_tree(tree, 4, TreeCursor::Bright, ""), 0);
         // down past the bottom: the view follows the cursor (the root row is 0)
         tree.select_index(6);
         assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));

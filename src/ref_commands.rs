@@ -12,7 +12,7 @@ use crate::{
 };
 
 // Whether `event` does something on the selected row of the sidebar, with the `picked` refs: its
-// key is handled there only then, and shown in the hints (see `App::sidebar_hints`). The commands
+// key is handled there only then, and shown in the hints (see `App::sidebar_keys`). The commands
 // of the graph work on a branch, remote branch or tag; diffing and deleting on the picked refs too.
 // Other events, like moving about, are not commands of the sidebar and always apply.
 pub fn ref_command_applies(

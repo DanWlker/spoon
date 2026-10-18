@@ -11,7 +11,7 @@ use crate::{
     search::SearchKind,
     view::{
         commit_event, query_status, register_graph_commands, type_query, typing_keys,
-        ListRefreshViewContext, RefreshViewContext,
+        ListRefreshViewContext, RefreshViewContext, Reselect,
     },
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
@@ -173,10 +173,9 @@ impl<'a> ListView<'a> {
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
         let ListRefreshViewContext {
-            commit_hash,
+            select,
             picked_commit_hashes,
             cursor,
-            scroll_to_top,
             search_options,
             search_context,
         } = list_context;
@@ -184,11 +183,12 @@ impl<'a> ListView<'a> {
         list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
         list_state.restore_search_options(*search_options);
         list_state.reset_height(cursor.height());
-        if *scroll_to_top {
-            list_state.select_first();
-        } else {
-            list_state.select_commit_hash(&CommitHash::from(commit_hash.as_str()));
-            list_state.restore_selected_row(cursor.row());
+        match select {
+            Reselect::Newest => list_state.select_first(),
+            Reselect::Commit(hash) => {
+                list_state.select_commit_hash(hash);
+                list_state.restore_selected_row(cursor.row());
+            }
         }
         if let Some(search_context) = search_context {
             list_state.restore_search(search_context);

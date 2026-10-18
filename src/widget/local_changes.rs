@@ -27,7 +27,7 @@ use crate::{
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
-            TreeShape,
+            TreeCursor, TreeShape,
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
@@ -1927,7 +1927,11 @@ impl LocalChangesPanel<'_> {
             // the search is highlighted in the section it applies to
             state.query_of(section).search(),
             |path| picked.contains(path),
-            active.then_some(self.focused),
+            match (active, self.focused) {
+                (false, _) => TreeCursor::Hidden,
+                (true, false) => TreeCursor::Dim,
+                (true, true) => TreeCursor::Bright,
+            },
             empty,
             &self.ctx,
         );

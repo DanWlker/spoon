@@ -21,7 +21,7 @@ use crate::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
-        file_tree::{render_tree, FileTree, FileTreeRow, FileTreeState, TreeShape},
+        file_tree::{render_tree, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeShape},
         tree_query::SearchDirection,
     },
 };
@@ -528,6 +528,11 @@ impl CommitTab {
             "No matches"
         };
         let tree_focused = !state.pane.is_focused();
+        let cursor = if tree_focused {
+            TreeCursor::Bright
+        } else {
+            TreeCursor::Dim
+        };
         let offset = render_tree(
             buf,
             tree_area,
@@ -535,7 +540,7 @@ impl CommitTab {
             |i| Some(state.files[i].symbol),
             self.search.as_deref(),
             |_| false,
-            Some(tree_focused),
+            cursor,
             empty,
             &self.ctx,
         );
@@ -555,6 +560,11 @@ impl CommitTab {
         if let Some(tree) = &state.tree {
             // a commit always has files, they can only be filtered out
             let focused = !state.is_preview_focused();
+            let cursor = if focused {
+                TreeCursor::Bright
+            } else {
+                TreeCursor::Dim
+            };
             let offset = render_tree(
                 buf,
                 tree_area,
@@ -562,7 +572,7 @@ impl CommitTab {
                 |_| None,
                 self.search.as_deref(),
                 |_| false,
-                Some(focused),
+                cursor,
                 "No matches",
                 &self.ctx,
             );

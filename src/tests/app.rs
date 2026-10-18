@@ -768,7 +768,7 @@ fn test_keys_unlisted_where_they_only_warn() {
     let listed = |hints: Vec<KeyHint>, short: &str| hints.iter().any(|(_, s)| s == short);
     harness.run(vec![
         // no remote: push, pull and fetch say so, unlisted
-        check(move |app| assert!(!listed(app.global_hints(), "push"))),
+        check(move |app| assert!(!listed(app.app_keys().hints(), "push"))),
         keys("p"),
         check(|app| assert_notice(app, "No remotes configured")),
         // with a commit picked, the commands of one commit ask to clear it, unlisted

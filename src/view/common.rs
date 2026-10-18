@@ -409,30 +409,37 @@ impl RefreshViewContext {
     }
 }
 
+// The commit selected once the commit list is reloaded.
+#[derive(Debug, Clone)]
+pub enum Reselect {
+    // the newest commit, the commits made meanwhile showing above it
+    Newest,
+    Commit(CommitHash),
+}
+
 #[derive(Debug, Clone)]
 pub struct ListRefreshViewContext {
-    pub commit_hash: String,
+    pub select: Reselect,
     pub picked_commit_hashes: Vec<CommitHash>,
     // the selected commit's row and the commits shown, restored around it once reloaded
     pub cursor: ListCursor,
-    pub scroll_to_top: bool,
     pub search_options: SearchOptions,
     pub search_context: Option<SearchRefreshContext>,
 }
 
 impl From<&CommitListState<'_>> for ListRefreshViewContext {
     fn from(list_state: &CommitListState) -> Self {
-        let commit_hash = list_state.selected_commit_hash().as_str().into();
         let cursor = list_state.cursor();
-        // on the first commit, the newest one: the commits made meanwhile show above it
-        let scroll_to_top = cursor.selected() == 0;
+        let select = match cursor.selected() {
+            0 => Reselect::Newest,
+            _ => Reselect::Commit(list_state.selected_commit_hash().clone()),
+        };
         let search_options = list_state.search_options();
         let search_context = list_state.search_refresh_context();
         ListRefreshViewContext {
-            commit_hash,
+            select,
             picked_commit_hashes: list_state.picked_commit_hashes().to_vec(),
             cursor,
-            scroll_to_top,
             search_options,
             search_context,
         }
