@@ -104,14 +104,21 @@ impl FileText {
             .min(last);
     }
 
-    // Scrolls the window `rows` screen rows, the selected line moving as many, so it keeps its
-    // place on screen; at either end of the file both stop.
+    // Scrolls the window `rows` screen rows and moves the selected line as many, like vim's
+    // ctrl-d/u: the line keeps its screen row while the window scrolls; at the end of the file the
+    // window stops and the line keeps going to the last one.
     fn scroll_cursor(&mut self, rows: isize) {
-        let before = self.scroll_state.offset;
-        self.scroll_view(rows);
-        let moved = self.scroll_state.offset as isize - before as isize;
-        let screen = self.wrap.visual_start(self.selected) as isize + moved;
-        self.selected = self.logical_at(screen.max(0) as usize);
+        let last = self.wrap.total().saturating_sub(self.scroll_state.height);
+        self.scroll_state.offset = self
+            .scroll_state
+            .offset
+            .saturating_add_signed(rows)
+            .min(last);
+        let screen = self
+            .wrap
+            .visual_start(self.selected)
+            .saturating_add_signed(rows);
+        self.selected = self.logical_at(screen);
     }
 
     // Selects a line, the last one past the end.
@@ -334,5 +341,28 @@ mod tests {
         text.scroll(UserEvent::HalfPageDown);
         assert_eq!(text.scroll_state.offset, offset + 1 + 5);
         assert_eq!(text.selected_line(), 25);
+    }
+
+    // A file shorter than the panel still moves the selected line, like vim: only the window stays.
+    #[test]
+    fn test_scroll_moves_the_line_when_the_file_fits() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 40, 10);
+        let lines: Vec<String> = (1..=4).map(|i| format!("line {i}")).collect();
+        let mut text = FileText::default();
+        text.set_lines(lines);
+        text.render(
+            area,
+            &mut Buffer::empty(area),
+            &ctx,
+            true,
+            LineCursor::Shown,
+            None,
+        );
+        assert_eq!(text.scroll_state.offset, 0);
+
+        text.scroll(UserEvent::HalfPageDown);
+        assert_eq!(text.selected_line(), 3, "the line went to the last one");
+        assert_eq!(text.scroll_state.offset, 0, "the window couldn't scroll");
     }
 }

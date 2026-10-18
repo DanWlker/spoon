@@ -207,7 +207,9 @@ impl<'a> DetailView<'a> {
             "apply to working tree",
             "Apply the selected hunk or line to the working tree",
         )
-        .when(|v| pane(v) && tab(DetailTab::Changes)(v));
+        .when(|v| {
+            pane(v) && tab(DetailTab::Changes)(v) && v.changes_state.pane.selected_is_change()
+        });
         k.add(
             &[ShortCopy],
             "copy line",
