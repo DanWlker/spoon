@@ -3,7 +3,7 @@
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, NamedRef, Ref, RemoteBranch, Repository},
+    git::{NamedRef, Ref, RemoteBranch, Repository, Stash},
     keybind::Scope,
     widget::{
         git_dialog::GitDialog,
@@ -186,11 +186,7 @@ fn delete_refs(
             let branches = names
                 .iter()
                 .map(|name| {
-                    split_remote_branch(&info.remotes, name)
-                        .map(|(remote, branch)| RemoteBranch {
-                            remote: remote.to_string(),
-                            branch: branch.to_string(),
-                        })
+                    RemoteBranch::parse(&info.remotes, name)
                         .ok_or_else(|| format!("No remote has {name}"))
                 })
                 .collect::<Result<_, String>>()?;
@@ -206,7 +202,7 @@ fn delete_refs(
                 .into_iter()
                 .map(|name| {
                     let message = stash_message(repository, &name);
-                    (name, message)
+                    Stash { name, message }
                 })
                 .collect();
             Ok(GitDialog::drop_stashes(stashes))

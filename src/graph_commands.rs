@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, CommitHash, Conflict, NamedRef, Ref, Repository, Rev},
+    git::{CommitHash, Conflict, NamedRef, Ref, RemoteBranch, Repository, Rev},
     view::Compare,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
@@ -63,20 +63,20 @@ pub fn graph_command(
         UserEvent::Rebase => single("Rebase").and_then(|_| {
             let branch = branch.ok_or("Check out a branch to rebase it")?;
             not_head(repository, &selected, "rebase onto")?;
-            let (target, label) = name_of(repository, &selected);
-            let conflict = rebase_conflict(repository, &target);
+            let Onto { arg, label } = onto_target(repository, Rev::Commit(selected.clone()));
+            let conflict = rebase_conflict(repository, &arg);
             Ok(
-                GitDialog::rebase(&branch, target, &label, rebase_auto_stash(repository))
+                GitDialog::rebase(&branch, arg, &label, rebase_auto_stash(repository))
                     .conflicting(conflict),
             )
         }),
         UserEvent::Merge => single("Merge").and_then(|_| {
             not_head(repository, &selected, "merge")?;
             let merge_ff = repository.config("merge.ff");
-            let (target, label) = name_of(repository, &selected);
-            let conflict = merge_conflict(repository, &target);
+            let Onto { arg, label } = onto_target(repository, Rev::Commit(selected.clone()));
+            let conflict = merge_conflict(repository, &arg);
             Ok(
-                GitDialog::merge(&branch_label, target, &label, merge_ff.as_deref())
+                GitDialog::merge(&branch_label, arg, &label, merge_ff.as_deref())
                     .conflicting(conflict),
             )
         }),
@@ -139,17 +139,7 @@ pub fn ref_graph_command(
     target: CommitHash,
 ) -> Option<Result<GraphCommand, String>> {
     let name = selected.name();
-    let shared = repository
-        .all_refs()
-        .iter()
-        .filter(|r| r.name() == name)
-        .count()
-        > 1;
-    let onto = if shared {
-        selected.full_name()
-    } else {
-        name.to_string()
-    };
+    let Onto { arg: onto, .. } = onto_target(repository, Rev::Ref(selected.clone()));
     let branch = repository.current_branch();
     let checked_out = || -> Result<(), String> {
         if branch.as_deref() == Some(name) {
@@ -224,25 +214,50 @@ pub fn dialog_commit(repository: &Repository, hash: &CommitHash) -> DialogCommit
     }
 }
 
-// The commit to merge or rebase onto, and its label: by the name of the one local branch at
-// it, for "Merge branch 'x'" as the message, else by its hash; by the hash too when a tag has
-// that name, which git would take instead.
-fn name_of(repository: &Repository, hash: &CommitHash) -> (String, String) {
-    let mut branches = repository
-        .refs(hash)
-        .into_iter()
-        .filter(|r| matches!(r, Ref::Branch { .. }));
-    let tagged = |name: &str| {
-        repository
-            .all_refs()
-            .iter()
-            .any(|r| matches!(r, Ref::Tag { .. }) && r.name() == name)
+// What merge and rebase are given, and how it is shown.
+struct Onto {
+    arg: String,
+    label: String,
+}
+
+// A ref by its name, in full when another ref has that name, which git would take instead; a
+// commit by the name of the one local branch at it, for "Merge branch 'x'" as the message (its
+// full name would show there), else by its hash.
+fn onto_target(repository: &Repository, rev: Rev) -> Onto {
+    let shared = |name: &str| {
+        let refs = repository.all_refs();
+        refs.iter().filter(|r| r.name() == name).count() > 1
     };
-    match (branches.next(), branches.next()) {
-        (Some(branch), None) if !tagged(branch.name()) => {
-            (branch.name().to_string(), branch.name().to_string())
+    match rev {
+        Rev::Ref(named) => {
+            let label = named.name().to_string();
+            let arg = if shared(&label) {
+                named.full_name()
+            } else {
+                label.clone()
+            };
+            Onto { arg, label }
         }
-        _ => (hash.as_str().to_string(), hash.as_short_hash().to_string()),
+        Rev::Commit(hash) => {
+            let mut branches = repository
+                .refs(&hash)
+                .into_iter()
+                .filter(|r| matches!(r, Ref::Branch { .. }));
+            match (branches.next(), branches.next()) {
+                (Some(branch), None) if !shared(branch.name()) => Onto {
+                    arg: branch.name().to_string(),
+                    label: branch.name().to_string(),
+                },
+                _ => Onto {
+                    arg: hash.as_str().to_string(),
+                    label: hash.as_short_hash().to_string(),
+                },
+            }
+        }
+        Rev::Head => Onto {
+            arg: "HEAD".into(),
+            label: "HEAD".into(),
+        },
     }
 }
 
@@ -296,12 +311,14 @@ fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutT
             }
             Ref::RemoteBranch { name, .. } => {
                 // a new local branch tracking it, unless there is one by that name
-                let Some((_, local)) = split_remote_branch(repository.remotes(), name) else {
+                let Some(RemoteBranch { branch: local, .. }) =
+                    RemoteBranch::parse(repository.remotes(), name)
+                else {
                     continue;
                 };
-                if local != "HEAD" && !local_exists(local) {
+                if local != "HEAD" && !local_exists(&local) {
                     targets.push(CheckoutTarget::Track {
-                        local: local.to_string(),
+                        local,
                         remote_branch: name.clone(),
                     });
                 }

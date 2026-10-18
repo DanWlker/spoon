@@ -160,11 +160,41 @@ impl Rev {
     }
 }
 
+// A stash, like "stash@{0}", and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stash {
+    pub name: String,
+    pub message: String,
+}
+
+impl Stash {
+    // The number in its name, 2 for "stash@{2}"; None for a name that isn't one.
+    pub fn index(&self) -> Option<usize> {
+        let index = self.name.strip_prefix("stash@{")?.strip_suffix('}')?;
+        index.parse().ok()
+    }
+}
+
 // A branch on a remote: "origin" and "main" for origin/main.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RemoteBranch {
     pub remote: String,
     pub branch: String,
+}
+
+impl RemoteBranch {
+    // The remote and the branch on it of a remote branch like "origin/main", one of `remotes`;
+    // remote names may contain slashes, the longest matching one owns the branch.
+    pub fn parse(remotes: &[String], name: &str) -> Option<RemoteBranch> {
+        let remote = remotes
+            .iter()
+            .filter(|remote| name.starts_with(&format!("{remote}/")))
+            .max_by_key(|remote| remote.len())?;
+        Some(RemoteBranch {
+            remote: remote.clone(),
+            branch: name[remote.len() + 1..].to_string(),
+        })
+    }
 }
 
 impl std::fmt::Display for RemoteBranch {
@@ -1031,12 +1061,9 @@ impl Repository {
                     }
                 }
             } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
-                if let Some((owner, branch)) = split_remote_branch(&remotes, name) {
+                if let Some(RemoteBranch { remote, branch }) = RemoteBranch::parse(&remotes, name) {
                     if branch != "HEAD" {
-                        remote_branches
-                            .entry(owner.to_string())
-                            .or_default()
-                            .push(branch.to_string());
+                        remote_branches.entry(remote).or_default().push(branch);
                     }
                 }
             }
@@ -1712,16 +1739,6 @@ impl FileChange {
             FileChange::Move { .. } => "R",
         }
     }
-}
-
-// The remote and the branch on it of a remote branch like "origin/main"; remote names may contain
-// slashes, the longest matching one owns the branch.
-pub fn split_remote_branch<'a>(remotes: &'a [String], name: &'a str) -> Option<(&'a str, &'a str)> {
-    remotes
-        .iter()
-        .filter(|remote| name.starts_with(&format!("{remote}/")))
-        .max_by_key(|remote| remote.len())
-        .map(|remote| (remote.as_str(), &name[remote.len() + 1..]))
 }
 
 fn diff_summary(path: &Path, base: &str, target: &str) -> Vec<FileChange> {

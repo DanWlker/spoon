@@ -182,14 +182,30 @@ pub fn key_span(key: impl Into<String>, theme: &ColorTheme) -> Span<'static> {
     Span::raw(key.into()).fg(theme.accent_fg).bold()
 }
 
-pub fn key_hints(hints: &[(&str, &str)], theme: &ColorTheme) -> Line<'static> {
+// A key as shown, like "j/k", and what it does, like "move".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyLabel {
+    pub keys: String,
+    pub action: String,
+}
+
+impl KeyLabel {
+    pub fn new(keys: impl Into<String>, action: impl Into<String>) -> Self {
+        KeyLabel {
+            keys: keys.into(),
+            action: action.into(),
+        }
+    }
+}
+
+pub fn key_hints(hints: &[KeyLabel], theme: &ColorTheme) -> Line<'static> {
     let mut spans = vec![];
-    for (i, (key, description)) in hints.iter().enumerate() {
+    for (i, hint) in hints.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw(" • ").fg(theme.divider_fg));
         }
-        spans.push(key_span(*key, theme));
-        spans.push(Span::raw(format!(" {description}")).fg(theme.muted_fg));
+        spans.push(key_span(hint.keys.clone(), theme));
+        spans.push(Span::raw(format!(" {}", hint.action)).fg(theme.muted_fg));
     }
     Line::from(spans)
 }
@@ -341,6 +357,16 @@ pub fn scroll_to(
         .min(total.saturating_sub(height))
 }
 
+// Where ctrl-d and ctrl-u go in a list: the list, moving its selection half a page, where the list
+// is what is read (the commit graph, the sidebar, the commits of the timeline); or the pane beside
+// it, scrolled like with the other scroll keys, where that is (the output of the command log, the
+// diff or preview beside the file trees).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalfPage {
+    List,
+    Pane,
+}
+
 // The selected row of a list and the rows shown from `offset`, `height` at a time: the commit list,
 // the file trees, the command log and the timeline. The selection moves keep it in view with
 // `scrolloff` rows around it, scrolling as little as can be, see `scroll_to`.
@@ -366,6 +392,11 @@ impl ListCursor {
         self.height
     }
 
+    // The row of the selection among those shown.
+    pub fn row(&self) -> usize {
+        self.selected - self.offset
+    }
+
     // Selects the row at `index` of `total`, or the last one.
     pub fn select(&mut self, index: usize, total: usize) {
         self.selected = index.min(total.saturating_sub(1));
@@ -386,16 +417,20 @@ impl ListCursor {
             .min(total.saturating_sub(self.height));
     }
 
-    // The row the movement keys select in `total` rows: j and k (and J and K), g and G, ctrl-d and
-    // ctrl-u, see `half_page_jump`; None for other events.
-    pub fn moved_to(&self, event: UserEvent, total: usize) -> Option<usize> {
+    // The row the movement keys select in `total` rows: j and k (and J and K), g and G, and ctrl-d
+    // and ctrl-u where `half_page` gives them to the list, see `half_page_jump`; None for other
+    // events.
+    pub fn moved_to(&self, event: UserEvent, total: usize, half_page: HalfPage) -> Option<usize> {
         let last = total.checked_sub(1)?;
         match event {
             UserEvent::NavigateDown | UserEvent::SelectDown => Some((self.selected + 1).min(last)),
             UserEvent::NavigateUp | UserEvent::SelectUp => Some(self.selected.saturating_sub(1)),
             UserEvent::GoToTop => Some(0),
             UserEvent::GoToBottom => Some(last),
-            _ => half_page_jump(event, self.selected, self.height, total),
+            _ if half_page == HalfPage::List => {
+                half_page_jump(event, self.selected, self.height, total)
+            }
+            _ => None,
         }
     }
 
@@ -482,7 +517,8 @@ mod tests {
     #[test]
     fn test_key_hints_name_keys_like_everywhere() {
         let theme = theme_with_bg();
-        let line = key_hints(&[("j/k", "move"), ("q", "quit")], &theme);
+        let hints = [KeyLabel::new("j/k", "move"), KeyLabel::new("q", "quit")];
+        let line = key_hints(&hints, &theme);
         let area = Rect::new(0, 0, 30, 1);
         let mut buf = Buffer::empty(area);
         line.render(area, &mut buf);
@@ -515,6 +551,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_half_page_goes_to_the_list_or_the_pane() {
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 30, 0);
+        let moved = |half_page| cursor.moved_to(UserEvent::HalfPageDown, 30, half_page);
+        assert_eq!(moved(HalfPage::List), Some(5));
+        // left to the pane, which scrolls
+        assert_eq!(moved(HalfPage::Pane), None);
+        // the other movement keys move the list either way
+        let down = cursor.moved_to(UserEvent::NavigateDown, 30, HalfPage::Pane);
+        assert_eq!(down, Some(1));
     }
 
     #[test]

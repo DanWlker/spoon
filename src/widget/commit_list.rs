@@ -24,7 +24,7 @@ use crate::{
     widget::{
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
-            ListCursor,
+            HalfPage, ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
@@ -283,7 +283,7 @@ impl<'a> CommitListState<'a> {
 
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
-        if let Some(index) = self.cursor.moved_to(event, self.total) {
+        if let Some(index) = self.cursor.moved_to(event, self.total, HalfPage::List) {
             self.select_visible_index(index);
         }
     }
@@ -356,11 +356,9 @@ impl<'a> CommitListState<'a> {
         (self.current_selected_index() + 1, self.total)
     }
 
-    // The row of the selected commit among those shown, the first shown, and how many are.
-    pub fn current_list_status(&self) -> (usize, usize, usize) {
-        let cursor = &self.cursor;
-        let row = cursor.selected() - cursor.offset();
-        (row, cursor.offset(), cursor.height())
+    // The selected commit and the commits shown.
+    pub fn cursor(&self) -> ListCursor {
+        self.cursor
     }
 
     pub fn reset_height(&mut self, height: usize) {
@@ -601,7 +599,7 @@ pub fn render_commit_list_panel<'a>(
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
     // the bar on the border, the graph starts right after it
-    let y = inner.y + (state.cursor.selected() - state.cursor.offset()) as u16;
+    let y = inner.y + state.cursor.row() as u16;
     if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
         mark_selected_bar(f.buffer_mut(), inner.x - 1, y, focused, &ctx.color_theme);
     }
@@ -1079,6 +1077,12 @@ mod tests {
 
     use super::*;
 
+    // The row of the selected commit among those shown, the first shown, and how many are.
+    fn status(state: &CommitListState) -> (usize, usize, usize) {
+        let cursor = state.cursor();
+        (cursor.row(), cursor.offset(), cursor.height())
+    }
+
     // The search's message, and whether it found something.
     fn matched(state: &CommitListState) -> Option<(String, bool)> {
         let outcome = state.search_outcome()?;
@@ -1315,10 +1319,10 @@ mod tests {
             state.toggle_pick();
             state.select_last();
             let third = state.selected_commit_hash().clone();
-            let status = state.current_list_status();
+            let before = status(state);
             state.toggle_pick();
             assert_eq!(state.picked_commit_hashes(), [first.clone(), third.clone()]);
-            assert_eq!(state.current_list_status(), status);
+            assert_eq!(status(state), before);
 
             state.select_first();
             state.toggle_pick();
@@ -1423,23 +1427,23 @@ mod tests {
             for _ in 0..4 {
                 state.select_next();
             }
-            assert_eq!(state.current_list_status(), (3, 1, 6));
+            assert_eq!(status(state), (3, 1, 6));
 
             state.select_prev();
             state.select_prev();
-            assert_eq!(state.current_list_status(), (2, 0, 6));
+            assert_eq!(status(state), (2, 0, 6));
 
             state.select_index(7);
-            assert_eq!(state.current_list_status(), (2, 5, 6));
+            assert_eq!(status(state), (2, 5, 6));
             state.scroll_down();
-            assert_eq!(state.current_list_status(), (2, 6, 6));
+            assert_eq!(status(state), (2, 6, 6));
             state.scroll_up();
-            assert_eq!(state.current_list_status(), (3, 5, 6));
+            assert_eq!(status(state), (3, 5, 6));
 
             state.select_last();
-            assert_eq!(state.current_list_status(), (5, 6, 6));
+            assert_eq!(status(state), (5, 6, 6));
             state.select_prev();
-            assert_eq!(state.current_list_status(), (4, 6, 6));
+            assert_eq!(status(state), (4, 6, 6));
         });
     }
 
@@ -1451,11 +1455,11 @@ mod tests {
 
             state.select_next();
             state.select_next();
-            assert_eq!(state.current_list_status(), (1, 1, 2));
+            assert_eq!(status(state), (1, 1, 2));
 
             state.select_index(6);
             state.restore_selected_row(1);
-            assert_eq!(state.current_list_status(), (1, 5, 2));
+            assert_eq!(status(state), (1, 5, 2));
         });
     }
 
@@ -1466,20 +1470,20 @@ mod tests {
             state.reset_height(10);
 
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (2, 8, 10));
+            assert_eq!(status(state), (2, 8, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (2, 18, 10));
+            assert_eq!(status(state), (2, 18, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 20, 10));
+            assert_eq!(status(state), (9, 20, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 20, 10));
+            assert_eq!(status(state), (9, 20, 10));
 
             state.scroll_up_page();
-            assert_eq!(state.current_list_status(), (7, 12, 10));
+            assert_eq!(status(state), (7, 12, 10));
             state.scroll_up_page();
-            assert_eq!(state.current_list_status(), (7, 2, 10));
+            assert_eq!(status(state), (7, 2, 10));
             state.scroll_up_page();
-            assert_eq!(state.current_list_status(), (0, 0, 10));
+            assert_eq!(status(state), (0, 0, 10));
         });
     }
 
@@ -1489,19 +1493,19 @@ mod tests {
             state.scrolloff = 2;
             state.reset_height(10);
             state.select_index(12);
-            assert_eq!(state.current_list_status(), (2, 10, 10));
+            assert_eq!(status(state), (2, 10, 10));
 
             // the selection moves down the page, the list stays
             state.jump_half_page(UserEvent::HalfPageDown);
-            assert_eq!(state.current_list_status(), (7, 10, 10));
+            assert_eq!(status(state), (7, 10, 10));
             // then scrolls, keeping 2 rows under it
             state.jump_half_page(UserEvent::HalfPageDown);
-            assert_eq!(state.current_list_status(), (7, 15, 10));
+            assert_eq!(status(state), (7, 15, 10));
             // to the last commit
             state.jump_half_page(UserEvent::HalfPageDown);
-            assert_eq!(state.current_list_status(), (9, 16, 10));
+            assert_eq!(status(state), (9, 16, 10));
             state.jump_half_page(UserEvent::HalfPageUp);
-            assert_eq!(state.current_list_status(), (4, 16, 10));
+            assert_eq!(status(state), (4, 16, 10));
         });
     }
 
@@ -1513,9 +1517,9 @@ mod tests {
             state.select_index(12);
 
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (7, 15, 10));
+            assert_eq!(status(state), (7, 15, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 15, 10));
+            assert_eq!(status(state), (9, 15, 10));
         });
     }
 
@@ -1525,10 +1529,10 @@ mod tests {
             state.scrolloff = 2;
             state.reset_height(10);
             state.select_index(15);
-            assert_eq!(state.current_list_status(), (2, 13, 10));
+            assert_eq!(status(state), (2, 13, 10));
 
             state.restore_selected_row(7);
-            assert_eq!(state.current_list_status(), (7, 8, 10));
+            assert_eq!(status(state), (7, 8, 10));
             assert_eq!(state.current_selected_index(), 15);
         });
     }
@@ -1538,12 +1542,12 @@ mod tests {
         with_commit_list_state(&["commit"; 25], |state| {
             state.reset_height(10);
             state.select_index(12);
-            assert_eq!(state.current_list_status(), (0, 12, 10));
+            assert_eq!(status(state), (0, 12, 10));
 
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (7, 15, 10));
+            assert_eq!(status(state), (7, 15, 10));
             state.scroll_down_page();
-            assert_eq!(state.current_list_status(), (9, 15, 10));
+            assert_eq!(status(state), (9, 15, 10));
         });
     }
 
@@ -1634,11 +1638,11 @@ mod tests {
             state.reset_height(2);
             state.select_index(2);
             state.scroll_up();
-            assert_eq!(state.current_list_status(), (1, 1, 2));
+            assert_eq!(status(state), (1, 1, 2));
 
             state.restore_search(&context);
 
-            assert_eq!(state.current_list_status(), (1, 1, 2));
+            assert_eq!(status(state), (1, 1, 2));
             assert_eq!(
                 matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
@@ -1678,7 +1682,7 @@ mod tests {
             state.scroll_up();
 
             let options = state.search_options();
-            let position = state.current_list_status();
+            let position = status(state);
             let result = matched(state);
             let matches = state.search_matches.clone();
             assert_eq!(result, Some(("Match 2 of 2 (query: \"fx\")".into(), true)));
@@ -1688,12 +1692,12 @@ mod tests {
             assert_eq!(typed(state), Some("/fx".into()));
             assert_eq!(state.search_status_input().unwrap().1, 3);
             assert_eq!(state.search_options(), options);
-            assert_eq!(state.current_list_status(), position);
+            assert_eq!(status(state), position);
             assert_eq!(state.search_matches, matches);
 
             apply_search(state);
             assert_eq!(matched(state), result);
-            assert_eq!(state.current_list_status(), position);
+            assert_eq!(status(state), position);
         });
     }
 
@@ -1732,13 +1736,13 @@ mod tests {
             input_search_query(state, "fix");
             apply_search(state);
             state.select_next();
-            let position = state.current_list_status();
+            let position = status(state);
             let result = matched(state);
 
             state.start_search();
             apply_search(state);
 
-            assert_eq!(state.current_list_status(), position);
+            assert_eq!(status(state), position);
             assert_eq!(state.current_selected_index(), 1);
             assert_eq!(matched(state), result);
         });

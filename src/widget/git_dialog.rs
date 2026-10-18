@@ -16,8 +16,8 @@ use crate::{
     event::{AppEvent, UserEvent},
     git::{
         parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
-        Conflict, FileChange, GitArgs, GitCommand, GitTask, NamedRef, Operation, RemoteBranch,
-        RemoteInfo, MAX_CONFLICT_STEPS,
+        Conflict, FileChange, GitArgs, GitCommand, GitTask, LocalChangeFile, NamedRef, Operation,
+        RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
     widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
@@ -230,9 +230,8 @@ enum DialogKind {
         index: Check,
         pop: Check,
     },
-    // stashes like "stash@{0}"
     DropStashes {
-        names: Vec<String>,
+        stashes: Vec<Stash>,
     },
     // links to open in the browser, or to copy: the pages of each remote
     // the remote and the page are chosen when there are several
@@ -313,8 +312,8 @@ pub struct CommitPreview {
     pub kind: CommitKind,
     pub subject: String,
     pub body: Vec<String>,
-    // the staged files, as their status letter like "M" and their path
-    pub files: Vec<(String, String)>,
+    // the staged files
+    pub files: Vec<LocalChangeFile>,
 }
 
 // What committing does. `branch` is None on a detached HEAD.
@@ -1682,19 +1681,21 @@ impl GitDialog {
         })
     }
 
-    // `stashes` are like ("stash@{0}", its message).
-    pub fn drop_stashes(stashes: Vec<(String, String)>) -> Self {
-        let lines: Vec<String> = stashes.iter().map(|(n, m)| format!("{n} {m}")).collect();
+    pub fn drop_stashes(stashes: Vec<Stash>) -> Self {
+        let lines: Vec<String> = stashes
+            .iter()
+            .map(|s| format!("{} {}", s.name, s.message))
+            .collect();
         let intro = names_intro("Drop", "Drop the stashes", &lines);
-        let names = stashes.into_iter().map(|(name, _)| name).collect();
-        let kind = DialogKind::DropStashes { names };
+        let kind = DialogKind::DropStashes { stashes };
         Self::with(" Drop stash ", "drop", intro, kind, Form::default())
     }
 
-    fn drop_stashes_command(&self, names: &[String]) -> Result<GitTask, String> {
+    fn drop_stashes_command(&self, stashes: &[Stash]) -> Result<GitTask, String> {
         // the newest first would renumber the older ones, so the oldest go first
-        let mut names = names.to_vec();
-        names.sort_by_key(|name| std::cmp::Reverse(stash_index(name)));
+        let mut stashes = stashes.to_vec();
+        stashes.sort_by_key(|stash| std::cmp::Reverse(stash.index()));
+        let names: Vec<String> = stashes.into_iter().map(|s| s.name).collect();
         let what = names_label("stash", "stashes", &names);
         let commands = names
             .iter()
@@ -2286,7 +2287,7 @@ impl GitDialog {
                 message,
             } => self.stash_command(paths, target, *message),
             K::ApplyStash { name, index, pop } => self.apply_stash_command(name, *index, *pop),
-            K::DropStashes { names } => self.drop_stashes_command(names),
+            K::DropStashes { stashes } => self.drop_stashes_command(stashes),
             K::Revert { commits, commit } => self.revert_command(commits, *commit),
             K::Reset {
                 commit,
@@ -2477,14 +2478,6 @@ fn delete_on_remotes(branches: &[RemoteBranch]) -> Vec<GitArgs> {
         .collect()
 }
 
-// The number of a stash like "stash@{2}".
-fn stash_index(name: &str) -> usize {
-    name.trim_start_matches("stash@{")
-        .trim_end_matches('}')
-        .parse()
-        .unwrap_or(0)
-}
-
 fn commits_intro(heading: &str, commits: &[DialogCommit]) -> Vec<String> {
     let commits = commits.iter().map(|c| c.line.clone()).collect();
     let mut lines = vec![format!("{heading}:")];
@@ -2528,11 +2521,11 @@ fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line
         },
         dim,
     ));
-    for (status, path) in preview.files.iter().take(COMMIT_PREVIEW_LINES) {
+    for file in preview.files.iter().take(COMMIT_PREVIEW_LINES) {
         lines.push(Line::from(vec![
             Span::raw("  "),
-            change_span(status, theme),
-            Span::raw(format!(" {path}")).fg(theme.fg),
+            change_span(file.status.symbol(), theme),
+            Span::raw(format!(" {}", file.path)).fg(theme.fg),
         ]));
     }
     if let Some(more) = preview
@@ -2761,7 +2754,11 @@ mod tests {
             },
             subject: "subject".into(),
             body: vec!["body".into()],
-            files: vec![("M".into(), "a.rs".into())],
+            files: vec![LocalChangeFile {
+                path: "a.rs".into(),
+                orig_path: None,
+                status: crate::git::LocalChangeStatus::Modified,
+            }],
         };
         let dialogs = [
             GitDialog::abort(Operation::Rebase),

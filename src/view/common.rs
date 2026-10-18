@@ -1,6 +1,8 @@
 // What the pages share: the key hints of the commit graph and of typing, the status line, copying,
 // and what each page keeps across a reload of the repository.
 
+use std::ops::RangeInclusive;
+
 use ratatui::{crossterm::event::KeyEvent, style::Style, text::Span};
 
 use crate::{
@@ -17,6 +19,7 @@ use crate::{
         commit_tabs::DetailTab,
         diff::DiffPart,
         file_tree::{Entry, FileTreeRow},
+        style::ListCursor,
         tree_query::{highlighted_text, name_matches, QueryChange, TreeQuery},
     },
 };
@@ -242,7 +245,7 @@ pub fn file_link(
     event: UserEvent,
     commit: &CommitHash,
     path: &str,
-    lines: Option<(usize, usize)>,
+    lines: Option<RangeInclusive<usize>>,
 ) -> AppEvent {
     let target = LinkTarget::File {
         commit: commit.clone(),
@@ -408,8 +411,8 @@ impl RefreshViewContext {
 pub struct ListRefreshViewContext {
     pub commit_hash: String,
     pub picked_commit_hashes: Vec<CommitHash>,
-    pub selected: usize,
-    pub height: usize,
+    // the selected commit's row and the commits shown, restored around it once reloaded
+    pub cursor: ListCursor,
     pub scroll_to_top: bool,
     pub search_options: SearchOptions,
     pub search_context: Option<SearchRefreshContext>,
@@ -418,17 +421,15 @@ pub struct ListRefreshViewContext {
 impl From<&CommitListState<'_>> for ListRefreshViewContext {
     fn from(list_state: &CommitListState) -> Self {
         let commit_hash = list_state.selected_commit_hash().as_str().into();
-        let (selected, offset, height) = list_state.current_list_status();
-        // If the selected commit is the top one and there is no offset, it means the list is already scrolled to the top.
-        // In this case, we set scroll_to_top to true to indicate that the view should be scrolled to the top after refresh.
-        let scroll_to_top = selected == 0 && offset == 0;
+        let cursor = list_state.cursor();
+        // on the first commit, the newest one: the commits made meanwhile show above it
+        let scroll_to_top = cursor.selected() == 0;
         let search_options = list_state.search_options();
         let search_context = list_state.search_refresh_context();
         ListRefreshViewContext {
             commit_hash,
             picked_commit_hashes: list_state.picked_commit_hashes().to_vec(),
-            selected,
-            height,
+            cursor,
             scroll_to_top,
             search_options,
             search_context,

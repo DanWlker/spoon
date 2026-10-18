@@ -22,7 +22,10 @@ use crate::{
     widget::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
-        style::{mark_selected_row, panel_block, panel_title, render_panel_scrollbar, ListCursor},
+        style::{
+            mark_selected_row, panel_block, panel_title, render_panel_scrollbar, HalfPage,
+            ListCursor,
+        },
         tree_query::{find_around, QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -148,7 +151,10 @@ impl TimelineView {
     // The keys on the commits: moving, and acting on the selected one; the scroll keys scroll the
     // diff.
     fn handle_commits_event(&mut self, event: UserEvent, repository: &Repository) {
-        if let Some(index) = self.cursor.moved_to(event, self.history.len()) {
+        let moved = self
+            .cursor
+            .moved_to(event, self.history.len(), HalfPage::List);
+        if let Some(index) = moved {
             self.select(index, repository);
         } else if !self.pane.scroll(event) {
             let commit = &self.history[self.cursor.selected()].commit;

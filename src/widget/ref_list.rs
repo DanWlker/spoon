@@ -14,7 +14,7 @@ use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::UserEvent,
-    git::{split_remote_branch, CommitHash, Head, NamedRef, Ref, Tracking},
+    git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, Tracking},
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
@@ -692,7 +692,10 @@ fn build_ref_tree_nodes(refs: &[&Ref], remotes: &[String]) -> Vec<RefTreeNode> {
             Ref::Tag { name, .. } => tag_refs.push(name.into()),
             Ref::Branch { name, .. } => branch_refs.push(name.into()),
             Ref::RemoteBranch { name, .. } => remote_refs.push(name.into()),
-            Ref::Stash { name, message, .. } => stash_refs.push((name.into(), message.into())),
+            Ref::Stash { name, message, .. } => stash_refs.push(Stash {
+                name: name.clone(),
+                message: message.clone(),
+            }),
         }
     }
 
@@ -736,9 +739,9 @@ impl RefTreeNode {
     }
 }
 
-fn refs_to_stash_ref_tree_nodes(ref_name_messages: Vec<(String, String)>) -> Vec<RefTreeNode> {
+fn refs_to_stash_ref_tree_nodes(stashes: Vec<Stash>) -> Vec<RefTreeNode> {
     let mut nodes: Vec<RefTreeNode> = Vec::new();
-    for (name, message) in ref_name_messages {
+    for Stash { name, message } in stashes {
         let node = RefTreeNode {
             identifier: NodeId::Name(name),
             name: message.to_string(),
@@ -758,10 +761,10 @@ fn remotes_to_ref_tree_nodes(ref_names: Vec<String>, remotes: &[String]) -> Vec<
         remotes.iter().map(|r| (r.clone(), vec![])).collect();
     let mut unknown = vec![];
     for name in ref_names {
-        match split_remote_branch(remotes, &name) {
-            Some((remote, branch)) => {
-                let i = remotes.iter().position(|r| r == remote).unwrap();
-                by_remote[i].1.push(branch.to_string());
+        match RemoteBranch::parse(remotes, &name) {
+            Some(RemoteBranch { remote, branch }) => {
+                let i = remotes.iter().position(|r| *r == remote).unwrap();
+                by_remote[i].1.push(branch);
             }
             None => unknown.push(name),
         }
@@ -856,15 +859,9 @@ fn sort_tag_tree_nodes(nodes: &mut [RefTreeNode]) {
     });
 }
 
-// The (name, message) of stashes by their index, stash@{2} before stash@{10}.
-fn sort_stashes(stashes: &mut [(String, String)]) {
-    let index = |(name, _): &(String, String)| {
-        name.trim_start_matches("stash@{")
-            .trim_end_matches('}')
-            .parse::<usize>()
-            .unwrap_or(usize::MAX)
-    };
-    stashes.sort_by_key(index);
+// Stashes by their index, stash@{2} before stash@{10}, those without one last.
+fn sort_stashes(stashes: &mut [Stash]) {
+    stashes.sort_by_key(|stash| stash.index().unwrap_or(usize::MAX));
 }
 
 fn parse_semantic_version_tag(tag: &str) -> Option<Version> {

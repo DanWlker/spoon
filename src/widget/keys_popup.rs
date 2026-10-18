@@ -13,17 +13,17 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     color::ColorTheme,
-    widget::style::{key_span, panel_block, panel_title},
+    widget::style::{key_span, panel_block, panel_title, KeyLabel},
 };
 
 pub struct KeysPopup<'a> {
     // the keys, like "j/k", and what they do
-    keys: &'a [(String, String)],
+    keys: &'a [KeyLabel],
     theme: &'a ColorTheme,
 }
 
 impl<'a> KeysPopup<'a> {
-    pub fn new(keys: &'a [(String, String)], theme: &'a ColorTheme) -> Self {
+    pub fn new(keys: &'a [KeyLabel], theme: &'a ColorTheme) -> Self {
         KeysPopup { keys, theme }
     }
 
@@ -33,7 +33,7 @@ impl<'a> KeysPopup<'a> {
         let row_width = self
             .keys
             .iter()
-            .map(|(_, description)| key_width + SEPARATOR.width() + description.width())
+            .map(|key| key_width + SEPARATOR.width() + key.action.width())
             .max()
             .unwrap_or(0)
             .max(TITLE.width() + 2);
@@ -53,7 +53,7 @@ impl<'a> KeysPopup<'a> {
     fn key_width(&self) -> usize {
         self.keys
             .iter()
-            .map(|(key, _)| key.width())
+            .map(|key| key.keys.width())
             .max()
             .unwrap_or(0)
     }
@@ -75,11 +75,11 @@ impl Widget for KeysPopup<'_> {
         let lines: Vec<Line> = self
             .keys
             .iter()
-            .map(|(key, description)| {
+            .map(|key| {
                 Line::from(vec![
-                    key_span(format!(" {key:>key_width$}"), theme),
+                    key_span(format!(" {:>key_width$}", key.keys), theme),
                     Span::raw(SEPARATOR).fg(theme.divider_fg),
-                    Span::raw(description.clone()).fg(theme.fg),
+                    Span::raw(key.action.clone()).fg(theme.fg),
                 ])
             })
             .collect();
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn test_looks_like_the_other_popups() {
         let theme = theme_with_bg();
-        let keys = vec![("j/k".to_string(), "move".to_string())];
+        let keys = vec![KeyLabel::new("j/k", "move")];
         let area = Rect::new(0, 0, 50, 10);
         let mut buf = Buffer::empty(area);
         KeysPopup::new(&keys, &theme).render(area, &mut buf);
@@ -118,11 +118,8 @@ mod tests {
     fn test_keys_popup_area() {
         let theme = ColorTheme::default();
         let keys = vec![
-            ("d".to_string(), "diff".to_string()),
-            (
-                "ctrl-x".to_string(),
-                "a long description of the key".to_string(),
-            ),
+            KeyLabel::new("d", "diff"),
+            KeyLabel::new("ctrl-x", "a long description of the key"),
         ];
         let popup = KeysPopup::new(&keys, &theme);
         // in the bottom right corner, the rows with the borders

@@ -481,12 +481,7 @@ impl<'a> LocalChangesState<'a> {
         let subject = self.draft.summary.text().trim().to_string();
         let description = self.draft.description.text();
         let body: Vec<String> = description.trim().lines().map(String::from).collect();
-        let files = self
-            .changes
-            .staged
-            .iter()
-            .map(|f| (f.status.symbol().to_string(), f.path.clone()))
-            .collect();
+        let files = self.changes.staged.clone();
         // amending a commit a rebase stopped at was warned about when it started
         let pushed = matches!(kind, CommitKind::AmendLast { .. })
             .then(|| self.repository.upstream_containing("HEAD"))
@@ -2954,7 +2949,12 @@ mod tests {
         );
         assert_eq!(preview.subject, "first change");
         assert_eq!(preview.body, vec!["body"]);
-        assert_eq!(preview.files, vec![("A".to_string(), "a.txt".to_string())]);
+        let files: Vec<_> = preview
+            .files
+            .iter()
+            .map(|f| (f.status, f.path.as_str()))
+            .collect();
+        assert_eq!(files, vec![(LocalChangeStatus::Added, "a.txt")]);
         confirm(&mut state)?;
         state.run_task()?;
         assert_eq!(

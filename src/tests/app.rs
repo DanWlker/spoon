@@ -1083,7 +1083,11 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
     let mut harness = Harness::new(&path, launch());
     let popup_has = |keys: &'static [&'static str]| {
         check(move |app| {
-            let shown: Vec<String> = app.keys_popup_keys().into_iter().map(|(_, d)| d).collect();
+            let shown: Vec<String> = app
+                .keys_popup_keys()
+                .into_iter()
+                .map(|k| k.action)
+                .collect();
             for key in keys {
                 assert!(shown.iter().any(|d| d == key), "no {key:?} in {shown:?}");
             }
@@ -1167,7 +1171,11 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
         check(|app| assert_ne!(app.ctx.layout.borrow().size(Panel::BlameCommits, 0), 0)),
         keys("alt-up shift-h"),
         check(|app| {
-            let shown: Vec<String> = app.keys_popup_keys().into_iter().map(|(_, d)| d).collect();
+            let shown: Vec<String> = app
+                .keys_popup_keys()
+                .into_iter()
+                .map(|k| k.action)
+                .collect();
             assert!(shown.iter().any(|d| d == "to the lines"), "{shown:?}");
         }),
         // and in the timeline, into the diff
@@ -1177,7 +1185,11 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
         overlay("timeline"),
         check(|app| {
             assert_ne!(app.ctx.layout.borrow().size(Panel::TimelineCommits, 0), 0);
-            let shown: Vec<String> = app.keys_popup_keys().into_iter().map(|(_, d)| d).collect();
+            let shown: Vec<String> = app
+                .keys_popup_keys()
+                .into_iter()
+                .map(|k| k.action)
+                .collect();
             assert!(shown.iter().any(|d| d == "select lines"), "{shown:?}");
         }),
     ]);

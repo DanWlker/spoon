@@ -16,7 +16,7 @@ use crate::{
     keys::Keys,
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
-        ListCursor, ScrollState,
+        HalfPage, ListCursor, ScrollState,
     },
 };
 
@@ -39,7 +39,8 @@ impl CommandLogState {
     // Moves the selection by the movement keys, the output of the command selected shown from
     // the top; returns whether `event` was one.
     pub fn move_selection(&mut self, event: UserEvent) -> bool {
-        let Some(index) = self.cursor.moved_to(event, self.entries.len()) else {
+        let total = self.entries.len();
+        let Some(index) = self.cursor.moved_to(event, total, HalfPage::Pane) else {
             return false;
         };
         self.cursor.select(index, self.entries.len());

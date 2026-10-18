@@ -264,6 +264,7 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::NavigateLeft => {
                 self.local_changes_state.collapse();
             }
+            // ctrl-d and ctrl-u too, the diff being what is read, see `HalfPage::Pane`
             _ if self.local_changes_state.scroll_diff(event) => {}
             // y and Y copy the path of the selected file
             UserEvent::ShortCopy | UserEvent::FullCopy

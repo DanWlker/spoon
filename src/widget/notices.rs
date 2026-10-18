@@ -11,7 +11,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget},
 };
 
-use crate::{color::ColorTheme, widget::style::key_hints};
+use crate::{
+    color::ColorTheme,
+    widget::style::{key_hints, KeyLabel},
+};
 
 // shown at most, the oldest drop off
 const MAX_NOTICES: usize = 5;
@@ -100,7 +103,7 @@ pub fn render_notices(
             .title(Line::raw(title).fg(color).bold());
         // the key on the newest one
         if i == 0 {
-            let mut hint = key_hints(&[(dismiss, "dismiss")], theme);
+            let mut hint = key_hints(&[KeyLabel::new(dismiss, "dismiss")], theme);
             hint.spans.insert(0, Span::raw(" "));
             hint.spans.push(Span::raw(" "));
             block = block.title_bottom(hint.right_aligned());

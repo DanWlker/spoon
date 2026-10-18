@@ -53,7 +53,7 @@ use crate::{
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
-        style::{badge, key_hints, spinner, SPINNER_RATE},
+        style::{badge, key_hints, spinner, KeyLabel, SPINNER_RATE},
     },
 };
 
@@ -902,11 +902,11 @@ impl App<'_> {
     }
 
     // The keys and what they do, without those bound to no key.
-    fn shown_keys(&self, hints: Vec<KeyHint>) -> Vec<(String, String)> {
+    fn shown_keys(&self, hints: Vec<KeyHint>) -> Vec<KeyLabel> {
         hints
             .into_iter()
-            .map(|(events, description)| (self.ctx.short_keys(&events), description))
-            .filter(|(keys, _)| !keys.is_empty())
+            .map(|(events, action)| KeyLabel::new(self.ctx.short_keys(&events), action))
+            .filter(|label| !label.keys.is_empty())
             .collect()
     }
 
@@ -923,9 +923,8 @@ impl App<'_> {
         };
         match event {
             UserEvent::Cancel | UserEvent::CommandLog => self.shell.overlay = None,
-            // the scroll keys scroll the output, ctrl-d and ctrl-u too
-            event if state.scroll_output(event) => {}
             event if state.move_selection(event) => {}
+            event if state.scroll_output(event) => {}
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 if let Some(text) = state.selected_text() {
                     self.ec.send(AppEvent::copy("Command and output", text));
@@ -966,7 +965,7 @@ impl App<'_> {
 
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
     // hidden. Computed once a frame, for clearing the screen and drawing.
-    fn keys_popup_keys(&self) -> Vec<(String, String)> {
+    fn keys_popup_keys(&self) -> Vec<KeyLabel> {
         // over the windows with keys of their own, not the help, which lists them all
         let shown = match self.shell.overlay {
             Some(Overlay::File(_) | Overlay::CommandLog(_)) => {
@@ -988,10 +987,6 @@ impl App<'_> {
         } else {
             self.global_hints()
         });
-        let keys: Vec<(&str, &str)> = keys
-            .iter()
-            .map(|(key, description)| (key.as_str(), description.as_str()))
-            .collect();
         let theme = &self.ctx.color_theme;
         // each hint and the " • " before it, see `key_hints`
         let mut used = 0;
@@ -1053,7 +1048,7 @@ impl App<'_> {
         self.ctx.image_protocol.delete_images(&image_ids)
     }
 
-    fn render(&mut self, f: &mut Frame, keys: &[(String, String)]) {
+    fn render(&mut self, f: &mut Frame, keys: &[KeyLabel]) {
         let base = Block::default()
             .fg(self.ctx.color_theme.fg)
             .bg(self.ctx.color_theme.bg);

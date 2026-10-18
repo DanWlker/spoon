@@ -2,13 +2,15 @@
 // lazygit's "open in browser": the remote URL becomes https://host/owner/repo, and each kind of
 // host lays out its pages its own way.
 
+use std::ops::RangeInclusive;
+
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, CommitHash, Repository},
+    git::{CommitHash, RemoteBranch, Repository},
 };
 
 // What a link is for: opened in the browser (o), or copied (O).
@@ -38,11 +40,11 @@ pub enum LinkTarget {
     // "origin/main"
     RemoteBranch(String),
     Tag(String),
-    // lines, when a hunk or line of the diff or a line of the file is selected: (first, last)
+    // lines, when a hunk or line of the diff or a line of the file is selected
     File {
         commit: CommitHash,
         path: String,
-        lines: Option<(usize, usize)>,
+        lines: Option<RangeInclusive<usize>>,
     },
     Remote(String),
 }
@@ -142,7 +144,7 @@ enum Page {
     File {
         commit: String,
         path: String,
-        lines: Option<(usize, usize)>,
+        lines: Option<RangeInclusive<usize>>,
     },
 }
 
@@ -188,19 +190,16 @@ pub fn links(
                 Page::File {
                     commit: commit.as_str().to_string(),
                     path: path.clone(),
-                    lines: *lines,
+                    lines: lines.clone(),
                 },
             )],
         ),
         LinkTarget::Tag(tag) => (remotes_of(current)?, vec![("Tag", Page::Tag(tag.clone()))]),
         LinkTarget::Remote(remote) => (vec![remote.clone()], vec![("Repository", Page::Repo)]),
         LinkTarget::RemoteBranch(name) => {
-            let (remote, branch) = split_remote_branch(&info.remotes, name)
+            let RemoteBranch { remote, branch } = RemoteBranch::parse(&info.remotes, name)
                 .ok_or_else(|| format!("{name} is on no remote"))?;
-            (
-                vec![remote.to_string()],
-                vec![("Branch", Page::Branch(branch.to_string()))],
-            )
+            (vec![remote], vec![("Branch", Page::Branch(branch))])
         }
         // its upstream branch, else a branch of the same name
         LinkTarget::Branch(branch) => {
@@ -247,7 +246,7 @@ pub fn links(
 }
 
 fn web_link(url: &str, services: &FxHashMap<String, Forge>, page: &Page) -> Result<String, String> {
-    let (scheme, host, path) =
+    let RemoteUrl { scheme, host, path } =
         parse_remote_url(url).ok_or_else(|| format!("{url} is not on a web host"))?;
     // the host without its port, "git.company.com"
     let domain = host.split(':').next().unwrap_or(&host).to_string();
@@ -299,25 +298,33 @@ fn web_link(url: &str, services: &FxHashMap<String, Forge>, page: &Page) -> Resu
     // the selected lines, where the host's links can point at them
     let fragment = match page {
         Page::File {
-            lines: Some((start, end)),
+            lines: Some(selected),
             ..
         } => match (&links.line, &links.lines) {
-            (Some(line), _) if start == end => line.clone(),
+            (Some(line), _) if selected.start() == selected.end() => line.clone(),
             (_, Some(lines)) => lines.clone(),
             (Some(line), None) => line.clone(),
             (None, None) => String::new(),
         }
-        .replace("{start}", &start.to_string())
-        .replace("{end}", &end.to_string()),
+        .replace("{start}", &selected.start().to_string())
+        .replace("{end}", &selected.end().to_string()),
         _ => String::new(),
     };
     Ok(link + &fragment)
 }
 
-// (scheme of the pages, host with its port when it serves them, owner/repo) of a remote URL:
-// https://host/owner/repo.git, ssh://git@host:22/owner/repo.git or git@host:owner/repo.git.
-// None for a path on this machine.
-fn parse_remote_url(url: &str) -> Option<(&'static str, String, String)> {
+// Where a remote's repository is on its web host: the scheme of the pages, the host with its port
+// when it serves them, and "owner/repo".
+#[derive(Debug, PartialEq, Eq)]
+struct RemoteUrl {
+    scheme: &'static str,
+    host: String,
+    path: String,
+}
+
+// Where the repository of a remote URL is on the web: https://host/owner/repo.git,
+// ssh://git@host:22/owner/repo.git or git@host:owner/repo.git. None for a path on this machine.
+fn parse_remote_url(url: &str) -> Option<RemoteUrl> {
     let (scheme, host, path) = match url.split_once("://") {
         Some((scheme, rest)) => {
             let (authority, path) = rest.split_once('/')?;
@@ -341,7 +348,11 @@ fn parse_remote_url(url: &str) -> Option<(&'static str, String, String)> {
     };
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
-    (!host.is_empty() && !path.is_empty()).then(|| (scheme, host, path.to_string()))
+    (!host.is_empty() && !path.is_empty()).then(|| RemoteUrl {
+        scheme,
+        host,
+        path: path.to_string(),
+    })
 }
 
 fn guess_kind(domain: &str) -> Option<&'static str> {
@@ -381,7 +392,10 @@ mod tests {
 
     #[test]
     fn test_parse_remote_url() {
-        let parsed = |url| parse_remote_url(url).map(|(s, h, p)| format!("{s}://{h}/{p}"));
+        let parsed = |url| {
+            parse_remote_url(url)
+                .map(|RemoteUrl { scheme, host, path }| format!("{scheme}://{host}/{path}"))
+        };
         let expected = Some("https://github.com/o/r".to_string());
         assert_eq!(parsed("git@github.com:o/r.git"), expected);
         assert_eq!(parsed("https://github.com/o/r.git"), expected);
@@ -428,19 +442,19 @@ mod tests {
             lines: Some(lines),
         };
         assert_eq!(
-            link(url, &none, file((5, 5))),
+            link(url, &none, file(5..=5)),
             Ok("https://github.com/o/r/blob/abc/a.rs#L5".into())
         );
         assert_eq!(
-            link(url, &none, file((5, 9))),
+            link(url, &none, file(5..=9)),
             Ok("https://github.com/o/r/blob/abc/a.rs#L5-L9".into())
         );
         assert_eq!(
-            link("git@gitlab.com:o/r.git", &none, file((5, 9))),
+            link("git@gitlab.com:o/r.git", &none, file(5..=9)),
             Ok("https://gitlab.com/o/r/-/blob/abc/a.rs#L5-9".into())
         );
         assert_eq!(
-            link("git@bitbucket.org:o/r.git", &none, file((5, 9))),
+            link("git@bitbucket.org:o/r.git", &none, file(5..=9)),
             Ok("https://bitbucket.org/o/r/src/abc/a.rs#lines-5:9".into())
         );
         assert_eq!(

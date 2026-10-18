@@ -600,7 +600,7 @@ impl<'a> DetailView<'a> {
                     .changes_state
                     .pane
                     .selected_lines()
-                    .map(|(first, _)| first),
+                    .map(|lines| *lines.start()),
                 DetailTab::Files => self.files_state.selected_line(),
                 DetailTab::Info => None,
             };
@@ -824,7 +824,7 @@ impl<'a> DetailView<'a> {
         if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
             let lines = match self.tab {
                 DetailTab::Changes => self.changes_state.pane.selected_lines(),
-                DetailTab::Files => self.files_state.selected_line().map(|line| (line, line)),
+                DetailTab::Files => self.files_state.selected_line().map(|line| line..=line),
                 DetailTab::Info => None,
             };
             if let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) {
@@ -980,6 +980,7 @@ impl<'a> DetailView<'a> {
         match event {
             // into the preview of a file; a directory opens or closes
             UserEvent::Confirm if !preview_focused && state.enter() => {}
+            // ctrl-d and ctrl-u too, the preview being what is read, see `HalfPage::Pane`
             _ if state.scroll_preview(event) => {}
             _ if preview_focused => return false,
             _ => return handle_tree_event(event, |f| state.update_tree(f)),

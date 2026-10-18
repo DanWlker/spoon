@@ -49,6 +49,13 @@ enum BlameFocus {
 // Who last changed each line of a file, over everything: the commit it is shown as of at the top,
 // stepped through the commits changing the file, and below the commit of each line beside its
 // text, see `UserEvent::Blame`.
+// The author and the date of a commit, as the blame shows them beside its lines.
+#[derive(Debug)]
+struct BlameLabel {
+    author: String,
+    date: String,
+}
+
 #[derive(Debug)]
 pub struct BlameView {
     // the commits changing the file, the newest first
@@ -58,7 +65,7 @@ pub struct BlameView {
     // the commit of each line
     commits: Vec<CommitHash>,
     // the author and date of each commit, as shown, and the width they are given
-    labels: FxHashMap<CommitHash, (String, String)>,
+    labels: FxHashMap<CommitHash, BlameLabel>,
     author_width: usize,
     date_width: usize,
     text: FileText,
@@ -110,17 +117,26 @@ impl BlameView {
         self.labels = blame
             .commits
             .into_iter()
-            .map(|(commit, c)| (commit, (c.author, format_date(&self.ctx, &c.date))))
+            .map(|(commit, c)| {
+                let date = format_date(&self.ctx, &c.date);
+                (
+                    commit,
+                    BlameLabel {
+                        author: c.author,
+                        date,
+                    },
+                )
+            })
             .collect();
-        let widest = |f: fn(&(String, String)) -> &String| {
+        let widest = |f: fn(&BlameLabel) -> &String| {
             self.labels
                 .values()
                 .map(|l| f(l).width())
                 .max()
                 .unwrap_or(0)
         };
-        self.author_width = widest(|l| &l.0).min(AUTHOR_WIDTH);
-        self.date_width = widest(|l| &l.1);
+        self.author_width = widest(|l| &l.author).min(AUTHOR_WIDTH);
+        self.date_width = widest(|l| &l.date);
         self.text.set_lines(lines);
         self.text.select_line(line);
         Ok(())
@@ -210,7 +226,7 @@ impl BlameView {
                 // the file at the commit shown, on the line
                 UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                     let revision = &self.history[self.index];
-                    let lines = Some((line + 1, line + 1));
+                    let lines = Some(line + 1..=line + 1);
                     let link = file_link(event, &revision.commit, &revision.path, lines);
                     self.tx.send(link);
                 }
@@ -248,7 +264,7 @@ impl BlameView {
                 let found = find_around(commits.len(), self.text.selected_line(), direction, |i| {
                     let commit = &commits[i];
                     let starts = i == 0 || commits[i - 1] != *commit;
-                    let (author, date) = &self.labels[commit];
+                    let BlameLabel { author, date } = &self.labels[commit];
                     starts
                         && [commit.as_str(), author, date]
                             .iter()
@@ -459,7 +475,7 @@ impl BlameView {
             if !heads {
                 continue;
             }
-            let (author, date) = &self.labels[commit];
+            let BlameLabel { author, date } = &self.labels[commit];
             // cut and padded to the width, as the commit list cuts names
             let author = console::truncate_str(author, author_width, ELLIPSIS);
             let author = console::pad_str(&author, author_width, console::Alignment::Left, None);

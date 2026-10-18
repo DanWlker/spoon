@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use crate::{
@@ -109,14 +111,14 @@ impl DiffPane {
         self.focus.unwrap_or(DiffPart::Hunk)
     }
 
-    // The lines of the selected hunk or line in the file at the commit, (first, last); None
-    // outside the diff, or for lines only removed.
-    pub fn selected_lines(&self) -> Option<(usize, usize)> {
+    // The lines of the selected hunk or line in the file at the commit; None outside the diff, or
+    // for lines only removed.
+    pub fn selected_lines(&self) -> Option<RangeInclusive<usize>> {
         let diff = self.diff.as_ref().filter(|_| self.is_focused())?;
         let rows = self.cursor.highlighted(diff, self.selected_part());
         let mut lines = diff.rows.get(rows)?.iter().filter_map(|row| row.new);
         let first = lines.next()?;
-        Some((first, lines.next_back().unwrap_or(first)))
+        Some(first..=lines.next_back().unwrap_or(first))
     }
 
     // Goes one level deeper, like on the local changes page: into the hunks, then the lines of the
