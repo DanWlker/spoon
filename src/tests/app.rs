@@ -46,6 +46,8 @@ enum Step {
     Outside(Box<dyn FnOnce(&Path)>),
     // the refs and the local changes checked, as the refresher does every few seconds
     Tick,
+    // the refs only checked, as the refresher does more often than the local changes
+    RefsTick,
     // waits until the repository is so, like once a fetch in the background is done
     WaitFor(Box<dyn Fn(&Path) -> bool>),
     // time passing without a key, for what the app shows after a while
@@ -217,9 +219,17 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
         Step::KeysAtOnce(keys) => keys.into_iter().for_each(|key| ec.send(AppEvent::Key(key))),
         Step::Event(event) => ec.send(*event),
         Step::Outside(f) => f(path),
-        Step::Tick => {
-            ec.send(AppEvent::RefsSnapshot(refs_snapshot(path).unwrap()));
+        Step::RefsTick => {
             let git_dir = app.repository.git_dir();
+            ec.send(AppEvent::RefsSnapshot(
+                refs_snapshot(path, git_dir).unwrap(),
+            ));
+        }
+        Step::Tick => {
+            let git_dir = app.repository.git_dir();
+            ec.send(AppEvent::RefsSnapshot(
+                refs_snapshot(path, git_dir).unwrap(),
+            ));
             ec.send(AppEvent::FilesTick(FilesSnapshot::load(path, git_dir)));
         }
         Step::WaitFor(f) => {
@@ -854,6 +864,29 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
         }),
         keys("c"),
         check(|app| assert_notice(app, "A merge is in progress")),
+    ]);
+}
+
+#[test]
+fn test_operation_started_outside_reloads_on_the_refs_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let aborts = |app: &App| app.view.keys().takes(crate::event::UserEvent::Abort);
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        check(move |app| assert!(!aborts(app))),
+        // a merge stopped, as git leaves it, which moves no ref and changes no file
+        outside(|path| {
+            let head = git(path, &["rev-parse", "HEAD"]);
+            std::fs::write(path.join(".git/MERGE_HEAD"), head).unwrap();
+        }),
+        // seen by the frequent check of the refs, without waiting for the local changes
+        vec![Step::RefsTick],
+        check(move |app| assert!(aborts(app))),
     ]);
 }
 

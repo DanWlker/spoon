@@ -8,7 +8,7 @@ use crate::{
 };
 
 // Checks in the background, without holding up the app, for changes made outside it like lazygit's
-// refresher: the branches and HEAD every `refs_interval`, the local changes every `files_interval`
+// refresher: the refs, HEAD and the operation in progress every `refs_interval`, the local changes every `files_interval`
 // (a multiple of it), and both whenever poked through the sender returned.
 pub fn spawn(
     tx: Sender,
@@ -30,7 +30,7 @@ pub fn spawn(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             tick += 1;
-            if let Ok(snapshot) = refs_snapshot(&work_tree) {
+            if let Ok(snapshot) = refs_snapshot(&work_tree, &git_dir) {
                 if !tx.try_send(AppEvent::RefsSnapshot(snapshot)) {
                     break;
                 }

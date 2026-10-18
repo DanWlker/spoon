@@ -178,8 +178,8 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-// How often the branches and HEAD are checked for changes made outside the app: each check runs
-// 3-4 git processes, so shorter costs CPU, longer leaves another terminal's checkout unseen.
+// How often the branches, HEAD and the operation in progress are checked for changes made outside
+// the app: each check runs 3-4 git processes, so shorter costs CPU, longer leaves another terminal's checkout unseen.
 const REFS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 // How often the local changes are checked: git status walks the whole working tree, which is
 // slow in big repositories; focusing the terminal checks right away, see `refresh_now`.

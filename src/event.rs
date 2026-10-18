@@ -39,7 +39,8 @@ pub enum AppEvent {
     LocalChangesChanged,
     // the local changes, loaded every few seconds in the background, for those made outside the app
     FilesTick(FilesSnapshot),
-    // where the local branches and HEAD point, every few seconds, see `git::refs_snapshot`
+    // where the refs and HEAD point and the operation in progress, every few seconds, see
+    // `git::refs_snapshot`
     RefsSnapshot(String),
     // the terminal got the focus back, what changed meanwhile is checked right away
     FocusGained,

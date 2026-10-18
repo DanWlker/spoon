@@ -298,11 +298,11 @@ impl Repository {
             let local_changes = scope.spawn(|| load_local_changes(path));
             let remotes = scope.spawn(|| load_remotes(path));
             let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
-            let refs_snapshot = scope.spawn(|| refs_snapshot(path).ok());
+            let refs_snapshot = scope.spawn(|| refs_snapshot(path, &git_dir).ok());
             let loaded_head = scope.spawn(|| HeadState::read(path));
             let tracking = scope.spawn(|| load_branch_tracking(path));
             let mut repository =
-                Self::load_commits(path, git_dir, sort, max_count, mailmap, revisions)?;
+                Self::load_commits(path, git_dir.clone(), sort, max_count, mailmap, revisions)?;
             repository.running = running;
             repository.remotes = remotes.join().unwrap_or_default();
             repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
@@ -977,19 +977,7 @@ impl Repository {
 
     // The operation stopped (on a conflict, or to edit a commit) and waiting to be finished, if any.
     pub fn operation_in_progress(&self) -> Option<Operation> {
-        let exists = |name: &str| self.git_dir.join(name).exists();
-        // rebase-apply is also used by `git am`, which does not leave the "rebasing" file
-        if exists("rebase-merge") || exists("rebase-apply/rebasing") {
-            Some(Operation::Rebase)
-        } else if exists("MERGE_HEAD") {
-            Some(Operation::Merge)
-        } else if exists("CHERRY_PICK_HEAD") {
-            Some(Operation::CherryPick)
-        } else if exists("REVERT_HEAD") {
-            Some(Operation::Revert)
-        } else {
-            None
-        }
+        operation_in_progress(&self.git_dir)
     }
 
     // The commits each local branch with an upstream has that it lacks (ahead, to push) and the
@@ -1006,7 +994,7 @@ impl Repository {
     // Takes the refs as they are now as loaded, after reloading failed: else the change that made
     // it fail would reload again and again.
     pub fn take_refs_snapshot(&mut self) {
-        self.refs_snapshot = refs_snapshot(&self.path).ok();
+        self.refs_snapshot = refs_snapshot(&self.path, &self.git_dir).ok();
     }
 
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
@@ -2176,11 +2164,29 @@ pub struct Tracking {
     pub behind: usize,
 }
 
-// A fingerprint of the branches, remote branches, tags, HEAD and the stashes, which changes when
-// they are changed from outside the app, like lazygit's `RefsSnapshot`: where each ref points
-// (a fetch in the background moves the remote ones), the branch checked out or the commit when
-// detached, and every stash, as the sidebar drops them by position.
-pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
+// The operation stopped in the repository of `git_dir`, see `Repository::operation_in_progress`.
+fn operation_in_progress(git_dir: &Path) -> Option<Operation> {
+    let exists = |name: &str| git_dir.join(name).exists();
+    // rebase-apply is also used by `git am`, which does not leave the "rebasing" file
+    if exists("rebase-merge") || exists("rebase-apply/rebasing") {
+        Some(Operation::Rebase)
+    } else if exists("MERGE_HEAD") {
+        Some(Operation::Merge)
+    } else if exists("CHERRY_PICK_HEAD") {
+        Some(Operation::CherryPick)
+    } else if exists("REVERT_HEAD") {
+        Some(Operation::Revert)
+    } else {
+        None
+    }
+}
+
+// A fingerprint of the branches, remote branches, tags, HEAD, the stashes and the operation in
+// progress, which changes when they are changed from outside the app, like lazygit's
+// `RefsSnapshot`: where each ref points (a fetch in the background moves the remote ones), the
+// branch checked out or the commit when detached, every stash, as the sidebar drops them by
+// position, and a merge, cherry-pick or revert stopped on conflicts, which moves no ref.
+pub fn refs_snapshot(path: &Path, git_dir: &Path) -> std::result::Result<String, String> {
     let refs = git_output(
         path,
         &[
@@ -2196,7 +2202,8 @@ pub fn refs_snapshot(path: &Path) -> std::result::Result<String, String> {
         .unwrap_or_default();
     // older stashes are only in the reflog of refs/stash, which for-each-ref doesn't see
     let stashes = git_output(path, &["stash", "list", "--format=%H"]).unwrap_or_default();
-    Ok(refs + &head + &stashes)
+    let operation = format!("{:?}", operation_in_progress(git_dir));
+    Ok(refs + &head + &stashes + &operation)
 }
 
 // The git commands the app runs in the background. What each does to HEAD, to signing and to the
@@ -2992,7 +2999,7 @@ mod tests {
         assert_eq!(repository.remotes(), ["origin"]);
         assert_eq!(
             repository.refs_snapshot(),
-            Some(refs_snapshot(path).unwrap().as_str())
+            Some(refs_snapshot(path, &path.join(".git")).unwrap().as_str())
         );
         assert!(repository.branch_tracking().is_empty());
     }
@@ -3777,9 +3784,9 @@ mod tests {
             head.trim(),
         ];
         git_output(dir.path(), &other).unwrap();
-        let before = refs_snapshot(&work).unwrap();
+        let before = refs_snapshot(&work, &work.join(".git")).unwrap();
         run_task(&work, &fetch(None)).unwrap();
-        assert_ne!(refs_snapshot(&work).unwrap(), before);
+        assert_ne!(refs_snapshot(&work, &work.join(".git")).unwrap(), before);
 
         // a remote that doesn't answer is given up on, and leaves nothing in the way of the next fetch
         let slow = [
@@ -3807,18 +3814,18 @@ mod tests {
         std::fs::write(path.join("f"), "a\n").unwrap();
         repo.add(&["f"]);
         repo.commit("base", "2024-01-01");
-        let before = refs_snapshot(path).unwrap();
+        let before = refs_snapshot(path, &path.join(".git")).unwrap();
         std::fs::write(path.join("f"), "b\n").unwrap();
         git_output(path, &["stash", "push", "-q"]).unwrap();
         // a stash made outside the app reloads the sidebar, which drops stashes by position
-        let one = refs_snapshot(path).unwrap();
+        let one = refs_snapshot(path, &path.join(".git")).unwrap();
         assert_ne!(one, before);
         std::fs::write(path.join("f"), "c\n").unwrap();
         git_output(path, &["stash", "push", "-q"]).unwrap();
-        let two = refs_snapshot(path).unwrap();
+        let two = refs_snapshot(path, &path.join(".git")).unwrap();
         // so does dropping an older one, which leaves refs/stash as it is
         git_output(path, &["stash", "drop", "-q", "stash@{1}"]).unwrap();
-        assert_ne!(refs_snapshot(path).unwrap(), two);
+        assert_ne!(refs_snapshot(path, &path.join(".git")).unwrap(), two);
     }
 
     #[test]

@@ -195,7 +195,7 @@ pub struct AppShell {
     // what the last frame showed, None before the first
     last_frame: Option<FrameLayout>,
     app_status: AppStatus,
-    // the branches and HEAD as loaded, see `git::refs_snapshot`, so the app's own changes are not
+    // the refs, HEAD and the operation in progress as loaded, see `git::refs_snapshot`, so the app's own changes are not
     // taken for outside ones
     refs_snapshot: Option<String>,
     // the history the graph shows
@@ -2337,8 +2337,8 @@ impl App<'_> {
         self.ctx.busy_message().is_some() || self.shell.dialog.is_some() || self.is_typing()
     }
 
-    // Reloads everything when the branches or HEAD changed since they were loaded, from outside the
-    // app, like lazygit.
+    // Reloads everything when the refs, HEAD or the operation in progress changed since they were
+    // loaded, from outside the app, like lazygit.
     fn check_refs(&mut self, snapshot: String) {
         let previous = self.shell.refs_snapshot.replace(snapshot);
         if previous.is_some_and(|p| Some(&p) != self.shell.refs_snapshot.as_ref()) {
