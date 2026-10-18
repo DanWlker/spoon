@@ -238,6 +238,7 @@ fn main() -> Result<()> {
         layout: Default::default(),
         wrap: Default::default(),
         search_options: Default::default(),
+        operation: Default::default(),
     });
 
     let ec = event::EventController::init();

@@ -456,6 +456,26 @@ pub enum UserEvent {
 }
 
 impl UserEvent {
+    // Whether its command moves or rewrites HEAD, refused while an operation waits to be finished;
+    // the commands themselves decide, see `GitTask::moves_head`.
+    pub fn moves_head(self) -> bool {
+        // the git command each runs: squashing, dropping and amending an older commit rebase
+        let command = match self {
+            UserEvent::Rebase
+            | UserEvent::Squash
+            | UserEvent::DropCommit
+            | UserEvent::AmendCommit => "rebase",
+            UserEvent::Merge => "merge",
+            UserEvent::Checkout => "checkout",
+            UserEvent::CherryPick => "cherry-pick",
+            UserEvent::Revert => "revert",
+            UserEvent::Reset => "reset",
+            UserEvent::Pull => "pull",
+            _ => return false,
+        };
+        crate::git::moves_head_command(command)
+    }
+
     // The scope a key of the event is bound in, when the keybind doesn't say: the keys of most
     // events work everywhere, those of the commands of a part of the app in that part only, so
     // the same key can do something else elsewhere. See `Scope`.

@@ -755,6 +755,100 @@ fn test_keys_unlisted_where_they_only_warn() {
 }
 
 #[test]
+fn test_details_list_only_their_own_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let shown = |app: &App| -> Vec<String> {
+        app.view
+            .keys()
+            .hints()
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect()
+    };
+    harness.run(vec![
+        // the files of the changes tab, not the commit list above them
+        keys("3"),
+        check(move |app| {
+            let shown = shown(app);
+            assert!(shown.contains(&"copy path".to_string()), "{shown:?}");
+            assert!(!shown.contains(&"copy hash".to_string()), "{shown:?}");
+            assert!(!shown.contains(&"details".to_string()), "{shown:?}");
+        }),
+        // and the other way round
+        keys("1"),
+        check(move |app| {
+            let shown = shown(app);
+            assert!(shown.contains(&"copy hash".to_string()), "{shown:?}");
+            assert!(!shown.contains(&"copy path".to_string()), "{shown:?}");
+        }),
+    ]);
+}
+
+#[test]
+fn test_commands_moving_head_unlisted_while_an_operation_waits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let listed = |app: &App, short: &str| app.view.keys().hints().iter().any(|(_, s)| s == short);
+    harness.run(vec![
+        check(move |app| assert!(listed(app, "checkout"))),
+        // a merge stopped, as git leaves it
+        outside(|path| {
+            let head = git(path, &["rev-parse", "HEAD"]);
+            std::fs::write(path.join(".git/MERGE_HEAD"), head).unwrap();
+        }),
+        tick(),
+        check(move |app| {
+            assert!(!listed(app, "checkout"));
+            // the others stay
+            assert!(listed(app, "new branch"));
+        }),
+        keys("c"),
+        check(|app| assert_notice(app, "A merge is in progress")),
+    ]);
+}
+
+#[test]
+fn test_no_file_keys_on_a_commit_without_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // the newest, first in the graph
+    let status = std::process::Command::new("git")
+        .args(["commit", "-q", "--allow-empty", "-m", "empty"])
+        .env("GIT_COMMITTER_DATE", "2099-01-01 00:00:00 +0000")
+        .env("GIT_AUTHOR_DATE", "2099-01-01 00:00:00 +0000")
+        .current_dir(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("3"),
+        check(|app| {
+            let shown: Vec<String> = app
+                .view
+                .keys()
+                .hints()
+                .into_iter()
+                .map(|(_, s)| s)
+                .collect();
+            for short in [
+                "select hunks",
+                "search",
+                "filter",
+                "copy path",
+                "ignore",
+                "copy link",
+            ] {
+                assert!(!shown.contains(&short.to_string()), "{short} in {shown:?}");
+            }
+        }),
+    ]);
+}
+
+#[test]
 fn test_no_other_diff_while_one_is_open() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

@@ -13,19 +13,17 @@ use crate::{
     git::{AfterTask, Commit, CommitHash, FileChange, GitTask, Ref, Repository},
     graph_commands::dialog_commit,
     keybind::Scope,
-    keys::{KeyList, Keys},
+    keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
         commit_event, copy_path, copy_selection, file_link, handle_search_event, query_status,
-        register_commit_list_keys, type_query, typing_keys, Compare, ListFacts,
+        register_commit_list_keys, type_commit_search, type_query, typing_keys, Compare, ListFacts,
         ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
-        commit_list::{
-            commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
-        },
+        commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::{
             render_compare_title, render_tab_titles, CommitChangesState, CommitFilesState,
             CommitTab, DetailTab,
@@ -147,6 +145,14 @@ impl<'a> DetailView<'a> {
         let tab = |tab: DetailTab| move |v: &Self| v.tab == tab;
         let file_selected =
             |v: &Self| !v.list_focused && matches!(v.selected_entry(), Some((_, false)));
+        // a row of the files, which a commit without changes has none of
+        let entry = move |v: &Self| files(v) && v.selected_entry().is_some();
+        // or a filter hiding all of them, to change
+        let queried = move |v: &Self| {
+            files(v)
+                && v.query()
+                    .is_some_and(|q| q.search().is_some() || q.filter().is_some())
+        };
 
         // the commit list: back to the diff of two commits, closing it, or the list's own keys
         k.add(
@@ -161,21 +167,16 @@ impl<'a> DetailView<'a> {
         if k.view().is_some() {
             register_commit_list_keys(
                 k,
-                |v| ListFacts::of(v.as_list_state()),
-                |v, event| {
+                |v| ListFacts::of(v.as_list_state(), &v.ctx),
+                |v, event| match event {
+                    _ if !v.list_focused => Availability::Off,
                     // no other diff until this one is closed, which clears the picks too
-                    v.list_focused
-                        && !(v.is_comparing()
-                            && matches!(event, ToggleSelect | Diff | BranchOnly | Cancel))
+                    ToggleSelect | Diff | BranchOnly if v.is_comparing() => Availability::Warns,
+                    Cancel if v.is_comparing() => Availability::Off,
+                    _ => Availability::Works,
                 },
             );
         }
-        // no other diff while one is open: they warn so, not listed where they don't work
-        k.quiet(
-            &[ToggleSelect, Diff, BranchOnly],
-            "While a diff of two commits is open, picking, diffing and branch only warn to close it first",
-        )
-        .when(|v| v.list_focused && v.is_comparing());
 
         // the tabs
         k.add(
@@ -183,13 +184,13 @@ impl<'a> DetailView<'a> {
             "select hunks",
             "Select the hunks of the diff, then their lines",
         )
-        .when(|v| files(v) && tab(DetailTab::Changes)(v));
+        .when(|v| entry(v) && tab(DetailTab::Changes)(v));
         k.add(
             &[Confirm],
             "select lines",
             "Select the lines of the preview",
         )
-        .when(|v| files(v) && tab(DetailTab::Files)(v));
+        .when(|v| entry(v) && tab(DetailTab::Files)(v));
         k.add(
             &[Confirm],
             "select lines",
@@ -280,32 +281,33 @@ impl<'a> DetailView<'a> {
             "search",
             "Search the files; the diff or preview while it has the focus",
         )
-        .when(|v| files(v) || pane(v));
-        k.add(&[Filter], "filter", "Filter the files").when(files);
+        .when(|v| entry(v) || queried(v) || pane(v));
+        k.add(&[Filter], "filter", "Filter the files")
+            .when(|v| entry(v) || queried(v));
         k.add(
             &[ShortCopy, FullCopy],
             "copy path",
             "Copy the relative/absolute path of the file",
         )
-        .when(files);
+        .when(entry);
         k.add(
             &[Ignore],
             "ignore",
             "Add the file or directory to .gitignore",
         )
-        .when(files);
+        .when(entry);
         k.add(
             &[OpenInBrowser],
             "open in browser",
             "Open the selected file at the commit on the web host, at the selected lines",
         )
-        .when(|v| files(v) || pane(v));
+        .when(|v| entry(v) || pane(v));
         k.add(
             &[CopyLink],
             "copy link",
             "Copy the link of the selected file, at the selected lines",
         )
-        .when(|v| files(v) || pane(v));
+        .when(|v| entry(v) || pane(v));
         k.add(
             &[Blame],
             "blame",
@@ -319,7 +321,7 @@ impl<'a> DetailView<'a> {
         )
         .when(file_selected);
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
-            .when(|v| files(v) || pane(v));
+            .when(|v| entry(v) || queried(v) || pane(v));
         k.quiet(
             &[NavigateDown, NavigateUp, GoToTop, GoToBottom],
             "Move or scroll down/up, to the top/bottom",
@@ -329,7 +331,7 @@ impl<'a> DetailView<'a> {
             &[NavigateRight, NavigateLeft],
             "Expand/collapse the directory",
         )
-        .when(files);
+        .when(entry);
         k.quiet(
             &[
                 PageDown,
@@ -354,12 +356,7 @@ impl<'a> DetailView<'a> {
         if self.is_typing_query() {
             return typing_keys(self.query_kind());
         }
-        if self.list_focused
-            && matches!(
-                self.as_list_state().search_state(),
-                SearchState::Searching { .. }
-            )
-        {
+        if self.list_focused && self.as_list_state().is_typing_search() {
             return typing_keys(SearchKind::Commits);
         }
         let mut keys = Keys::of(self);
@@ -516,8 +513,15 @@ impl<'a> DetailView<'a> {
         // searching the commit list works as without the details, which follow the selection
         if self.list_focused {
             let before = self.as_list_state().selected_commit_hash().clone();
-            let tx = self.tx.clone();
-            if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
+            let (ctx, tx) = (self.ctx.clone(), self.tx.clone());
+            let state = self.as_mut_list_state();
+            let handled = if state.is_typing_search() {
+                type_commit_search(state, &ctx, &tx, key);
+                true
+            } else {
+                handle_search_event(state, &ctx, &tx, event)
+            };
+            if handled {
                 if *self.as_list_state().selected_commit_hash() != before {
                     self.update_selected_commit(|_| {});
                 }
@@ -982,6 +986,11 @@ impl<'a> DetailView<'a> {
 
     pub fn is_typing_query(&self) -> bool {
         self.query().is_some_and(TreeQuery::is_editing)
+    }
+
+    // Typing a search or filter, of a tab or the commit list, which takes every key.
+    pub fn is_capturing_keys(&self) -> bool {
+        self.is_typing_query() || (self.list_focused && self.as_list_state().is_typing_search())
     }
 
     // The search and filter of the current tab, which has a file tree.

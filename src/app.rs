@@ -29,13 +29,13 @@ use crate::{
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        moves_head_command, run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
-        GitTask, Head, NamedRef, Ref, Repository,
+        run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
+        NamedRef, Ref, Repository,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
-    keys::{KeyList, Keys},
+    keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, PanelLayout},
     protocol::ImageProtocol,
     ref_commands::{diff_refs, ref_command, ref_command_applies},
@@ -122,6 +122,9 @@ pub struct AppContext {
     pub wrap: Cell<bool>,
     // the options of every search, toggled while typing any of them, shared with the commit list
     pub search_options: Rc<Cell<SearchOptions>>,
+    // the rebase, merge, cherry-pick or revert waiting to be finished, as last loaded: the
+    // commands moving HEAD are refused meanwhile, see `App::blocked_by_operation`
+    pub operation: Cell<Option<crate::git::Operation>>,
 }
 
 impl AppContext {
@@ -212,8 +215,6 @@ pub struct AppShell {
     overlay: Option<Overlay>,
     // errors and warnings at the top right, until dismissed
     notices: Vec<Notice>,
-    // a rebase, merge, cherry-pick or revert waits to be finished, as last loaded, for the key hints
-    operation_shown: bool,
     // the merge commits folded in the graph, see `UserEvent::NavigateLeft`
     folded_merges: FxHashSet<CommitHash>,
 }
@@ -481,7 +482,6 @@ impl<'a> App<'a> {
                 keys_popup: false,
                 overlay: None,
                 notices: Vec::new(),
-                operation_shown: false,
                 folded_merges: FxHashSet::default(),
             },
         };
@@ -489,7 +489,7 @@ impl<'a> App<'a> {
         shell
             .folded_merges
             .retain(|h| repository.commit(h).is_some());
-        shell.operation_shown = repository.operation_in_progress().is_some();
+        ctx.operation.set(repository.operation_in_progress());
         // a git command still running from before the reload
         let running = ctx
             .running_task
@@ -649,46 +649,35 @@ impl App<'_> {
                     return Ok(None);
                 }
 
-                // key sequences wait for their next key, typed text (the search input) is no
-                // sequence; the focused scope decides, like ] cycling the tabs of the details
-                // where elsewhere it starts "] v"
-                if !matches!(self.shell.app_status.status_line, StatusLine::Input { .. }) {
-                    let had_pending = !self.shell.app_status.pending_keys.is_empty();
-                    self.shell.app_status.pending_keys.push(key);
-                    match self
-                        .ctx
-                        .keybind
-                        .resolve(scope, &self.shell.app_status.pending_keys)
-                    {
-                        SequenceMatch::Partial => return Ok(None),
-                        SequenceMatch::Complete(ue) => {
-                            self.shell.app_status.pending_keys.clear();
-                            self.dispatch(ue, key);
+                // key sequences wait for their next key; the focused scope decides, like ]
+                // cycling the tabs of the details where elsewhere it starts "] v"
+                let had_pending = !self.shell.app_status.pending_keys.is_empty();
+                self.shell.app_status.pending_keys.push(key);
+                match self
+                    .ctx
+                    .keybind
+                    .resolve(scope, &self.shell.app_status.pending_keys)
+                {
+                    SequenceMatch::Partial => return Ok(None),
+                    SequenceMatch::Complete(ue) => {
+                        self.shell.app_status.pending_keys.clear();
+                        self.dispatch(ue, key);
+                        return Ok(None);
+                    }
+                    SequenceMatch::None => {
+                        self.shell.app_status.pending_keys.clear();
+                        // Esc only cancels the started sequence
+                        if had_pending
+                            && self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel)
+                        {
                             return Ok(None);
                         }
-                        SequenceMatch::None => {
-                            self.shell.app_status.pending_keys.clear();
-                            // Esc only cancels the started sequence
-                            if had_pending
-                                && self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel)
-                            {
-                                return Ok(None);
-                            }
-                            // otherwise the key goes on as usual
-                        }
+                        // otherwise the key goes on as usual
                     }
                 }
 
-                match self.ctx.keybind.event_in(scope, &key) {
-                    Some(ue) => self.dispatch(ue, key),
-                    None => {
-                        if let StatusLine::Input { .. } = self.shell.app_status.status_line {
-                            // In input mode, pass all key events to the view
-                            // fixme: currently, the only thing that processes key_event is searching the list,
-                            //        so this probably works, but it's not the right process...
-                            self.view.handle_event(UserEvent::Unknown, key);
-                        }
-                    }
+                if let Some(event) = self.ctx.keybind.event_in(scope, &key) {
+                    self.dispatch(event, key);
                 }
             }
             AppEvent::Mouse(mouse)
@@ -913,12 +902,8 @@ impl App<'_> {
         }
     }
 
-    // The keys and what they do, without those waiting for the operation in progress (their
-    // commands are refused, see `blocked_by_operation`) or bound to no key.
-    fn shown_keys(&self, mut hints: Vec<KeyHint>) -> Vec<(String, String)> {
-        if self.shell.operation_shown {
-            hints.retain(|(events, _)| !events.iter().copied().any(moves_head));
-        }
+    // The keys and what they do, without those bound to no key.
+    fn shown_keys(&self, hints: Vec<KeyHint>) -> Vec<(String, String)> {
         hints
             .into_iter()
             .map(|(events, description)| (self.ctx.short_keys(&events), description))
@@ -969,17 +954,17 @@ impl App<'_> {
         };
         let code = if down { KeyCode::Down } else { KeyCode::Up };
         let key = KeyEvent::new(code, KeyModifiers::NONE);
-        let typing_in_window =
-            matches!(&self.shell.overlay, Some(Overlay::File(w)) if w.is_typing());
-        if self.shell.dialog.is_none() && !self.is_typing() && !typing_in_window {
+        if self.shell.dialog.is_none() && !self.is_typing() {
             self.dispatch(event, key);
         }
     }
 
-    // Whether text is being typed or a prompt answered, in the view or the status bar.
+    // Whether a search or filter is typed, in the window over everything or the page.
     fn is_typing(&self) -> bool {
-        self.view.is_capturing_keys()
-            || matches!(self.shell.app_status.status_line, StatusLine::Input { .. })
+        match &self.shell.overlay {
+            Some(Overlay::File(window)) => window.is_typing(),
+            _ => self.view.is_capturing_keys(),
+        }
     }
 
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
@@ -1420,13 +1405,6 @@ impl App<'_> {
     // the window over everything, the focused sidebar or the page, when one of their keys works
     // there: no key works without being listed in the hints and the help.
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
-        // keys typed into the search of the list belong to the view
-        if matches!(self.shell.app_status.status_line, StatusLine::Input { .. }) {
-            if !self.force_quit(&key) {
-                self.view.handle_event(event, key);
-            }
-            return;
-        }
         if self.app_keys().takes(event) {
             self.handle_app_event(event);
             return;
@@ -1466,7 +1444,8 @@ impl App<'_> {
             "Show/hide the keys of the focused panel",
         )
         .when(|app| !matches!(app.shell.overlay, Some(Overlay::Help(_))));
-        // with no remote, or pulling on a detached HEAD, unlisted but saying so when pressed
+        // with no remote, pulling on a detached HEAD or while an operation waits, unlisted but
+        // saying so when pressed
         let remote_keys = [
             (Push, "push", "Push a branch to a remote"),
             (Pull, "pull", "Pull a branch of a remote"),
@@ -1474,14 +1453,16 @@ impl App<'_> {
             (FetchAll, "", "Fetch all remotes"),
         ];
         for (event, short, long) in remote_keys {
-            let works = move |app: &Self| {
-                !app.repository.remotes().is_empty()
+            k.add_where(&[event], short, long, move |app| {
+                let runs = !app.repository.remotes().is_empty()
                     && (event != Pull || app.repository.current_branch().is_some())
-            };
-            k.add(&[event], short, long)
-                .when(move |app| page(app) && works(app));
-            k.quiet(&[event], long)
-                .when(move |app| page(app) && !works(app));
+                    && !(event.moves_head() && app.ctx.operation.get().is_some());
+                match (page(app), runs) {
+                    (false, _) => Availability::Off,
+                    (true, false) => Availability::Warns,
+                    (true, true) => Availability::Works,
+                }
+            });
         }
         k.add(
             &[RefList],
@@ -1756,8 +1737,12 @@ impl App<'_> {
         // the picked refs aren't commits, see `ref_command_applies`
         register_graph_commands(
             k,
-            |app: &Self, event| app.sidebar_command_applies(event),
+            |app: &Self, event| match app.sidebar_command_applies(event) {
+                true => Availability::Works,
+                false => Availability::Off,
+            },
             |_| false,
+            |app| app.ctx.operation.get().is_some(),
         );
         k.add(
             &[ToggleSelect],
@@ -2453,7 +2438,9 @@ impl App<'_> {
     // Reloads the local changes, made outside the app too: the page showing them, else their
     // count in the page bar.
     fn reload_files(&mut self, files: FilesSnapshot) {
-        self.shell.operation_shown = self.repository.operation_in_progress().is_some();
+        self.ctx
+            .operation
+            .set(self.repository.operation_in_progress());
         match &mut self.view {
             View::LocalChanges(view) => view.reload_files(files),
             _ => {
@@ -2596,26 +2583,6 @@ impl App<'_> {
             }
         }
     }
-}
-
-// Whether the task commits the message of the local changes page.
-// Whether the command of `event` moves or rewrites HEAD, for its key not to be shown while an
-// operation is in progress; the commands themselves decide, see `GitTask::moves_head`.
-fn moves_head(event: UserEvent) -> bool {
-    // the git command each runs: squashing, dropping and amending an older commit rebase
-    let command = match event {
-        UserEvent::Rebase | UserEvent::Squash | UserEvent::DropCommit | UserEvent::AmendCommit => {
-            "rebase"
-        }
-        UserEvent::Merge => "merge",
-        UserEvent::Checkout => "checkout",
-        UserEvent::CherryPick => "cherry-pick",
-        UserEvent::Revert => "revert",
-        UserEvent::Reset => "reset",
-        UserEvent::Pull => "pull",
-        _ => return false,
-    };
-    moves_head_command(command)
 }
 
 // The path with the home directory as ~, like a shell prompt.

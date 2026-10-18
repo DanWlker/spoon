@@ -38,6 +38,7 @@ pub fn test_ctx_of(color_theme: ColorTheme, ui_config: UiConfig) -> Rc<AppContex
         layout: Default::default(),
         wrap: Default::default(),
         search_options: Default::default(),
+        operation: Default::default(),
     })
 }
 

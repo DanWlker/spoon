@@ -12,6 +12,11 @@ pub enum SearchTarget {
 }
 
 impl SearchTarget {
+    // Whether searching this looks in `part`.
+    pub fn includes(self, part: SearchTarget) -> bool {
+        self == SearchTarget::All || self == part
+    }
+
     pub fn next(self) -> Self {
         match self {
             Self::All => Self::Subject,

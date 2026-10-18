@@ -37,6 +37,14 @@ pub enum QueryChange {
 }
 
 impl TreeQuery {
+    // A search already applied, like after a reload.
+    pub fn with_search(search: String) -> Self {
+        TreeQuery {
+            search: Some(search),
+            ..Default::default()
+        }
+    }
+
     // Starts typing a query, from its current value.
     pub fn start(&mut self, kind: QueryKind) {
         let value = match kind {

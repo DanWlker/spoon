@@ -467,18 +467,12 @@ pub enum SidebarMode {
 
 pub struct RefList {
     ctx: Rc<AppContext>,
-    focused: bool,
-    // only the title is shown
-    collapsed: bool,
+    mode: SidebarMode,
 }
 
 impl RefList {
     pub fn new(ctx: Rc<AppContext>, mode: SidebarMode) -> RefList {
-        RefList {
-            ctx,
-            focused: mode == SidebarMode::Focused,
-            collapsed: mode == SidebarMode::Collapsed,
-        }
+        RefList { ctx, mode }
     }
 }
 
@@ -487,20 +481,23 @@ impl StatefulWidget for RefList {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let theme = &self.ctx.color_theme;
-        let label = if self.collapsed { "[0]" } else { "[0] Refs" };
+        let focused = self.mode == SidebarMode::Focused;
+        // only the title is shown
+        let collapsed = self.mode == SidebarMode::Collapsed;
+        let label = if collapsed { "[0]" } else { "[0] Refs" };
         let picked = match state.picked.len() {
             0 => String::new(),
-            n if self.collapsed => n.to_string(),
+            n if collapsed => n.to_string(),
             n => format!("{n} picked"),
         };
         let inner = render_panel(
             buf,
             area,
-            panel_title(label, &picked, self.focused, theme),
-            self.focused,
+            panel_title(label, &picked, focused, theme),
+            focused,
             theme,
         );
-        if self.collapsed || inner.width == 0 || inner.height == 0 {
+        if collapsed || inner.width == 0 || inner.height == 0 {
             return;
         }
 
@@ -517,7 +514,7 @@ impl StatefulWidget for RefList {
             state.scroll_to_selection = false;
         }
         let total = state.visible_rows.len();
-        render_panel_scrollbar(buf, area, total, state.offset, self.focused, theme);
+        render_panel_scrollbar(buf, area, total, state.offset, focused, theme);
 
         let item_style = Style::default().fg(theme.fg);
         // the sections stand out from the refs in them
@@ -629,7 +626,7 @@ impl StatefulWidget for RefList {
                 mark_picked_row(buf, Rect::new(inner.x, y, inner.width, 1), theme);
             }
             if row.identifier == state.selected {
-                mark_selected_row(buf, inner, y, self.focused, theme);
+                mark_selected_row(buf, inner, y, focused, theme);
             }
             keep_guide_color(buf, inner, y, guide, theme);
         }
@@ -654,11 +651,11 @@ fn build_ref_tree_nodes(refs: &[&Ref], remotes: &[String]) -> Vec<RefTreeNode> {
     let mut branch_nodes = refs_to_ref_tree_nodes(branch_refs);
     let remote_nodes = remotes_to_ref_tree_nodes(remote_refs, remotes);
     let mut tag_nodes = refs_to_ref_tree_nodes(tag_refs);
-    let mut stash_nodes = refs_to_stash_ref_tree_nodes(stash_refs);
+    sort_stashes(&mut stash_refs);
+    let stash_nodes = refs_to_stash_ref_tree_nodes(stash_refs);
 
     sort_branch_tree_nodes(&mut branch_nodes);
     sort_tag_tree_nodes(&mut tag_nodes);
-    sort_stash_tree_nodes(&mut stash_nodes);
 
     let section = |section, text: &str, children| {
         RefTreeNode::new(NodeId::Section(section), text.into(), children)
@@ -758,16 +755,16 @@ fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
         let mut parent_identifier = String::new();
 
         for part in ref_name.split('/') {
-            if let Some(index) = current_nodes.iter().position(|n| n.name == part) {
-                let node = &mut current_nodes[index];
-                current_nodes = &mut node.children;
-                parent_identifier = node.identifier.name().unwrap_or_default().to_string();
+            // the full name up to this part
+            let identifier = if parent_identifier.is_empty() {
+                part.to_string()
             } else {
-                let identifier = if parent_identifier.is_empty() {
-                    part.to_string()
-                } else {
-                    format!("{parent_identifier}/{part}")
-                };
+                format!("{parent_identifier}/{part}")
+            };
+            if let Some(index) = current_nodes.iter().position(|n| n.name == part) {
+                current_nodes = &mut current_nodes[index].children;
+                parent_identifier = identifier;
+            } else {
                 let node = RefTreeNode {
                     identifier: NodeId::Name(identifier.clone()),
                     name: part.to_string(),
@@ -811,18 +808,15 @@ fn sort_tag_tree_nodes(nodes: &mut [RefTreeNode]) {
     });
 }
 
-// By their index, stash@{2} before stash@{10}.
-fn sort_stash_tree_nodes(nodes: &mut [RefTreeNode]) {
-    let index = |node: &RefTreeNode| {
-        node.identifier
-            .name()
-            .unwrap_or_default()
-            .trim_start_matches("stash@{")
+// The (name, message) of stashes by their index, stash@{2} before stash@{10}.
+fn sort_stashes(stashes: &mut [(String, String)]) {
+    let index = |(name, _): &(String, String)| {
+        name.trim_start_matches("stash@{")
             .trim_end_matches('}')
             .parse::<usize>()
             .unwrap_or(usize::MAX)
     };
-    nodes.sort_by_key(index);
+    stashes.sort_by_key(index);
 }
 
 fn parse_semantic_version_tag(tag: &str) -> Option<Version> {

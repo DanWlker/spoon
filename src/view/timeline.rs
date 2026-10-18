@@ -290,7 +290,8 @@ impl TimelineView {
             "into the diff",
             "Into the diff/back out of it",
         )
-        .when(commits);
+        // a diff without hunks, like a rename's, has nothing to go into
+        .when(move |v| commits(v) && v.pane.diff().is_some_and(|d| !d.hunks.is_empty()));
         register_commit_keys(k, commits);
         register_moving_keys(k, |_| true);
         k.quiet(
@@ -444,6 +445,8 @@ mod tests {
         // the rename, from the path before it; with no hunk, back on the commits
         assert!(raw(&view).contains("rename from a"));
         assert!(!view.pane.is_focused());
+        // nothing to go into there
+        assert!(!view.keys().takes(UserEvent::NavigateRight));
         press(&mut view, UserEvent::NewerCommit);
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::OlderCommit);

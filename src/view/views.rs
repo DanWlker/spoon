@@ -181,8 +181,9 @@ impl<'a> View<'a> {
     pub fn is_capturing_keys(&self) -> bool {
         match self {
             View::LocalChanges(view) => view.is_capturing_keys(),
-            View::Detail(view) => view.is_typing_query(),
-            _ => false,
+            View::Detail(view) => view.is_capturing_keys(),
+            View::List(view) => view.as_list_state().is_typing_search(),
+            View::Default => false,
         }
     }
 

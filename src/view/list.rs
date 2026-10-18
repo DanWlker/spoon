@@ -7,17 +7,16 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
     git::CommitHash,
-    keys::{KeyList, Keys},
+    keys::{Availability, KeyList, Keys},
     search::SearchKind,
     view::{
-        commit_event, register_graph_commands, status_input, typing_keys, ListRefreshViewContext,
-        RefreshViewContext,
+        commit_event, query_status, register_graph_commands, type_query, typing_keys,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
-        commit_list::{
-            commit_list_inner_height, render_commit_list_panel, CommitListState, SearchState,
-        },
+        commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::DetailTab,
+        tree_query::QueryChange,
     },
 };
 
@@ -43,8 +42,13 @@ impl<'a> ListView<'a> {
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
-        let tx = self.tx.clone();
-        if handle_search_event(self.as_mut_list_state(), &tx, event, key) {
+        let (ctx, tx) = (self.ctx.clone(), self.tx.clone());
+        // while typing the search, keys arrive unmapped, see `App::run`
+        if self.as_list_state().is_typing_search() {
+            type_commit_search(self.as_mut_list_state(), &ctx, &tx, key);
+            return;
+        }
+        if handle_search_event(self.as_mut_list_state(), &ctx, &tx, event) {
             return;
         }
         match event {
@@ -91,11 +95,15 @@ impl<'a> ListView<'a> {
 
     // The keys of the graph page, see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
-        register_commit_list_keys(k, |v| ListFacts::of(v.as_list_state()), |_, _| true);
+        register_commit_list_keys(
+            k,
+            |v| ListFacts::of(v.as_list_state(), &v.ctx),
+            |_, _| Availability::Works,
+        );
     }
 
     pub fn keys(&self) -> KeyList {
-        if let SearchState::Searching { .. } = self.as_list_state().search_state() {
+        if self.as_list_state().is_typing_search() {
             return typing_keys(SearchKind::Commits);
         }
         let mut keys = Keys::of(self);
@@ -193,150 +201,175 @@ impl<'a> ListView<'a> {
 pub struct ListFacts {
     pub picked: usize,
     pub search_applied: bool,
+    // see `AppContext::operation`
+    pub operation_waits: bool,
 }
 
 impl ListFacts {
-    pub fn of(state: &CommitListState) -> Self {
+    pub fn of(state: &CommitListState, ctx: &AppContext) -> Self {
         ListFacts {
+            operation_waits: ctx.operation.get().is_some(),
             picked: state.picked_commit_hashes().len(),
-            search_applied: matches!(state.search_state(), SearchState::Applied { .. }),
+            search_applied: state.search_applied(),
         }
     }
 }
 
-// The keys of a commit list, on the graph page and over the details: the commands on the selected
-// or picked commits where `applies` says each works, picking, searching, and moving about.
+// The keys of a commit list, on the graph page and over the details, each as `availability` says
+// of its event: the commands on the selected or picked commits, picking, searching, and moving.
 pub fn register_commit_list_keys<T: ?Sized>(
     k: &mut Keys<T>,
     facts: impl Fn(&T) -> ListFacts + Copy,
-    applies: impl Fn(&T, UserEvent) -> bool + Copy,
+    availability: impl Fn(&T, UserEvent) -> Availability + Copy,
 ) {
     use UserEvent::*;
-    let applies_to = move |event| move |v: &T| applies(v, event);
-    k.add(&[Confirm], "details", "Show the details of the commit");
+    let works = move |event| move |v: &T| availability(v, event) == Availability::Works;
+    k.add(&[Confirm], "details", "Show the details of the commit")
+        .when(works(Confirm));
     k.add(
         &[Cancel],
         "clear search",
         "Clear the search, then the picked commits",
     )
-    .when(move |v| facts(v).search_applied);
+    .when(move |v| works(Search)(v) && facts(v).search_applied);
     k.add(
         &[Cancel],
         "clear picks",
         "Clear the search, then the picked commits",
     )
-    .when(move |v| !facts(v).search_applied && facts(v).picked > 0 && applies(v, Cancel));
-    k.add(&[ToggleSelect], "pick", "Pick/unpick the commit")
-        .when(applies_to(ToggleSelect));
+    .when(move |v| works(Cancel)(v) && !facts(v).search_applied && facts(v).picked > 0);
+    k.add_where(
+        &[ToggleSelect],
+        "pick",
+        "Pick/unpick the commit",
+        move |v| availability(v, ToggleSelect),
+    );
     k.quiet(
         &[NextPicked, PreviousPicked],
         "Go to the next/previous picked commit",
+    )
+    .when(works(NextPicked));
+    register_graph_commands(
+        k,
+        availability,
+        move |v| facts(v).picked > 0,
+        move |v| facts(v).operation_waits,
     );
-    register_graph_commands(k, applies, move |v| facts(v).picked > 0);
     k.add(
         &[OpenInBrowser],
         "open in browser",
         "Open the commit on the web host",
-    );
-    k.add(&[CopyLink], "copy link", "Copy the link of the commit");
-    k.add(&[Search], "search", "Search the commits");
+    )
+    .when(works(OpenInBrowser));
+    k.add(&[CopyLink], "copy link", "Copy the link of the commit")
+        .when(works(CopyLink));
+    k.add(&[Search], "search", "Search the commits")
+        .when(works(Search));
     k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
-        .when(move |v| facts(v).search_applied);
-    k.quiet(
-        &[SearchTargetToggle],
-        "Toggle what the search of the commit list looks in",
-    );
-    k.quiet(
-        &[SmartCaseToggle],
-        "Toggle smart case or case-sensitive, for every search",
-    );
-    k.quiet(
-        &[FuzzyToggle],
-        "Toggle fuzzy match, for every search but of text",
-    );
+        .when(move |v| works(GoToNext)(v) && facts(v).search_applied);
+    let quiet = [
+        (
+            vec![SearchTargetToggle],
+            "Toggle what the search of the commit list looks in",
+        ),
+        (
+            vec![SmartCaseToggle],
+            "Toggle smart case or case-sensitive, for every search",
+        ),
+        (
+            vec![FuzzyToggle],
+            "Toggle fuzzy match, for every search but of text",
+        ),
+        (
+            vec![NavigateDown, SelectDown, NavigateUp, SelectUp],
+            "Select the older/newer commit",
+        ),
+        (vec![GoToTop, GoToBottom], "Go to the top/bottom"),
+        (
+            vec![HalfPageDown, HalfPageUp],
+            "Jump half a page down/up, scrolling as needed",
+        ),
+        (vec![PageDown, PageUp], "Scroll a page down/up"),
+        (vec![ScrollDown, ScrollUp], "Scroll down/up"),
+        (
+            vec![NavigateLeft, NavigateRight],
+            "Fold/unfold the selected merge commit",
+        ),
+        (
+            vec![FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+            "Show the info/changes/files of the commit",
+        ),
+    ];
     k.add(
         &[ShortCopy, FullCopy],
         "copy hash",
         "Copy the commit short/full hash",
-    );
-    k.quiet(
-        &[NavigateDown, SelectDown, NavigateUp, SelectUp],
-        "Select the older/newer commit",
-    );
-    k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
-    k.quiet(
-        &[HalfPageDown, HalfPageUp],
-        "Jump half a page down/up, scrolling as needed",
-    );
-    k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
-    k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
-    k.quiet(
-        &[NavigateLeft, NavigateRight],
-        "Fold/unfold the selected merge commit",
-    );
-    k.quiet(
-        &[FocusPanel(2), FocusPanel(3), FocusPanel(4)],
-        "Show the info/changes/files of the commit",
-    );
+    )
+    .when(works(ShortCopy));
+    for (events, long) in quiet {
+        k.quiet(&events, long).when(works(events[0]));
+    }
 }
 
+// A key typed into the search of the commit list, unmapped like any search (see `type_query`);
+// the matches follow, and the status line shows the search, or once kept how it went.
+pub fn type_commit_search(
+    state: &mut CommitListState,
+    ctx: &AppContext,
+    tx: &Sender,
+    key: KeyEvent,
+) {
+    // enter only keeps it
+    if type_query(ctx, state.query_mut(), key, SearchKind::Commits) != QueryChange::None {
+        state.search_changed();
+    }
+    if state.is_typing_search() {
+        tx.send(query_status(
+            ctx,
+            state.search_status_input(),
+            SearchKind::Commits,
+        ));
+    } else {
+        update_matched_message(state, tx);
+    }
+}
+
+// The keys of the search of the commit list while not typing it: starting it, its options, and
+// going through its matches. Returns whether `event` was one.
 pub fn handle_search_event(
     state: &mut CommitListState,
+    ctx: &AppContext,
     tx: &Sender,
     event: UserEvent,
-    key: KeyEvent,
 ) -> bool {
-    match (state.search_state(), event) {
-        (SearchState::Searching { .. }, UserEvent::Confirm) => {
-            state.apply_search();
-            update_matched_message(state, tx);
-        }
-        (SearchState::Searching { .. }, UserEvent::Cancel) => {
-            state.cancel_search();
-            tx.send(AppEvent::ClearStatusLine);
-        }
-        (SearchState::Searching { .. }, UserEvent::SearchTargetToggle) => {
-            state.toggle_search_target();
-            update_search_status(state, tx);
-        }
-        (SearchState::Searching { .. }, UserEvent::SmartCaseToggle) => {
-            state.toggle_smart_case();
-            update_search_status(state, tx);
-        }
-        (SearchState::Searching { .. }, UserEvent::FuzzyToggle) => {
-            state.toggle_fuzzy();
-            update_search_status(state, tx);
-        }
-        (SearchState::Searching { .. }, _) => {
-            state.handle_search_input(key);
-            update_search_status(state, tx);
-        }
-        (_, UserEvent::Search) => {
+    let applied = state.search_applied();
+    match event {
+        UserEvent::Search => {
             state.start_search();
-            update_search_status(state, tx);
+            tx.send(query_status(
+                ctx,
+                state.search_status_input(),
+                SearchKind::Commits,
+            ));
         }
-        (_, UserEvent::SearchTargetToggle) => {
+        UserEvent::SearchTargetToggle => {
             state.toggle_search_target();
             update_search_options_message(state, tx);
         }
-        (_, UserEvent::SmartCaseToggle) => {
+        UserEvent::SmartCaseToggle => {
             state.toggle_smart_case();
             update_search_options_message(state, tx);
         }
-        (_, UserEvent::FuzzyToggle) => {
+        UserEvent::FuzzyToggle => {
             state.toggle_fuzzy();
             update_search_options_message(state, tx);
         }
-        (SearchState::Applied { .. }, UserEvent::GoToNext) => {
-            state.select_next_match();
-            update_matched_message(state, tx);
-        }
-        (SearchState::Applied { .. }, UserEvent::GoToPrevious) => {
-            state.select_prev_match();
+        UserEvent::GoToNext | UserEvent::GoToPrevious if applied => {
+            state.select_next_match(Toward::of(event, UserEvent::GoToNext));
             update_matched_message(state, tx);
         }
         // an applied search is cleared before the picked commits
-        (SearchState::Applied { .. }, UserEvent::Cancel) => {
+        UserEvent::Cancel if applied => {
             state.cancel_search();
             tx.send(AppEvent::ClearStatusLine);
         }
@@ -345,19 +378,8 @@ pub fn handle_search_event(
     true
 }
 
-fn update_search_status(state: &CommitListState, tx: &Sender) {
-    if let SearchState::Searching { .. } = state.search_state() {
-        let cursor = state.search_query_cursor_position();
-        let typed = state.search_query_string().map(|query| (query, cursor));
-        tx.send(status_input(
-            typed,
-            state.search_options().status_string(SearchKind::Commits),
-        ));
-    }
-}
-
 fn update_search_options_message(state: &CommitListState, tx: &Sender) {
-    if let SearchState::Applied { .. } = state.search_state() {
+    if state.search_applied() {
         update_matched_message(state, tx);
     } else {
         let options = state.search_options().status_string(SearchKind::Commits);

@@ -18,7 +18,7 @@ use crate::{
         AfterTask, ConflictSide, DiffOf, FilesSnapshot, GitTask, Head, LocalChangeFile,
         LocalChangeStatus, LocalChanges, Operation, PatchAction, Repository,
     },
-    keys::{KeyList, Keys},
+    keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions},
     widget::{
@@ -183,6 +183,14 @@ enum Focus {
     Commit { editing: bool },
 }
 
+// What the diff beside the files shows: the row under the cursor, or all the picked files, to
+// stage hunks and lines from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffSource {
+    Row,
+    Picked,
+}
+
 // A file section: its tree of files, search and filter, and picked rows.
 #[derive(Debug)]
 struct Section {
@@ -243,10 +251,10 @@ pub struct LocalChangesState<'a> {
     // the unstaged and the staged section, see `LocalChangesSection`
     sections: [Section; 2],
     section: LocalChangesSection,
-    // whether the diff shows the picked files rather than the row under the cursor
-    diff_of_picked: bool,
     focus: Focus,
+    // the diff beside the files, and what it is of
     diff: ParsedDiff,
+    diff_source: DiffSource,
     // the selected hunk or line, and the scroll of the diff (or of the conflict sides)
     cursor: DiffCursor,
     // searching the diff while it has the focus
@@ -256,8 +264,6 @@ pub struct LocalChangesState<'a> {
     draft: CommitDraft,
     // the box of the message selected in the commit section
     commit_field: CommitField,
-    // a rebase stopped to edit a commit, which committing amends before going on
-    editing_commit: bool,
     // what the view is to ask the app for once the event is handled, see `take_request`
     request: Option<Request>,
     // the cursor moved to another row, whose diff loads once used, see `move_cursor`
@@ -293,14 +299,13 @@ impl<'a> LocalChangesState<'a> {
             changes,
             sections,
             section,
-            diff_of_picked: false,
             focus: Focus::Files,
             diff: ParsedDiff::default(),
+            diff_source: DiffSource::Row,
             cursor: DiffCursor::default(),
             diff_query: TreeQuery::default(),
             draft: CommitDraft::default(),
             commit_field: CommitField::Summary,
-            editing_commit: false,
             request: None,
             diff_stale: false,
             files_stamp,
@@ -364,6 +369,15 @@ impl<'a> LocalChangesState<'a> {
             self.commit_field = CommitField::Summary;
         }
         self.focus = Focus::Commit { editing: empty };
+    }
+
+    // A rebase stopped to edit a commit, which committing amends before going on, see
+    // `sync_edit_stop`.
+    fn editing_commit(&self) -> bool {
+        self.draft
+            .amend
+            .as_ref()
+            .is_some_and(|amend| amend.of == AmendOf::EditStop)
     }
 
     pub fn is_editing(&self) -> bool {
@@ -434,7 +448,7 @@ impl<'a> LocalChangesState<'a> {
     fn request_commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
         let amend = self.draft.amend.is_some();
-        let (action, branch) = if self.editing_commit {
+        let (action, branch) = if self.editing_commit() {
             // HEAD is the commit being edited, on no branch while rebasing
             let head = self
                 .repository
@@ -472,7 +486,7 @@ impl<'a> LocalChangesState<'a> {
             files,
         };
         // amending a commit a rebase stopped at was warned about when it started
-        let pushed = (amend && !self.editing_commit)
+        let pushed = (amend && !self.editing_commit())
             .then(|| self.repository.upstream_containing("HEAD"))
             .flatten();
         let dialog = GitDialog::commit(preview, self.commit_task()?).pushed(pushed);
@@ -533,7 +547,7 @@ impl<'a> LocalChangesState<'a> {
     // to edit is amended first.
     pub fn continuing_operation(&self) -> Option<Operation> {
         self.operation
-            .filter(|o| o.continues_without_commit() && !self.editing_commit)
+            .filter(|o| o.continues_without_commit() && !self.editing_commit())
     }
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked, then
@@ -767,7 +781,7 @@ impl<'a> LocalChangesState<'a> {
     // Turning amend on shows the changes of HEAD in the staged section, combined with what is staged,
     // and the HEAD message in place of the typed one. Turning it off restores both.
     pub fn toggle_amend(&mut self) -> Result<(), String> {
-        if self.editing_commit {
+        if self.editing_commit() {
             return Err("The commit being edited is amended; C aborts the rebase".into());
         }
         if let Some(operation) = self.operation.filter(|_| self.draft.amend.is_none()) {
@@ -804,26 +818,22 @@ impl<'a> LocalChangesState<'a> {
     // A rebase stopped to edit a commit turns amending on, with the message of that commit, and
     // amending goes off again once the rebase goes on or is aborted.
     fn sync_edit_stop(&mut self) {
-        self.editing_commit =
+        let stopped =
             self.operation == Some(Operation::Rebase) && self.repository.rebase_stopped_to_edit();
-        let changed = if self.editing_commit && self.draft.amend.is_none() {
+        let changed = if stopped && !self.editing_commit() {
             match (
                 self.repository.amend_base(),
                 self.repository.head_commit_message(),
             ) {
+                // amending the last commit before, it's the commit stopped at now
                 (Ok(base), Ok(message)) => {
+                    self.draft.stop_amend();
                     self.draft.start_amend(base, &message, AmendOf::EditStop);
                     true
                 }
                 _ => false,
             }
-        } else if !self.editing_commit
-            && self
-                .draft
-                .amend
-                .as_ref()
-                .is_some_and(|a| a.of == AmendOf::EditStop)
-        {
+        } else if !stopped && self.editing_commit() {
             self.draft.stop_amend();
             true
         } else {
@@ -882,7 +892,7 @@ impl<'a> LocalChangesState<'a> {
         };
         // committing, or amending, or continuing an operation
         let commit_word = |v: &Self| {
-            if v.editing_commit || v.draft.amend.is_some() {
+            if v.editing_commit() || v.draft.amend.is_some() {
                 "amend"
             } else if v.operation.is_some_and(Operation::continues_without_commit) {
                 "continue"
@@ -956,17 +966,20 @@ impl<'a> LocalChangesState<'a> {
         let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));
         const COMMIT: &str =
             "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase";
-        k.add(&[Confirm], "commit", COMMIT)
-            .when(move |v| commits(v) && committable(v))
-            .short(commit_word);
-        k.quiet(&[Confirm], COMMIT)
-            .when(move |v| commits(v) && !committable(v));
+        let availability = move |applies: bool, v: &Self| match (applies, committable(v)) {
+            (false, _) => Availability::Off,
+            (true, false) => Availability::Warns,
+            (true, true) => Availability::Works,
+        };
+        k.add_where(&[Confirm], "commit", COMMIT, move |v| {
+            availability(commits(v), v)
+        })
+        .short(commit_word);
         let not_typing = |v: &Self| !matches!(v.focus, Focus::Commit { editing: true });
-        k.add(&[Commit], "commit", COMMIT)
-            .when(move |v| not_typing(v) && committable(v))
-            .short(commit_word);
-        k.quiet(&[Commit], COMMIT)
-            .when(move |v| not_typing(v) && !committable(v));
+        k.add_where(&[Commit], "commit", COMMIT, move |v| {
+            availability(not_typing(v), v)
+        })
+        .short(commit_word);
         k.add(
             &[Abort],
             "abort",
@@ -979,7 +992,7 @@ impl<'a> LocalChangesState<'a> {
             "Amend the last commit, or stop amending",
         )
         // during an operation only stopping, see `toggle_amend`; a commit being edited stays amended
-        .when(|v| !v.editing_commit && (v.operation.is_none() || v.draft.amend.is_some()))
+        .when(|v| !v.editing_commit() && (v.operation.is_none() || v.draft.amend.is_some()))
         .short(|v| {
             if v.draft.amend.is_some() {
                 "stop amending"
@@ -1202,7 +1215,7 @@ impl<'a> LocalChangesState<'a> {
             Focus::Files => {
                 // with picked rows, the diff shows all their files to stage hunks and lines from
                 if !self.picked().is_empty() {
-                    self.diff_of_picked = true;
+                    self.diff_source = DiffSource::Picked;
                     self.load_diff();
                 }
                 if self.cursor.select_hunk(&self.diff, 0) {
@@ -1269,7 +1282,7 @@ impl<'a> LocalChangesState<'a> {
     // Moves the focus to the files, whose diff shows the row under the cursor again.
     pub fn focus_files(&mut self) {
         self.focus = Focus::Files;
-        if std::mem::take(&mut self.diff_of_picked) {
+        if std::mem::replace(&mut self.diff_source, DiffSource::Row) == DiffSource::Picked {
             self.load_diff();
         }
     }
@@ -1415,13 +1428,14 @@ impl<'a> LocalChangesState<'a> {
         let focus = self.focus;
         let selected = self.cursor.clone();
         self.load_diff();
-        if self.diff_of_picked && self.diff.hunks.is_empty() {
+        if self.diff_source == DiffSource::Picked && self.diff.hunks.is_empty() {
             // nothing left to stage from the picked files
-            self.diff_of_picked = false;
+            self.diff_source = DiffSource::Row;
             self.load_diff();
         }
         // stay in the diff while the same path (or the picked files) still has hunks left
-        let same_source = self.diff_of_picked || self.selected_path() == selected_path;
+        let same_source =
+            self.diff_source == DiffSource::Picked || self.selected_path() == selected_path;
         if matches!(focus, Focus::Hunks | Focus::Lines)
             && same_source
             && !self.diff.hunks.is_empty()
@@ -1588,7 +1602,7 @@ impl<'a> LocalChangesState<'a> {
     // the next file. The diff of the picked files has no next one.
     pub fn select_next_file(&mut self, toward: Toward) -> Result<(), String> {
         let in_diff = self.is_diff_focused();
-        if !(in_diff || self.focus == Focus::Files) || self.diff_of_picked {
+        if !(in_diff || self.focus == Focus::Files) || self.diff_source == DiffSource::Picked {
             return Ok(());
         }
         let direction = SearchDirection::from(toward);
@@ -1721,7 +1735,7 @@ impl<'a> LocalChangesState<'a> {
             },
             LocalChangesSection::Unstaged => DiffOf::Unstaged,
         };
-        if self.diff_of_picked {
+        if self.diff_source == DiffSource::Picked {
             // untracked files are only shown by diffing each against /dev/null
             let targets = self.target_files();
             let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = targets
@@ -1758,7 +1772,9 @@ impl<'a> LocalChangesState<'a> {
         self.selected_row()
             .and_then(|row| row.file_index)
             .and_then(|i| self.files().get(i))
-            .filter(|f| f.status == LocalChangeStatus::Conflicted && !self.diff_of_picked)
+            .filter(|f| {
+                f.status == LocalChangeStatus::Conflicted && self.diff_source == DiffSource::Row
+            })
             .map(|f| ConflictView::load(self.repository, &f.path))
     }
 
@@ -1911,7 +1927,9 @@ impl LocalChangesPanel<'_> {
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
         let title = match state.selected_row() {
-            _ if state.diff_of_picked => picked_files_label(state.target_files().len()),
+            _ if state.diff_source == DiffSource::Picked => {
+                picked_files_label(state.target_files().len())
+            }
             Some(row) if row.is_root() => "/".to_string(),
             Some(row) => row.path.clone(),
             None => String::new(),
@@ -2712,6 +2730,45 @@ mod tests {
     }
 
     #[test]
+    fn test_edit_stop_amends_the_commit() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for (key, value) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.com"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git_stdout(repo_path, &["config", key, value]);
+        }
+        git.commit("first", "2024-01-01");
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        git.commit("second", "2024-01-02");
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        // amending the last commit, then a rebase stops to edit it: the stop's amend takes over
+        state.toggle_amend()?;
+        let status = std::process::Command::new("git")
+            .args(["rebase", "-q", "-i", "HEAD~1"])
+            .env("GIT_SEQUENCE_EDITOR", "sed -i 1s/^pick/edit/")
+            .current_dir(repo_path)
+            .status()?;
+        assert!(status.success());
+        state.reload();
+        assert_eq!(state.operation, Some(Operation::Rebase));
+        assert!(state.editing_commit());
+        assert_eq!(state.draft.message(), "second");
+        // going on, amending stops
+        git_stdout(repo_path, &["rebase", "--continue"]);
+        state.reload();
+        assert!(!state.editing_commit());
+        assert!(state.draft.amend.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn test_amend_root_commit() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -3203,14 +3260,14 @@ mod tests {
         select_row(&mut state, "c.txt");
         state.toggle_pick();
         state.enter()?;
-        assert!(state.is_diff_focused() && state.diff_of_picked);
+        assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
         assert_eq!(state.diff.hunks.len(), 2);
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
-        assert!(state.is_diff_focused() && state.diff_of_picked);
+        assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
         state.toggle_stage()?;
         assert!(state.changes.unstaged.is_empty());
-        assert!(!state.is_diff_focused() && !state.diff_of_picked);
+        assert!(!state.is_diff_focused() && state.diff_source == DiffSource::Row);
 
         // discard the picked files only
         fs::write(repo_path.join("b.txt"), "x\nchanged\nagain\n")?;

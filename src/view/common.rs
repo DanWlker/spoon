@@ -9,7 +9,7 @@ use crate::{
     event::{AppEvent, UserEvent},
     git::{CommitHash, FileRevision, Repository},
     keybind::Scope,
-    keys::{KeyList, Keys},
+    keys::{Availability, KeyList, Keys},
     search::{SearchKind, SearchOptions},
     widget::{
         commit_list::format_date,
@@ -20,13 +20,15 @@ use crate::{
     },
 };
 
-// The commands of the commit graph on the selected commit, or the picked ones, where `applies`
-// says each works: in the commit list and the details, and on a ref of the sidebar. While commits
-// are `picked`, those of one commit say to clear them, unlisted.
+// The commands of the commit graph on the selected commit, or the picked ones, as `availability`
+// says of each: in the commit list and the details, and on a ref of the sidebar. While commits
+// are `picked`, those of one commit say to clear them, and while an operation waits to be
+// finished those moving HEAD say so, unlisted.
 pub fn register_graph_commands<T: ?Sized>(
     k: &mut Keys<T>,
-    applies: impl Fn(&T, UserEvent) -> bool + Copy,
+    availability: impl Fn(&T, UserEvent) -> Availability + Copy,
     picked: impl Fn(&T) -> bool + Copy,
+    operation_waits: impl Fn(&T) -> bool + Copy,
 ) {
     use UserEvent::*;
     let commands: [(UserEvent, &str, &'static str); 13] = [
@@ -93,12 +95,13 @@ pub fn register_graph_commands<T: ?Sized>(
             event,
             Rebase | Merge | Checkout | AmendCommit | Reset | CreateBranch | CreateTag
         );
-        k.add(&[event], short, long)
-            .when(move |view| applies(view, event) && !(single && picked(view)));
-        if single {
-            k.quiet(&[event], long)
-                .when(move |view| applies(view, event) && picked(view));
-        }
+        k.add_where(&[event], short, long, move |view| {
+            let refused = (single && picked(view)) || (event.moves_head() && operation_waits(view));
+            match availability(view, event) {
+                Availability::Works if refused => Availability::Warns,
+                availability => availability,
+            }
+        });
     }
 }
 
@@ -237,22 +240,25 @@ pub fn file_link(
     }
 }
 
-// The options toggled while typing a search other than the commit list's, as there: smart case,
-// and fuzzy matching where it applies (see `SearchKind`); returns whether `key` toggled one, the
+// The options toggled while typing a search: smart case, and fuzzy matching and what the commit
+// list's looks in where they apply (see `SearchKind`); returns whether `key` toggled one, the
 // search to be applied again then.
 pub fn toggle_search_option(ctx: &AppContext, key: &KeyEvent, kind: SearchKind) -> bool {
     let mut options = ctx.search_options.get();
     match ctx.keybind.event_in(Scope::Global, key) {
         Some(UserEvent::SmartCaseToggle) => options.smart_case = !options.smart_case,
         Some(UserEvent::FuzzyToggle) if kind.has_fuzzy() => options.fuzzy = !options.fuzzy,
+        Some(UserEvent::SearchTargetToggle) if kind.has_target() => {
+            options.target = options.target.next()
+        }
         _ => return false,
     }
     ctx.search_options.set(options);
     true
 }
 
-// A key typed into a search or filter other than the commit list's: toggling an option applies it
-// again, other keys edit it. Returns what to apply.
+// A key typed into a search or filter: toggling an option applies it again, other keys edit it.
+// Returns what to apply.
 pub fn type_query(
     ctx: &AppContext,
     query: &mut TreeQuery,

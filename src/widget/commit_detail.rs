@@ -181,10 +181,11 @@ impl CommitDetail<'_> {
     // The labels of the commit list.
     fn refs_line(&self) -> Line<'_> {
         let info = CommitInfo::new(self.commit, self.refs.iter().collect(), self.tracking, true);
-        let matches = FxHashMap::default();
+        let options = self.ctx.search_options.get();
         Line::from(refs_spans(
             &info,
-            &matches,
+            None,
+            options,
             self.head,
             &self.ctx.color_theme,
         ))
@@ -288,7 +289,13 @@ mod tests {
 
         // the labels as the commit list draws them, cell for cell
         let info = CommitInfo::new(&commit, refs.iter().collect(), &tracking, true);
-        let spans = refs_spans(&info, &FxHashMap::default(), &Head::None, &ctx.color_theme);
+        let spans = refs_spans(
+            &info,
+            None,
+            ctx.search_options.get(),
+            &Head::None,
+            &ctx.color_theme,
+        );
         let mut list = Buffer::empty(Rect::new(0, 0, 100, 1));
         Line::from(spans).render(list.area, &mut list);
         let width = list

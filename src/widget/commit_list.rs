@@ -1,9 +1,7 @@
 use std::{cell::Cell, rc::Rc};
 
-use laurier::highlight::highlight_matched_text;
 use ratatui::{
     buffer::Buffer,
-    crossterm::event::{Event, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
@@ -11,7 +9,6 @@ use ratatui::{
     Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use tui_input::{backend::crossterm::EventHandler, Input, InputRequest};
 
 use crate::widget::tree_query::Toward;
 use crate::{
@@ -28,7 +25,9 @@ use crate::{
             half_page_jump, mark_selected_bar, panel_block, panel_title, picked_style,
             render_panel_scrollbar, scroll_to,
         },
-        tree_query::{find_around, match_ranges, SearchDirection},
+        tree_query::{
+            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
+        },
     },
 };
 
@@ -88,120 +87,9 @@ impl<'a> CommitInfo<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchState {
-    Inactive,
-    Searching {
-        start_index: usize,
-        match_index: usize,
-    },
-    Applied {
-        match_index: usize,
-        total_match: usize,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRefreshContext {
     query: String,
-}
-
-impl SearchState {
-    fn update_match_index(&mut self, index: usize) {
-        match self {
-            SearchState::Searching { match_index, .. } => *match_index = index,
-            SearchState::Applied { match_index, .. } => *match_index = index,
-            _ => {}
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-struct SearchMatch {
-    refs: FxHashMap<String, SearchMatchPosition>,
-    subject: Option<SearchMatchPosition>,
-    author_name: Option<SearchMatchPosition>,
-    commit_hash: Option<SearchMatchPosition>,
-    match_index: usize, // 1-based
-}
-
-impl SearchMatch {
-    fn set(&mut self, c: &Commit, refs: &[&Ref], matcher: &SearchMatcher, target: SearchTarget) {
-        self.refs = if matches!(target, SearchTarget::All | SearchTarget::Ref) {
-            refs.iter()
-                .filter(|r| !matches!(*r, Ref::Stash { .. }))
-                .filter_map(|r| {
-                    matcher
-                        .matched_position(r.name())
-                        .map(|pos| (r.name().into(), pos))
-                })
-                .collect()
-        } else {
-            FxHashMap::default()
-        };
-        self.subject = if matches!(target, SearchTarget::All | SearchTarget::Subject) {
-            matcher.matched_position(&c.subject)
-        } else {
-            None
-        };
-        self.author_name = if matches!(target, SearchTarget::All | SearchTarget::Author) {
-            matcher.matched_position(&c.author_name)
-        } else {
-            None
-        };
-        self.commit_hash = if matches!(target, SearchTarget::All | SearchTarget::Hash) {
-            matcher.matched_position(c.commit_hash.as_short_hash())
-        } else {
-            None
-        };
-        self.match_index = 0;
-    }
-
-    fn matched(&self) -> bool {
-        !self.refs.is_empty()
-            || self.subject.is_some()
-            || self.author_name.is_some()
-            || self.commit_hash.is_some()
-    }
-
-    fn clear(&mut self) {
-        self.refs.clear();
-        self.subject = None;
-        self.author_name = None;
-        self.commit_hash = None;
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct SearchMatchPosition {
-    matched_indices: Vec<usize>,
-}
-
-impl SearchMatchPosition {
-    fn new(matched_indices: Vec<usize>) -> Self {
-        Self { matched_indices }
-    }
-}
-
-// What the search matches in the fields of a commit, see `match_ranges`.
-struct SearchMatcher {
-    query: String,
-    options: SearchOptions,
-}
-
-impl SearchMatcher {
-    fn new(query: &str, options: SearchOptions) -> Self {
-        Self {
-            query: query.into(),
-            options,
-        }
-    }
-
-    fn matched_position(&self, s: &str) -> Option<SearchMatchPosition> {
-        let ranges = match_ranges(s, &self.query, self.options);
-        (!ranges.is_empty())
-            .then(|| SearchMatchPosition::new(ranges.into_iter().flatten().collect()))
-    }
 }
 
 #[derive(Debug)]
@@ -213,11 +101,14 @@ pub struct CommitListState<'a> {
 
     ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
 
-    search_state: SearchState,
+    // the search, typed like the others, see `TreeQuery`
+    query: TreeQuery,
+    // the commit selected when typing it started, the matches are looked for from
+    search_start: usize,
     // the app's, see `AppContext::search_options`
     search_options: Rc<Cell<SearchOptions>>,
-    search_input: Input,
-    search_matches: Vec<SearchMatch>,
+    // the commits the search matches
+    search_matches: Vec<bool>,
 
     // commits picked with space for commands on several commits, in the order they were picked
     picked_commit_hashes: Vec<CommitHash>,
@@ -249,10 +140,10 @@ impl<'a> CommitListState<'a> {
             graph_image_manager,
             graph_cell_width,
             ref_name_to_commit_index_map,
-            search_state: SearchState::Inactive,
+            query: TreeQuery::default(),
+            search_start: 0,
             search_options,
-            search_input: Input::default(),
-            search_matches: vec![SearchMatch::default(); total],
+            search_matches: vec![false; total],
             picked_commit_hashes: Vec::new(),
             filter_note: None,
             head: Head::None,
@@ -475,12 +366,17 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn select_next_match(&mut self) {
-        self.select_next_match_index(self.current_selected_index());
+    // Selects the next (or previous) commit the search matches, wrapping around.
+    pub fn select_next_match(&mut self, toward: Toward) {
+        self.select_match_from(self.current_selected_index(), SearchDirection::from(toward));
     }
 
-    pub fn select_prev_match(&mut self) {
-        self.select_prev_match_index(self.current_selected_index());
+    // Selects the commit at `from` when the search matches it (`SearchDirection::Current`), else
+    // the next or previous one it matches.
+    fn select_match_from(&mut self, from: usize, direction: SearchDirection) {
+        if let Some(index) = find_around(self.total, from, direction, |i| self.search_matches[i]) {
+            self.select_index(index);
+        }
     }
 
     // Folds the selected merge commit with left, unfolds it with right; None for other events
@@ -557,8 +453,14 @@ impl<'a> CommitListState<'a> {
         index.is_some()
     }
 
-    pub fn search_state(&self) -> SearchState {
-        self.search_state
+    // Typing the search, which takes every key.
+    pub fn is_typing_search(&self) -> bool {
+        self.query.is_editing()
+    }
+
+    // A search typed and kept, which n and N go through.
+    pub fn search_applied(&self) -> bool {
+        !self.query.is_editing() && self.query.search().is_some()
     }
 
     pub fn search_options(&self) -> SearchOptions {
@@ -569,83 +471,57 @@ impl<'a> CommitListState<'a> {
         self.search_options.set(options);
     }
 
+    // Starts typing the search, from the applied one, looking for matches from the selection.
     pub fn start_search(&mut self) {
-        let match_index = match self.search_state {
-            SearchState::Inactive => {
-                self.search_input.reset();
-                self.clear_search_matches();
-                0
-            }
-            SearchState::Applied { match_index, .. } => {
-                self.search_input.handle(InputRequest::GoToEnd);
-                match_index
-            }
-            SearchState::Searching { .. } => return,
-        };
-        self.search_state = SearchState::Searching {
-            start_index: self.current_selected_index(),
-            match_index,
-        };
-    }
-
-    pub fn handle_search_input(&mut self, key: KeyEvent) {
-        if let SearchState::Searching { start_index, .. } = self.search_state {
-            self.search_input.handle_event(&Event::Key(key));
-            self.update_search_matches();
-            self.select_current_or_next_match_index(start_index);
+        if !self.query.is_editing() {
+            self.search_start = self.current_selected_index();
+            self.query.start(QueryKind::Search);
         }
     }
 
-    pub fn apply_search(&mut self) {
-        if let SearchState::Searching { match_index, .. } = self.search_state {
-            if self.search_input.value().is_empty() {
-                self.cancel_search();
-            } else {
-                let total_match = self.search_matches.iter().filter(|m| m.matched()).count();
-                self.search_state = SearchState::Applied {
-                    match_index,
-                    total_match,
-                };
-            }
-        }
+    // The search, where it looks in `part`, to highlight there.
+    fn search_in(&self, part: SearchTarget) -> Option<&str> {
+        self.query
+            .search()
+            .filter(|_| self.search_options.get().target.includes(part))
+    }
+
+    // The search to type into, see `search_changed`.
+    pub fn query_mut(&mut self) -> &mut TreeQuery {
+        &mut self.query
+    }
+
+    // The search as typed, for the status line.
+    pub fn search_status_input(&self) -> Option<(String, u16)> {
+        self.query.status_input()
+    }
+
+    // Finds the matches again once the search or its options changed: while typing, the first
+    // from where it started; else the selected commit stays, or the next match.
+    pub fn search_changed(&mut self) {
+        let from = if self.query.is_editing() {
+            self.search_start
+        } else {
+            self.current_selected_index()
+        };
+        self.update_search_matches();
+        self.select_match_from(from, SearchDirection::Current);
     }
 
     pub fn search_refresh_context(&self) -> Option<SearchRefreshContext> {
-        if let SearchState::Applied { .. } = self.search_state {
-            Some(SearchRefreshContext {
-                query: self.search_input.value().into(),
-            })
-        } else {
-            None
-        }
+        self.search_applied().then(|| SearchRefreshContext {
+            query: self.query.search().unwrap_or_default().into(),
+        })
     }
 
     pub fn restore_search(&mut self, context: &SearchRefreshContext) {
-        self.search_input = Input::new(context.query.clone());
+        self.query = TreeQuery::with_search(context.query.clone());
         self.update_search_matches();
-
-        let total_match = self.search_matches.iter().filter(|m| m.matched()).count();
-        self.search_state = SearchState::Applied {
-            // The selected commit may not match after refresh; next/previous updates this value.
-            match_index: 0,
-            total_match,
-        };
-
-        if total_match > 0 {
-            let current_index = self.current_selected_index();
-            if self.search_matches[current_index].matched() {
-                self.search_state
-                    .update_match_index(self.search_matches[current_index].match_index);
-            }
-        }
     }
 
     pub fn cancel_search(&mut self) {
-        if let SearchState::Searching { .. } | SearchState::Applied { .. } = self.search_state {
-            self.search_state = SearchState::Inactive;
-            self.search_input.reset();
-            self.clear_search_matches();
-        }
+        self.query = TreeQuery::default();
+        self.update_search_matches();
     }
 
     // Moves by the keys moving in a list: the selection, by pages, or only the view; returns
@@ -670,147 +546,50 @@ impl<'a> CommitListState<'a> {
         let mut options = self.search_options.get();
         options.smart_case = !options.smart_case;
         self.search_options.set(options);
-        self.update_search_after_options_change();
+        self.search_changed();
     }
 
     pub fn toggle_fuzzy(&mut self) {
         let mut options = self.search_options.get();
         options.fuzzy = !options.fuzzy;
         self.search_options.set(options);
-        self.update_search_after_options_change();
+        self.search_changed();
     }
 
     pub fn toggle_search_target(&mut self) {
         let mut options = self.search_options.get();
         options.target = options.target.next();
         self.search_options.set(options);
-        self.update_search_after_options_change();
+        self.search_changed();
     }
 
-    pub fn search_query_string(&self) -> Option<String> {
-        if let SearchState::Searching { .. } = self.search_state {
-            let query = self.search_input.value();
-            Some(format!("/{query}"))
-        } else {
-            None
-        }
-    }
-
+    // How the applied search went: the selected match of how many, and whether there are any.
     pub fn matched_query_string(&self) -> Option<(String, bool)> {
-        if let SearchState::Applied {
-            match_index,
-            total_match,
-            ..
-        } = self.search_state
-        {
-            let query = self.search_input.value();
-            if total_match == 0 {
-                let msg = format!("No matches found (query: \"{query}\")");
-                Some((msg, false))
-            } else {
-                let msg = format!("Match {match_index} of {total_match} (query: \"{query}\")");
-                Some((msg, true))
-            }
-        } else {
-            None
+        let query = self.query.search().filter(|_| self.search_applied())?;
+        let total = self.search_matches.iter().filter(|m| **m).count();
+        if total == 0 {
+            return Some((format!("No matches found (query: \"{query}\")"), false));
         }
-    }
-
-    pub fn search_query_cursor_position(&self) -> u16 {
-        self.search_input.visual_cursor() as u16 + 1 // add 1 for "/"
+        let selected = self.current_selected_index();
+        let index = if self.search_matches[selected] {
+            self.search_matches[..=selected]
+                .iter()
+                .filter(|m| **m)
+                .count()
+        } else {
+            0
+        };
+        Some((
+            format!("Match {index} of {total} (query: \"{query}\")"),
+            true,
+        ))
     }
 
     fn update_search_matches(&mut self) {
-        if self.search_input.value().is_empty() {
-            self.clear_search_matches();
-            self.search_state.update_match_index(0);
-            return;
-        }
         let options = self.search_options.get();
-        let matcher = SearchMatcher::new(self.search_input.value(), options);
-        let mut match_index = 1;
-        for (i, commit_info) in self.commits.iter().enumerate() {
-            let m = &mut self.search_matches[i];
-            m.set(
-                commit_info.commit,
-                commit_info.refs.as_slice(),
-                &matcher,
-                options.target,
-            );
-            if m.matched() {
-                m.match_index = match_index;
-                match_index += 1;
-            }
-        }
-    }
-
-    fn update_search_after_options_change(&mut self) {
-        match self.search_state {
-            SearchState::Inactive => {}
-            SearchState::Searching { start_index, .. } => {
-                self.update_search_matches();
-                self.select_current_or_next_match_index(start_index);
-            }
-            SearchState::Applied { .. } => {
-                let current_index = self.current_selected_index();
-                self.update_search_matches();
-                let total_match = self.search_matches.iter().filter(|m| m.matched()).count();
-                self.search_state = SearchState::Applied {
-                    match_index: 0,
-                    total_match,
-                };
-                if total_match > 0 {
-                    self.select_current_or_next_match_index(current_index);
-                }
-            }
-        }
-    }
-
-    fn clear_search_matches(&mut self) {
-        self.search_matches.iter_mut().for_each(|m| m.clear());
-    }
-
-    fn select_current_or_next_match_index(&mut self, current_index: usize) {
-        if self.search_matches[current_index].matched() {
-            self.select_index(current_index);
-            self.search_state
-                .update_match_index(self.search_matches[current_index].match_index);
-        } else {
-            self.select_next_match_index(current_index)
-        }
-    }
-
-    fn select_next_match_index(&mut self, current_index: usize) {
-        let mut i = (current_index + 1) % self.total;
-        while i != current_index {
-            if self.search_matches[i].matched() {
-                self.select_index(i);
-                self.search_state
-                    .update_match_index(self.search_matches[i].match_index);
-                return;
-            }
-            if i == self.total - 1 {
-                i = 0;
-            } else {
-                i += 1;
-            }
-        }
-    }
-
-    fn select_prev_match_index(&mut self, current_index: usize) {
-        let mut i = (current_index + self.total - 1) % self.total;
-        while i != current_index {
-            if self.search_matches[i].matched() {
-                self.select_index(i);
-                self.search_state
-                    .update_match_index(self.search_matches[i].match_index);
-                return;
-            }
-            if i == 0 {
-                i = self.total - 1;
-            } else {
-                i -= 1;
-            }
+        let query = self.query.search();
+        for (matched, commit_info) in self.search_matches.iter_mut().zip(&self.commits) {
+            *matched = query.is_some_and(|query| commit_matches(commit_info, query, options));
         }
     }
 
@@ -991,7 +770,8 @@ impl CommitList<'_> {
             .map(|(i, commit_info)| {
                 let mut spans = refs_spans(
                     commit_info,
-                    &state.search_matches[state.offset + i].refs,
+                    state.search_in(SearchTarget::Ref),
+                    state.search_options(),
                     &state.head,
                     &self.ctx.color_theme,
                 );
@@ -1000,28 +780,14 @@ impl CommitList<'_> {
                 let commit = commit_info.commit;
                 let subject_fg = self.text_fg(commit_info, self.ctx.color_theme.list_subject_fg);
                 if max_width > ELLIPSIS.len() {
-                    let truncate = console::measure_text_width(&commit.subject) > max_width;
-                    let subject = if truncate {
-                        console::truncate_str(&commit.subject, max_width, ELLIPSIS).to_string()
-                    } else {
-                        commit.subject.to_string()
-                    };
-
-                    let sub_spans =
-                        if let Some(pos) = state.search_matches[state.offset + i].subject.clone() {
-                            highlighted_spans(
-                                subject.into(),
-                                pos,
-                                subject_fg,
-                                Modifier::empty(),
-                                &self.ctx.color_theme,
-                                truncate,
-                            )
-                        } else {
-                            vec![subject.fg(subject_fg)]
-                        };
-
-                    spans.extend(sub_spans)
+                    spans.extend(highlighted_cut(
+                        &commit.subject,
+                        max_width,
+                        Style::default().fg(subject_fg),
+                        state.search_in(SearchTarget::Subject),
+                        state.search_options(),
+                        &self.ctx.color_theme,
+                    ));
                 }
                 self.to_commit_list_item(i, spans, state)
             })
@@ -1039,25 +805,14 @@ impl CommitList<'_> {
             .map(|(i, commit_info)| {
                 let commit = commit_info.commit;
                 let name_fg = self.text_fg(commit_info, self.ctx.color_theme.list_name_fg);
-                let truncate = console::measure_text_width(&commit.author_name) > max_width;
-                let name = if truncate {
-                    console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
-                } else {
-                    commit.author_name.to_string()
-                };
-                let spans =
-                    if let Some(pos) = state.search_matches[state.offset + i].author_name.clone() {
-                        highlighted_spans(
-                            name.into(),
-                            pos,
-                            name_fg,
-                            Modifier::empty(),
-                            &self.ctx.color_theme,
-                            truncate,
-                        )
-                    } else {
-                        vec![name.fg(name_fg)]
-                    };
+                let spans = highlighted_cut(
+                    &commit.author_name,
+                    max_width,
+                    Style::default().fg(name_fg),
+                    state.search_in(SearchTarget::Author),
+                    state.search_options(),
+                    &self.ctx.color_theme,
+                );
                 self.to_commit_list_item(i, spans, state)
             })
             .collect();
@@ -1073,19 +828,14 @@ impl CommitList<'_> {
             .map(|(i, commit_info)| {
                 let hash_fg = self.text_fg(commit_info, self.ctx.color_theme.list_hash_fg);
                 let hash = commit_info.commit.commit_hash.as_short_hash();
-                let spans =
-                    if let Some(pos) = state.search_matches[state.offset + i].commit_hash.clone() {
-                        highlighted_spans(
-                            hash.into(),
-                            pos,
-                            hash_fg,
-                            Modifier::empty(),
-                            &self.ctx.color_theme,
-                            false,
-                        )
-                    } else {
-                        vec![hash.fg(hash_fg)]
-                    };
+                let spans = highlighted_text(
+                    hash,
+                    hash.len(),
+                    Style::default().fg(hash_fg),
+                    state.search_in(SearchTarget::Hash),
+                    state.search_options(),
+                    &self.ctx.color_theme,
+                );
                 self.to_commit_list_item(i, spans, state)
             })
             .collect();
@@ -1149,11 +899,48 @@ impl CommitList<'_> {
     }
 }
 
+// Whether the search matches the commit, in what it looks in: its refs (not stashes), subject,
+// author or short hash.
+fn commit_matches(info: &CommitInfo, query: &str, options: SearchOptions) -> bool {
+    let commit = info.commit;
+    let matches = |text: &str| name_matches(text, query, options);
+    options.target.includes(SearchTarget::Ref)
+        && info
+            .refs
+            .iter()
+            .any(|r| !matches!(r, Ref::Stash { .. }) && matches(r.name()))
+        || options.target.includes(SearchTarget::Subject) && matches(&commit.subject)
+        || options.target.includes(SearchTarget::Author) && matches(&commit.author_name)
+        || options.target.includes(SearchTarget::Hash)
+            && matches(commit.commit_hash.as_short_hash())
+}
+
+// `text` cut to `width` with an ellipsis, what `search` matches in it highlighted, as everywhere.
+fn highlighted_cut(
+    text: &str,
+    width: usize,
+    style: Style,
+    search: Option<&str>,
+    options: SearchOptions,
+    theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    if console::measure_text_width(text) <= width {
+        return highlighted_text(text, text.len(), style, search, options, theme);
+    }
+    let cut = console::truncate_str(text, width, ELLIPSIS);
+    let shown = cut.len() - ELLIPSIS.len();
+    let mut spans = highlighted_text(text, shown, style, search, options, theme);
+    spans.push(Span::styled(ELLIPSIS, style));
+    spans
+}
+
 // The refs at the commit as labels tinted with their colors, each with its icon: branches, remote
-// branches, tags and stashes. The commit list and the details show them alike.
+// branches, tags and stashes, what `search` matches in their names highlighted. The commit list
+// and the details show them alike.
 pub fn refs_spans(
     commit_info: &CommitInfo,
-    refs_matches: &FxHashMap<String, SearchMatchPosition>,
+    search: Option<&str>,
+    options: SearchOptions,
     head: &Head,
     color_theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
@@ -1172,8 +959,6 @@ pub fn refs_spans(
     for r in &commit_info.refs {
         let name = r.name();
         let style = ref_label_style(ref_color(r, head_branch, color_theme));
-        let fg = style.fg.unwrap_or_default();
-        let bg = style.bg.unwrap_or_default();
         let icon = match r {
             Ref::Branch { .. } if commit_info.with_upstream.contains(&name) => Some(UPSTREAM_ICON),
             Ref::Branch { .. } => None,
@@ -1182,30 +967,18 @@ pub fn refs_spans(
             Ref::Stash { .. } => Some(STASH_ICON),
         };
         let prefix = icon.map_or(" ".into(), |icon| format!(" {icon} "));
-        let label = format!("{prefix}{name} ");
-        let label_spans = match refs_matches.get(name) {
-            // the match positions are of the name, the label has the prefix before it
-            Some(pos) => {
-                let mut pos = pos.clone();
-                pos.matched_indices = pos
-                    .matched_indices
-                    .iter()
-                    .map(|i| i + prefix.len())
-                    .collect();
-                highlighted_spans(label.into(), pos, fg, Modifier::BOLD, color_theme, false)
-                    .into_iter()
-                    .map(|span| {
-                        if span.style.bg.is_none() {
-                            span.bg(bg)
-                        } else {
-                            span
-                        }
-                    })
-                    .collect()
-            }
-            None => vec![Span::styled(label, style)],
-        };
-        spans.extend(label_spans);
+        // stashes aren't searched
+        let search = search.filter(|_| !matches!(r, Ref::Stash { .. }));
+        spans.push(Span::styled(prefix, style));
+        spans.extend(highlighted_text(
+            name,
+            name.len(),
+            style,
+            search,
+            options,
+            color_theme,
+        ));
+        spans.push(Span::styled(" ", style));
         spans.push(Span::raw(" "));
     }
     spans
@@ -1239,44 +1012,6 @@ pub fn ref_label_style(color: Color) -> Style {
 }
 
 const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);
-
-fn highlighted_spans(
-    s: Span<'_>,
-    pos: SearchMatchPosition,
-    base_fg: Color,
-    base_modifier: Modifier,
-    color_theme: &ColorTheme,
-    truncate: bool,
-) -> Vec<Span<'static>> {
-    // whole chars only: lowercasing for the search, or truncating, can move the bytes of a match
-    let text = &s.content;
-    let indices = pos
-        .matched_indices
-        .into_iter()
-        .filter(|&i| i < text.len())
-        .flat_map(|i| {
-            let start = (0..=i)
-                .rev()
-                .find(|&b| text.is_char_boundary(b))
-                .unwrap_or(0);
-            let len = text[start..].chars().next().map_or(1, char::len_utf8);
-            start..start + len
-        })
-        .collect();
-    let mut hm = highlight_matched_text(vec![s])
-        .matched_indices(indices)
-        .not_matched_style(Style::default().fg(base_fg).add_modifier(base_modifier))
-        .matched_style(
-            Style::default()
-                .fg(color_theme.list_match_fg)
-                .bg(color_theme.list_match_bg)
-                .add_modifier(base_modifier),
-        );
-    if truncate {
-        hm = hm.ellipsis(ELLIPSIS);
-    }
-    hm.into_spans()
-}
 
 fn calc_cell_widths(
     area_width: u16,
@@ -1365,7 +1100,7 @@ fn calc_cell_widths(
 mod tests {
     use std::path::PathBuf;
 
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::{
         color::GraphColorSet,
@@ -1375,6 +1110,7 @@ mod tests {
         keybind::KeyBind,
         protocol::ImageProtocol,
         view::ListRefreshViewContext,
+        widget::tree_query::QueryChange,
     };
 
     use super::*;
@@ -1446,11 +1182,26 @@ mod tests {
         f(&mut state)
     }
 
+    // A key typed into the search, as the commit list's view does.
+    fn type_key(state: &mut CommitListState<'_>, key: KeyEvent) {
+        if state.query_mut().handle_key(key) != QueryChange::None {
+            state.search_changed();
+        }
+    }
+
     fn input_search_query(state: &mut CommitListState<'_>, query: &str) {
         state.start_search();
         for c in query.chars() {
-            state.handle_search_input(KeyEvent::from(KeyCode::Char(c)));
+            type_key(state, KeyEvent::from(KeyCode::Char(c)));
         }
+    }
+
+    fn apply_search(state: &mut CommitListState<'_>) {
+        type_key(state, KeyEvent::from(KeyCode::Enter));
+    }
+
+    fn typed(state: &CommitListState<'_>) -> Option<String> {
+        state.search_status_input().map(|(text, _)| text)
     }
 
     #[test]
@@ -1485,7 +1236,7 @@ mod tests {
         .collect();
         let info = CommitInfo::new(&commit, refs.iter().collect(), &tracking, true);
         let theme = ColorTheme::default();
-        let label: String = refs_spans(&info, &FxHashMap::default(), &Head::None, &theme)
+        let label: String = refs_spans(&info, None, SearchOptions::default(), &Head::None, &theme)
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
@@ -1561,6 +1312,7 @@ mod tests {
                     layout: Default::default(),
                     wrap: Default::default(),
                     search_options: Default::default(),
+                    operation: Default::default(),
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1668,6 +1420,7 @@ mod tests {
                 layout: Default::default(),
                 wrap: Default::default(),
                 search_options: Default::default(),
+                operation: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
             let mut before = Buffer::empty(area);
@@ -1829,7 +1582,7 @@ mod tests {
             input_search_query(state, "fx");
             state.toggle_smart_case();
             state.toggle_fuzzy();
-            state.apply_search();
+            apply_search(state);
 
             (
                 state.search_refresh_context().unwrap(),
@@ -1857,7 +1610,7 @@ mod tests {
                 "unrelated"
             );
 
-            state.select_next_match();
+            state.select_next_match(Toward::Next);
             assert_eq!(
                 state.matched_query_string(),
                 Some(("Match 1 of 2 (query: \"fx\")".into(), true))
@@ -1867,7 +1620,7 @@ mod tests {
                 "FIX new"
             );
 
-            state.select_next_match();
+            state.select_next_match(Toward::Next);
             assert_eq!(
                 state.matched_query_string(),
                 Some(("Match 2 of 2 (query: \"fx\")".into(), true))
@@ -1889,7 +1642,7 @@ mod tests {
         with_commit_list_state(&["FIX"], |state| {
             state.restore_search_options(options);
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
 
             assert_eq!(
                 state.matched_query_string(),
@@ -1902,7 +1655,7 @@ mod tests {
     fn test_restore_search_keeps_selected_match_position() {
         let context = with_commit_list_state(&["fix"], |state| {
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
             state.search_refresh_context().unwrap()
         });
 
@@ -1927,11 +1680,11 @@ mod tests {
         with_commit_list_state(&["FIX"], |state| {
             input_search_query(state, "fix");
             state.toggle_smart_case();
-            state.apply_search();
+            apply_search(state);
             state.cancel_search();
 
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
 
             assert_eq!(
                 state.matched_query_string(),
@@ -1948,37 +1701,26 @@ mod tests {
             state.toggle_fuzzy();
             state.toggle_search_target();
             input_search_query(state, "fx");
-            state.handle_search_input(KeyEvent::from(KeyCode::Left));
-            state.apply_search();
-            state.select_next_match();
+            type_key(state, KeyEvent::from(KeyCode::Left));
+            apply_search(state);
+            state.select_next_match(Toward::Next);
             state.scroll_up();
 
             let options = state.search_options();
             let position = state.current_list_status();
             let result = state.matched_query_string();
-            let matches: Vec<_> = state
-                .search_matches
-                .iter()
-                .map(|m| m.subject.as_ref().map(|p| p.matched_indices.clone()))
-                .collect();
+            let matches = state.search_matches.clone();
             assert_eq!(result, Some(("Match 2 of 2 (query: \"fx\")".into(), true)));
 
             state.start_search();
 
-            assert_eq!(state.search_query_string(), Some("/fx".into()));
-            assert_eq!(state.search_query_cursor_position(), 3);
+            assert_eq!(typed(state), Some("/fx".into()));
+            assert_eq!(state.search_status_input().unwrap().1, 3);
             assert_eq!(state.search_options(), options);
             assert_eq!(state.current_list_status(), position);
-            assert_eq!(
-                state
-                    .search_matches
-                    .iter()
-                    .map(|m| m.subject.as_ref().map(|p| p.matched_indices.clone()))
-                    .collect::<Vec<_>>(),
-                matches
-            );
+            assert_eq!(state.search_matches, matches);
 
-            state.apply_search();
+            apply_search(state);
             assert_eq!(state.matched_query_string(), result);
             assert_eq!(state.current_list_status(), position);
         });
@@ -1990,21 +1732,21 @@ mod tests {
             &["fix parser older", "fix graph", "fix parser newer"],
             |state| {
                 input_search_query(state, "fix");
-                state.apply_search();
-                state.select_next_match();
+                apply_search(state);
+                state.select_next_match(Toward::Next);
                 assert_eq!(state.current_selected_index(), 1);
 
                 state.start_search();
                 for c in " parser".chars() {
-                    state.handle_search_input(KeyEvent::from(KeyCode::Char(c)));
+                    type_key(state, KeyEvent::from(KeyCode::Char(c)));
                 }
                 assert_eq!(state.current_selected_index(), 2);
-                assert!(!state.search_matches[1].matched());
-                assert!(state.search_matches[2].matched());
+                assert!(!state.search_matches[1]);
+                assert!(state.search_matches[2]);
 
-                state.handle_search_input(KeyEvent::from(KeyCode::Backspace));
-                assert_eq!(state.search_query_string(), Some("/fix parse".into()));
-                state.apply_search();
+                type_key(state, KeyEvent::from(KeyCode::Backspace));
+                assert_eq!(typed(state), Some("/fix parse".into()));
+                apply_search(state);
                 assert_eq!(
                     state.matched_query_string(),
                     Some(("Match 2 of 2 (query: \"fix parse\")".into(), true))
@@ -2017,13 +1759,13 @@ mod tests {
     fn test_resume_search_does_not_move_selection_off_an_unmatched_commit() {
         with_commit_list_state(&["fix", "other", "fix again"], |state| {
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
             state.select_next();
             let position = state.current_list_status();
             let result = state.matched_query_string();
 
             state.start_search();
-            state.apply_search();
+            apply_search(state);
 
             assert_eq!(state.current_list_status(), position);
             assert_eq!(state.current_selected_index(), 1);
@@ -2035,17 +1777,17 @@ mod tests {
     fn test_resume_search_without_matches_can_be_corrected() {
         with_commit_list_state(&["fix", "other"], |state| {
             input_search_query(state, "fixx");
-            state.apply_search();
+            apply_search(state);
             let result = state.matched_query_string();
 
             state.start_search();
-            assert_eq!(state.search_query_string(), Some("/fixx".into()));
-            state.apply_search();
+            assert_eq!(typed(state), Some("/fixx".into()));
+            apply_search(state);
             assert_eq!(state.matched_query_string(), result);
 
             state.start_search();
-            state.handle_search_input(KeyEvent::from(KeyCode::Backspace));
-            state.apply_search();
+            type_key(state, KeyEvent::from(KeyCode::Backspace));
+            apply_search(state);
             assert_eq!(
                 state.matched_query_string(),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
@@ -2057,14 +1799,14 @@ mod tests {
     fn test_cancel_resumed_search_starts_next_search_empty() {
         with_commit_list_state(&["fix", "other"], |state| {
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
             state.start_search();
             state.cancel_search();
 
-            assert_eq!(state.search_state(), SearchState::Inactive);
-            assert!(state.search_matches.iter().all(|m| !m.matched()));
+            assert!(!state.search_applied() && !state.is_typing_search());
+            assert!(state.search_matches.iter().all(|m| !m));
             state.start_search();
-            assert_eq!(state.search_query_string(), Some("/".into()));
+            assert_eq!(typed(state), Some("/".into()));
         });
     }
 
@@ -2076,20 +1818,23 @@ mod tests {
                     state.toggle_fuzzy();
                 }
                 input_search_query(state, "fix");
-                state.apply_search();
+                apply_search(state);
                 state.start_search();
-                state.handle_search_input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+                type_key(
+                    state,
+                    KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                );
 
-                assert_eq!(state.search_query_string(), Some("/".into()));
-                assert!(state.search_matches.iter().all(|m| !m.matched()));
-                state.apply_search();
-                assert_eq!(state.search_state(), SearchState::Inactive);
+                assert_eq!(typed(state), Some("/".into()));
+                assert!(state.search_matches.iter().all(|m| !m));
+                apply_search(state);
+                assert!(!state.search_applied() && !state.is_typing_search());
                 assert_eq!(state.matched_query_string(), None);
 
                 state.start_search();
-                assert_eq!(state.search_query_string(), Some("/".into()));
-                state.handle_search_input(KeyEvent::from(KeyCode::Char('o')));
-                state.apply_search();
+                assert_eq!(typed(state), Some("/".into()));
+                type_key(state, KeyEvent::from(KeyCode::Char('o')));
+                apply_search(state);
                 assert_eq!(
                     state.matched_query_string(),
                     Some(("Match 1 of 1 (query: \"o\")".into(), true))
@@ -2103,14 +1848,14 @@ mod tests {
         let query = "検索".repeat(40);
         with_commit_list_state(&[query.as_str()], |state| {
             input_search_query(state, &query);
-            state.handle_search_input(KeyEvent::from(KeyCode::Home));
-            state.apply_search();
+            type_key(state, KeyEvent::from(KeyCode::Home));
+            apply_search(state);
 
             state.start_search();
-            assert_eq!(state.search_query_string(), Some(format!("/{query}")));
-            assert_eq!(state.search_query_cursor_position(), 161);
-            state.handle_search_input(KeyEvent::from(KeyCode::Char('追')));
-            assert_eq!(state.search_query_string(), Some(format!("/{query}追")));
+            assert_eq!(typed(state), Some(format!("/{query}")));
+            assert_eq!(state.search_status_input().unwrap().1, 161);
+            type_key(state, KeyEvent::from(KeyCode::Char('追')));
+            assert_eq!(typed(state), Some(format!("/{query}追")));
         });
     }
 
@@ -2119,7 +1864,7 @@ mod tests {
         with_commit_list_state(&["FIX"], |state| {
             state.toggle_smart_case();
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
 
             assert_eq!(
                 state.matched_query_string(),
@@ -2181,12 +1926,19 @@ mod tests {
             name: "ref-match".into(),
             target: commit.commit_hash.clone(),
         };
-        let refs = [&reference];
+        let stash = Ref::Stash {
+            name: "stash@{0}".into(),
+            message: "stash-match".into(),
+            target: commit.commit_hash.clone(),
+        };
+        let tracking = FxHashMap::default();
+        let info = CommitInfo::new(&commit, vec![&reference, &stash], &tracking, true);
         let cases = [
             (SearchTarget::All, "subject-match", true),
             (SearchTarget::All, "author-match", true),
             (SearchTarget::All, "ref-match", true),
             (SearchTarget::All, "abcdef0", true),
+            (SearchTarget::All, "stash@", false),
             (SearchTarget::Subject, "subject-match", true),
             (SearchTarget::Subject, "author-match", false),
             (SearchTarget::Author, "author-match", true),
@@ -2196,102 +1948,44 @@ mod tests {
             (SearchTarget::Hash, "abcdef0", true),
             (SearchTarget::Hash, "subject-match", false),
         ];
-
         for (target, query, expected) in cases {
-            let matcher = SearchMatcher::new(query, SearchOptions::default());
-            let mut search_match = SearchMatch::default();
-            search_match.set(&commit, &refs, &matcher, target);
-            assert_eq!(search_match.matched(), expected, "{target:?}: {query}");
+            let options = SearchOptions {
+                target,
+                ..Default::default()
+            };
+            assert_eq!(
+                commit_matches(&info, query, options),
+                expected,
+                "{target:?}: {query}"
+            );
         }
     }
 
     #[test]
     fn test_matches_highlight_whole_chars() {
         let theme = ColorTheme::default();
-        let highlight = |text: &str, indices: Vec<usize>, truncate: bool| {
-            let pos = SearchMatchPosition::new(indices);
-            highlighted_spans(
-                text.into(),
-                pos,
-                Color::Reset,
-                Modifier::empty(),
-                &theme,
-                truncate,
-            )
-            .iter()
-            .filter(|span| span.style.bg == Some(theme.list_match_bg))
-            .map(|span| span.content.to_string())
-            .collect::<String>()
-        };
-
-        // the fuzzy matcher counts chars, the highlight takes bytes
-        let fuzzy = SearchMatcher::new(
-            "ül",
-            SearchOptions {
-                fuzzy: true,
-                ..Default::default()
-            },
-        );
-        let pos = fuzzy.matched_position("Müller").unwrap();
-        assert_eq!(pos.matched_indices, vec![1, 2, 3]);
-        assert_eq!(highlight("Müller", pos.matched_indices, false), "ül");
-
-        // a byte inside a char takes the whole char
-        assert_eq!(highlight("Müller", vec![2], false), "ü");
-        // past the end of a truncated text
-        assert_eq!(highlight("Mü…", vec![1, 2, 40], true), "ü");
-    }
-
-    #[test]
-    fn test_smart_case() {
-        // ignoring case unless the query has an uppercase letter; case-sensitive never
-        let found = |query, smart_case, text| {
+        let highlight = |text: &str, width: usize, query: &str, fuzzy: bool| {
             let options = SearchOptions {
-                smart_case,
+                fuzzy,
                 ..Default::default()
             };
-            SearchMatcher::new(query, options)
-                .matched_position(text)
-                .is_some()
+            highlighted_cut(text, width, Style::default(), Some(query), options, &theme)
+                .iter()
+                .filter(|span| span.style.bg == Some(theme.list_match_bg))
+                .map(|span| span.content.to_string())
+                .collect::<String>()
         };
-        assert!(found("fix", true, "Fix bug"));
-        assert!(!found("Fix", true, "fix bug"));
-        assert!(found("Fix", true, "Fix bug"));
-        assert!(!found("fix", false, "Fix bug"));
-    }
-
-    #[test]
-    fn test_search_target_change_clears_previous_field_matches() {
-        let commit = Commit {
-            commit_hash: CommitHash::from("abcdef0123456789abcdef0123456789abcdef01"),
-            subject: "match".into(),
-            author_name: "match".into(),
-            ..Commit::default()
-        };
-        let reference = Ref::Branch {
-            name: "match".into(),
-            target: commit.commit_hash.clone(),
-        };
-        let refs = [&reference];
-        let matcher = SearchMatcher::new("match", SearchOptions::default());
-        let mut search_match = SearchMatch::default();
-
-        search_match.set(&commit, &refs, &matcher, SearchTarget::All);
-        assert!(!search_match.refs.is_empty());
-        assert!(search_match.subject.is_some());
-        assert!(search_match.author_name.is_some());
-
-        search_match.set(&commit, &refs, &matcher, SearchTarget::Hash);
-        assert!(search_match.refs.is_empty());
-        assert!(search_match.subject.is_none());
-        assert!(search_match.author_name.is_none());
+        // fuzzy, by chars, not bytes
+        assert_eq!(highlight("Müller", 10, "ül", true), "ül");
+        // cut with an ellipsis, the match within what is shown
+        assert_eq!(highlight("Müller Straße", 6, "ller", false), "l");
     }
 
     #[test]
     fn test_applied_search_target_toggle_recalculates_matches() {
         with_commit_list_state(&["fix", "other"], |state| {
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
 
             state.toggle_search_target();
             assert_eq!(state.search_options().target, SearchTarget::Subject);
@@ -2313,7 +2007,7 @@ mod tests {
     fn test_applied_search_options_keep_selected_match() {
         with_commit_list_state(&["FIX", "fix"], |state| {
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
             state.toggle_smart_case();
 
             assert_eq!(
@@ -2332,7 +2026,7 @@ mod tests {
         with_commit_list_state(&["FIX", "fix"], |state| {
             state.toggle_smart_case();
             input_search_query(state, "fix");
-            state.apply_search();
+            apply_search(state);
             state.toggle_smart_case();
 
             assert_eq!(
@@ -2351,7 +2045,7 @@ mod tests {
         with_commit_list_state(&["fix", "other"], |state| {
             state.toggle_fuzzy();
             input_search_query(state, "fx");
-            state.apply_search();
+            apply_search(state);
             let selected = state.current_selected_index();
 
             state.toggle_fuzzy();

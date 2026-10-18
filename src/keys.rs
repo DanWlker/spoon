@@ -70,6 +70,23 @@ impl<'a, T: ?Sized> Keys<'a, T> {
         self
     }
 
+    // A key listed where it works, unlisted where it only says why it doesn't, like a command
+    // refused while a rebase waits, and off elsewhere.
+    pub fn add_where(
+        &mut self,
+        events: &[UserEvent],
+        short: &str,
+        long: &'static str,
+        availability: impl FnOnce(&T) -> Availability,
+    ) -> &mut Self {
+        let availability = self.view.map(availability);
+        self.quiet(events, long)
+            .when(|_| availability == Some(Availability::Warns));
+        // the listed one last, for `short` to change
+        self.add(events, short, long)
+            .when(|_| availability == Some(Availability::Works))
+    }
+
     // The view, None while registering every key for the help page.
     pub fn view(&self) -> Option<&'a T> {
         self.view
@@ -78,6 +95,14 @@ impl<'a, T: ?Sized> Keys<'a, T> {
     pub fn list(self) -> KeyList {
         KeyList(self.keys)
     }
+}
+
+// Where a key is, see `Keys::add_where`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    Works,
+    Warns,
+    Off,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
