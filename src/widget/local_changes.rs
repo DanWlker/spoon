@@ -56,6 +56,14 @@ enum ConflictItem {
     Editor,
 }
 
+// Shown beside the files instead of the diff of a conflicted file: its two sides, and the choice
+// selected while the panel has the focus.
+#[derive(Debug)]
+struct ConflictPanel {
+    view: ConflictView,
+    item: ConflictItem,
+}
+
 // An interactive program for the view to run in place of the app.
 // What the state asks the app for, once the event is handled: a git command run in the
 // background (like continuing a rebase), a popup confirming one (like a commit), or an editor
@@ -177,10 +185,9 @@ pub enum CommitField {
 enum Focus {
     // the files of the current section
     Files,
-    // the hunks or lines of the diff, see `DiffPane`
-    Diff,
-    // the choices of the conflict panel, shown instead of the diff of a conflicted file
-    Conflict(ConflictItem),
+    // the panel beside the files: the hunks or lines of the diff (see `DiffPane`), or the
+    // choices of the conflict panel shown instead for a conflicted file
+    Side,
     // the commit section, on one of its boxes; back in it, the summary is selected
     Commit(CommitField),
     // typing the message into a box of the commit section
@@ -271,8 +278,8 @@ pub struct LocalChangesState<'a> {
     diff_stale: bool,
     // the fingerprint of the files as loaded, see `reload_if_changed`
     files_stamp: u64,
-    // the two sides of the conflicted file under the cursor, shown instead of its diff
-    conflict: Option<ConflictView>,
+    // the conflicted file under the cursor, shown instead of its diff
+    conflict: Option<ConflictPanel>,
     // a rebase, merge, cherry-pick or revert stopped and waits to be finished (or aborted)
     operation: Option<Operation>,
 }
@@ -416,7 +423,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Selecting hunks or lines in the diff.
     pub fn is_diff_focused(&self) -> bool {
-        self.focus == Focus::Diff
+        self.focus == Focus::Side && self.conflict.is_none()
     }
 
     #[cfg(test)]
@@ -706,10 +713,9 @@ impl<'a> LocalChangesState<'a> {
 
     // Asks for confirmation to discard the selected unstaged line, hunk, file or directory.
     pub fn request_discard(&mut self) -> Result<(), String> {
-        if matches!(
-            self.focus,
-            Focus::Commit(_) | Focus::Typing(_) | Focus::Conflict(_)
-        ) || self.section != LocalChangesSection::Unstaged
+        if matches!(self.focus, Focus::Commit(_) | Focus::Typing(_))
+            || self.is_conflict_focused()
+            || self.section != LocalChangesSection::Unstaged
         {
             return Ok(());
         }
@@ -723,9 +729,10 @@ impl<'a> LocalChangesState<'a> {
         } else {
             row.path.clone()
         };
-        let target = match self.focus {
-            Focus::Diff => format!("this {} of", self.pane.selected_part().name()),
-            _ => "all changes to".into(),
+        let target = if self.is_diff_focused() {
+            format!("this {} of", self.pane.selected_part().name())
+        } else {
+            "all changes to".into()
         };
         let Some(task) = self.discard_task()? else {
             return Ok(());
@@ -884,7 +891,7 @@ impl<'a> LocalChangesState<'a> {
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
         let files = |v: &Self| v.focus == Focus::Files;
-        let diff = |v: &Self| v.focus == Focus::Diff;
+        let diff = |v: &Self| v.is_diff_focused();
         let commit = |v: &Self| matches!(v.focus, Focus::Commit(_));
         let conflict = |v: &Self| v.is_conflict_focused();
         let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
@@ -949,7 +956,7 @@ impl<'a> LocalChangesState<'a> {
             "On the empty staged files, go to the unstaged ones",
         )
         .when(|v| files(v) && empty(v) && !unstaged(v));
-        register_diff_keys(k, |v| (v.focus == Focus::Diff).then_some(&v.pane));
+        register_diff_keys(k, |v| v.is_diff_focused().then_some(&v.pane));
         k.add(
             &[Confirm],
             "choose",
@@ -1153,13 +1160,13 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn is_conflict_focused(&self) -> bool {
-        matches!(self.focus, Focus::Conflict(_))
+        self.focus == Focus::Side && self.conflict.is_some()
     }
 
     // Moves between the sides (side by side) and the tools below them.
     pub fn move_conflict_item(&mut self, direction: Direction) {
         use ConflictItem::*;
-        let Focus::Conflict(item) = &mut self.focus else {
+        let Some(ConflictPanel { item, .. }) = self.conflict.as_mut() else {
             return;
         };
         *item = match (*item, direction) {
@@ -1202,10 +1209,18 @@ impl<'a> LocalChangesState<'a> {
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus {
             Focus::Commit(_) | Focus::Typing(_) => self.commit_or_continue()?,
-            Focus::Conflict(item) => self.activate_conflict_item(item)?,
-            Focus::Files if self.conflict.is_some() && self.picked().is_empty() => {
+            Focus::Side => match &self.conflict {
+                Some(conflict) => self.activate_conflict_item(conflict.item)?,
+                None => {
+                    self.pane.enter();
+                }
+            },
+            Focus::Files if self.picked().is_empty() && self.conflict.is_some() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
-                self.focus = Focus::Conflict(ConflictItem::Existing);
+                if let Some(conflict) = self.conflict.as_mut() {
+                    conflict.item = ConflictItem::Existing;
+                }
+                self.focus = Focus::Side;
             }
             // nothing here to open: on from the unstaged files to committing, from the staged
             // ones back to the unstaged, as nothing staged commits nothing
@@ -1223,13 +1238,10 @@ impl<'a> LocalChangesState<'a> {
                     self.load_diff();
                 }
                 if self.pane.enter() {
-                    self.focus = Focus::Diff;
+                    self.focus = Focus::Side;
                 } else if self.pane.diff().is_some_and(|diff| diff.converted) {
                     return Err(CONVERTED_DIFF.into());
                 }
-            }
-            Focus::Diff => {
-                self.pane.enter();
             }
         }
         Ok(())
@@ -1240,11 +1252,12 @@ impl<'a> LocalChangesState<'a> {
     pub fn back(&mut self) -> bool {
         match self.focus {
             Focus::Typing(field) => self.focus = Focus::Commit(field),
-            Focus::Commit(_) | Focus::Conflict(_) => self.focus = Focus::Files,
-            Focus::Diff if self.pane.is_selecting_lines() => {
+            Focus::Commit(_) => self.focus = Focus::Files,
+            Focus::Side if self.conflict.is_some() => self.focus = Focus::Files,
+            Focus::Side if self.pane.is_selecting_lines() => {
                 self.pane.back();
             }
-            Focus::Diff => self.focus_files(),
+            Focus::Side => self.focus_files(),
             Focus::Files => return false,
         }
         true
@@ -1266,11 +1279,10 @@ impl<'a> LocalChangesState<'a> {
                 self.enter()?;
                 return Ok(self.focus != Focus::Files);
             }
-            (Focus::Diff | Focus::Conflict(_), Direction::Down) => self.focus_commit(),
-            (
-                Focus::Diff | Focus::Conflict(_) | Focus::Commit(_) | Focus::Typing(_),
-                Direction::Left,
-            ) => self.focus_files(),
+            (Focus::Side, Direction::Down) => self.focus_commit(),
+            (Focus::Side | Focus::Commit(_) | Focus::Typing(_), Direction::Left) => {
+                self.focus_files()
+            }
             // into the diff of the selected file, else its files
             (Focus::Commit(_) | Focus::Typing(_), Direction::Up) => {
                 self.focus_files();
@@ -1311,7 +1323,7 @@ impl<'a> LocalChangesState<'a> {
     // Moves the selected line or hunk, else the cursor of the files to `row`.
     fn step(&mut self, step: Step, row: impl Fn(&Self) -> usize) {
         match self.focus {
-            Focus::Diff => self.pane.step(step),
+            Focus::Side if self.conflict.is_none() => self.pane.step(step),
             // the summary, or the description under it
             Focus::Commit(_) | Focus::Typing(_) => {
                 let field = match step {
@@ -1348,8 +1360,8 @@ impl<'a> LocalChangesState<'a> {
                 self.edit_message();
                 return Ok(());
             }
-            Focus::Conflict(_) => return Ok(()),
-            Focus::Diff => {
+            Focus::Side if self.conflict.is_some() => return Ok(()),
+            Focus::Side => {
                 // the patch is made and applied the same way
                 let direction = self.patch_direction();
                 match self.pane.selected_patch(direction) {
@@ -1427,7 +1439,7 @@ impl<'a> LocalChangesState<'a> {
                 .retain(|p| files.iter().any(|f| path_contains(p, &f.path)));
         }
 
-        let focus = self.focus;
+        let in_diff = self.is_diff_focused();
         let selection = self.pane.selection();
         self.load_diff();
         if self.diff_source == DiffSource::Picked
@@ -1440,10 +1452,10 @@ impl<'a> LocalChangesState<'a> {
         // stay in the diff while the same path (or the picked files) still has hunks left
         let same_source =
             self.diff_source == DiffSource::Picked || self.selected_path() == selected_path;
-        if focus == Focus::Diff && same_source {
+        if in_diff && same_source && self.conflict.is_none() {
             self.pane.restore(selection);
             if self.pane.is_focused() {
-                self.focus = Focus::Diff;
+                self.focus = Focus::Side;
             }
         }
     }
@@ -1646,7 +1658,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Whether the keys moving in the files apply to them: the conflict panel is beside them.
     fn focus_on_files(&self) -> bool {
-        matches!(self.focus, Focus::Files | Focus::Conflict(_))
+        self.focus == Focus::Files || self.is_conflict_focused()
     }
 
     fn current(&self) -> &Section {
@@ -1765,14 +1777,17 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // The two sides of the selected file, when it is conflicted.
-    fn load_conflict(&self) -> Option<ConflictView> {
+    fn load_conflict(&self) -> Option<ConflictPanel> {
         self.selected_row()
             .and_then(FileTreeRow::file_index)
             .and_then(|i| self.files().get(i))
             .filter(|f| {
                 f.status == LocalChangeStatus::Conflicted && self.diff_source == DiffSource::Row
             })
-            .map(|f| ConflictView::load(self.repository, &f.path))
+            .map(|f| ConflictPanel {
+                view: ConflictView::load(self.repository, &f.path),
+                item: ConflictItem::Existing,
+            })
     }
 
     fn set_diff(&mut self, diff: &str) {
@@ -2004,10 +2019,8 @@ impl LocalChangesPanel<'_> {
         let [ours_area, theirs_area] =
             Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(sides_area);
-        let selected_item = match state.focus {
-            Focus::Conflict(item) if self.focused => Some(item),
-            _ => None,
-        };
+        let selected_item = (self.focused && state.is_conflict_focused()).then_some(conflict.item);
+        let conflict = &conflict.view;
         let focused = |item| selected_item == Some(item);
 
         let sides = [
@@ -3747,7 +3760,7 @@ mod tests {
         select_row(&mut state, "a.txt");
 
         // the conflicted file shows both sides instead of its diff
-        let conflict = state.conflict.as_ref().unwrap();
+        let conflict = &state.conflict.as_ref().unwrap().view;
         assert_eq!(
             (conflict.ours_label.as_str(), conflict.theirs_label.as_str()),
             ("HEAD", "feature")
@@ -3823,7 +3836,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "a.txt");
-        let conflict = state.conflict.as_ref().unwrap();
+        let conflict = &state.conflict.as_ref().unwrap().view;
         assert_eq!(conflict.ours, ["(deleted)"]);
         assert_eq!(conflict.theirs, ["feature"]);
 
