@@ -29,7 +29,7 @@ use crate::{
             CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
-        file_tree::FileTreeState,
+        file_tree::{FileTreeState, ROOT_PATH},
         git_dialog::GitDialog,
         style::{panel_block, ScrollState},
         tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
@@ -147,6 +147,8 @@ impl<'a> DetailView<'a> {
             |v: &Self| !v.list_focused && matches!(v.selected_entry(), Some((_, false)));
         // a row of the files, which a commit without changes has none of
         let entry = move |v: &Self| files(v) && v.selected_entry().is_some();
+        // a file or directory, not the root row standing for all of them
+        let path = |v: &Self| v.selected_path().is_some();
         // or a filter hiding all of them, to change
         let queried = move |v: &Self| {
             files(v)
@@ -295,19 +297,19 @@ impl<'a> DetailView<'a> {
             "ignore",
             "Add the file or directory to .gitignore",
         )
-        .when(entry);
+        .when(move |v| files(v) && path(v));
         k.add(
             &[OpenInBrowser],
             "open in browser",
             "Open the selected file at the commit on the web host, at the selected lines",
         )
-        .when(|v| entry(v) || pane(v));
+        .when(move |v| (files(v) || pane(v)) && path(v));
         k.add(
             &[CopyLink],
             "copy link",
             "Copy the link of the selected file, at the selected lines",
         )
-        .when(|v| entry(v) || pane(v));
+        .when(move |v| (files(v) || pane(v)) && path(v));
         k.add(
             &[Blame],
             "blame",
@@ -629,7 +631,7 @@ impl<'a> DetailView<'a> {
             }
             // o opens the selected file at this commit on the web host, O copies its link
             if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-                if let Some((path, _)) = self.selected_entry() {
+                if let Some((path, _)) = self.selected_path() {
                     let link = file_link(event, &self.commit.commit_hash, path, None);
                     self.tx.send(link);
                     return;
@@ -637,7 +639,7 @@ impl<'a> DetailView<'a> {
             }
             // i adds the selected file or directory to .gitignore
             if event == UserEvent::Ignore {
-                if let Some((path, dir)) = self.selected_entry() {
+                if let Some((path, dir)) = self.selected_path() {
                     let event = match self.repository.ignore_path(path, dir) {
                         Ok(message) => {
                             self.tx.send(AppEvent::LocalChangesChanged);
@@ -740,7 +742,7 @@ impl<'a> DetailView<'a> {
         match &self.compare {
             // the panel 2, like the tabs
             Comparing::Shown(compare) => render_compare_title(
-                &format!("[2] {}", compare.title),
+                &format!("[2] {}", compare.title()),
                 focused,
                 indicator,
                 &self.ctx.color_theme,
@@ -806,6 +808,12 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    // The selected file or directory, not the root row of the changes, which has no path of its
+    // own to ignore or link to.
+    fn selected_path(&self) -> Option<(&str, bool)> {
+        self.selected_entry().filter(|(path, _)| *path != ROOT_PATH)
+    }
+
     // The keys of the diff or preview having the focus: moving the selection in it, scrolling,
     // copying and applying (the search is handled before); others are ignored.
     fn handle_pane_event(&mut self, event: UserEvent) {
@@ -816,7 +824,7 @@ impl<'a> DetailView<'a> {
                 DetailTab::Files => self.files_state.selected_line().map(|line| (line, line)),
                 DetailTab::Info => None,
             };
-            if let Some((path, _)) = self.selected_entry() {
+            if let Some((path, _)) = self.selected_path() {
                 let link = file_link(event, &self.commit.commit_hash, path, lines);
                 self.tx.send(link);
             }
@@ -892,7 +900,7 @@ impl<'a> DetailView<'a> {
 
     // Applies the selected hunk or line of the diff to the working tree.
     fn apply_change(&self) {
-        let Some(patch) = self.changes_state.pane.selected_patch() else {
+        let Some(patch) = self.changes_state.pane.selected_patch(false) else {
             return;
         };
         let what = if self.changes_state.pane.is_selecting_lines() {

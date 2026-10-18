@@ -3,7 +3,7 @@
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, Ref, Repository},
+    git::{split_remote_branch, NamedRef, Ref, Repository},
     keybind::Scope,
     widget::{
         git_dialog::GitDialog,
@@ -22,7 +22,7 @@ pub fn ref_command_applies(
     picked: &RefPicks,
 ) -> bool {
     use RefSection::*;
-    let on_ref = matches!(selection, RefSelection::Ref(Branches | Remotes | Tags, _));
+    let on_ref = matches!(selection, RefSelection::Ref(_));
     let graph = event.home_scope() == Scope::Graph;
     // a detached HEAD is no ref to delete, rename, pick, copy or diff, only a commit to work on
     let detached = *selection == RefSelection::DetachedHead;
@@ -30,9 +30,11 @@ pub fn ref_command_applies(
         // on the whole graph, wherever
         UserEvent::BranchOnly => true,
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
-        UserEvent::ToggleSelect => matches!(selection, RefSelection::Ref(..)),
+        UserEvent::ToggleSelect => {
+            matches!(selection, RefSelection::Ref(_) | RefSelection::Stash(_))
+        }
         UserEvent::DeleteRef => match selection {
-            RefSelection::Ref(..) => true,
+            RefSelection::Ref(_) | RefSelection::Stash(_) => true,
             // a remote, removed
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => !picked.is_empty(),
@@ -48,13 +50,13 @@ pub fn ref_command_applies(
         }
         UserEvent::CreateRef => adds_remote(repository, selection),
         UserEvent::EditRef => match selection {
-            RefSelection::Ref(Branches, _) => true,
+            RefSelection::Ref(NamedRef::Branch(_)) => true,
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => false,
         },
-        UserEvent::ApplyStash => matches!(selection, RefSelection::Ref(Stashes, _)),
+        UserEvent::ApplyStash => matches!(selection, RefSelection::Stash(_)),
         UserEvent::OpenInBrowser | UserEvent::CopyLink => match selection {
-            RefSelection::Ref(section, _) => *section != Stashes,
+            RefSelection::Ref(_) => true,
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => false,
         },
@@ -63,22 +65,18 @@ pub fn ref_command_applies(
     }
 }
 
-// The refs `D` diffs in the sidebar, by full name as a tag may have a branch's name: the picked
-// ones, else the selected branch, remote branch or tag; None for stashes and the rows that are no
-// ref.
-pub fn diff_refs(selection: &RefSelection, picked: &RefPicks) -> Option<Vec<String>> {
-    let (section, names) = match selection {
-        _ if !picked.is_empty() => (picked.section, picked.names.clone()),
-        RefSelection::Ref(section, name) => (*section, vec![name.clone()]),
-        _ => return None,
-    };
-    let prefix = match section {
-        RefSection::Branches => "refs/heads/",
-        RefSection::Remotes => "refs/remotes/",
-        RefSection::Tags => "refs/tags/",
-        RefSection::Stashes => return None,
-    };
-    Some(names.iter().map(|name| format!("{prefix}{name}")).collect())
+// The refs `D` diffs in the sidebar: the picked ones, else the selected branch, remote branch or
+// tag; None for stashes and the rows that are no ref.
+pub fn diff_refs(selection: &RefSelection, picked: &RefPicks) -> Option<Vec<NamedRef>> {
+    match selection {
+        _ if !picked.is_empty() => picked
+            .names
+            .iter()
+            .map(|name| picked.section.named(name.clone()))
+            .collect(),
+        RefSelection::Ref(named) => Some(vec![named.clone()]),
+        _ => None,
+    }
 }
 
 // The popup of `event` on the selected row, where `ref_command_applies`; None for other events.
@@ -103,10 +101,15 @@ pub fn ref_command(
         {
             Ok(GitDialog::remove_remote(name))
         }
-        (UserEvent::DeleteRef, RefSelection::Ref(section, name)) => {
-            delete_refs(repository, *section, std::slice::from_ref(name))
+        (UserEvent::DeleteRef, RefSelection::Ref(named)) => delete_refs(
+            repository,
+            RefSection::of(named),
+            &[named.name().to_string()],
+        ),
+        (UserEvent::DeleteRef, RefSelection::Stash(name)) => {
+            delete_refs(repository, Stashes, std::slice::from_ref(name))
         }
-        (UserEvent::EditRef, RefSelection::Ref(Branches, name)) => {
+        (UserEvent::EditRef, RefSelection::Ref(NamedRef::Branch(name))) => {
             let info = repository.remote_info();
             let upstream = info
                 .upstreams
@@ -127,7 +130,7 @@ pub fn ref_command(
             let url = repository.remote_url(name).unwrap_or_default();
             Ok(GitDialog::edit_remote(name, &url))
         }
-        (UserEvent::ApplyStash, RefSelection::Ref(Stashes, name)) => Ok(GitDialog::apply_stash(
+        (UserEvent::ApplyStash, RefSelection::Stash(name)) => Ok(GitDialog::apply_stash(
             name,
             &stash_message(repository, name),
         )),
@@ -461,7 +464,7 @@ mod tests {
 
         // the current branch can't be deleted
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let selection = RefSelection::Ref(Branches, "topic".into());
+        let selection = RefSelection::Ref(NamedRef::Branch("topic".into()));
         let deleted = ref_command(
             &repository,
             UserEvent::DeleteRef,
@@ -484,7 +487,7 @@ mod tests {
         assert_eq!(branches(), "main \ntopic2 origin/main\n");
 
         // no longer tracking it
-        let selection = RefSelection::Ref(Branches, "topic2".into());
+        let selection = RefSelection::Ref(NamedRef::Branch("topic2".into()));
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let mut dialog = ref_command(
             &repository,
@@ -513,7 +516,7 @@ mod tests {
         git(path, &["commit", "-q", "--allow-empty", "-m", "c2"]);
         git(path, &["checkout", "-q", "main"]);
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let ahead = RefSelection::Ref(Branches, "ahead".into());
+        let ahead = RefSelection::Ref(NamedRef::Branch("ahead".into()));
         let dialog = ref_command(
             &repository,
             UserEvent::DeleteRef,
@@ -529,7 +532,7 @@ mod tests {
         // a branch deleted with its upstream on the remote, when checked
         git(path, &["branch", "-q", "up"]);
         git(path, &["push", "-q", "-u", "origin", "up"]);
-        let up = RefSelection::Ref(Branches, "up".into());
+        let up = RefSelection::Ref(NamedRef::Branch("up".into()));
         run(
             path,
             UserEvent::DeleteRef,
@@ -547,7 +550,7 @@ mod tests {
         run(
             path,
             UserEvent::DeleteRef,
-            RefSelection::Ref(Remotes, "origin/gone".into()),
+            RefSelection::Ref(NamedRef::RemoteBranch("origin/gone".into())),
             &[],
         );
         assert_eq!(
@@ -578,7 +581,7 @@ mod tests {
         run(
             path,
             UserEvent::DeleteRef,
-            RefSelection::Ref(Tags, "v1".into()),
+            RefSelection::Ref(NamedRef::Tag("v1".into())),
             &keys,
         );
         assert_eq!(git(path, &["tag"]), "");
@@ -589,7 +592,7 @@ mod tests {
             ref_command_applies(&repository, event, &selection, picked)
         };
         let none = RefPicks::default();
-        let main = || RefSelection::Ref(Branches, "main".into());
+        let main = || RefSelection::Ref(NamedRef::Branch("main".into()));
         for event in [
             UserEvent::CreateBranch,
             UserEvent::CreateTag,
@@ -618,7 +621,7 @@ mod tests {
         ));
         assert!(!applies(
             UserEvent::CreateRef,
-            RefSelection::Ref(Remotes, "origin/main".into()),
+            RefSelection::Ref(NamedRef::RemoteBranch("origin/main".into())),
             &none
         ));
         assert!(applies(
@@ -658,7 +661,7 @@ mod tests {
         std::fs::write(path.join("f"), "2\n").unwrap();
         git(path, &["add", "f"]);
         git(path, &["stash", "-q"]);
-        let stash = RefSelection::Ref(Stashes, "stash@{0}".into());
+        let stash = RefSelection::Stash("stash@{0}".into());
         run(
             path,
             UserEvent::ApplyStash,
@@ -675,7 +678,7 @@ mod tests {
         run(
             path,
             UserEvent::ApplyStash,
-            RefSelection::Ref(Stashes, "stash@{0}".into()),
+            RefSelection::Stash("stash@{0}".into()),
             &keys,
         );
         assert_eq!(git(path, &["status", "--porcelain"]), " M f\n");

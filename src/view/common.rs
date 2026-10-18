@@ -7,7 +7,7 @@ use crate::{
     app::AppContext,
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, UserEvent},
-    git::{CommitHash, FileRevision, Repository},
+    git::{CommitHash, FileRevision, Repository, Rev},
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
     search::{SearchKind, SearchOptions},
@@ -338,9 +338,14 @@ pub fn copy_path(repository: &Repository, path: &str, full: bool) -> AppEvent {
 // resolved again once reloaded.
 #[derive(Debug, Clone)]
 pub struct Compare {
-    pub base: String,
-    pub target: String,
-    pub title: String,
+    pub base: Rev,
+    pub target: Rev,
+}
+
+impl Compare {
+    pub fn title(&self) -> String {
+        format!("Diff {} → {}", self.base.shown(), self.target.shown())
+    }
 }
 
 #[derive(Debug, Clone)]

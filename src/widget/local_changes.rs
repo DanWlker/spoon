@@ -23,10 +23,8 @@ use crate::{
     search::{SearchKind, SearchOptions},
     widget::{
         conflict::ConflictView,
-        diff::{
-            diff_line_count, diff_lines, parse_diff, render_diff_lines, DiffCursor, DiffHunk,
-            ParsedDiff, Step, CONVERTED_DIFF,
-        },
+        diff::{parse_diff, Step, CONVERTED_DIFF},
+        diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, FileTree, FileTreeRow, FileTreeState, TreeShape,
         },
@@ -36,7 +34,7 @@ use crate::{
             render_panel_scrollbar, tree_panel_width,
         },
         text_area::TextArea,
-        tree_query::{highlight_match, QueryChange, QueryKind, SearchDirection, TreeQuery},
+        tree_query::{QueryChange, QueryKind, SearchDirection, TreeQuery},
     },
 };
 
@@ -176,10 +174,8 @@ pub enum CommitField {
 enum Focus {
     // the files of the current section
     Files,
-    // the hunks of the diff
-    Hunks,
-    // the changed lines of the diff
-    Lines,
+    // the hunks or lines of the diff, see `DiffPane`
+    Diff,
     // the choices of the conflict panel, shown instead of the diff of a conflicted file
     Conflict,
     // the commit section
@@ -257,11 +253,10 @@ pub struct LocalChangesState<'a> {
     sections: [Section; 2],
     section: LocalChangesSection,
     focus: Focus,
-    // the diff beside the files, and what it is of
-    diff: ParsedDiff,
+    // the diff beside the files, its selected hunk or line and scroll (or that of the conflict
+    // sides), and what it is of
+    pane: DiffPane,
     diff_source: DiffSource,
-    // the selected hunk or line, and the scroll of the diff (or of the conflict sides)
-    cursor: DiffCursor,
     // searching the diff while it has the focus
     diff_query: TreeQuery,
 
@@ -305,9 +300,8 @@ impl<'a> LocalChangesState<'a> {
             sections,
             section,
             focus: Focus::Files,
-            diff: ParsedDiff::default(),
+            pane: DiffPane::default(),
             diff_source: DiffSource::Row,
-            cursor: DiffCursor::default(),
             diff_query: TreeQuery::default(),
             draft: CommitDraft::default(),
             commit_field: CommitField::Summary,
@@ -411,11 +405,11 @@ impl<'a> LocalChangesState<'a> {
 
     // Selecting hunks or lines in the diff.
     pub fn is_diff_focused(&self) -> bool {
-        matches!(self.focus, Focus::Hunks | Focus::Lines)
+        self.focus == Focus::Diff
     }
 
     pub fn is_selecting_lines(&self) -> bool {
-        self.focus == Focus::Lines
+        self.is_diff_focused() && self.pane.is_selecting_lines()
     }
 
     // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
@@ -722,8 +716,8 @@ impl<'a> LocalChangesState<'a> {
             row.path.clone()
         };
         let target = match self.focus {
-            Focus::Lines => "this line of",
-            Focus::Hunks => "this hunk of",
+            Focus::Diff if self.pane.is_selecting_lines() => "this line of",
+            Focus::Diff => "this hunk of",
             _ => "all changes to",
         };
         let Some(task) = self.discard_task()? else {
@@ -752,11 +746,7 @@ impl<'a> LocalChangesState<'a> {
         };
         if self.is_diff_focused() {
             // the other changed lines stay in the working tree, like when unstaging from the index
-            let patch = if self.focus == Focus::Lines {
-                self.cursor.line_patch(&self.diff, true)
-            } else {
-                self.cursor.selected_hunk(&self.diff).map(DiffHunk::patch)
-            };
+            let patch = self.pane.selected_patch(true);
             let apply = ["apply", "--reverse", "-"].map(String::from).to_vec();
             return Ok(patch.map(|patch| task(vec![apply], Some(patch))));
         }
@@ -887,7 +877,7 @@ impl<'a> LocalChangesState<'a> {
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
         let files = |v: &Self| v.focus == Focus::Files;
-        let diff = |v: &Self| matches!(v.focus, Focus::Hunks | Focus::Lines);
+        let diff = |v: &Self| v.focus == Focus::Diff;
         let commit = |v: &Self| v.focus == Focus::Commit;
         let conflict = |v: &Self| v.focus == Focus::Conflict;
         let unstaged = |v: &Self| v.section == LocalChangesSection::Unstaged;
@@ -902,10 +892,10 @@ impl<'a> LocalChangesState<'a> {
         };
         let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
         let what = |v: &Self| {
-            if v.focus == Focus::Hunks {
-                "hunk"
-            } else {
+            if v.pane.is_selecting_lines() {
                 "line"
+            } else {
+                "hunk"
             }
         };
         // committing, or amending, or continuing an operation
@@ -961,7 +951,7 @@ impl<'a> LocalChangesState<'a> {
             "lines",
             "Select the hunks of the diff, then their lines; resolve a conflict",
         )
-        .when(|v| v.focus == Focus::Hunks);
+        .when(|v| diff(v) && !v.pane.is_selecting_lines());
         k.add(
             &[Confirm],
             "choose",
@@ -1237,18 +1227,15 @@ impl<'a> LocalChangesState<'a> {
                     self.diff_source = DiffSource::Picked;
                     self.load_diff();
                 }
-                if self.cursor.select_hunk(&self.diff, 0) {
-                    self.focus = Focus::Hunks;
-                } else if self.diff.converted {
+                if self.pane.enter() {
+                    self.focus = Focus::Diff;
+                } else if self.pane.diff().is_some_and(|diff| diff.converted) {
                     return Err(CONVERTED_DIFF.into());
                 }
             }
-            Focus::Hunks => {
-                if self.cursor.enter_lines(&self.diff) {
-                    self.focus = Focus::Lines;
-                }
+            Focus::Diff => {
+                self.pane.enter();
             }
-            Focus::Lines => {}
         }
         Ok(())
     }
@@ -1259,11 +1246,10 @@ impl<'a> LocalChangesState<'a> {
         match self.focus {
             Focus::Typing => self.focus = Focus::Commit,
             Focus::Commit | Focus::Conflict => self.focus = Focus::Files,
-            Focus::Lines => {
-                self.focus = Focus::Hunks;
-                self.cursor.leave_lines(&self.diff);
+            Focus::Diff if self.pane.is_selecting_lines() => {
+                self.pane.back();
             }
-            Focus::Hunks => self.focus_files(),
+            Focus::Diff => self.focus_files(),
             Focus::Files => return false,
         }
         true
@@ -1285,11 +1271,10 @@ impl<'a> LocalChangesState<'a> {
                 self.enter()?;
                 return Ok(self.focus != Focus::Files);
             }
-            (Focus::Hunks | Focus::Lines | Focus::Conflict, Direction::Down) => self.focus_commit(),
-            (
-                Focus::Hunks | Focus::Lines | Focus::Conflict | Focus::Commit | Focus::Typing,
-                Direction::Left,
-            ) => self.focus_files(),
+            (Focus::Diff | Focus::Conflict, Direction::Down) => self.focus_commit(),
+            (Focus::Diff | Focus::Conflict | Focus::Commit | Focus::Typing, Direction::Left) => {
+                self.focus_files()
+            }
             // into the diff of the selected file, else its files
             (Focus::Commit | Focus::Typing, Direction::Up) => {
                 self.focus_files();
@@ -1305,6 +1290,7 @@ impl<'a> LocalChangesState<'a> {
     // Moves the focus to the files, whose diff shows the row under the cursor again.
     pub fn focus_files(&mut self) {
         self.focus = Focus::Files;
+        self.pane.leave();
         if std::mem::replace(&mut self.diff_source, DiffSource::Row) == DiffSource::Picked {
             self.load_diff();
         }
@@ -1329,8 +1315,7 @@ impl<'a> LocalChangesState<'a> {
     // Moves the selected line or hunk, else the cursor of the files to `row`.
     fn step(&mut self, step: Step, row: impl Fn(&Self) -> usize) {
         match self.focus {
-            Focus::Lines => self.cursor.move_line(&self.diff, step),
-            Focus::Hunks => self.cursor.move_hunk(&self.diff, step),
+            Focus::Diff => self.pane.step(step),
             // the summary, or the description under it
             Focus::Commit | Focus::Typing => {
                 self.commit_field = match step {
@@ -1345,8 +1330,7 @@ impl<'a> LocalChangesState<'a> {
     // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
     // whether `event` was one.
     pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
-        (self.focus == Focus::Lines && self.cursor.jump_half_page(&self.diff, event))
-            || self.cursor.scroll.handle_scroll(event)
+        self.pane.scroll(event)
     }
 
     // Staging the unstaged changes, unstaging the staged ones.
@@ -1365,19 +1349,13 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(());
             }
             Focus::Conflict => return Ok(()),
-            Focus::Lines => {
+            Focus::Diff => {
                 let reverse = self.section == LocalChangesSection::Staged;
-                match self.cursor.line_patch(&self.diff, reverse) {
+                match self.pane.selected_patch(reverse) {
                     Some(patch) => self.repository.apply_patch(&patch, self.patch_action()),
                     None => Ok(()),
                 }
             }
-            Focus::Hunks => match self.cursor.selected_hunk(&self.diff) {
-                Some(hunk) => self
-                    .repository
-                    .apply_patch(&hunk.patch(), self.patch_action()),
-                None => Ok(()),
-            },
             Focus::Files => {
                 let result = self.toggle_stage_row();
                 if result.is_ok() {
@@ -1449,9 +1427,11 @@ impl<'a> LocalChangesState<'a> {
         }
 
         let focus = self.focus;
-        let selected = self.cursor.clone();
+        let selection = self.pane.selection();
         self.load_diff();
-        if self.diff_source == DiffSource::Picked && self.diff.hunks.is_empty() {
+        if self.diff_source == DiffSource::Picked
+            && self.pane.diff().is_none_or(|d| d.hunks.is_empty())
+        {
             // nothing left to stage from the picked files
             self.diff_source = DiffSource::Row;
             self.load_diff();
@@ -1459,15 +1439,10 @@ impl<'a> LocalChangesState<'a> {
         // stay in the diff while the same path (or the picked files) still has hunks left
         let same_source =
             self.diff_source == DiffSource::Picked || self.selected_path() == selected_path;
-        if matches!(focus, Focus::Hunks | Focus::Lines)
-            && same_source
-            && !self.diff.hunks.is_empty()
-        {
-            self.focus = Focus::Hunks;
-            self.cursor.select_hunk(&self.diff, selected.hunk);
-            // continue from the same position, the staged line itself is gone or became context
-            if focus == Focus::Lines && self.cursor.select_line_near(&self.diff, selected.line) {
-                self.focus = Focus::Lines;
+        if focus == Focus::Diff && same_source {
+            self.pane.restore(selection);
+            if self.pane.is_focused() {
+                self.focus = Focus::Diff;
             }
         }
     }
@@ -1567,23 +1542,15 @@ impl<'a> LocalChangesState<'a> {
         let Some(query) = self.diff_query.search() else {
             return;
         };
-        let lines = self.focus == Focus::Lines;
-        if let Some(changed) = self
-            .cursor
-            .search(&self.diff, query, direction, lines, options)
-        {
-            self.focus = if changed { Focus::Lines } else { Focus::Hunks };
+        let query = query.to_string();
+        if self.pane.search(&query, direction, options) {
+            self.focus = Focus::Diff;
         }
     }
 
     // The selected line as in the file, or the selected hunk as a diff, to copy.
     pub fn selected_diff_text(&self) -> Option<String> {
-        matches!(self.focus, Focus::Hunks | Focus::Lines)
-            .then(|| {
-                self.cursor
-                    .selected_text(&self.diff, self.focus == Focus::Lines)
-            })
-            .flatten()
+        self.pane.selected_text().filter(|_| self.is_diff_focused())
     }
 
     fn apply_query_change(&mut self, change: QueryChange, options: SearchOptions) {
@@ -1648,7 +1615,7 @@ impl<'a> LocalChangesState<'a> {
     fn update_tree(&mut self, f: impl FnOnce(&mut FileTreeState)) {
         let before = self.selected_path();
         f(self.tree_mut());
-        if self.selected_path() != before || self.diff.raw.is_empty() {
+        if self.selected_path() != before || self.pane.diff().is_none_or(|d| d.raw.is_empty()) {
             self.load_diff();
         }
     }
@@ -1709,7 +1676,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     #[cfg(test)]
-    fn rows(&self) -> &[FileTreeRow] {
+    pub fn rows(&self) -> &[FileTreeRow] {
         self.tree().rows()
     }
 
@@ -1807,9 +1774,9 @@ impl<'a> LocalChangesState<'a> {
         if !self.is_commit_focused() {
             self.focus = Focus::Files;
         }
-        self.diff = parse_diff(diff);
-        self.diff.drop_converted(self.repository);
-        self.cursor.reset();
+        let mut diff = parse_diff(diff);
+        diff.drop_converted(self.repository);
+        self.pane.set_diff(Some(diff));
     }
 }
 
@@ -1958,8 +1925,8 @@ impl LocalChangesPanel<'_> {
             None => String::new(),
         };
         let mode = match state.focus {
-            Focus::Lines => "select lines",
-            Focus::Hunks => "select hunks",
+            Focus::Diff if state.pane.is_selecting_lines() => "select lines",
+            Focus::Diff => "select hunks",
             _ => "",
         };
         let diff_focused = self.focused && state.is_diff_focused();
@@ -1971,49 +1938,21 @@ impl LocalChangesPanel<'_> {
             &self.ctx.color_theme,
         );
 
-        let selected = state.selected_row().is_some();
-        let count = if selected {
-            diff_line_count(&state.diff)
-        } else {
-            1
-        };
-        let range = state.cursor.scroll.fit(count, inner.height as usize);
-        let offset = range.start;
-        let theme = &self.ctx.color_theme;
-        render_panel_scrollbar(buf, area, count, offset, diff_focused, theme);
-
-        let mut lines = if selected {
-            diff_lines(&state.diff, &self.ctx.color_theme, range, inner.width)
-        } else {
+        if state.selected_row().is_none() {
             let message = if state.count() == 0 {
                 "No local changes"
             } else {
                 "No file selected"
             };
-            vec![placeholder(message, &self.ctx.color_theme)]
-        };
-
-        // the selected line or hunk, by its row in the diff
-        let highlighted = match state.focus {
-            Focus::Lines | Focus::Hunks => state
-                .cursor
-                .highlighted(&state.diff, state.focus == Focus::Lines),
-            _ => 0..0,
-        };
-        let search = state.diff_query.search().filter(|_| selected);
-        if let Some(query) = search {
-            for line in lines.iter_mut() {
-                highlight_match(
-                    line,
-                    query,
-                    self.ctx.search_options.get(),
-                    &self.ctx.color_theme,
-                );
-            }
+            Paragraph::new(placeholder(message, &self.ctx.color_theme)).render(inner, buf);
+            return;
         }
-        let rows = offset..offset + lines.len();
-        let (wrap, theme) = (self.ctx.wrap.get(), &self.ctx.color_theme);
-        render_diff_lines(lines, rows, highlighted, wrap, theme, inner, buf);
+        // on the right border, past the padding
+        let scrollbar = Rect::new(area.right().saturating_sub(1), inner.y, 1, inner.height);
+        let search = state.diff_query.search();
+        state
+            .pane
+            .render(inner, scrollbar, buf, &self.ctx, diff_focused, search);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -2108,7 +2047,7 @@ impl LocalChangesPanel<'_> {
             block.render(side_area, buf);
             height = content_area.height as usize;
             let longest = conflict.ours.len().max(conflict.theirs.len());
-            let range = state.cursor.scroll.fit(longest, height);
+            let range = state.pane.scroll_state().fit(longest, height);
             let lines: Vec<Line> = lines
                 .iter()
                 .skip(range.start)
@@ -2123,7 +2062,7 @@ impl LocalChangesPanel<'_> {
                 .collect();
             Paragraph::new(lines).render(content_area, buf);
         }
-        state.cursor.scroll.height = height;
+        state.pane.scroll_state().height = height;
 
         let tool = match &self.ctx.core_config.git.merge_tool {
             Some(tool) => format!("  Edit in merge tool ({tool})  "),
@@ -2205,6 +2144,11 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    // The diff beside the files, always loaded on the page.
+    fn diff<'s>(state: &'s LocalChangesState) -> &'s crate::widget::diff::ParsedDiff {
+        state.pane.diff().unwrap()
+    }
     use crate::{
         git::SortCommit,
         test_support::git::GitRepository,
@@ -2263,17 +2207,17 @@ mod tests {
         }
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
-        let shown = state.diff.raw.clone();
+        let shown = diff(&state).raw.clone();
 
         // like a held key, moving over the rows loads no diff
         for path in ["a.txt", "b.txt", "c.txt"] {
             let pos = state.rows().iter().position(|r| r.path == path).unwrap();
             state.move_cursor(pos);
-            assert_eq!(state.diff.raw, shown);
+            assert_eq!(diff(&state).raw, shown);
         }
         // the row it stops on is loaded once, before the next key or the next frame
         state.load_stale_diff();
-        assert!(state.diff.raw.contains("+c.txt"));
+        assert!(diff(&state).raw.contains("+c.txt"));
         Ok(())
     }
 
@@ -2462,7 +2406,7 @@ mod tests {
         // stage the first hunk of a file, staying in the diff while hunks remain
         select_row(&mut state, "a.txt");
         state.enter()?;
-        assert_eq!(state.diff.hunks.len(), 2);
+        assert_eq!(diff(&state).hunks.len(), 2);
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt"]);
         assert_eq!(
@@ -2470,7 +2414,7 @@ mod tests {
             vec!["a.txt", "dir/x.txt", "dir/y.txt"]
         );
         assert!(state.is_diff_focused());
-        assert_eq!(state.diff.hunks.len(), 1);
+        assert_eq!(diff(&state).hunks.len(), 1);
 
         // staging the last hunk returns to the files
         state.toggle_stage()?;
@@ -2591,13 +2535,13 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         // shown converted, without hunks to stage
         select_row(&mut state, "a.bin");
-        assert!(state.diff.raw.contains("+Y"));
+        assert!(diff(&state).raw.contains("+Y"));
         assert_eq!(state.enter().unwrap_err(), CONVERTED_DIFF);
         assert_eq!(state.focus, Focus::Files);
         // the others as usual
         select_row(&mut state, "a.txt");
         state.enter()?;
-        assert_eq!(state.focus, Focus::Hunks);
+        assert!(state.is_diff_focused() && !state.is_selecting_lines());
         Ok(())
     }
 
@@ -2627,24 +2571,24 @@ mod tests {
         // files -> hunks -> lines, starting on the first changed line
         select_row(&mut state, "a.txt");
         state.enter()?;
-        assert_eq!(state.diff.hunks.len(), 1);
+        assert_eq!(diff(&state).hunks.len(), 1);
         state.enter()?;
-        assert!((state.focus == Focus::Lines));
-        assert_eq!(state.diff.rows[state.cursor.line].text, "new A");
+        assert!(state.is_selecting_lines());
+        assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
 
         // stage a single line, staying in line mode on the next changed line
         state.toggle_stage()?;
         assert!(staged_diff("a.txt").contains("+new A"));
         assert!(!staged_diff("a.txt").contains("+new B"));
         assert!(unstaged_diff("a.txt").contains("+new B"));
-        assert!((state.focus == Focus::Lines));
-        assert_eq!(state.diff.rows[state.cursor.line].text, "new B");
+        assert!(state.is_selecting_lines());
+        assert_eq!(state.selected_diff_text().as_deref(), Some("new B"));
 
         // staging the last line returns to the files
         state.toggle_stage()?;
         assert!(staged_diff("a.txt").contains("+new B"));
         assert!(!state.is_diff_focused());
-        assert!(!(state.focus == Focus::Lines));
+        assert!(!state.is_selecting_lines());
 
         // unstage a single line
         state.focus_section(LocalChangesSection::Staged);
@@ -2657,7 +2601,7 @@ mod tests {
 
         // back from lines goes to hunks, then to files
         assert!(state.back());
-        assert!(state.is_diff_focused() && !(state.focus == Focus::Lines));
+        assert!(state.is_diff_focused() && !state.is_selecting_lines());
         assert!(state.back());
         assert!(!state.is_diff_focused());
         assert!(!state.back());
@@ -2723,7 +2667,7 @@ mod tests {
         // the staged diff includes the change made by the last commit
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, "a.txt");
-        assert!(state.diff.raw.contains("+more"));
+        assert!(diff(&state).raw.contains("+more"));
 
         // unstaging while amending removes the file from the amended commit
         select_row(&mut state, "b.txt");
@@ -3042,7 +2986,7 @@ mod tests {
         confirm_and_run(&mut state)?;
         let content = fs::read_to_string(repo_path.join("a.txt"))?;
         assert!(content.contains("line 2\n") && content.contains("line twenty-eight\n"));
-        assert_eq!(state.diff.hunks.len(), 1);
+        assert_eq!(diff(&state).hunks.len(), 1);
 
         // discard only the removal of "line 28", which brings it back next to the added line
         state.enter()?;
@@ -3089,7 +3033,7 @@ mod tests {
 
         // the root row is selected first, and shows the diff of everything
         assert!(state.selected_row().unwrap().is_root());
-        assert!(state.diff.raw.contains("+b"));
+        assert!(diff(&state).raw.contains("+b"));
 
         // stage all, including untracked files
         state.toggle_stage()?;
@@ -3216,7 +3160,7 @@ mod tests {
         state.collapse();
         type_query(&mut state, QueryKind::Search, "app");
         assert_eq!(state.selected_path().as_deref(), Some("src/app.rs"));
-        assert!(state.diff.raw.contains("+a"));
+        assert!(diff(&state).raw.contains("+a"));
         assert_eq!(
             state
                 .query_of(LocalChangesSection::Unstaged)
@@ -3313,7 +3257,7 @@ mod tests {
         state.toggle_pick();
         state.enter()?;
         assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
-        assert_eq!(state.diff.hunks.len(), 2);
+        assert_eq!(diff(&state).hunks.len(), 2);
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
         assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
@@ -3577,13 +3521,13 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "a.txt");
-        state.cursor.scroll.scroll(3);
+        state.pane.scroll_state().scroll(3);
         // as loaded in the background
         let files = || FilesSnapshot::load(repo_path, repository.git_dir());
 
         // nothing changed: the diff stays scrolled
         state.reload_if_changed(files());
-        assert_eq!(state.cursor.scroll.offset, 3);
+        assert_eq!(state.pane.scroll_state().offset, 3);
 
         // the file changed, still modified: the diff is loaded again
         fs::write(
@@ -3591,8 +3535,8 @@ mod tests {
             numbered_lines(30).replace("line 3\n", "three\n"),
         )?;
         state.reload_if_changed(files());
-        assert_eq!(state.cursor.scroll.offset, 0);
-        assert!(state.diff.raw.contains("+three"));
+        assert_eq!(state.pane.scroll_state().offset, 0);
+        assert!(diff(&state).raw.contains("+three"));
         Ok(())
     }
 

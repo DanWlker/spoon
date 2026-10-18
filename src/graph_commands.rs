@@ -6,7 +6,8 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     event::UserEvent,
-    git::{split_remote_branch, CommitHash, Conflict, NamedRef, Ref, Repository},
+    git::{split_remote_branch, CommitHash, Conflict, NamedRef, Ref, Repository, Rev},
+    view::Compare,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
 
@@ -15,12 +16,8 @@ pub enum GraphCommand {
     Dialog(GitDialog),
     // the last commit amended on the local changes page
     AmendHead,
-    // the changes from `base` to `target`, shown in the details
-    Compare {
-        base: CommitHash,
-        target: CommitHash,
-        title: String,
-    },
+    // the changes from one commit to another, shown in the details
+    Compare(Compare),
 }
 
 // The command of `event` on the `selected` commit, or the `picked` ones; None for other events.
@@ -488,12 +485,10 @@ fn compare(
     let [target, base]: [CommitHash; 2] = sort_newest_first(repository, vec![a, b])
         .try_into()
         .expect("two commits");
-    let title = format!("Diff {} → {}", base.as_short_hash(), target.as_short_hash());
-    Ok(GraphCommand::Compare {
-        base,
-        target,
-        title,
-    })
+    Ok(GraphCommand::Compare(Compare {
+        base: Rev::Commit(base),
+        target: Rev::Commit(target),
+    }))
 }
 
 #[cfg(test)]
@@ -518,7 +513,7 @@ mod tests {
             Ok(GraphCommand::Dialog(dialog)) => {
                 dialog.command().unwrap().unwrap().commands[0].join(" ")
             }
-            Ok(GraphCommand::Compare { title, .. }) => title,
+            Ok(GraphCommand::Compare(compare)) => compare.title(),
             Ok(GraphCommand::AmendHead) => "amend head".into(),
             Err(err) => err,
         }

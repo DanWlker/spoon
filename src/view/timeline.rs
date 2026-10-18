@@ -388,7 +388,9 @@ impl TimelineView {
         block.render(diff_area, buf);
         // the scrollbar on the right border, the selection bar on the left one
         let search = self.query.search().filter(|_| !focused);
-        self.pane.render(inner, buf, &ctx, !focused, search);
+        let scrollbar = Rect::new(inner.right(), inner.y, 1, inner.height);
+        self.pane
+            .render(inner, scrollbar, buf, &ctx, !focused, search);
     }
 }
 

@@ -14,7 +14,7 @@ use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     event::UserEvent,
-    git::{split_remote_branch, CommitHash, Head, Ref, Tracking},
+    git::{split_remote_branch, CommitHash, Head, NamedRef, Ref, Tracking},
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
@@ -61,6 +61,25 @@ impl RefSection {
         match identifier {
             NodeId::Section(section) => Some(*section),
             _ => None,
+        }
+    }
+
+    // The ref `name` of the section; None for a stash, which is no ref to work on.
+    pub fn named(self, name: String) -> Option<NamedRef> {
+        match self {
+            RefSection::Branches => Some(NamedRef::Branch(name)),
+            RefSection::Remotes => Some(NamedRef::RemoteBranch(name)),
+            RefSection::Tags => Some(NamedRef::Tag(name)),
+            RefSection::Stashes => None,
+        }
+    }
+
+    // The section listing the ref.
+    pub fn of(named: &NamedRef) -> RefSection {
+        match named {
+            NamedRef::Branch(_) => RefSection::Branches,
+            NamedRef::RemoteBranch(_) => RefSection::Remotes,
+            NamedRef::Tag(_) => RefSection::Tags,
         }
     }
 
@@ -113,8 +132,10 @@ pub enum RefSelection {
     Section(RefSection),
     // a folder in a section, by its path: a remote ("origin"), or a prefix of names ("feature")
     Folder(RefSection, String),
-    // a ref, by its full name: "main", "origin/main", "v1.0", "stash@{0}"
-    Ref(RefSection, String),
+    // a branch, remote branch or tag
+    Ref(NamedRef),
+    // a stash, by its name: "stash@{0}"
+    Stash(String),
     // the detached HEAD, in the branches
     DetachedHead,
 }
@@ -300,12 +321,14 @@ impl RefListState {
         self.scroll_to_selection = true;
     }
 
-    // The ref selected, as the graph names it: "HEAD" for the detached HEAD.
-    pub fn selected_ref_name(&self) -> Option<String> {
-        match self.selected.last()? {
-            NodeId::Name(name) => Some(name.clone()),
-            NodeId::DetachedHead => Some("HEAD".into()),
-            NodeId::Section(_) => None,
+    // The ref selected as git names it, to find its commit in the graph: "refs/heads/main",
+    // "stash@{0}", or "HEAD" for the detached HEAD.
+    pub fn selected_git_name(&self) -> Option<String> {
+        match self.selection() {
+            RefSelection::Ref(named) => Some(named.full_name()),
+            RefSelection::Stash(name) => Some(name),
+            RefSelection::DetachedHead => Some("HEAD".into()),
+            RefSelection::Section(_) | RefSelection::Folder(..) => None,
         }
     }
 
@@ -343,7 +366,10 @@ impl RefListState {
                 .any(|row| row.identifier == self.selected && !row.folder);
         match self.selected.last() {
             Some(NodeId::DetachedHead) => RefSelection::DetachedHead,
-            Some(NodeId::Name(name)) if is_ref => RefSelection::Ref(section, name.clone()),
+            Some(NodeId::Name(name)) if is_ref => match section.named(name.clone()) {
+                Some(named) => RefSelection::Ref(named),
+                None => RefSelection::Stash(name.clone()),
+            },
             Some(NodeId::Name(path)) => RefSelection::Folder(section, path.clone()),
             _ => RefSelection::Section(section),
         }
@@ -852,8 +878,10 @@ mod tests {
 
     // Picks or unpicks the selected ref.
     fn pick(state: &mut RefListState) -> Result<(), String> {
-        let RefSelection::Ref(section, name) = state.selection() else {
-            panic!("no ref selected");
+        let (section, name) = match state.selection() {
+            RefSelection::Ref(named) => (RefSection::of(&named), named.name().to_string()),
+            RefSelection::Stash(name) => (RefSection::Stashes, name),
+            _ => panic!("no ref selected"),
         };
         state.toggle_pick(section, name)
     }
@@ -958,7 +986,7 @@ mod tests {
         assert!(names(&state).contains(&"HEAD (detached at aaaaaaa)".to_string()));
         state.select_next();
         let selection = RefSelection::DetachedHead;
-        assert_eq!(state.selected_ref_name().as_deref(), Some("HEAD"));
+        assert_eq!(state.selected_git_name().as_deref(), Some("HEAD"));
         assert_eq!(state.selection(), selection);
         // and stays selected through a reload
         state.set_refs(&[&branch], &[], &head);

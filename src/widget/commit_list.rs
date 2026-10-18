@@ -100,7 +100,8 @@ pub struct CommitListState<'a> {
     graph_image_manager: GraphImageManager<'a>,
     graph_cell_width: u16,
 
-    ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
+    // the commit of each ref by its full name ("refs/heads/main", "stash@{0}", "HEAD")
+    ref_name_to_commit_index_map: FxHashMap<String, usize>,
 
     // the search, typed like the others, see `TreeQuery`
     query: TreeQuery,
@@ -129,7 +130,7 @@ impl<'a> CommitListState<'a> {
         commits: Vec<CommitInfo<'a>>,
         graph_image_manager: GraphImageManager<'a>,
         graph_cell_width: u16,
-        ref_name_to_commit_index_map: FxHashMap<&'a str, usize>,
+        ref_name_to_commit_index_map: FxHashMap<String, usize>,
         search_options: Rc<Cell<SearchOptions>>,
         scrolloff: usize,
     ) -> CommitListState<'a> {

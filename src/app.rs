@@ -29,8 +29,8 @@ use crate::{
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        run_task, short_ref_name, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot,
-        GitTask, Head, NamedRef, Ref, Repository,
+        run_task, AfterTask, Commit, CommitHash, FileChange, FilesSnapshot, GitTask, Head,
+        NamedRef, Ref, Repository, Rev,
     },
     graph::{Fold, GraphImageManager},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -313,16 +313,9 @@ enum GraphFilter {
     // that of two refs diffed from the sidebar while their comparison is shown, going back to
     // `before` once it isn't, see `end_stale_ref_compare`
     Compare {
-        refs: RefCompare,
+        refs: Compare,
         before: Box<GraphFilter>,
     },
-}
-
-// The changes from `base` to `target`, refs (or HEAD) diffed from the sidebar.
-#[derive(Debug, Clone)]
-struct RefCompare {
-    base: String,
-    target: String,
 }
 
 impl AppShell {
@@ -341,7 +334,9 @@ impl AppShell {
             GraphFilter::BranchOnly(None) => Some(vec!["HEAD".into()]),
             // not a tag of the same name
             GraphFilter::BranchOnly(Some(branch)) => Some(vec![format!("refs/heads/{branch}")]),
-            GraphFilter::Compare { refs, .. } => Some(vec![refs.base.clone(), refs.target.clone()]),
+            GraphFilter::Compare { refs, .. } => {
+                Some(vec![refs.base.git_name(), refs.target.git_name()])
+            }
         }
     }
 
@@ -356,11 +351,9 @@ impl AppShell {
                     .or_else(|| repository.current_branch())
                     .unwrap_or_else(|| "HEAD".into())
             )),
-            GraphFilter::Compare { refs, .. } => Some(format!(
-                "{} ↔ {}",
-                short_ref_name(&refs.base),
-                short_ref_name(&refs.target)
-            )),
+            GraphFilter::Compare { refs, .. } => {
+                Some(format!("{} ↔ {}", refs.base.shown(), refs.target.shown()))
+            }
         }
     }
 
@@ -413,13 +406,15 @@ impl<'a> App<'a> {
             .enumerate()
             .map(|(i, commit)| {
                 let refs = repository.refs(&commit.commit_hash);
+                // by the names git takes for them alone, as a tag may have a branch's name
                 for r in &refs {
-                    ref_name_to_commit_index_map.insert(r.name(), i);
+                    let name = r.named().map_or_else(|| r.name().to_string(), |n| n.full_name());
+                    ref_name_to_commit_index_map.insert(name, i);
                 }
                 // the detached HEAD's row in the sidebar selects it
                 if matches!(repository.head(), Head::Detached { target } if *target == commit.commit_hash)
                 {
-                    ref_name_to_commit_index_map.insert("HEAD", i);
+                    ref_name_to_commit_index_map.insert("HEAD".to_string(), i);
                 }
                 // comparing two refs, both are shown alike
                 let on_head = comparing_refs || head_history.contains(&commit.commit_hash);
@@ -450,7 +445,9 @@ impl<'a> App<'a> {
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
-                Head::Branch { name } => commit_list_state.select_ref(name),
+                Head::Branch { name } => {
+                    commit_list_state.select_ref(&NamedRef::Branch(name.clone()).full_name())
+                }
                 Head::Detached { target } => {
                     commit_list_state.select_commit_hash(target);
                 }
@@ -1577,10 +1574,7 @@ impl App<'_> {
 
     fn handle_sidebar_event(&mut self, event: UserEvent, key: KeyEvent) {
         // space applies a stash, and checks out the other refs, as it does on the graph
-        let stash = matches!(
-            self.shell.sidebar.selection(),
-            RefSelection::Ref(RefSection::Stashes, _)
-        );
+        let stash = matches!(self.shell.sidebar.selection(), RefSelection::Stash(_));
         let event = match event {
             UserEvent::ApplyStash if !stash => UserEvent::Checkout,
             event => event,
@@ -1638,7 +1632,12 @@ impl App<'_> {
             }
             // on a ref, see `ref_command_applies`
             UserEvent::ToggleSelect => {
-                if let RefSelection::Ref(section, name) = self.shell.sidebar.selection() {
+                let pick = match self.shell.sidebar.selection() {
+                    RefSelection::Ref(named) => Some((RefSection::of(&named), named.name().into())),
+                    RefSelection::Stash(name) => Some((RefSection::Stashes, name)),
+                    _ => None,
+                };
+                if let Some((section, name)) = pick {
                     if let Err(err) = self.shell.sidebar.toggle_pick(section, name) {
                         self.ec.send(AppEvent::NotifyWarn(err));
                     }
@@ -1647,9 +1646,11 @@ impl App<'_> {
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
             UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                 let target = match self.shell.sidebar.selection() {
-                    RefSelection::Ref(RefSection::Branches, name) => LinkTarget::Branch(name),
-                    RefSelection::Ref(RefSection::Remotes, name) => LinkTarget::RemoteBranch(name),
-                    RefSelection::Ref(RefSection::Tags, name) => LinkTarget::Tag(name),
+                    RefSelection::Ref(NamedRef::Branch(name)) => LinkTarget::Branch(name),
+                    RefSelection::Ref(NamedRef::RemoteBranch(name)) => {
+                        LinkTarget::RemoteBranch(name)
+                    }
+                    RefSelection::Ref(NamedRef::Tag(name)) => LinkTarget::Tag(name),
                     RefSelection::Folder(RefSection::Remotes, name) => LinkTarget::Remote(name),
                     _ => return,
                 };
@@ -1701,7 +1702,7 @@ impl App<'_> {
         let picks = |app: &Self| !app.shell.sidebar.picked().is_empty();
         let on_stash = |app: &Self| {
             app.shell.sidebar.picked().section == Stashes
-                || matches!(app.shell.sidebar.selection(), RefSelection::Ref(Stashes, _))
+                || matches!(app.shell.sidebar.selection(), RefSelection::Stash(_))
         };
         k.add(
             &[Cancel],
@@ -1835,7 +1836,7 @@ impl App<'_> {
 
     // Shows the selected ref on the graph; the commit details stay open, showing its commit.
     fn show_sidebar_selection(&mut self) {
-        let Some(name) = self.shell.sidebar.selected_ref_name() else {
+        let Some(name) = self.shell.sidebar.selected_git_name() else {
             return;
         };
         match &mut self.view {
@@ -1925,10 +1926,10 @@ impl App<'_> {
 
     fn copy_sidebar_ref_name(&self) {
         let (name, value) = match self.shell.sidebar.selection() {
-            RefSelection::Ref(RefSection::Branches | RefSection::Remotes, branch) => {
+            RefSelection::Ref(NamedRef::Branch(branch) | NamedRef::RemoteBranch(branch)) => {
                 ("Branch Name", branch)
             }
-            RefSelection::Ref(RefSection::Tags, tag) => ("Tag Name", tag),
+            RefSelection::Ref(NamedRef::Tag(tag)) => ("Tag Name", tag),
             _ => return,
         };
         self.ec.send(AppEvent::copy(name, value));
@@ -2225,7 +2226,7 @@ impl App<'_> {
         if event == UserEvent::BranchOnly {
             // the selected branch's history, or the current one's off a branch
             let branch = match self.shell.sidebar.selection() {
-                RefSelection::Ref(RefSection::Branches, name) => Some(name),
+                RefSelection::Ref(NamedRef::Branch(name)) => Some(name),
                 _ => None,
             };
             self.shell.graph_filter = match &self.shell.graph_filter {
@@ -2238,19 +2239,19 @@ impl App<'_> {
         if event == UserEvent::Diff {
             let selection = self.shell.sidebar.selection();
             // there are some, see `ref_command_applies`
-            let Some(names) = diff_refs(&selection, self.shell.sidebar.picked()) else {
+            let Some(refs) = diff_refs(&selection, self.shell.sidebar.picked()) else {
                 return;
             };
-            match self.sidebar_compare(&names) {
+            match self.sidebar_compare(&refs) {
                 Ok(compare) => self.request_ref_compare(compare),
                 Err(err) => self.ec.send(AppEvent::NotifyError(err)),
             }
             return;
         }
-        // a branch, remote branch or tag, see `ref_command_applies`, of the row's section, as a
-        // tag may have a branch's name; or the row of a detached HEAD, its commit
-        let (section, name) = match self.shell.sidebar.selection() {
-            RefSelection::Ref(section, name) => (section, name),
+        // a branch, remote branch or tag, see `ref_command_applies`; or the row of a detached
+        // HEAD, its commit
+        let selected = match self.shell.sidebar.selection() {
+            RefSelection::Ref(named) => named,
             RefSelection::DetachedHead => {
                 if let Head::Detached { target } = self.repository.head() {
                     let command = graph_command(self.repository, event, target.clone(), vec![]);
@@ -2260,17 +2261,13 @@ impl App<'_> {
             }
             _ => return,
         };
-        let selected = self.repository.all_refs().into_iter().find_map(|r| {
-            let named = r.named()?;
-            let of_section = matches!(
-                (&named, section),
-                (NamedRef::Branch(_), RefSection::Branches)
-                    | (NamedRef::RemoteBranch(_), RefSection::Remotes)
-                    | (NamedRef::Tag(_), RefSection::Tags)
-            );
-            (of_section && named.name() == name).then(|| (named, r.target().clone()))
-        });
-        let Some((selected, target)) = selected else {
+        let target = self
+            .repository
+            .all_refs()
+            .into_iter()
+            .find(|r| r.named().as_ref() == Some(&selected))
+            .map(|r| r.target().clone());
+        let Some(target) = target else {
             return;
         };
         let command = ref_graph_command(self.repository, event, &selected, target);
@@ -2349,29 +2346,29 @@ impl App<'_> {
 
     // The refs to diff from the sidebar: the two picked ones, else HEAD and the picked or
     // selected one.
-    fn sidebar_compare(&self, names: &[String]) -> Result<RefCompare, String> {
+    fn sidebar_compare(&self, refs: &[NamedRef]) -> Result<Compare, String> {
         let head = || {
             self.repository
                 .current_branch()
-                .map_or_else(|| "HEAD".into(), |branch| format!("refs/heads/{branch}"))
+                .map_or(Rev::Head, |branch| Rev::Ref(NamedRef::Branch(branch)))
         };
-        let (base, target) = match names {
-            [one] => (head(), one.clone()),
-            [one, two] => (one.clone(), two.clone()),
+        let (base, target) = match refs {
+            [one] => (head(), Rev::Ref(one.clone())),
+            [one, two] => (Rev::Ref(one.clone()), Rev::Ref(two.clone())),
             more => return Err(format!("Diff compares two refs, {} are picked", more.len())),
         };
         if base == target {
             return Err(format!(
                 "{} is checked out, there is nothing to compare",
-                short_ref_name(&base)
+                base.shown()
             ));
         }
-        Ok(RefCompare { base, target })
+        Ok(Compare { base, target })
     }
 
     // Diffs refs from the sidebar: the graph is loaded again with only their history, showing
     // their comparison, see `end_stale_ref_compare`.
-    fn request_ref_compare(&mut self, compare: RefCompare) {
+    fn request_ref_compare(&mut self, compare: Compare) {
         let Some(context) = self.view.refresh_context() else {
             return;
         };
@@ -2385,15 +2382,7 @@ impl App<'_> {
             filter => Box::new(filter),
         };
         // reloaded for the history of both, opening their comparison like after any reload
-        let shown = Compare {
-            base: compare.base.clone(),
-            target: compare.target.clone(),
-            title: format!(
-                "Diff {} → {}",
-                short_ref_name(&compare.base),
-                short_ref_name(&compare.target)
-            ),
-        };
+        let shown = compare.clone();
         self.shell.graph_filter = GraphFilter::Compare {
             refs: compare,
             before,
@@ -2416,15 +2405,7 @@ impl App<'_> {
             None => {}
             Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(dialog)),
             Some(Ok(GraphCommand::AmendHead)) => self.amend_on_local_changes(),
-            Some(Ok(GraphCommand::Compare {
-                base,
-                target,
-                title,
-            })) => self.open_compare(Compare {
-                base: base.as_str().into(),
-                target: target.as_str().into(),
-                title,
-            }),
+            Some(Ok(GraphCommand::Compare(compare))) => self.open_compare(compare),
             // the popups tell first that a command is running
             Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
@@ -2478,14 +2459,14 @@ impl App<'_> {
         }
         let resolved = self
             .repository
-            .resolve(&compare.base)
-            .zip(self.repository.resolve(&compare.target));
+            .resolve(&compare.base.git_name())
+            .zip(self.repository.resolve(&compare.target.git_name()));
         let Some((base, target)) = resolved else {
             // gone meanwhile, like a ref deleted
             self.ec.send(AppEvent::NotifyError(format!(
                 "Cannot diff {} and {}, one of them is gone",
-                short_ref_name(&compare.base),
-                short_ref_name(&compare.target)
+                compare.base.shown(),
+                compare.target.shown()
             )));
             return;
         };

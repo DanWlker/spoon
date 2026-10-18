@@ -8,7 +8,7 @@ use crate::{
         diff::{
             diff_line_count, diff_lines, render_diff_lines, DiffCursor, DiffHunk, ParsedDiff, Step,
         },
-        style::render_scrollbar,
+        style::{render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
     },
 };
@@ -23,8 +23,16 @@ enum DiffFocus {
     Lines,
 }
 
-// The diff of a commit beside what picks it, read only: moving into it selects hunks, then lines,
-// to copy or link to; the changes tab and the timeline.
+// A diff beside what picks it: moving into it selects hunks, then lines, to copy, link to, apply or
+// stage; the changes tab, the timeline and the local changes.
+// The selection of a diff, kept across its reload, see `DiffPane::restore`.
+#[derive(Debug, Clone, Copy)]
+pub struct DiffSelection {
+    focus: DiffFocus,
+    hunk: usize,
+    line: usize,
+}
+
 #[derive(Debug, Default)]
 pub struct DiffPane {
     // loaded lazily, None until then
@@ -43,6 +51,42 @@ impl DiffPane {
 
     pub fn diff(&self) -> Option<&ParsedDiff> {
         self.diff.as_ref()
+    }
+
+    // What is selected, to select it again in the diff reloaded, see `restore`.
+    pub fn selection(&self) -> DiffSelection {
+        DiffSelection {
+            focus: self.focus,
+            hunk: self.cursor.hunk,
+            line: self.cursor.line,
+        }
+    }
+
+    // Selects again in the diff reloaded after staging part of it what `selection` was: the same
+    // hunk, then the changed line at or after the same row, as the staged line itself is gone or
+    // became context. Stays out of the diff when it has no hunk left.
+    pub fn restore(&mut self, selection: DiffSelection) {
+        let Some(diff) = &self.diff else {
+            return;
+        };
+        if selection.focus == DiffFocus::Outside || !self.cursor.select_hunk(diff, selection.hunk) {
+            return;
+        }
+        self.focus = DiffFocus::Hunks;
+        if selection.focus == DiffFocus::Lines && self.cursor.select_line_near(diff, selection.line)
+        {
+            self.focus = DiffFocus::Lines;
+        }
+    }
+
+    // Moves the focus out of the diff, to what is beside it.
+    pub fn leave(&mut self) {
+        self.focus = DiffFocus::Outside;
+    }
+
+    // The scroll of what is shown in place of the diff, like the sides of a conflict.
+    pub fn scroll_state(&mut self) -> &mut ScrollState {
+        &mut self.cursor.scroll
     }
 
     // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
@@ -115,13 +159,13 @@ impl DiffPane {
         }
     }
 
-    // The patch of the selected hunk or line, to apply to the working tree.
-    pub fn selected_patch(&self) -> Option<String> {
+    // The patch of the selected hunk or line, see `DiffHunk::partial_patch` for `reverse`.
+    pub fn selected_patch(&self, reverse: bool) -> Option<String> {
         let diff = self.diff.as_ref()?;
         match self.focus {
             DiffFocus::Outside => None,
             DiffFocus::Hunks => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
-            DiffFocus::Lines => self.cursor.line_patch(diff, false),
+            DiffFocus::Lines => self.cursor.line_patch(diff, reverse),
         }
     }
 
@@ -156,10 +200,11 @@ impl DiffPane {
     }
 
     // Draws the diff, its selected hunk or line highlighted while it has the focus, and the
-    // scrollbar on the column right of `area`.
+    // scrollbar in the `scrollbar` column, on the right border.
     pub fn render(
         &mut self,
         area: Rect,
+        scrollbar: Rect,
         buf: &mut Buffer,
         ctx: &AppContext,
         focused: bool,
@@ -171,8 +216,7 @@ impl DiffPane {
         let Some(diff) = &self.diff else {
             return;
         };
-        let border = Rect::new(area.right(), area.y, 1, area.height);
-        render_scrollbar(buf, border, count, range.start, focused, theme);
+        render_scrollbar(buf, scrollbar, count, range.start, focused, theme);
         let mut lines = diff_lines(diff, theme, range.clone(), area.width);
         let highlighted = match self.focus {
             DiffFocus::Outside => 0..0,

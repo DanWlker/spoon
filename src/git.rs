@@ -130,12 +130,32 @@ impl NamedRef {
     }
 }
 
-// The name of a branch, remote branch or tag without its `refs/…/`, as the sidebar shows it.
-pub fn short_ref_name(name: &str) -> &str {
-    ["refs/heads/", "refs/remotes/", "refs/tags/"]
-        .iter()
-        .find_map(|prefix| name.strip_prefix(prefix))
-        .unwrap_or(name)
+// A revision to compare: HEAD, a commit, or a branch, remote branch or tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rev {
+    Head,
+    Commit(CommitHash),
+    Ref(NamedRef),
+}
+
+impl Rev {
+    // The name git takes for it alone, a ref in full, see `NamedRef::full_name`.
+    pub fn git_name(&self) -> String {
+        match self {
+            Rev::Head => "HEAD".into(),
+            Rev::Commit(hash) => hash.as_str().into(),
+            Rev::Ref(named) => named.full_name(),
+        }
+    }
+
+    // As the graph and the sidebar show it.
+    pub fn shown(&self) -> String {
+        match self {
+            Rev::Head => "HEAD".into(),
+            Rev::Commit(hash) => hash.as_short_hash().into(),
+            Rev::Ref(named) => named.name().into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

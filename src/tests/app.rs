@@ -17,14 +17,14 @@ use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
     event::{EventController, KeyHint},
-    git::{refs_snapshot, FilesSnapshot, SortCommit},
+    git::{refs_snapshot, FilesSnapshot, NamedRef, SortCommit},
     graph::{GraphImageWidthMode, GraphStyle},
     keybind::parse_key_event,
     layout::Panel,
     protocol::ImageProtocol,
     test_support::{git::git, ui::test_ctx},
     view::View,
-    widget::ref_list::{RefSection, RefSelection},
+    widget::ref_list::RefSelection,
     Loader, Refresh,
 };
 
@@ -660,6 +660,23 @@ fn test_compare_takes_the_branch_not_its_tag() {
 }
 
 #[test]
+fn test_sidebar_branch_shows_its_commit_not_its_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let feat = git(&path, &["rev-parse", "feat"]).trim().to_string();
+    // a tag with the branch's name, at another commit
+    git(&path, &["tag", "feat", "master"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("0 j"),
+        check(move |app| {
+            let state = app.view.as_list_state().unwrap();
+            assert_eq!(state.selected_commit_hash().as_str(), feat);
+        }),
+    ]);
+}
+
+#[test]
 fn test_compare_follows_the_reloads_until_closed() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -938,10 +955,7 @@ fn test_half_page_jump_in_the_sidebar() {
     let selected = |name: &'static str| {
         check(move |app| {
             let selection = app.shell.sidebar.selection();
-            assert_eq!(
-                selection,
-                RefSelection::Ref(RefSection::Branches, name.into())
-            );
+            assert_eq!(selection, RefSelection::Ref(NamedRef::Branch(name.into())));
         })
     };
     harness.run(vec![
@@ -1409,7 +1423,7 @@ fn test_delete_tag_also_on_an_unreachable_remote_keeps_it() {
         keys("0 ] ] j"),
         check(|app| {
             let selection = app.shell.sidebar.selection();
-            assert_eq!(format!("{selection:?}"), r#"Ref(Tags, "v1")"#);
+            assert_eq!(selection, RefSelection::Ref(NamedRef::Tag("v1".into())));
         }),
         // also from origin
         keys("d v enter"),

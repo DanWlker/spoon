@@ -103,11 +103,10 @@ impl FileTree {
     }
 }
 
-// How a tree starts: its directories open or closed, or open under a root row standing for
-// everything, see `FileTreeRow::root`.
+// How a tree starts: its directories closed, or open under a root row standing for everything,
+// see `FileTreeRow::root`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeShape {
-    Open,
     Closed,
     Rooted,
 }
@@ -670,7 +669,7 @@ mod tests {
     fn test_tree_guides() {
         // like nvim-tree's indent markers: a line down each directory, "└" at its last entry
         let tree = FileTree::new(["a/b/x.rs", "a/b/w.rs", "a/y.rs", "z.rs"]);
-        let state = FileTreeState::new(tree, TreeShape::Open);
+        let state = FileTreeState::new(tree, TreeShape::Rooted);
         let lines: Vec<String> = (0..state.rows().len())
             .map(|i| {
                 let row = &state.rows()[i];
@@ -681,12 +680,13 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "> a",
-                "  > b",
-                "  │ │ w.rs",
-                "  │ └ x.rs",
-                "  └ y.rs",
-                "  z.rs",
+                "> /",
+                "  > a",
+                "  │ > b",
+                "  │ │ │ w.rs",
+                "  │ │ └ x.rs",
+                "  │ └ y.rs",
+                "  └ z.rs",
             ]
         );
     }
@@ -720,31 +720,32 @@ mod tests {
     #[test]
     fn test_file_tree_state() {
         let paths = ["src/a.rs", "src/b.rs", "README.md"];
-        let mut state = FileTreeState::new(FileTree::new(paths), TreeShape::Open);
+        let mut state = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted);
         let visible = |state: &FileTreeState| -> Vec<String> {
             state.rows().iter().map(|r| r.path.clone()).collect()
         };
         assert_eq!(
             visible(&state),
-            vec!["src", "src/a.rs", "src/b.rs", "README.md"]
+            vec![ROOT_PATH, "src", "src/a.rs", "src/b.rs", "README.md"]
         );
 
         // collapsing from a file goes to its directory first, then collapses it
         state.select_next();
+        state.select_next();
         state.collapse();
         assert_eq!(state.selected().unwrap().path, "src");
         state.collapse();
-        assert_eq!(visible(&state), vec!["src", "README.md"]);
+        assert_eq!(visible(&state), vec![ROOT_PATH, "src", "README.md"]);
 
         // the expanded state and selection carry over to another tree
         let other = state.with_tree(FileTree::new(["src/c.rs", "README.md"]));
-        assert_eq!(visible(&other), vec!["src", "README.md"]);
+        assert_eq!(visible(&other), vec![ROOT_PATH, "src", "README.md"]);
         assert_eq!(other.selected().unwrap().path, "src");
 
         state.toggle();
         assert_eq!(
             visible(&state),
-            vec!["src", "src/a.rs", "src/b.rs", "README.md"]
+            vec![ROOT_PATH, "src", "src/a.rs", "src/b.rs", "README.md"]
         );
 
         // closed by default
@@ -900,22 +901,24 @@ mod tests {
     #[test]
     fn test_tree_rows_look_like_the_other_lists() {
         let theme = ColorTheme::default();
-        let mut tree =
-            FileTreeState::new(FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]), TreeShape::Open);
+        let mut tree = FileTreeState::new(
+            FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]),
+            TreeShape::Rooted,
+        );
         for focused in [true, false] {
             tree.select_path("z.rs");
             let plain = draw_tree(&tree, 5, focused, "");
             tree.select_path("a/x.rs");
             let selected = draw_tree(&tree, 5, focused, "");
-            // the change letter and the lines keep their colors
-            let row = Rect::new(1, 1, 20, 1);
+            // the change letter and the lines keep their colors, under the root row
+            let row = Rect::new(1, 2, 20, 1);
             assert_row_bg(&selected, row, theme.list_selected_bg);
             assert_only_bg_changed(&plain, &selected, row);
             assert_guides_keep_color(&selected, row, &theme);
         }
         // a picked row: across it too
         let buf = draw_tree(&tree, 5, true, "a/y.rs");
-        let row = Rect::new(1, 2, 20, 1);
+        let row = Rect::new(1, 3, 20, 1);
         assert_row_bg(&buf, row, theme.list_picked_bg);
         assert_guides_keep_color(&buf, row, &theme);
     }
@@ -929,7 +932,7 @@ mod tests {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(
             FileTree::new(paths.iter().map(String::as_str)),
-            TreeShape::Open,
+            TreeShape::Rooted,
         );
         for height in 0..4 {
             for index in 0..10 {
@@ -959,17 +962,17 @@ mod tests {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(
             FileTree::new(paths.iter().map(String::as_str)),
-            TreeShape::Open,
+            TreeShape::Rooted,
         );
         let top = |tree: &FileTreeState| row_text(&draw_tree(tree, 4, true, ""), 0);
-        // down past the bottom: the view follows the cursor
-        tree.select_index(5);
+        // down past the bottom: the view follows the cursor (the root row is 0)
+        tree.select_index(6);
         assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));
         // up within the view: the view stays
-        tree.select_index(3);
+        tree.select_index(4);
         assert!(top(&tree).contains("f2.rs"), "{}", top(&tree));
         // up past the top: it follows again
-        tree.select_index(0);
+        tree.select_index(1);
         assert!(top(&tree).contains("f0.rs"), "{}", top(&tree));
     }
 }

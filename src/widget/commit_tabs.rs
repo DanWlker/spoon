@@ -120,7 +120,7 @@ pub struct CommitChangesState<'a> {
     // compared to this commit instead of the parent
     base: Option<CommitHash>,
     files: Vec<ChangedFile>,
-    // expanded by default, to show every changed file
+    // under the root row, expanded by default to show every changed file, like the local changes
     tree: FileTreeState,
     // the diff of the selected file, loaded lazily, only while the tab is shown
     pub pane: DiffPane,
@@ -172,7 +172,7 @@ impl<'a> CommitChangesState<'a> {
             .collect();
         let mut tree = FileTreeState::new(
             FileTree::new(files.iter().map(|f| f.path.as_str())),
-            TreeShape::Open,
+            TreeShape::Rooted,
         );
         // start on the first file rather than its directory
         if let Some(path) = tree
@@ -544,9 +544,10 @@ impl CommitTab {
         render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
 
         let search = self.pane_search.as_deref();
+        let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
         state
             .pane
-            .render(diff_area, buf, &self.ctx, self.focused, search);
+            .render(diff_area, scrollbar, buf, &self.ctx, self.focused, search);
     }
 
     pub fn render_files(self, area: Rect, buf: &mut Buffer, state: &mut CommitFilesState) {
@@ -635,7 +636,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::{git::SortCommit, test_support::git::GitRepository};
+    use crate::{git::SortCommit, test_support::git::GitRepository, widget::file_tree::ROOT_PATH};
 
     fn visible(tree: &FileTreeState) -> Vec<&str> {
         tree.rows().iter().map(|r| r.path.as_str()).collect()
@@ -675,11 +676,15 @@ mod tests {
             commits[1].commit_hash.clone(),
         );
 
-        // changes: expanded, starts on the first file, a rename shows its source too
+        // changes: under the root row like the local changes, expanded, starts on the first file,
+        // a rename shows its source too
         let (_, changes) = repository.commit_detail(&second);
         let mut state = CommitChangesState::new(&repository, second.clone(), &changes);
         state.ensure_loaded();
-        assert_eq!(visible(&state.tree), vec!["src", "src/a.rs", "DOC.md"]);
+        assert_eq!(
+            visible(&state.tree),
+            vec![ROOT_PATH, "src", "src/a.rs", "DOC.md"]
+        );
         assert_eq!(selected(&state.tree), "src/a.rs");
         assert!(state.pane.diff().unwrap().raw.contains("+changed"));
         state.update_tree(FileTreeState::select_last);
@@ -690,11 +695,17 @@ mod tests {
             .raw
             .contains("rename from README"));
 
-        // changes: folders collapse, and the diff follows the selection
+        // the root row shows the diff of the whole commit
         state.update_tree(FileTreeState::select_first);
+        let raw = &state.pane.diff().unwrap().raw;
+        assert!(raw.contains("+changed") && raw.contains("rename from README"));
+
+        // changes: folders collapse, and the diff follows the selection
+        state.update_tree(|tree| tree.select_path("src"));
         state.update_tree(FileTreeState::toggle);
-        assert_eq!(visible(&state.tree), vec!["src", "DOC.md"]);
-        assert!(state.pane.diff().unwrap().raw.contains("+changed"));
+        assert_eq!(visible(&state.tree), vec![ROOT_PATH, "src", "DOC.md"]);
+        let raw = &state.pane.diff().unwrap().raw;
+        assert!(raw.contains("+changed") && !raw.contains("rename from README"));
 
         // the root commit is compared to the empty tree
         let (_, changes) = repository.commit_detail(&first);
@@ -864,7 +875,7 @@ mod tests {
             SearchDirection::Current,
             SearchOptions::default(),
         );
-        let patch = state.pane.selected_patch().unwrap();
+        let patch = state.pane.selected_patch(false).unwrap();
         let task = crate::git::GitTask {
             commands: vec![vec!["apply".into(), "-".into()]],
             input: Some(patch),
@@ -909,6 +920,38 @@ mod tests {
         assert!(!state.search_preview("zzz", SearchDirection::Next, SearchOptions::default()));
         assert!(state.back() && !state.back());
         assert_eq!(state.selected_text(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_changes_tree_looks_like_the_local_changes() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::widget::local_changes::LocalChangesState;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        git.commit("first", "2024-01-01");
+        fs::create_dir(path.join("src"))?;
+        fs::write(path.join("src/a.rs"), "a\n")?;
+        fs::write(path.join("b"), "b\n")?;
+        git.add(&["src/a.rs", "b"]);
+
+        // the same files, staged then committed, give the same rows
+        let names = |rows: &[crate::widget::file_tree::FileTreeRow]| -> Vec<String> {
+            rows.iter()
+                .map(|r| format!("{}{}", r.depth, r.name))
+                .collect()
+        };
+        let repository = Repository::load(path, SortCommit::Chronological, None, false)?;
+        let mut local = LocalChangesState::load(&repository);
+        local.focus_section(crate::widget::local_changes::LocalChangesSection::Staged);
+        let local_rows = names(local.rows());
+        git.commit("second", "2024-01-02");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false)?;
+        let head = repository.head_commit().unwrap();
+        let (_, changes) = repository.commit_detail(&head);
+        let state = CommitChangesState::new(&repository, head, &changes);
+        assert_eq!(names(state.tree.rows()), local_rows);
         Ok(())
     }
 }

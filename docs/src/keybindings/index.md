@@ -148,7 +148,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 The commit detail has three tabs:
 
 - **Info**: the commit information. <kbd>j/k</kbd> scroll it.
-- **Changes**: the changed files as a tree, expanded by default, with the diff of the selected file (or directory) beside it. <kbd>j/k</kbd> select a file, the scroll keys scroll the diff (from the files too).
+- **Changes**: the changed files as a tree under a `/` row standing for all of them, like on the local changes page, expanded by default, with the diff of the selected file (or directory, or `/` for the whole commit) beside it. <kbd>j/k</kbd> select a file, the scroll keys scroll the diff (from the files too).
 - **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> select a file, the scroll keys scroll the preview.
 
 In the files tab, <kbd>Enter</kbd> moves the focus into the preview of the selected file (on a directory, it expands or collapses it instead of closing the details): <kbd>j/k</kbd> select a line, <kbd>y</kbd> copies it as in the file, <kbd>/</kbd> searches the file (<kbd>n/N</kbd> next/previous match), and <kbd>Esc</kbd> goes back to the files.
