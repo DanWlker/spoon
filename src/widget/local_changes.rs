@@ -1894,7 +1894,7 @@ impl LocalChangesPanel<'_> {
         extras.extend(state.query_of(section).indicator());
         let label = format!("[{number}] {name} ({})", files.len());
         let theme = &self.ctx.color_theme;
-        let mut title = panel_title(&label, &extras.join(" · "), focused, theme);
+        let mut title = panel_title(&label, extras, focused, theme);
         if section == LocalChangesSection::Staged && state.draft.amend.is_some() {
             title.push_span(warn_note("amending", theme));
         }
@@ -1936,9 +1936,9 @@ impl LocalChangesPanel<'_> {
             Some(row) => row.path.clone(),
             None => String::new(),
         };
-        let indicator = state.diff_query.indicator().unwrap_or_default();
         let diff_focused = self.focused && state.is_diff_focused();
-        let title = panel_title(&title, &indicator, diff_focused, &self.ctx.color_theme);
+        let indicator = state.diff_query.indicator();
+        let title = panel_title(&title, indicator, diff_focused, &self.ctx.color_theme);
         let search = state.diff_query.search();
         let inner = state
             .pane
@@ -1958,7 +1958,7 @@ impl LocalChangesPanel<'_> {
         let theme = &self.ctx.color_theme;
         let focused = self.focused && state.is_commit_focused();
         // amending and rebasing have no controls of their own, the title shows them
-        let mut title = panel_title("[3] Commit", "", focused, theme).spans;
+        let mut title = panel_title("[3] Commit", [], focused, theme).spans;
         if state.draft.amend.is_some() {
             title.push(warn_note("amending", theme));
         }
@@ -2041,7 +2041,7 @@ impl LocalChangesPanel<'_> {
                 } else {
                     theme.divider_fg
                 }))
-                .title(panel_title(title.trim(), "", focused(item), theme));
+                .title(panel_title(title.trim(), [], focused(item), theme));
             let content_area = block.inner(side_area);
             block.render(side_area, buf);
             height = content_area.height as usize;

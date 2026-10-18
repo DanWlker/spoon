@@ -21,9 +21,9 @@ use crate::{
     search::SearchKind,
     view::{
         commit_event, copy_path, copy_selection, file_link, handle_search_event, not_found,
-        query_status, register_commit_list_keys, register_diff_keys, type_commit_search,
-        type_query, typing_keys, Compare, CopyForm, ListFacts, ListRefreshViewContext,
-        RefreshViewContext,
+        query_status, register_commit_link_keys, register_commit_list_keys, register_diff_keys,
+        type_commit_search, type_query, typing_keys, Compare, CopyForm, ListFacts,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -244,20 +244,7 @@ impl<'a> DetailView<'a> {
         .when(pane);
         k.add(&[NextTab, PreviousTab], "tab", "Show the next/previous tab")
             .when(|v| !v.list_focused && !v.shows_compare());
-        k.add(
-            &[ShortCopy, FullCopy],
-            "copy hash",
-            "Copy the commit short/full hash",
-        )
-        .when(on(Info));
-        k.add(
-            &[OpenInBrowser],
-            "open in browser",
-            "Open the commit on the web host",
-        )
-        .when(on(Info));
-        k.add(&[CopyLink], "copy link", "Copy the link of the commit")
-            .when(on(Info));
+        register_commit_link_keys(k, on(Info));
         k.add(
             &[ResetFile],
             "reset file",
@@ -700,6 +687,7 @@ impl<'a> DetailView<'a> {
                     &self.refs,
                     self.repository.head(),
                     self.repository.branch_tracking(),
+                    focused,
                     self.ctx.clone(),
                 );
                 f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);

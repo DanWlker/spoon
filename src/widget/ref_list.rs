@@ -514,14 +514,14 @@ impl StatefulWidget for RefList {
         let collapsed = self.mode == SidebarMode::Collapsed;
         let label = if collapsed { "[0]" } else { "[0] Refs" };
         let picked = match state.picked.len() {
-            0 => String::new(),
-            n if collapsed => n.to_string(),
-            n => format!("{n} picked"),
+            0 => None,
+            n if collapsed => Some(n.to_string()),
+            n => Some(format!("{n} picked")),
         };
         let inner = render_panel(
             buf,
             area,
-            panel_title(label, &picked, focused, theme),
+            panel_title(label, picked, focused, theme),
             focused,
             theme,
         );

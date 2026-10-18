@@ -113,7 +113,7 @@ impl<'a> CommandLog<'a> {
         let inner = render_panel(
             buf,
             list_area,
-            panel_title("Command log", &count, true, theme),
+            panel_title("Command log", [count], true, theme),
             true,
             theme,
         );
@@ -147,7 +147,7 @@ impl<'a> CommandLog<'a> {
         let inner = render_panel(
             buf,
             output_area,
-            panel_title("Output", "", false, theme),
+            panel_title("Output", [], false, theme),
             false,
             theme,
         );
@@ -164,6 +164,7 @@ impl<'a> CommandLog<'a> {
                 .collect()
         };
         let rows = state.output.fit(lines.len(), inner.height as usize, 0);
+        render_panel_scrollbar(buf, output_area, lines.len(), rows.start, false, theme);
         Paragraph::new(lines)
             .scroll((rows.start as u16, 0))
             .render(inner, buf);

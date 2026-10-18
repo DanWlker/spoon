@@ -243,6 +243,12 @@ pub fn register_commit_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
     .when(applies);
     k.add(&[Checkout], "checkout", "Check out the commit")
         .when(applies);
+    register_commit_link_keys(k, applies);
+}
+
+// o, O and y on a commit, where `applies`: its page on the web host, its link and its hash.
+pub fn register_commit_link_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
+    use UserEvent::*;
     k.add(
         &[OpenInBrowser],
         "open in browser",

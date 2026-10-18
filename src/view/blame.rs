@@ -419,8 +419,12 @@ impl BlameView {
         let focused = self.focus == BlameFocus::Revision;
         let (count, revision) = (self.history.len(), &self.history[self.index]);
         let position = format!("{}/{count}", count - self.index);
-        let block =
-            panel_block(focused, theme).title(panel_title("[0] Commit", &position, focused, theme));
+        let block = panel_block(focused, theme).title(panel_title(
+            "[0] Commit",
+            [position],
+            focused,
+            theme,
+        ));
         // [ and ] step from anywhere
         let [left, right] = choice_arrows(self.index + 1 < count, self.index > 0, theme);
         let mut spans = vec![left];
@@ -434,14 +438,11 @@ impl BlameView {
         // the lines, each run of lines of a commit headed by it
         let focused = !focused;
         // the search applies to the text or the commits, both in this panel
-        let mut path = vec![revision.path.clone()];
-        path.extend(self.query.indicator());
-        let block = panel_block(focused, theme).title(panel_title(
-            "[1] Blame",
-            &path.join(" · "),
-            focused,
-            theme,
-        ));
+        let notes = [revision.path.clone()]
+            .into_iter()
+            .chain(self.query.indicator());
+        let block =
+            panel_block(focused, theme).title(panel_title("[1] Blame", notes, focused, theme));
         let inner = block.inner(body);
         block.render(body, buf);
         let author_width = self.author_width;

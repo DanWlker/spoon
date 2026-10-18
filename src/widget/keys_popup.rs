@@ -83,7 +83,7 @@ impl Widget for KeysPopup<'_> {
                 ])
             })
             .collect();
-        let block = panel_block(true, theme).title(panel_title(TITLE, "", true, theme));
+        let block = panel_block(true, theme).title(panel_title(TITLE, [], true, theme));
         Clear.render(area, buf);
         Paragraph::new(lines)
             .block(block)

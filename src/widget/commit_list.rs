@@ -575,17 +575,13 @@ pub fn render_commit_list_panel<'a>(
     focused: bool,
 ) {
     let theme = &ctx.color_theme;
-    let mut notes: Vec<String> = state.filter_note.iter().cloned().collect();
-    match state.picked_commit_hashes().len() {
-        0 => {}
-        n => notes.push(format!("{n} picked")),
-    }
-    let block = panel_block(focused, theme).title(panel_title(
-        "[1] Commits",
-        &notes.join(" · "),
-        focused,
-        theme,
-    ));
+    let picked = match state.picked_commit_hashes().len() {
+        0 => None,
+        n => Some(format!("{n} picked")),
+    };
+    let notes = state.filter_note.iter().cloned().chain(picked);
+    let block =
+        panel_block(focused, theme).title(panel_title("[1] Commits", notes, focused, theme));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);

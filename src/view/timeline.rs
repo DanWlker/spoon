@@ -345,14 +345,10 @@ impl TimelineView {
         let count = self.history.len();
         // the search in the title of the panel it applies to, like its highlights
         let indicator = |shown: bool| self.query.indicator().filter(|_| shown);
-        let mut position = vec![format!("{}/{count}", count - self.cursor.selected())];
-        position.extend(indicator(focused));
-        let block = panel_block(focused, theme).title(panel_title(
-            "[0] Commits",
-            &position.join(" · "),
-            focused,
-            theme,
-        ));
+        let position = format!("{}/{count}", count - self.cursor.selected());
+        let notes = [position].into_iter().chain(indicator(focused));
+        let block =
+            panel_block(focused, theme).title(panel_title("[0] Commits", notes, focused, theme));
         let inner = block.inner(list_area);
         block.render(list_area, buf);
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
@@ -370,9 +366,9 @@ impl TimelineView {
         render_panel_scrollbar(buf, list_area, count, offset, focused, theme);
 
         // the file's changes in it
-        let mut path = vec![self.history[self.cursor.selected()].path.clone()];
-        path.extend(indicator(!focused));
-        let title = panel_title("[1] Diff", &path.join(" · "), !focused, theme);
+        let path = self.history[self.cursor.selected()].path.clone();
+        let notes = [path].into_iter().chain(indicator(!focused));
+        let title = panel_title("[1] Diff", notes, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
         self.pane
             .render_panel(diff_area, title, buf, &ctx, !focused, search);

@@ -10,8 +10,8 @@ use crate::{
     keys::{Availability, KeyList, Keys},
     search::SearchKind,
     view::{
-        commit_event, query_status, register_graph_commands, type_query, typing_keys,
-        ListRefreshViewContext, RefreshViewContext, Reselect,
+        commit_event, query_status, register_commit_link_keys, register_graph_commands, type_query,
+        typing_keys, ListRefreshViewContext, RefreshViewContext, Reselect,
     },
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
@@ -256,14 +256,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
         move |v| facts(v).picked > 0,
         move |v| facts(v).operation_waits,
     );
-    k.add(
-        &[OpenInBrowser],
-        "open in browser",
-        "Open the commit on the web host",
-    )
-    .when(works(OpenInBrowser));
-    k.add(&[CopyLink], "copy link", "Copy the link of the commit")
-        .when(works(CopyLink));
+    register_commit_link_keys(k, works(OpenInBrowser));
     k.add(&[Search], "search", "Search the commits")
         .when(works(Search));
     k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
@@ -301,12 +294,6 @@ pub fn register_commit_list_keys<T: ?Sized>(
             "Show the info/changes/files of the commit",
         ),
     ];
-    k.add(
-        &[ShortCopy, FullCopy],
-        "copy hash",
-        "Copy the commit short/full hash",
-    )
-    .when(works(ShortCopy));
     for (events, long) in quiet {
         k.quiet(&events, long).when(works(events[0]));
     }

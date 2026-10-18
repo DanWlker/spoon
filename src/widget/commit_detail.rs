@@ -15,7 +15,7 @@ use crate::{
     git::{Commit, FileChange, Head, Ref, Tracking},
     widget::{
         commit_list::{refs_spans, CommitInfo},
-        style::{change_span, divider, ScrollState},
+        style::{change_span, divider, render_scrollbar, ScrollState},
     },
 };
 
@@ -25,6 +25,8 @@ pub struct CommitDetail<'a> {
     refs: &'a Vec<Ref>,
     head: &'a Head,
     tracking: &'a FxHashMap<String, Tracking>,
+    // the details have the focus, the scrollbar in the accent's color
+    focused: bool,
     ctx: Rc<AppContext>,
 }
 
@@ -35,6 +37,7 @@ impl<'a> CommitDetail<'a> {
         refs: &'a Vec<Ref>,
         head: &'a Head,
         tracking: &'a FxHashMap<String, Tracking>,
+        focused: bool,
         ctx: Rc<AppContext>,
     ) -> Self {
         Self {
@@ -43,6 +46,7 @@ impl<'a> CommitDetail<'a> {
             refs,
             head,
             tracking,
+            focused,
             ctx,
         }
     }
@@ -58,6 +62,17 @@ impl StatefulWidget for CommitDetail<'_> {
         let (mut label_lines, mut value_lines) = self.contents(area);
 
         state.fit(value_lines.len(), area.height as usize, 0);
+        // on the right border, like the diffs'
+        let border = Rect::new(area.right(), area.y, 1, area.height);
+        let theme = &self.ctx.color_theme;
+        render_scrollbar(
+            buf,
+            border,
+            value_lines.len(),
+            state.offset,
+            self.focused,
+            theme,
+        );
 
         label_lines = label_lines.into_iter().skip(state.offset).collect();
         value_lines = value_lines.into_iter().skip(state.offset).collect();
@@ -255,6 +270,31 @@ mod tests {
     use crate::test_support::ui::{column_of, find_row, row_text, test_ctx};
 
     #[test]
+    fn test_long_details_scrollbar_on_the_border() {
+        let body: Vec<String> = (1..=60).map(|i| format!("line {i}")).collect();
+        let commit = Commit {
+            body: body.join("\n"),
+            ..Default::default()
+        };
+        let tracking = FxHashMap::default();
+        // the border right of the details
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 61, 10));
+        CommitDetail::new(
+            &commit,
+            &vec![],
+            &vec![],
+            &Head::None,
+            &tracking,
+            true,
+            test_ctx(),
+        )
+        .render(area, &mut buf, &mut ScrollState::default());
+        let border: String = (0..10).map(|y| buf[(60, y)].symbol()).collect();
+        assert!(border.contains('█'), "{border:?}");
+    }
+
+    #[test]
     fn test_refs_look_like_the_commit_list() {
         let commit = Commit::default();
         let target = commit.commit_hash.clone();
@@ -281,11 +321,16 @@ mod tests {
         let ctx = test_ctx();
         let area = Rect::new(0, 0, 100, 20);
         let mut detail = Buffer::empty(area);
-        CommitDetail::new(&commit, &vec![], &refs, &Head::None, &tracking, ctx.clone()).render(
-            area,
-            &mut detail,
-            &mut ScrollState::default(),
-        );
+        CommitDetail::new(
+            &commit,
+            &vec![],
+            &refs,
+            &Head::None,
+            &tracking,
+            true,
+            ctx.clone(),
+        )
+        .render(area, &mut detail, &mut ScrollState::default());
 
         // the labels as the commit list draws them, cell for cell
         let info = CommitInfo::new(&commit, refs.iter().collect(), &tracking, true);

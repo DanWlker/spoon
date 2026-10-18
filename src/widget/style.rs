@@ -27,15 +27,21 @@ pub fn spinner() -> &'static str {
 }
 
 // The title of a panel, like "[1] Unstaged (3)": a badge while it has the focus.
-// `extra`, like "· 2 picked", follows it.
-pub fn panel_title(label: &str, extra: &str, focused: bool, theme: &ColorTheme) -> Line<'static> {
+// `notes`, like "2 picked" and the search, follow it.
+pub fn panel_title(
+    label: &str,
+    notes: impl IntoIterator<Item = String>,
+    focused: bool,
+    theme: &ColorTheme,
+) -> Line<'static> {
     let mut spans = vec![if focused {
         focused_title(format!(" {label} "), theme)
     } else {
         Span::raw(format!(" {label} ")).fg(theme.fg)
     }];
-    if !extra.is_empty() {
-        spans.push(Span::raw(format!(" {extra} ")).fg(theme.highlight_fg));
+    let notes: Vec<String> = notes.into_iter().collect();
+    if !notes.is_empty() {
+        spans.push(Span::raw(format!(" {} ", notes.join(" · "))).fg(theme.highlight_fg));
     }
     Line::from(spans)
 }

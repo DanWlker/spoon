@@ -98,8 +98,7 @@ pub fn render_compare_title(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let indicator = indicator.unwrap_or_default();
-    let spans = panel_title(title, &indicator, focused, theme).spans;
+    let spans = panel_title(title, indicator, focused, theme).spans;
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     Line::from(spans).render(area, buf);
 }
@@ -668,7 +667,7 @@ mod tests {
             let x = row.find("[3] Changes").unwrap() as u16;
             // the same title drawn like the other panels'
             let mut expected = Buffer::empty(area);
-            panel_title("[3] Changes", "", focused, &theme).render(area, &mut expected);
+            panel_title("[3] Changes", [], focused, &theme).render(area, &mut expected);
             assert_eq!(buf[(x, 0)], expected[(1, 0)], "focused: {focused}");
         }
     }
