@@ -952,6 +952,11 @@ impl<'a> LocalChangesState<'a> {
                 .filter(|file| picked.contains(&file.path))
                 .collect()
         };
+        // a submodule is a directory, not a file to open in the editor
+        let files: Vec<&LocalChangeFile> = files
+            .into_iter()
+            .filter(|file| !self.repository.is_submodule(&file.path))
+            .collect();
         if files.is_empty() {
             return Err("Select a file to edit".into());
         }
@@ -2485,6 +2490,7 @@ mod tests {
         assert!(!state.is_files_focused());
         state.back();
         assert!(state.is_files_focused());
+        assert!(state.request_edit().is_err(), "a submodule is a directory");
         Ok(())
     }
 

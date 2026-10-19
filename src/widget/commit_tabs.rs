@@ -1,5 +1,7 @@
 use std::{collections::BTreeSet, rc::Rc};
 
+use rustc_hash::FxHashSet;
+
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -132,6 +134,9 @@ pub struct CommitChangesState<'a> {
     pub pane: DiffPane,
     // the selected submodule's commits, shown instead of its gitlink diff
     submodule: Option<SubmodulePanel<'a>>,
+    // paths that are gitlinks in the commit or its base, so one-file views don't take one for a
+    // file; loaded once, with the diff
+    gitlinks: Option<FxHashSet<String>>,
 }
 
 impl<'a> CommitChangesState<'a> {
@@ -159,19 +164,50 @@ impl<'a> CommitChangesState<'a> {
     }
 
     // The one file a single-file view works on: the selected file, or the one picked file. A
-    // picked directory is not expanded.
+    // picked directory is not expanded, and a gitlink is not a file.
     pub fn single_picked_file(&self) -> Option<&str> {
-        if self.picked.is_empty() {
-            return match self.selected_row()?.entry()? {
-                Entry::File(path) => Some(path),
-                Entry::Dir(_) => None,
-            };
+        let path = if self.picked.is_empty() {
+            match self.selected_row()?.entry()? {
+                Entry::File(path) => path,
+                Entry::Dir(_) => return None,
+            }
+        } else {
+            let path = self.picked.single_path()?;
+            self.files
+                .iter()
+                .find(|file| file.path == path)?
+                .path
+                .as_str()
+        };
+        (!self.is_gitlink(path)).then_some(path)
+    }
+
+    // The paths that are gitlinks in the commit or its base, read once.
+    fn ensure_gitlinks(&mut self) {
+        if self.gitlinks.is_some() {
+            return;
         }
-        let path = self.picked.single_path()?;
-        self.files
-            .iter()
-            .find(|file| file.path == path)
-            .map(|file| file.path.as_str())
+        let mut gitlinks = self.repository.commit_gitlink_paths(&self.commit_hash);
+        if let Some(base) = self.base_commit() {
+            gitlinks.extend(self.repository.commit_gitlink_paths(&base));
+        }
+        self.gitlinks = Some(gitlinks);
+    }
+
+    fn is_gitlink(&self, path: &str) -> bool {
+        self.gitlinks
+            .as_ref()
+            .is_some_and(|gitlinks| gitlinks.contains(path))
+    }
+
+    fn base_commit(&self) -> Option<CommitHash> {
+        self.base.clone().or_else(|| {
+            self.repository
+                .commit(&self.commit_hash)?
+                .parent_commit_hashes
+                .first()
+                .cloned()
+        })
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
@@ -245,6 +281,7 @@ impl<'a> CommitChangesState<'a> {
             picked: TreeSelection::default(),
             pane: DiffPane::default(),
             submodule: None,
+            gitlinks: None,
         }
     }
 
@@ -258,6 +295,7 @@ impl<'a> CommitChangesState<'a> {
     }
 
     pub fn ensure_loaded(&mut self) {
+        self.ensure_gitlinks();
         if self.pane.diff().is_some() || self.submodule.is_some() {
             return;
         }
@@ -312,18 +350,9 @@ impl<'a> CommitChangesState<'a> {
         let to = self
             .repository
             .submodule_gitlink_at(self.commit_hash.as_str(), path)?;
-        let from = match &self.base {
-            Some(base) => self.repository.submodule_gitlink_at(base.as_str(), path)?,
-            None => {
-                let parent = self
-                    .repository
-                    .commit(&self.commit_hash)?
-                    .parent_commit_hashes
-                    .first()?;
-                self.repository
-                    .submodule_gitlink_at(parent.as_str(), path)?
-            }
-        };
+        let from = self
+            .base_commit()
+            .and_then(|base| self.repository.submodule_gitlink_at(base.as_str(), path))?;
         Some(SubmodulePanel::between(
             self.repository,
             &self.ctx,
@@ -384,6 +413,8 @@ enum FilePreview {
     TextFocused,
     Binary,
     Directory,
+    // a gitlink, whose commits are shown on the Changes tab
+    Submodule,
     Error(String),
 }
 
@@ -397,6 +428,9 @@ pub struct CommitFilesState<'a> {
     changes: Vec<FileChange>,
     // the files of the commit once listed, or worked out
     paths: Option<BTreeSet<String>>,
+    // the gitlinks of the commit, which are not files to preview or act on
+    gitlinks: FxHashSet<String>,
+    gitlinks_for: Option<CommitHash>,
     // loaded lazily, only once the tab is shown
     tree: Option<FileTreeState>,
     // the rows selected with v, which moving extends and esc clears
@@ -428,16 +462,30 @@ impl<'a> CommitFilesState<'a> {
     }
 
     // The one file a single-file view works on: the selected file, or the one picked file. A
-    // picked directory is not expanded.
+    // picked directory is not expanded, and a gitlink is not a file.
     pub fn single_picked_file(&self) -> Option<&str> {
-        if self.picked.is_empty() {
-            return match self.selected_row()?.entry()? {
-                Entry::File(path) => Some(path),
-                Entry::Dir(_) => None,
-            };
+        let path = if self.picked.is_empty() {
+            match self.selected_row()?.entry()? {
+                Entry::File(path) => path,
+                Entry::Dir(_) => return None,
+            }
+        } else {
+            let path = self.picked.single_path()?;
+            self.paths.as_ref()?.contains(path).then_some(path)?
+        };
+        (!self.is_gitlink(path)).then_some(path)
+    }
+
+    fn ensure_gitlinks(&mut self) {
+        if self.gitlinks_for.as_ref() == Some(&self.commit_hash) {
+            return;
         }
-        let path = self.picked.single_path()?;
-        self.paths.as_ref()?.contains(path).then_some(path)
+        self.gitlinks = self.repository.commit_gitlink_paths(&self.commit_hash);
+        self.gitlinks_for = Some(self.commit_hash.clone());
+    }
+
+    fn is_gitlink(&self, path: &str) -> bool {
+        self.gitlinks_for.as_ref() == Some(&self.commit_hash) && self.gitlinks.contains(path)
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
@@ -471,6 +519,8 @@ impl<'a> CommitFilesState<'a> {
             first_parent: commit.parent_commit_hashes.first().cloned(),
             changes: changes.to_vec(),
             paths: None,
+            gitlinks: FxHashSet::default(),
+            gitlinks_for: None,
             tree: None,
             picked: TreeSelection::default(),
             previous_tree: None,
@@ -517,6 +567,7 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn ensure_loaded(&mut self) {
+        self.ensure_gitlinks();
         if self.tree.is_none() {
             let repository = self.repository;
             let commit_hash = &self.commit_hash;
@@ -653,12 +704,17 @@ impl<'a> CommitFilesState<'a> {
 
     fn load_preview(&mut self) {
         self.text.set_lines(Vec::new());
+        self.ensure_gitlinks();
         let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
             return;
         };
         if row.is_dir() {
             self.preview = Some(FilePreview::Directory);
+            return;
+        }
+        if self.is_gitlink(&row.path) {
+            self.preview = Some(FilePreview::Submodule);
             return;
         }
         let preview = match self
@@ -821,6 +877,9 @@ impl CommitTab {
                 return;
             }
             Some(FilePreview::Binary) => dim("Binary file".into()),
+            Some(FilePreview::Submodule) => {
+                dim("Submodule, its commits are on the Changes tab".into())
+            }
             Some(FilePreview::Error(err)) => dim(err.clone()),
             Some(FilePreview::Directory) | None => Vec::new(),
         };
@@ -951,6 +1010,24 @@ mod tests {
     }
 
     #[test]
+    fn test_files_tab_shows_a_submodule_without_a_file_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repository, _superproject, _first, _second) =
+            repository_with_a_bumped_submodule(dir.path());
+        let head = repository.head_commit().unwrap();
+        let (commit, changes) = repository.commit_detail(&head);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes);
+        state.ensure_loaded();
+        state.update_tree(|tree| tree.select_path("sub"));
+        assert!(matches!(state.preview, Some(FilePreview::Submodule)));
+        assert_eq!(
+            state.single_picked_file(),
+            None,
+            "a submodule is not a file for the one-file views"
+        );
+    }
+
+    #[test]
     fn test_a_bumped_submodule_is_found_after_it_leaves_the_index() {
         let dir = tempfile::tempdir().unwrap();
         let (_, superproject, _first, _second) = repository_with_a_bumped_submodule(dir.path());
@@ -988,6 +1065,11 @@ mod tests {
         assert_eq!(submodule.subjects(), ["second"]);
         // the gitlink diff isn't shown, its commits are
         assert!(state.pane.diff().is_none());
+        assert_eq!(
+            state.single_picked_file(),
+            None,
+            "a submodule is not a file for the one-file views"
+        );
     }
 
     fn visible(tree: &FileTreeState) -> Vec<&str> {

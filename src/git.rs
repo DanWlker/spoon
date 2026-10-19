@@ -832,6 +832,19 @@ impl Repository {
             .unwrap_or_default()
     }
 
+    // The paths that are gitlinks (submodules) in the tree of a commit, from its modes: a
+    // submodule path is otherwise listed as a file by `commit_tree_paths`.
+    pub fn commit_gitlink_paths(&self, commit_hash: &CommitHash) -> FxHashSet<String> {
+        let out = git_output(&self.path, &["ls-tree", "-r", "-z", commit_hash.as_str()])
+            .unwrap_or_default();
+        out.split('\0')
+            .filter_map(|entry| {
+                let (meta, path) = entry.split_once('\t')?;
+                meta.starts_with("160000 ").then(|| path.to_string())
+            })
+            .collect()
+    }
+
     // Who last changed each line of the file at `path` as of the commit, see `Blame`.
     pub fn blame(
         &self,
@@ -4027,6 +4040,9 @@ mod tests {
             repository.submodule_gitlink_at("HEAD", "sub"),
             Some(info.index.clone())
         );
+        assert!(repository
+            .commit_gitlink_paths(&repository.head_commit().unwrap())
+            .contains("sub"));
         // the commits the recorded gitlink doesn't have
         let sub_repository = repository
             .submodule_repository("sub", &info.index, &head)

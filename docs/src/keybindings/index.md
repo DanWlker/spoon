@@ -150,7 +150,7 @@ The commit detail has three tabs:
 
 - **Info**: the commit information. <kbd>j/k</kbd> scroll it.
 - **Changes**: the changed files as a tree under a `/` row standing for all of them, like on the local changes page, expanded by default, with the diff of the selected file (or directory, or `/` for the whole commit) beside it. <kbd>j/k</kbd> and the scroll keys select a file; <kbd>v</kbd> selects a range of files; the diff is scrolled with them only while it has the focus.
-- **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> and the scroll keys select a file; <kbd>v</kbd> selects a range of files; the preview is scrolled with them only while it has the focus.
+- **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> and the scroll keys select a file; <kbd>v</kbd> selects a range of files; the preview is scrolled with them only while it has the focus. A submodule says its commits are on the Changes tab instead of previewing it as a file.
 
 In the files tab, <kbd>Enter</kbd> moves the focus into the preview of the selected file (on a directory, it expands or collapses it instead of closing the details): <kbd>j/k</kbd> select a line, <kbd>v</kbd> selects the lines from the first to the selected one (<kbd>y</kbd> copies them; another selection adds to them), <kbd>/</kbd> searches the file (<kbd>n/N</kbd> next/previous match), and <kbd>Esc</kbd> clears the selection, then goes back to the files.
 
@@ -208,7 +208,7 @@ A file git diffs as text converted from it (a `textconv` diff driver in `.gitatt
 <kbd>i</kbd> adds the selected files and directories to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
 
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor; <kbd>Enter</kbd> opens the diff of the row under the cursor only.
-<kbd>e</kbd> opens the picked files only, and <kbd>B</kbd>/<kbd>T</kbd> work only when exactly one file is picked: a picked directory is not expanded into the files under it.
+<kbd>e</kbd> opens the picked files only, and <kbd>B</kbd>/<kbd>T</kbd> work only when exactly one file is picked: a picked directory is not expanded into the files under it, and a submodule is not opened as a file.
 <kbd>s</kbd> opens a popup asking for a stash message (it may be empty), and stashes including untracked files.
 
 #### Refs Sidebar
