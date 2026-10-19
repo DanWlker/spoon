@@ -24,15 +24,15 @@ use unicode_width::UnicodeWidthStr;
 use crate::widget::tree_query::Toward;
 use crate::{
     browse::{self, LinkAction, LinkTarget},
-    color::ColorTheme,
-    config::{CoreConfig, CursorType, UiConfig},
+    color::{ColorTheme, GraphColorSet},
+    config::{CoreConfig, CursorType, GraphColorConfig, UiConfig},
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
         read_head_commit, read_operation, run_task, AfterTask, Commit, CommitHash, FileChange,
         FilesSnapshot, GitCommand, GitTask, Head, NamedRef, Ref, Repository, Rev, RunningTask,
     },
-    graph::{Fold, GraphImageManager},
+    graph::{CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphStyle},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
     keys::{Availability, KeyList, Keys},
@@ -117,6 +117,9 @@ pub struct AppContext {
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
     pub image_protocol: ImageProtocol,
+    // the graph images are drawn with, shared by the main graph and the submodule graphs the
+    // pages build beside it, see `graph_image_manager`
+    pub graph: RefCell<GraphRender>,
     // the git command running in the background, kept across refreshes, shared with the repository
     pub running_task: Rc<RefCell<Option<RunningTask>>>,
     // the keys of the hints in the status bar, see `short_keys`
@@ -129,7 +132,49 @@ pub struct AppContext {
     pub search_options: Rc<Cell<SearchOptions>>,
 }
 
+// What a commit graph image is drawn with. The color set, style and antialias come from the
+// config; the cell width is decided once for the main graph and reused by the submodule graphs.
+#[derive(Debug, Clone)]
+pub struct GraphRender {
+    pub color_set: GraphColorSet,
+    pub style: GraphStyle,
+    pub antialias: bool,
+    pub image_width_mode: GraphImageWidthMode,
+    pub cell_width_type: CellWidthType,
+}
+
+impl Default for GraphRender {
+    fn default() -> Self {
+        Self {
+            color_set: GraphColorSet::new(&GraphColorConfig::default()),
+            style: GraphStyle::Rounded,
+            antialias: true,
+            image_width_mode: GraphImageWidthMode::Compact,
+            cell_width_type: CellWidthType::Double,
+        }
+    }
+}
+
 impl AppContext {
+    // The image manager of a graph built beside the main one, drawn with the same settings.
+    pub fn graph_image_manager<'a>(&self, graph: Graph<'a>) -> GraphImageManager<'a> {
+        let render = self.graph.borrow();
+        let image_params = crate::graph::ImageParams::new(
+            &render.color_set,
+            render.cell_width_type,
+            render.antialias,
+        )
+        .fit_cell(crate::protocol::cell_pixels());
+        GraphImageManager::new(
+            graph,
+            image_params,
+            render.cell_width_type,
+            render.style,
+            render.image_width_mode,
+            self.image_protocol,
+        )
+    }
+
     // The keys of the events for a hint, see `KeyBind::short_keys`, found once for each.
     pub fn short_keys(&self, events: &[UserEvent]) -> String {
         let mut names = self.key_names.borrow_mut();
@@ -388,6 +433,8 @@ impl<'a> App<'a> {
             None => (None, None),
         };
         let graph = graph_image_manager.graph();
+        // kept past the move of the manager into the commit list below
+        let warning = graph.warning.clone();
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let head_history = repository.head_history();
         let comparing_refs = shell
@@ -496,7 +543,7 @@ impl<'a> App<'a> {
             ec,
         };
 
-        if let Some(warning) = &graph.warning {
+        if let Some(warning) = &warning {
             app.warn_notification(warning.clone());
         }
 
@@ -1834,7 +1881,7 @@ impl App<'_> {
         let snapshot = self.shell.parked_local_changes.take();
         self.replace_view(View::of_local_changes(
             commit_list_state,
-            LocalChangesState::restore(self.repository, snapshot),
+            LocalChangesState::restore(self.repository, self.ctx.clone(), snapshot),
             self.ctx.clone(),
             self.ec.sender(),
         ));

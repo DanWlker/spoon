@@ -13,5 +13,6 @@ pub mod local_changes;
 pub mod notices;
 pub mod ref_list;
 pub mod style;
+pub mod submodule;
 pub mod text_area;
 pub mod tree_query;

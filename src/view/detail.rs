@@ -109,7 +109,7 @@ impl<'a> DetailView<'a> {
             commit_list_state,
             commit_detail_state: ScrollState::default(),
             tab: DetailTab::default(),
-            changes_state: CommitChangesState::new(repository, hash.clone(), &changes),
+            changes_state: CommitChangesState::new(repository, ctx.clone(), hash.clone(), &changes),
             files_state: CommitFilesState::new(repository, &commit, &changes),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
@@ -131,7 +131,8 @@ impl<'a> DetailView<'a> {
     pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, compare: Compare) {
         let repository = self.repository;
         let changes = repository.diff_summary_between(&base, &target);
-        self.changes_state = CommitChangesState::between(repository, Some(base), target, &changes);
+        self.changes_state =
+            CommitChangesState::between(repository, self.ctx.clone(), Some(base), target, &changes);
         self.compare = Comparing::Shown(compare);
         self.show_tab(DetailTab::Changes);
     }
@@ -422,7 +423,12 @@ impl<'a> DetailView<'a> {
         };
         let changes = std::mem::replace(
             &mut self.changes_state,
-            CommitChangesState::new(self.repository, self.commit.commit_hash.clone(), &[]),
+            CommitChangesState::new(
+                self.repository,
+                self.ctx.clone(),
+                self.commit.commit_hash.clone(),
+                &[],
+            ),
         );
         self.compare = Comparing::Parked(compare, Box::new(changes));
         self.update_selected_commit(|_| {});
@@ -743,6 +749,7 @@ impl<'a> DetailView<'a> {
 
     pub fn prepare_graph_uploads(&mut self) {
         self.as_mut_list_state().ensure_visible_graph_uploaded();
+        self.changes_state.prepare_submodule_uploads();
     }
 }
 
@@ -1119,11 +1126,21 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
-        self.as_mut_list_state().drain_pending_graph_uploads()
+        let mut uploads = self.as_mut_list_state().drain_pending_graph_uploads();
+        uploads.extend(self.changes_state.drain_submodule_uploads());
+        if let Comparing::Parked(_, changes) = &mut self.compare {
+            uploads.extend(changes.drain_submodule_uploads());
+        }
+        uploads
     }
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        self.as_list_state().graph_image_ids_sorted()
+        let mut ids = self.as_list_state().graph_image_ids_sorted();
+        ids.extend(self.changes_state.submodule_image_ids());
+        if let Comparing::Parked(_, changes) = &self.compare {
+            ids.extend(changes.submodule_image_ids());
+        }
+        ids
     }
 
     pub fn image_clear_area(&self, area: Rect) -> Rect {
@@ -1172,7 +1189,8 @@ impl<'a> DetailView<'a> {
         let selected = self.as_list_state().selected_commit_hash().clone();
         let (commit, changes) = repository.commit_detail(&selected);
         let refs = repository.refs(&selected).into_iter().cloned().collect();
-        self.changes_state = CommitChangesState::new(repository, selected.clone(), &changes);
+        self.changes_state =
+            CommitChangesState::new(repository, self.ctx.clone(), selected.clone(), &changes);
         self.files_state.set_commit(&commit, &changes);
         self.commit = commit;
         self.changes = changes;

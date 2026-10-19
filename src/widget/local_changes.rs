@@ -18,14 +18,12 @@ use crate::{
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
-        SubmoduleChanges,
     },
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions},
     view::register_diff_keys,
     widget::{
-        commit_list::render_commit_columns,
         conflict::ConflictView,
         diff::{parse_diff, DiffPart, Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
@@ -38,6 +36,7 @@ use crate::{
             badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
             render_panel_scrollbar, tree_panel_width,
         },
+        submodule::SubmodulePanel,
         text_area::{Caret, Lines, TextArea},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
@@ -258,6 +257,8 @@ impl Default for LocalChangesSnapshot {
 #[derive(Debug)]
 pub struct LocalChangesState<'a> {
     repository: &'a Repository,
+    // what the submodule panel draws its graph with, and the config everywhere
+    ctx: Rc<AppContext>,
     // the paths of local changes are relative to it
     changes: LocalChanges,
     // the unstaged and the staged section, see `LocalChangesSection`
@@ -283,17 +284,21 @@ pub struct LocalChangesState<'a> {
     // the conflicted file under the cursor, shown instead of its diff
     conflict: Option<ConflictPanel>,
     // the submodule under the cursor, shown instead of its gitlink diff
-    submodule: Option<SubmoduleChanges>,
+    submodule: Option<SubmodulePanel<'a>>,
 }
 
 impl<'a> LocalChangesState<'a> {
     #[cfg(test)]
     pub fn load(repository: &'a Repository) -> Self {
-        Self::restore(repository, None)
+        Self::restore(repository, crate::test_support::ui::test_ctx(), None)
     }
 
     // Loads the page as it was in `snapshot`, loading the diff once, for the selected file.
-    pub fn restore(repository: &'a Repository, snapshot: Option<LocalChangesSnapshot>) -> Self {
+    pub fn restore(
+        repository: &'a Repository,
+        ctx: Rc<AppContext>,
+        snapshot: Option<LocalChangesSnapshot>,
+    ) -> Self {
         let changes = repository.take_loaded_local_changes();
         let files_stamp = repository.files_stamp(&changes);
         let sections = [
@@ -305,6 +310,7 @@ impl<'a> LocalChangesState<'a> {
             .map_or(LocalChangesSection::Unstaged, |s| s.section);
         let mut state = Self {
             repository,
+            ctx,
             changes,
             sections,
             section,
@@ -669,7 +675,11 @@ impl<'a> LocalChangesState<'a> {
     fn reload_repository(&mut self) {
         let sort = crate::git::SortCommit::Chronological;
         let repository = Repository::load(self.repository.path(), sort, None, false).unwrap();
-        *self = Self::restore(Box::leak(Box::new(repository)), Some(self.snapshot()));
+        *self = Self::restore(
+            Box::leak(Box::new(repository)),
+            self.ctx.clone(),
+            Some(self.snapshot()),
+        );
     }
 
     // Empties the message box and stops amending, once the commit is made.
@@ -1384,9 +1394,33 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
-    // whether `event` was one.
+    // whether `event` was one. The submodule panel scrolls itself, there being no diff.
     pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
+        if let Some(submodule) = &mut self.submodule {
+            return submodule.scroll(event);
+        }
         self.pane.scroll(event)
+    }
+
+    // Prepares the graph images of the submodule panel, if one is shown, see `CommitListState`.
+    pub fn prepare_graph_uploads(&mut self) {
+        if let Some(submodule) = &mut self.submodule {
+            submodule.ensure_visible_graph_uploaded();
+        }
+    }
+
+    // The graph images the submodule panel has queued, to write to the terminal.
+    pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
+        self.submodule
+            .as_mut()
+            .map_or_else(Vec::new, SubmodulePanel::drain_pending_graph_uploads)
+    }
+
+    // The graph images the submodule panel has, to clean up.
+    pub fn submodule_graph_image_ids(&self) -> Vec<u32> {
+        self.submodule
+            .as_ref()
+            .map_or_else(Vec::new, SubmodulePanel::graph_image_ids_sorted)
     }
 
     // Staging the unstaged changes, unstaging the staged ones.
@@ -1845,9 +1879,9 @@ impl<'a> LocalChangesState<'a> {
         self.pane.set_diff(Some(diff));
     }
 
-    // The submodule of the selected file, comparing it against the gitlink the index records:
-    // what staging it would record. None for a directory, the picked files or a plain file.
-    fn load_submodule(&self) -> Option<SubmoduleChanges> {
+    // The submodule of the selected file, shown in place of its gitlink diff. None for a
+    // directory, the picked files or a plain file.
+    fn load_submodule(&self) -> Option<SubmodulePanel<'a>> {
         if self.diff_source != DiffSource::Row {
             return None;
         }
@@ -1855,7 +1889,7 @@ impl<'a> LocalChangesState<'a> {
         if row.is_dir() {
             return None;
         }
-        self.repository.submodule_changes(&row.path)
+        SubmodulePanel::changes(self.repository, &self.ctx, &row.path)
     }
 }
 
@@ -2029,51 +2063,16 @@ impl LocalChangesPanel<'_> {
     }
 
     fn render_submodule(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
-        let Some(submodule) = state.submodule.as_ref() else {
-            return;
-        };
-        let theme = &self.ctx.color_theme;
         let path = state.selected_path().unwrap_or_default();
-        let inner = render_panel(
-            buf,
-            area,
-            Line::from(vec![
-                Span::raw(format!(" {path} ")).fg(theme.fg),
-                badge(" submodule changed ", theme.status_warn_fg, theme),
-            ]),
-            false,
-            theme,
-        );
-        if submodule.head.is_none() {
-            Paragraph::new(placeholder("submodule not checked out", theme)).render(inner, buf);
+        let theme = &self.ctx.color_theme;
+        let title = Line::from(vec![
+            Span::raw(format!(" {path} ")).fg(theme.fg),
+            badge(" submodule changed ", theme.status_warn_fg, theme),
+        ]);
+        let Some(submodule) = state.submodule.as_mut() else {
             return;
-        }
-        let [header_area, list_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
-        let note = match submodule.uncommitted {
-            0 => "no uncommitted files".to_string(),
-            1 => "1 uncommitted file".to_string(),
-            n => format!("{n} uncommitted files"),
         };
-        buf.set_line(
-            header_area.x,
-            header_area.y,
-            &Line::raw(note).fg(theme.muted_fg),
-            header_area.width,
-        );
-        if submodule.commits.is_empty() {
-            Paragraph::new(placeholder("no commits ahead of the recorded one", theme))
-                .render(list_area, buf);
-            return;
-        }
-        let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
-        let total = submodule.commits.len();
-        let range = state
-            .pane
-            .scroll_state()
-            .fit(total, list_area.height as usize, scrolloff);
-        render_commit_columns(&self.ctx, list_area, buf, &submodule.commits, range.start);
-        render_panel_scrollbar(buf, area, total, range.start, false, theme);
+        submodule.render_framed(&self.ctx, area, buf, title, false);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -2348,8 +2347,7 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "sub");
         let submodule = state.submodule.as_ref().expect("the submodule panel");
-        assert_eq!(submodule.commits.len(), 1);
-        assert_eq!(submodule.commits[0].subject, "second");
+        assert_eq!(submodule.subjects(), ["second"]);
         // the gitlink diff isn't shown, there is nothing to enter in it
         assert!(state.pane.diff().is_none());
         Ok(())
@@ -2874,18 +2872,30 @@ mod tests {
             Ok(repository)
         };
         let merging_repository = merging()?;
-        let during = LocalChangesState::restore(&merging_repository, Some(state.snapshot()));
+        let during = LocalChangesState::restore(
+            &merging_repository,
+            crate::test_support::ui::test_ctx(),
+            Some(state.snapshot()),
+        );
         assert!(during.keys().takes(UserEvent::ToggleAmend));
 
         // the draft survives a refresh
-        let reloaded = LocalChangesState::restore(&repository, Some(state.snapshot()));
+        let reloaded = LocalChangesState::restore(
+            &repository,
+            crate::test_support::ui::test_ctx(),
+            Some(state.snapshot()),
+        );
         assert_eq!(paths(&reloaded.changes.staged), vec!["a.txt", "c.txt"]);
 
         // turning amend off restores the staged section and the typed message
         state.toggle_amend()?;
         assert_eq!(state.draft.message(), "draft");
         let merging_repository = merging()?;
-        let during = LocalChangesState::restore(&merging_repository, Some(state.snapshot()));
+        let during = LocalChangesState::restore(
+            &merging_repository,
+            crate::test_support::ui::test_ctx(),
+            Some(state.snapshot()),
+        );
         assert!(!during.keys().takes(UserEvent::ToggleAmend));
         assert_eq!(paths(&state.changes.staged), vec!["b.txt", "c.txt"]);
         assert_eq!(state.changes.staged[0].status, LocalChangeStatus::Deleted);
@@ -2916,7 +2926,11 @@ mod tests {
         // another branch checked out: its HEAD isn't what was amended, the typed message is back
         git.checkout("other");
         let repository = reload(repo_path);
-        let state = LocalChangesState::restore(&repository, Some(state.snapshot()));
+        let state = LocalChangesState::restore(
+            &repository,
+            crate::test_support::ui::test_ctx(),
+            Some(state.snapshot()),
+        );
         assert!(state.draft.amend.is_none());
         assert!(state.changes.staged.is_empty());
         assert_eq!(state.draft.message(), "draft");
@@ -3835,11 +3849,19 @@ mod tests {
         assert!(state.toggle_amend().is_err());
         // also when the page opens from a snapshot; once cleared, it stays so
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
-        let restored = LocalChangesState::restore(&repository, Some(Default::default()));
+        let restored = LocalChangesState::restore(
+            &repository,
+            crate::test_support::ui::test_ctx(),
+            Some(Default::default()),
+        );
         assert_eq!(restored.draft.summary.text(), "Merge branch 'feature'");
         state.draft.set_message("");
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
-        let restored = LocalChangesState::restore(&repository, Some(state.snapshot()));
+        let restored = LocalChangesState::restore(
+            &repository,
+            crate::test_support::ui::test_ctx(),
+            Some(state.snapshot()),
+        );
         assert_eq!(restored.draft.message(), "");
         state.draft.set_message("Merge branch 'feature'");
 

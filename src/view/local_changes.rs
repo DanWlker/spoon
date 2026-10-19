@@ -336,7 +336,18 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        self.as_list_state().graph_image_ids_sorted()
+        let mut ids = self.as_list_state().graph_image_ids_sorted();
+        ids.extend(self.local_changes_state.submodule_graph_image_ids());
+        ids
+    }
+
+    // The submodule panel's graph images, drawn beside the files, see `CommitListState`.
+    pub fn prepare_graph_uploads(&mut self) {
+        self.local_changes_state.prepare_graph_uploads();
+    }
+
+    pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
+        self.local_changes_state.drain_pending_graph_uploads()
     }
 
     // Runs the editor or merge tool the state asked for, in place of the app.

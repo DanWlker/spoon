@@ -22,6 +22,7 @@ use crate::{
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
         file_tree::{render_tree, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeShape},
+        submodule::SubmodulePanel,
         tree_query::SearchDirection,
     },
 };
@@ -115,6 +116,7 @@ struct ChangedFile {
 #[derive(Debug)]
 pub struct CommitChangesState<'a> {
     repository: &'a Repository,
+    ctx: Rc<AppContext>,
     commit_hash: CommitHash,
     // compared to this commit instead of the parent
     base: Option<CommitHash>,
@@ -123,6 +125,8 @@ pub struct CommitChangesState<'a> {
     tree: FileTreeState,
     // the diff of the selected file, loaded lazily, only while the tab is shown
     pub pane: DiffPane,
+    // the selected submodule's commits, shown instead of its gitlink diff
+    submodule: Option<SubmodulePanel<'a>>,
 }
 
 impl<'a> CommitChangesState<'a> {
@@ -137,15 +141,17 @@ impl<'a> CommitChangesState<'a> {
 
     pub fn new(
         repository: &'a Repository,
+        ctx: Rc<AppContext>,
         commit_hash: CommitHash,
         changes: &[FileChange],
     ) -> Self {
-        Self::between(repository, None, commit_hash, changes)
+        Self::between(repository, ctx, None, commit_hash, changes)
     }
 
     // The changes from `base` to the commit; from its parent when None.
     pub fn between(
         repository: &'a Repository,
+        ctx: Rc<AppContext>,
         base: Option<CommitHash>,
         commit_hash: CommitHash,
         changes: &[FileChange],
@@ -181,16 +187,24 @@ impl<'a> CommitChangesState<'a> {
         }
         Self {
             repository,
+            ctx,
             commit_hash,
             base,
             files,
             tree,
             pane: DiffPane::default(),
+            submodule: None,
         }
     }
 
     pub fn ensure_loaded(&mut self) {
-        if self.pane.diff().is_some() {
+        if self.pane.diff().is_some() || self.submodule.is_some() {
+            return;
+        }
+        // a submodule shows its own commits instead of the gitlink diff
+        if let Some(submodule) = self.load_submodule() {
+            self.submodule = Some(submodule);
+            self.pane.set_diff(None);
             return;
         }
         let diff = match self.tree.selected() {
@@ -223,12 +237,41 @@ impl<'a> CommitChangesState<'a> {
         self.pane.set_diff(Some(diff));
     }
 
+    // The submodule of the selected file, between the gitlink of the base (or the parent) and the
+    // commit's, when both have one. None for a directory or a plain file.
+    fn load_submodule(&self) -> Option<SubmodulePanel<'a>> {
+        let row = self.tree.selected()?;
+        if row.is_dir() {
+            return None;
+        }
+        let path = &row.path;
+        if !self.repository.is_submodule(path) {
+            return None;
+        }
+        let to = self
+            .repository
+            .gitlink_at(self.commit_hash.as_str(), path)?;
+        let from = match &self.base {
+            Some(base) => self.repository.gitlink_at(base.as_str(), path)?,
+            None => {
+                let parent = self
+                    .repository
+                    .commit(&self.commit_hash)?
+                    .parent_commit_hashes
+                    .first()?;
+                self.repository.gitlink_at(parent.as_str(), path)?
+            }
+        };
+        SubmodulePanel::between(self.repository, &self.ctx, path, &from, &to)
+    }
+
     // Applies a tree operation, reloading the diff when the selection changed.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
             self.pane.set_diff(None);
+            self.submodule = None;
             self.ensure_loaded();
         }
         result
@@ -239,6 +282,25 @@ impl<'a> CommitChangesState<'a> {
     pub fn is_converted(&self) -> bool {
         self.tree.selected().is_some_and(|r| !r.is_dir())
             && self.pane.diff().is_some_and(|d| d.converted)
+    }
+
+    // The submodule panel's graph images, drawn beside the file tree, see `CommitListState`.
+    pub fn prepare_submodule_uploads(&mut self) {
+        if let Some(submodule) = &mut self.submodule {
+            submodule.ensure_visible_graph_uploaded();
+        }
+    }
+
+    pub fn drain_submodule_uploads(&mut self) -> Vec<String> {
+        self.submodule
+            .as_mut()
+            .map_or_else(Vec::new, SubmodulePanel::drain_pending_graph_uploads)
+    }
+
+    pub fn submodule_image_ids(&self) -> Vec<u32> {
+        self.submodule
+            .as_ref()
+            .map_or_else(Vec::new, SubmodulePanel::graph_image_ids_sorted)
     }
 }
 
@@ -545,6 +607,13 @@ impl CommitTab {
         );
         render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
 
+        // a submodule shows its own commits, with the graph, instead of the gitlink diff
+        if let Some(submodule) = state.submodule.as_mut() {
+            let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
+            submodule.render_bare(&self.ctx, diff_area, scrollbar, buf, self.focused);
+            return;
+        }
+
         let search = self.pane_search.as_deref();
         let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
         state
@@ -646,7 +715,72 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::{git::SortCommit, test_support::git::GitRepository, widget::file_tree::ROOT_PATH};
+    use crate::{
+        git::SortCommit,
+        test_support::git::{git, GitRepository},
+        test_support::ui::test_ctx,
+        widget::file_tree::ROOT_PATH,
+    };
+
+    // A superproject with `sub` added, and a commit bumping its gitlink from the first commit to
+    // the second inside it; the two gitlinks are returned.
+    fn repository_with_a_bumped_submodule(
+        path: &std::path::Path,
+    ) -> (Repository, std::path::PathBuf, String, String) {
+        let base = path.join("base");
+        fs::create_dir(&base).unwrap();
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n").unwrap();
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("first", "2024-01-01");
+        let first = base_repo.rev_parse_head();
+
+        let superproject = path.join("super");
+        fs::create_dir(&superproject).unwrap();
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                base.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        repo.commit("add sub", "2024-01-02");
+
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        fs::write(sub.join("a.txt"), "two\n").unwrap();
+        sub_repo.add(&["a.txt"]);
+        sub_repo.commit("second", "2024-01-03");
+        let second = sub_repo.rev_parse_head();
+
+        repo.add(&["sub"]);
+        repo.commit("bump the submodule", "2024-01-04");
+        let repository =
+            Repository::load(&superproject, SortCommit::Chronological, None, false).unwrap();
+        (repository, superproject, first, second)
+    }
+
+    #[test]
+    fn test_changes_of_a_bumped_submodule_list_its_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repository, _superproject, _first, _second) =
+            repository_with_a_bumped_submodule(dir.path());
+        let head = repository.head_commit().unwrap();
+        let (_, changes) = repository.commit_detail(&head);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), head.clone(), &changes);
+        state.ensure_loaded();
+        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        assert_eq!(submodule.subjects(), ["second"]);
+        // the gitlink diff isn't shown, its commits are
+        assert!(state.pane.diff().is_none());
+    }
 
     fn visible(tree: &FileTreeState) -> Vec<&str> {
         tree.rows().iter().map(|r| r.path.as_str()).collect()
@@ -705,7 +839,7 @@ mod tests {
         // changes: under the root row like the local changes, expanded, starts on the first file,
         // a rename shows its source too
         let (_, changes) = repository.commit_detail(&second);
-        let mut state = CommitChangesState::new(&repository, second.clone(), &changes);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), second.clone(), &changes);
         state.ensure_loaded();
         assert_eq!(
             visible(&state.tree),
@@ -735,7 +869,7 @@ mod tests {
 
         // the root commit is compared to the empty tree
         let (_, changes) = repository.commit_detail(&first);
-        let mut state = CommitChangesState::new(&repository, first.clone(), &changes);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), first.clone(), &changes);
         state.ensure_loaded();
         assert!(state.pane.diff().unwrap().raw.contains("+a"));
 
@@ -858,7 +992,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let second = repository.all_commits()[0].commit_hash.clone();
         let (_, changes) = repository.commit_detail(&second);
-        let mut state = CommitChangesState::new(&repository, second, &changes);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), second, &changes);
         state.ensure_loaded();
 
         // enter goes into the hunks, then the lines of the selected one; back goes out
@@ -979,7 +1113,7 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false)?;
         let head = repository.head_commit().unwrap();
         let (_, changes) = repository.commit_detail(&head);
-        let state = CommitChangesState::new(&repository, head, &changes);
+        let state = CommitChangesState::new(&repository, test_ctx(), head, &changes);
         assert_eq!(names(state.tree.rows()), local_rows);
         Ok(())
     }

@@ -25,7 +25,7 @@ mod mailmap_tests;
 #[cfg(test)]
 mod test_support;
 
-use std::{path::PathBuf, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
@@ -212,6 +212,7 @@ fn main() -> Result<()> {
         fetch: true,
     };
 
+    let graph_color_set = color::GraphColorSet::new(&graph_config.color);
     let loader = Loader {
         path: PathBuf::from("."),
         order,
@@ -222,7 +223,7 @@ fn main() -> Result<()> {
         graph_style,
         graph_antialias,
         graph_image_width_mode,
-        graph_color_set: color::GraphColorSet::new(&graph_config.color),
+        graph_color_set: graph_color_set.clone(),
         image_protocol,
         initial_selection,
         launch,
@@ -234,6 +235,13 @@ fn main() -> Result<()> {
         ui_config,
         color_theme,
         image_protocol,
+        graph: RefCell::new(app::GraphRender {
+            color_set: graph_color_set,
+            style: graph_style,
+            antialias: graph_antialias,
+            image_width_mode: graph_image_width_mode,
+            cell_width_type: graph::CellWidthType::Double,
+        }),
         running_task: Default::default(),
         key_names: Default::default(),
         layout: Default::default(),
@@ -383,11 +391,12 @@ impl Loader {
             .unwrap_or_default();
         let graph = graph::calc_graph(repository, self.primary_branch.as_deref(), &folded);
         let cell_width_type = check::decide_cell_width_type(&graph, size, self.graph_width)?;
+        ctx.graph.borrow_mut().cell_width_type = cell_width_type;
         let image_params =
             graph::ImageParams::new(&self.graph_color_set, cell_width_type, self.graph_antialias)
                 .fit_cell(protocol::cell_pixels());
         let graph_image_manager = GraphImageManager::new(
-            &graph,
+            graph,
             image_params,
             cell_width_type,
             self.graph_style,

@@ -66,7 +66,7 @@ impl<'a> View<'a> {
             View::Default => {}
             View::List(view) => view.prepare_graph_uploads(),
             View::Detail(view) => view.prepare_graph_uploads(),
-            View::LocalChanges(_) => {}
+            View::LocalChanges(view) => view.prepare_graph_uploads(),
         }
     }
 
@@ -75,7 +75,7 @@ impl<'a> View<'a> {
             View::Default => Vec::new(),
             View::List(view) => view.drain_pending_graph_uploads(),
             View::Detail(view) => view.drain_pending_graph_uploads(),
-            View::LocalChanges(_) => Vec::new(),
+            View::LocalChanges(view) => view.drain_pending_graph_uploads(),
         }
     }
 

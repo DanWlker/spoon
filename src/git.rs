@@ -237,6 +237,28 @@ type CommitsMap = FxHashMap<CommitHash, Vec<CommitHash>>;
 
 type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 
+// The submodule repositories loaded beside this one, kept append-only so the references handed
+// out by `submodule_repository` stay valid while more are loaded. The map boxes its values, so
+// their addresses don't change.
+#[derive(Default)]
+struct SubmoduleRepositories(elsa::FrozenMap<String, Box<Repository>>);
+
+impl std::fmt::Debug for SubmoduleRepositories {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SubmoduleRepositories({} loaded)", self.0.len())
+    }
+}
+
+impl SubmoduleRepositories {
+    fn get(&self, key: &str) -> Option<&Repository> {
+        self.0.get(key)
+    }
+
+    fn insert(&self, key: String, repository: Repository) -> &Repository {
+        self.0.insert(key, Box::new(repository))
+    }
+}
+
 #[derive(Debug)]
 pub struct Repository {
     // the top directory of the working tree (the repository itself when bare), which git
@@ -258,6 +280,8 @@ pub struct Repository {
     tracking: FxHashMap<String, Tracking>,
     // the paths of the submodules tracked in the index when loaded (mode 160000)
     submodules: FxHashSet<String>,
+    // the submodules' own repositories, loaded for the pages that show their commits
+    submodule_repositories: SubmoduleRepositories,
     commit_map: CommitMap,
 
     parents_map: CommitsMap,
@@ -369,6 +393,7 @@ impl Repository {
             operation: None,
             tracking: Default::default(),
             submodules: Default::default(),
+            submodule_repositories: Default::default(),
             commit_map,
             parents_map,
             children_map,
@@ -870,16 +895,16 @@ impl Repository {
             .unwrap_or_default()
     }
 
-    // Whether `path` is a submodule tracked in the index, see `submodule_changes`.
+    // Whether `path` is a submodule tracked in the index, see `submodule_info`.
     pub fn is_submodule(&self, path: &str) -> bool {
         self.submodules.contains(path)
     }
 
-    // What a submodule has that the superproject's recorded commit doesn't: the commits made
-    // inside it, its current HEAD, and how many files are uncommitted there. None when `path`
-    // isn't a submodule. The parent repo can only stage the gitlink, so the page beside the
-    // files shows this instead of the gitlink diff.
-    pub fn submodule_changes(&self, path: &str) -> Option<SubmoduleChanges> {
+    // What a submodule records and is at: the commit the index records, its current HEAD and how
+    // many files are uncommitted inside it. None when `path` isn't a submodule. The parent repo
+    // can only stage the gitlink, so the pages beside the files show the submodule's own commits
+    // in place of the gitlink diff.
+    pub fn submodule_info(&self, path: &str) -> Option<SubmoduleInfo> {
         if !self.is_submodule(path) {
             return None;
         }
@@ -894,28 +919,43 @@ impl Repository {
             .flatten()
             .map(|out| out.trim().to_string());
         let Some(head) = head else {
-            return Some(SubmoduleChanges {
+            return Some(SubmoduleInfo {
+                recorded,
                 head: None,
-                commits: Vec::new(),
                 uncommitted: 0,
             });
         };
-        let range = format!("{recorded}..{head}");
-        let commits = load_all_commits(
-            &submodule,
+        Some(SubmoduleInfo {
+            uncommitted: load_local_changes(&submodule).count(),
+            recorded,
+            head: Some(head),
+        })
+    }
+
+    // A submodule's own repository, for the pages that list its commits. Loaded once per path and
+    // pair of recorded commits (`from..to`), then kept: the parent owns it for the rest of this
+    // repository's life, so the reference a page holds stays valid, and it all goes on reload.
+    pub fn submodule_repository(
+        &self,
+        path: &str,
+        from: &str,
+        to: &str,
+    ) -> std::result::Result<&Repository, String> {
+        let key = format!("{path}\0{from}..{to}");
+        if let Some(repository) = self.submodule_repositories.get(&key) {
+            return Ok(repository);
+        }
+        let range = format!("{from}..{to}");
+        let repository = Repository::load_scoped(
+            &self.path.join(path),
             SortCommit::Chronological,
-            &Head::None,
-            &[],
             None,
             false,
             Some(&[range]),
+            Default::default(),
         )
-        .unwrap_or_default();
-        Some(SubmoduleChanges {
-            head: Some(head),
-            commits,
-            uncommitted: load_local_changes(&submodule).count(),
-        })
+        .map_err(|err| err.to_string())?;
+        Ok(self.submodule_repositories.insert(key, repository))
     }
 
     // The gitlink (commit) the index records for the submodule at `path`.
@@ -928,6 +968,14 @@ impl Repository {
         let mode = fields.next()?;
         let commit = fields.next()?;
         (mode == "160000").then(|| commit.to_string())
+    }
+
+    // The commit `revision` records for the submodule at `path`, or None when it has no gitlink
+    // there (a plain file, or the submodule wasn't in that commit).
+    pub fn gitlink_at(&self, revision: &str, path: &str) -> Option<String> {
+        let spec = format!("{revision}:{path}");
+        let out = git_output(&self.path, &["rev-parse", "--verify", "--quiet", &spec]).ok()?;
+        Some(out.trim().to_string())
     }
 
     // The message of the commit at HEAD, of which git leaves out the name: `log -1 --format=%B`.
@@ -1561,15 +1609,16 @@ pub struct FileRevision {
     pub path: String,
 }
 
-// A submodule seen from the superproject: the commit it records, the one the submodule is at, the
-// commits between them and how many files are uncommitted inside it. Shown beside the files
-// instead of the gitlink diff, which the parent can't turn into the content changes.
+// A submodule seen from the superproject: the commit the index records, the one the submodule is
+// at, and how many files are uncommitted inside it. The pages beside the files list the
+// submodule's commits from `submodule_repository` instead of the gitlink diff, which the parent
+// can't turn into the content changes.
 #[derive(Debug, Default, Clone)]
-pub struct SubmoduleChanges {
+pub struct SubmoduleInfo {
+    // the commit the index records for the submodule
+    pub recorded: String,
     // None when the submodule isn't checked out, so its working tree can't be read
     pub head: Option<String>,
-    // the commits in the submodule that the recorded one doesn't have, newest first
-    pub commits: Vec<Commit>,
     // the files with uncommitted changes inside the submodule, counted once each
     pub uncommitted: usize,
 }
@@ -3946,7 +3995,7 @@ mod tests {
     }
 
     #[test]
-    fn test_submodule_changes_list_its_commits_and_uncommitted_files() {
+    fn test_submodule_info_and_repository_of_its_commits() {
         use crate::test_support::git::GitRepository;
 
         let dir = tempfile::tempdir().unwrap();
@@ -3962,20 +4011,33 @@ mod tests {
         let repository =
             Repository::load(&superproject, SortCommit::Chronological, None, false).unwrap();
         assert!(repository.is_submodule("sub"));
-        let changes = repository.submodule_changes("sub").unwrap();
-        assert_eq!(
-            changes.head.as_deref(),
-            Some(sub_repo.rev_parse_head().as_str())
-        );
-        let subjects: Vec<&str> = changes.commits.iter().map(|c| c.subject.as_str()).collect();
+        let info = repository.submodule_info("sub").unwrap();
+        let head = info.head.clone().unwrap();
+        assert_eq!(head, sub_repo.rev_parse_head());
+        assert_eq!(info.uncommitted, 2);
+        // the commits the recorded gitlink doesn't have
+        let sub_repository = repository
+            .submodule_repository("sub", &info.recorded, &head)
+            .unwrap();
+        let subjects: Vec<&str> = sub_repository
+            .all_commits()
+            .iter()
+            .map(|c| c.subject.as_str())
+            .collect();
         assert_eq!(subjects, ["second"]);
-        assert_eq!(changes.uncommitted, 2);
+        // loaded once, the same repository comes back
+        assert!(std::ptr::eq(
+            sub_repository,
+            repository
+                .submodule_repository("sub", &info.recorded, &head)
+                .unwrap()
+        ));
         // a plain path is not a submodule
-        assert!(repository.submodule_changes("base").is_none());
+        assert!(repository.submodule_info("base").is_none());
     }
 
     #[test]
-    fn test_submodule_changes_of_an_unchecked_out_submodule() {
+    fn test_submodule_info_of_an_unchecked_out_submodule() {
         let dir = tempfile::tempdir().unwrap();
         let superproject = repository_with_submodule(dir.path());
         // without its `.git` file the submodule isn't checked out; git would otherwise fall back
@@ -3984,9 +4046,8 @@ mod tests {
 
         let repository =
             Repository::load(&superproject, SortCommit::Chronological, None, false).unwrap();
-        let changes = repository.submodule_changes("sub").unwrap();
-        assert_eq!(changes.head, None);
-        assert!(changes.commits.is_empty());
-        assert_eq!(changes.uncommitted, 0);
+        let info = repository.submodule_info("sub").unwrap();
+        assert_eq!(info.head, None);
+        assert_eq!(info.uncommitted, 0);
     }
 }

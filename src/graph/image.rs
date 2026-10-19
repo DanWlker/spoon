@@ -40,7 +40,7 @@ pub struct GraphImageManager<'a> {
     image_ids: FxHashSet<u32>,
     pending_uploads: Vec<String>,
 
-    graph: &'a Graph<'a>,
+    graph: Graph<'a>,
     cell_width_type: CellWidthType,
     graph_style: GraphStyle,
     image_width_mode: GraphImageWidthMode,
@@ -52,7 +52,7 @@ pub struct GraphImageManager<'a> {
 
 impl<'a> GraphImageManager<'a> {
     pub fn new(
-        graph: &'a Graph,
+        graph: Graph<'a>,
         image_params: ImageParams,
         cell_width_type: CellWidthType,
         graph_style: GraphStyle,
@@ -80,8 +80,8 @@ impl<'a> GraphImageManager<'a> {
         self.prepared_image_map.get(commit_hash).unwrap()
     }
 
-    pub fn graph(&self) -> &'a Graph<'a> {
-        self.graph
+    pub fn graph(&self) -> &Graph<'a> {
+        &self.graph
     }
 
     pub fn graph_cell_width(&self) -> u16 {
@@ -106,7 +106,7 @@ impl<'a> GraphImageManager<'a> {
         }
         let image_id = graph_image_id(self.session_nonce, commit_hash);
         let graph_row_image = build_single_graph_row_image(
-            self.graph,
+            &self.graph,
             &self.image_params,
             &mut self.drawing_pixels,
             self.graph_style,

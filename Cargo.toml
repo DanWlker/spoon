@@ -21,6 +21,7 @@ chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
 console = "0.16.6"
 crokey = { version = "1.5", default-features = false }
+elsa = "1.11.2"
 fuzzy-matcher = "0.3.7"
 garde = { version = "0.23.0", features = ["derive", "regex"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
