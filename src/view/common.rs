@@ -216,7 +216,11 @@ pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
 
 // The keys of a diff, alike on every page, where `pane` gives it while it has the focus: into the
 // lines of the selected hunk, and copying the hunk or line.
-pub fn register_diff_keys<T: ?Sized>(k: &mut Keys<T>, pane: fn(&T) -> Option<&DiffPane>) {
+pub fn register_diff_keys<T: ?Sized>(
+    k: &mut Keys<T>,
+    pane: fn(&T) -> Option<&DiffPane>,
+    context: fn(&T) -> usize,
+) {
     use UserEvent::*;
     k.add(
         &[Confirm],
@@ -230,6 +234,20 @@ pub fn register_diff_keys<T: ?Sized>(k: &mut Keys<T>, pane: fn(&T) -> Option<&Di
             let part = pane(v).map_or(DiffPart::Hunk, DiffPane::selected_part);
             format!("copy {}", part.name())
         });
+    // a diff of several files has no one file to show more or less context of
+    let single_file = |v: &T| pane(v).is_some_and(DiffPane::is_single_file);
+    k.add(
+        &[IncreaseDiffContext],
+        "more context",
+        "Show more lines around the changes",
+    )
+    .when(single_file);
+    k.add(
+        &[DecreaseDiffContext],
+        "less context",
+        "Show fewer lines around the changes",
+    )
+    .when(move |v| single_file(v) && context(v) > 0);
 }
 
 // The keys of `commit_event`, where `applies`.

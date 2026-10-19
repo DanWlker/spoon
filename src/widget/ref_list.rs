@@ -18,8 +18,8 @@ use crate::{
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
-            fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
-            render_panel_scrollbar, spinner, ListCursor,
+            fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
+            render_panel, render_panel_scrollbar, spinner, ListCursor,
         },
     },
 };
@@ -158,6 +158,8 @@ pub struct RefListState {
     // the row of `selected` and the rows shown, see `sync_cursor`
     cursor: ListCursor,
     picked: RefPicks,
+    // the section a visual selection started in, its refs alone picked
+    visual_section: Option<RefSection>,
     // the commits to push and to pull of the local branches with an upstream, by name
     tracking: FxHashMap<String, Tracking>,
     // the row of the checked-out branch, or of the detached HEAD, marked
@@ -178,6 +180,7 @@ impl RefListState {
             opened,
             cursor: ListCursor::default(),
             picked: RefPicks::default(),
+            visual_section: None,
             tracking: FxHashMap::default(),
             head: None,
             stash_targets: refs
@@ -220,31 +223,87 @@ impl RefListState {
         &self.picked
     }
 
-    // Picks or unpicks a ref, the selected one; refs of another section than the picked ones
-    // can't be picked with them.
-    pub fn toggle_pick(&mut self, section: RefSection, name: String) -> Result<(), String> {
-        let mut names = match self.picked.0.take() {
-            None => vec![],
-            Some((picked, names)) if picked == section => names,
-            Some(picks) => {
-                let plural = picks.0.plural();
-                self.picked = RefPicks(Some(picks));
-                return Err(format!(
-                    "Only {plural} can be picked with the picked {plural}, esc clears them"
-                ));
-            }
-        };
-        match names.iter().position(|n| *n == name) {
-            Some(i) => {
-                names.remove(i);
-            }
-            None => names.push(name),
+    // Whether the refs are being picked from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.cursor.is_visual()
+    }
+
+    // Starts or ends a visual selection on the selected ref or stash, picking the refs of its
+    // section from where it started to the selected one. Only refs of one section can be picked.
+    pub fn toggle_visual(&mut self) -> Result<(), String> {
+        if self.cursor.is_visual() {
+            self.cursor.cancel_visual();
+            self.visual_section = None;
+            return Ok(());
         }
-        self.picked = RefPicks::new(section, names);
+        let Some(row) = self.visible_rows.get(self.cursor.selected()) else {
+            return Ok(());
+        };
+        let section = RefSection::of_root(&row.identifier[0]);
+        let Some(section) =
+            section.filter(|_| row.kind == RowKind::Ref && row.identifier.len() > 1)
+        else {
+            return Ok(());
+        };
+        if let Some(picked) = self.picked.section().filter(|picked| *picked != section) {
+            let plural = picked.plural();
+            return Err(format!(
+                "Only {plural} can be picked with the picked {plural}, esc clears them"
+            ));
+        }
+        self.cursor.toggle_visual();
+        self.visual_section = Some(section);
+        self.sync_visual_picks();
         Ok(())
     }
 
+    // Stops a visual selection that left its section, keeping what it picked there; None while it
+    // is still inside the section or isn't visual.
+    pub fn visual_outside_section(&mut self) -> Option<String> {
+        let section = self.visual_section?;
+        let row = self.visible_rows.get(self.cursor.selected())?;
+        if RefSection::of_root(&row.identifier[0]) == Some(section) {
+            return None;
+        }
+        self.cursor.cancel_visual();
+        self.visual_section = None;
+        Some(format!(
+            "Selection stopped at the {} section",
+            section.plural()
+        ))
+    }
+
+    fn sync_visual_picks(&mut self) {
+        let Some(range) = self.cursor.visual_range() else {
+            return;
+        };
+        let Some(section) = self.visual_section else {
+            return;
+        };
+        let mut names: Vec<String> = self
+            .picked
+            .names()
+            .iter()
+            .filter(|_| self.picked.section() == Some(section))
+            .cloned()
+            .collect();
+        for name in self.visible_rows[range]
+            .iter()
+            .filter(|row| {
+                row.kind == RowKind::Ref && RefSection::of_root(&row.identifier[0]) == Some(section)
+            })
+            .filter_map(|row| row.identifier.last().and_then(NodeId::name))
+        {
+            if !names.iter().any(|picked| picked == name) {
+                names.push(name.to_string());
+            }
+        }
+        self.picked = RefPicks::new(section, names);
+    }
+
     pub fn clear_picks(&mut self) {
+        self.cursor.cancel_visual();
+        self.visual_section = None;
         self.picked = RefPicks::default();
     }
 
@@ -265,6 +324,7 @@ impl RefListState {
         }
         self.cursor = cursor;
         self.select_visible_index(self.cursor.selected());
+        self.sync_visual_picks();
         true
     }
 
@@ -294,6 +354,7 @@ impl RefListState {
         }
         self.rebuild_visible_rows();
         self.sync_cursor();
+        self.sync_visual_picks();
         true
     }
 
@@ -305,6 +366,7 @@ impl RefListState {
         }
         // The category roots always remain selectable.
         self.sync_cursor();
+        self.sync_visual_picks();
     }
 
     // The ref selected as git names it, to find its commit in the graph: "refs/heads/main",
@@ -340,6 +402,7 @@ impl RefListState {
         self.opened.insert(self.selected.clone());
         self.rebuild_visible_rows();
         self.sync_cursor();
+        self.sync_visual_picks();
     }
 
     pub fn selection(&self) -> RefSelection {
@@ -365,7 +428,7 @@ impl RefListState {
     // picked refs still there.
     pub fn set_refs(&mut self, refs: &[&Ref], remotes: &[String], head: &Head) {
         let (selected, opened) = self.current_tree_status();
-        let cursor = self.cursor;
+        let mut cursor = self.cursor;
         let mut picked = std::mem::take(&mut self.picked);
         // a picked stash by its commit, as stash@{0} names another once one is stashed
         if picked.section() == Some(RefSection::Stashes) {
@@ -382,6 +445,7 @@ impl RefListState {
             picked = RefPicks::new(RefSection::Stashes, names);
         }
         *self = Self::new(refs, remotes);
+        cursor.cancel_visual();
         // the row of a detached HEAD, before the selection looks for it
         self.set_head(head);
         // the rows shown stay, around the selection kept
@@ -647,7 +711,16 @@ impl StatefulWidget for RefList {
                 mark_picked_row(buf, Rect::new(inner.x, y, inner.width, 1), theme);
             }
             if row.identifier == state.selected {
-                mark_selected_row(buf, inner, y, focused, theme);
+                // while selecting, the cursor is picked like the refs it extends; after v stops
+                // it goes back to the selected color
+                if state.is_visual() {
+                    mark_picked_row(buf, Rect::new(inner.x, y, inner.width, 1), theme);
+                    if inner.x > 0 {
+                        mark_selected_bar(buf, inner.x - 1, y, focused, theme);
+                    }
+                } else {
+                    mark_selected_row(buf, inner, y, focused, theme);
+                }
             }
             keep_guide_color(buf, inner, y, guide, theme);
         }
@@ -868,16 +941,6 @@ mod tests {
         buf
     }
 
-    // Picks or unpicks the selected ref.
-    fn pick(state: &mut RefListState) -> Result<(), String> {
-        let (section, name) = match state.selection() {
-            RefSelection::Ref(named) => (RefSection::of(&named), named.name().to_string()),
-            RefSelection::Stash(name) => (RefSection::Stashes, name),
-            _ => panic!("no ref selected"),
-        };
-        state.toggle_pick(section, name)
-    }
-
     // Moves the selection to the row named `name`, from the top.
     fn select(state: &mut RefListState, name: &str) {
         state.handle_move(UserEvent::GoToTop);
@@ -916,7 +979,8 @@ mod tests {
         }
 
         // a picked branch: across the row too
-        pick(&mut state).unwrap();
+        state.toggle_visual().unwrap();
+        state.toggle_visual().unwrap();
         select(&mut state, "main");
         let buf = draw(&mut state, true);
         let y = find_row(&buf, "one");
@@ -939,21 +1003,34 @@ mod tests {
         let refs = [&a, &b, &tag];
         let mut state = RefListState::new(&refs, &[]);
         state.handle_move(UserEvent::NavigateDown);
-        pick(&mut state).unwrap();
+        state.toggle_visual().unwrap();
         state.handle_move(UserEvent::NavigateDown);
-        pick(&mut state).unwrap();
+        state.toggle_visual().unwrap();
+        assert_eq!(state.picked().names(), ["a", "b"]);
+        // a new visual selection keeps the refs picked before it
+        select(&mut state, "a");
+        state.toggle_visual().unwrap();
+        state.toggle_visual().unwrap();
+        assert_eq!(state.picked().names(), ["a", "b"]);
+
+        // it stops at the next section, keeping the refs picked in this one
+        state.toggle_visual().unwrap();
+        state.select_section(Toward::Next);
+        assert!(state.visual_outside_section().is_some());
+        assert!(!state.is_visual());
         assert_eq!(state.picked().names(), ["a", "b"]);
         // a tag can't be picked with branches
         state.reset_tree_status(
             vec![NodeId::Section(RefSection::Tags), NodeId::Name("v1".into())],
             vec![vec![NodeId::Section(RefSection::Tags)]],
         );
-        assert!(pick(&mut state).unwrap_err().contains("Only branches"));
+        assert!(state.toggle_visual().unwrap_err().contains("Only branches"));
         // the picks stay through a reload, without those gone
         state.set_refs(&[&a, &tag], &[], &Head::None);
         assert_eq!(state.picked().names(), ["a"]);
         state.clear_picks();
-        pick(&mut state).unwrap();
+        state.toggle_visual().unwrap();
+        state.toggle_visual().unwrap();
         assert_eq!(state.picked().section(), Some(RefSection::Tags));
     }
 
@@ -1001,7 +1078,8 @@ mod tests {
             ],
             vec![vec![NodeId::Section(RefSection::Stashes)]],
         );
-        pick(&mut state).unwrap();
+        state.toggle_visual().unwrap();
+        state.toggle_visual().unwrap();
         // a new stash takes stash@{0}, the picked one is stash@{1} now
         state.set_refs(&[&stash(0, 'b'), &stash(1, 'a')], &[], &Head::None);
         assert_eq!(state.picked().names(), ["stash@{1}"]);

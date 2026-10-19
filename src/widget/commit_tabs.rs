@@ -123,6 +123,8 @@ pub struct CommitChangesState<'a> {
     files: Vec<ChangedFile>,
     // under the root row, expanded by default to show every changed file, like the local changes
     tree: FileTreeState,
+    // paths of the rows selected with v, which moving extends and esc clears
+    picked: BTreeSet<String>,
     // the diff of the selected file, loaded lazily, only while the tab is shown
     pub pane: DiffPane,
     // the selected submodule's commits, shown instead of its gitlink diff
@@ -137,6 +139,39 @@ impl<'a> CommitChangesState<'a> {
 
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
         self.tree.selected()
+    }
+
+    // Whether the files are being selected from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.tree.is_visual()
+    }
+
+    // Whether files are selected, while the visual selection or after it ended.
+    pub fn has_selection(&self) -> bool {
+        !self.picked.is_empty()
+    }
+
+    // Starts or ends a visual selection, selecting the files from where it started to the selected
+    // one.
+    pub fn toggle_visual(&mut self) {
+        self.tree.toggle_visual();
+        self.sync_visual_picked();
+    }
+
+    pub fn cancel_visual(&mut self) {
+        self.tree.cancel_visual();
+        self.picked.clear();
+    }
+
+    fn sync_visual_picked(&mut self) {
+        let Some(range) = self.tree.visual_range() else {
+            return;
+        };
+        let paths: Vec<String> = self.tree.rows()[range]
+            .iter()
+            .map(|row| row.path.clone())
+            .collect();
+        self.picked.extend(paths);
     }
 
     pub fn new(
@@ -192,9 +227,19 @@ impl<'a> CommitChangesState<'a> {
             base,
             files,
             tree,
+            picked: BTreeSet::new(),
             pane: DiffPane::default(),
             submodule: None,
         }
+    }
+
+    // Shows the diff again, the same file around the changes as the settings say.
+    pub fn reload_diff(&mut self) {
+        let selection = self.pane.selection();
+        self.pane.set_diff(None);
+        self.submodule = None;
+        self.ensure_loaded();
+        self.pane.restore(selection);
     }
 
     pub fn ensure_loaded(&mut self) {
@@ -221,13 +266,17 @@ impl<'a> CommitChangesState<'a> {
                     _ => vec![row.path.as_str()],
                 };
                 paths.extend(files.iter().filter_map(|f| f.from.as_deref()));
+                let context = self.ctx.diff_context.get();
                 match &self.base {
                     Some(base) => self.repository.diff_between(
                         base.as_str(),
                         self.commit_hash.as_str(),
                         &paths,
+                        context,
                     ),
-                    None => self.repository.commit_diff(&self.commit_hash, &paths),
+                    None => self
+                        .repository
+                        .commit_diff(&self.commit_hash, &paths, context),
                 }
             }
             None => String::new(),
@@ -269,6 +318,7 @@ impl<'a> CommitChangesState<'a> {
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
+        self.sync_visual_picked();
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
             self.pane.set_diff(None);
             self.submodule = None;
@@ -328,6 +378,8 @@ pub struct CommitFilesState<'a> {
     paths: Option<BTreeSet<String>>,
     // loaded lazily, only once the tab is shown
     tree: Option<FileTreeState>,
+    // paths of the rows selected with v, which moving extends and esc clears
+    picked: BTreeSet<String>,
     // the tree of the previously shown commit, whose expanded directories and selection are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
@@ -340,6 +392,46 @@ impl<'a> CommitFilesState<'a> {
         self.tree.as_ref()?.selected()
     }
 
+    // Whether the files are being selected from where the visual selection started.
+    pub fn is_tree_visual(&self) -> bool {
+        self.tree.as_ref().is_some_and(FileTreeState::is_visual)
+    }
+
+    // Whether files are selected, while the visual selection or after it ended.
+    pub fn has_tree_selection(&self) -> bool {
+        !self.picked.is_empty()
+    }
+
+    // Starts or ends a visual selection, selecting the files from where it started to the selected
+    // one.
+    pub fn toggle_tree_visual(&mut self) {
+        if let Some(tree) = self.tree.as_mut() {
+            tree.toggle_visual();
+        }
+        self.sync_visual_picked();
+    }
+
+    pub fn cancel_tree_visual(&mut self) {
+        if let Some(tree) = self.tree.as_mut() {
+            tree.cancel_visual();
+        }
+        self.picked.clear();
+    }
+
+    fn sync_visual_picked(&mut self) {
+        let Some(tree) = self.tree.as_ref() else {
+            return;
+        };
+        let Some(range) = tree.visual_range() else {
+            return;
+        };
+        let paths: Vec<String> = tree.rows()[range]
+            .iter()
+            .map(|row| row.path.clone())
+            .collect();
+        self.picked.extend(paths);
+    }
+
     pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {
         Self {
             repository,
@@ -348,6 +440,7 @@ impl<'a> CommitFilesState<'a> {
             changes: changes.to_vec(),
             paths: None,
             tree: None,
+            picked: BTreeSet::new(),
             previous_tree: None,
             preview: None,
             text: FileText::default(),
@@ -379,6 +472,10 @@ impl<'a> CommitFilesState<'a> {
         self.commit_hash = hash.clone();
         self.first_parent = first_parent.cloned();
         self.changes = changes.to_vec();
+        if let Some(tree) = self.tree.as_mut() {
+            tree.cancel_visual();
+        }
+        self.picked.clear();
         if !same_paths {
             if let Some(tree) = self.tree.take() {
                 self.previous_tree = Some(tree);
@@ -413,10 +510,15 @@ impl<'a> CommitFilesState<'a> {
     // Applies a tree operation, reloading the preview when the selection changed; None before the
     // tree is loaded.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> Option<R> {
-        let tree = self.tree.as_mut()?;
-        let before = tree.selected().map(|r| r.path.clone());
-        let result = f(tree);
-        if tree.selected().map(|r| &r.path) != before.as_ref() {
+        let (result, selected_changed) = {
+            let tree = self.tree.as_mut()?;
+            let before = tree.selected().map(|r| r.path.clone());
+            let result = f(tree);
+            let changed = tree.selected().map(|r| &r.path) != before.as_ref();
+            (result, changed)
+        };
+        self.sync_visual_picked();
+        if selected_changed {
             self.load_preview();
         }
         Some(result)
@@ -430,6 +532,27 @@ impl<'a> CommitFilesState<'a> {
 
     pub fn is_preview_focused(&self) -> bool {
         matches!(self.preview, Some(FilePreview::TextFocused))
+    }
+
+    // Whether the lines of the preview are being selected from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.text.is_visual()
+    }
+
+    // Whether lines of the preview are selected, while the visual selection or after it ended.
+    pub fn has_selection(&self) -> bool {
+        self.text.has_selection()
+    }
+
+    // Starts or ends a visual selection of the preview's lines, while the preview has the focus.
+    pub fn toggle_visual(&mut self) {
+        if self.is_preview_focused() {
+            self.text.toggle_visual();
+        }
+    }
+
+    pub fn cancel_visual(&mut self) {
+        self.text.cancel_visual();
     }
 
     // Whether the preview can have the focus, which only a file with text can.
@@ -589,10 +712,11 @@ impl CommitTab {
             "No matches"
         };
         let tree_focused = !state.pane.is_focused();
-        let cursor = if tree_focused {
-            TreeCursor::Bright
-        } else {
-            TreeCursor::Dim
+        let cursor = match (state.tree.is_visual(), tree_focused) {
+            (true, true) => TreeCursor::PickedBright,
+            (true, false) => TreeCursor::PickedDim,
+            (false, true) => TreeCursor::Bright,
+            (false, false) => TreeCursor::Dim,
         };
         let offset = render_tree(
             buf,
@@ -600,7 +724,7 @@ impl CommitTab {
             &state.tree,
             |i| Some(state.files[i].symbol),
             self.search.as_deref(),
-            |_| false,
+            |path| state.picked.contains(path),
             cursor,
             empty,
             &self.ctx,
@@ -628,10 +752,11 @@ impl CommitTab {
         if let Some(tree) = &state.tree {
             // a commit always has files, they can only be filtered out
             let focused = !state.is_preview_focused();
-            let cursor = if focused {
-                TreeCursor::Bright
-            } else {
-                TreeCursor::Dim
+            let cursor = match (tree.is_visual(), focused) {
+                (true, true) => TreeCursor::PickedBright,
+                (true, false) => TreeCursor::PickedDim,
+                (false, true) => TreeCursor::Bright,
+                (false, false) => TreeCursor::Dim,
             };
             let offset = render_tree(
                 buf,
@@ -639,7 +764,7 @@ impl CommitTab {
                 tree,
                 |_| None,
                 self.search.as_deref(),
-                |_| false,
+                |path| state.picked.contains(path),
                 cursor,
                 "No matches",
                 &self.ctx,
@@ -864,6 +989,26 @@ mod tests {
         let raw = &state.pane.diff().unwrap().raw;
         assert!(raw.contains("+changed") && raw.contains("rename from README"));
 
+        // changes: v selects the files between the ends, keeping them after it stops
+        state.update_tree(|tree| tree.select_path("src/a.rs"));
+        state.toggle_visual();
+        state.update_tree(|tree| tree.navigate(UserEvent::NavigateDown));
+        assert_eq!(
+            selected(&state.tree),
+            "DOC.md",
+            "{:?}",
+            visible(&state.tree)
+        );
+        assert!(
+            state.picked.contains("src/a.rs") && state.picked.contains("DOC.md"),
+            "{:?}",
+            state.picked
+        );
+        state.toggle_visual();
+        assert!(!state.is_visual() && state.has_selection());
+        state.cancel_visual();
+        assert!(!state.has_selection());
+
         // changes: folders collapse, and the diff follows the selection
         state.update_tree(|tree| tree.select_path("src"));
         state.update_tree(FileTreeState::toggle);
@@ -895,6 +1040,16 @@ mod tests {
                 Some(FilePreview::Text | FilePreview::TextFocused)
             ) && state.text.lines() == ["a", "changed"]
         );
+
+        // files: v selects the rows too
+        state.toggle_tree_visual();
+        state.update_tree(|tree| tree.navigate(UserEvent::NavigateDown));
+        assert!(state.has_tree_selection());
+        state.toggle_tree_visual();
+        assert!(!state.is_tree_visual() && state.has_tree_selection());
+        state.cancel_tree_visual();
+        assert!(!state.has_tree_selection());
+
         state.update_tree(|tree| {
             tree.navigate(UserEvent::GoToBottom);
         });

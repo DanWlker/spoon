@@ -61,8 +61,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show commit details on the info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
-| <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
-| <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
+| <kbd>v</kbd>                         | Select a range of commits, from the first to the selected one; move to extend it, <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
@@ -131,11 +130,12 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
+| <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one; another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash; in the changes and files tabs, the relative/absolute path of the selected file | `short_copy` `full_copy` |
 | <kbd>i</kbd>                         | Add the selected file or directory to `.gitignore`, in the changes and files tabs | `ignore` |
 | <kbd>2</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_2` |
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
-| <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus (with the commit list focused, they start <kbd>]v</kbd> <kbd>[v</kbd>) | `next_tab` `previous_tab` |
+| <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus | `next_tab` `previous_tab` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs); search the diff while it has the focus | `search` `filter` |
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `apply_change` |
@@ -144,22 +144,24 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 | <kbd>B</kbd>                         | Blame the selected file (see below), from the selected line of its diff or preview | `blame` |
 | <kbd>T</kbd>                         | Show the commits changing the selected file (see below)  | `timeline` |
+| <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
 
 The commit detail has three tabs:
 
 - **Info**: the commit information. <kbd>j/k</kbd> scroll it.
-- **Changes**: the changed files as a tree under a `/` row standing for all of them, like on the local changes page, expanded by default, with the diff of the selected file (or directory, or `/` for the whole commit) beside it. <kbd>j/k</kbd> and the scroll keys select a file; the diff is scrolled with them only while it has the focus.
-- **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> and the scroll keys select a file; the preview is scrolled with them only while it has the focus.
+- **Changes**: the changed files as a tree under a `/` row standing for all of them, like on the local changes page, expanded by default, with the diff of the selected file (or directory, or `/` for the whole commit) beside it. <kbd>j/k</kbd> and the scroll keys select a file; <kbd>v</kbd> selects a range of files; the diff is scrolled with them only while it has the focus.
+- **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> and the scroll keys select a file; <kbd>v</kbd> selects a range of files; the preview is scrolled with them only while it has the focus.
 
-In the files tab, <kbd>Enter</kbd> moves the focus into the preview of the selected file (on a directory, it expands or collapses it instead of closing the details): <kbd>j/k</kbd> select a line, <kbd>y</kbd> copies it as in the file, <kbd>/</kbd> searches the file (<kbd>n/N</kbd> next/previous match), and <kbd>Esc</kbd> goes back to the files.
+In the files tab, <kbd>Enter</kbd> moves the focus into the preview of the selected file (on a directory, it expands or collapses it instead of closing the details): <kbd>j/k</kbd> select a line, <kbd>v</kbd> selects the lines from the first to the selected one (<kbd>y</kbd> copies them; another selection adds to them), <kbd>/</kbd> searches the file (<kbd>n/N</kbd> next/previous match), and <kbd>Esc</kbd> clears the selection, then goes back to the files.
 
 In the changes tab (and a diff of two commits), <kbd>Enter</kbd> moves the focus into the diff, like on the local changes page: <kbd>j/k</kbd> select hunks, <kbd>Enter</kbd> then selects the changed lines of the hunk, and <kbd>Esc</kbd> goes back to the hunks, then to the files (<kbd>h/l</kbd> expand and collapse directories there). In the diff:
 
 - <kbd>/</kbd> searches its text (ignoring case unless the query has an uppercase letter), selecting the changed line matched, else its hunk; <kbd>n/N</kbd> go to the next/previous match.
 - <kbd>y</kbd> copies the selected line as in the file, or the selected hunk as a diff.
 - <kbd>Space</kbd> applies the selected hunk or line to the working tree (`git apply`), when it applies there; the count of the local changes in the page bar follows.
+- <kbd>+</kbd> and <kbd>-</kbd> show more or fewer lines around the changes, when the diff is of one file.
 
-While the diff or the preview has the focus, only its own keys work there: the keys of the files beside it (<kbd>Y</kbd>, <kbd>?</kbd>, <kbd>h/l</kbd>, <kbd>J/K</kbd> to the next commit) do nothing. The same goes for the diff of the local changes page, where <kbd>/</kbd> searches the diff and <kbd>y</kbd> copies the line or hunk too, and <kbd>v</kbd>, <kbd>]v</kbd> <kbd>[v</kbd>, <kbd>?</kbd>, <kbd>Y</kbd>, <kbd>h/l</kbd> do nothing. The commands of the page still work, like committing or the commands of the commit graph.
+While the diff or the preview has the focus, only its own keys work there: the keys of the files beside it (<kbd>Y</kbd>, <kbd>?</kbd>, <kbd>h/l</kbd>, <kbd>J/K</kbd> to the next commit) do nothing. In the preview, <kbd>v</kbd> selects lines and <kbd>y</kbd> copies them. The same goes for the diff of the local changes page, where <kbd>/</kbd> searches the diff and <kbd>y</kbd> copies the line or hunk too, and <kbd>v</kbd>, <kbd>?</kbd>, <kbd>Y</kbd>, <kbd>h/l</kbd> do nothing. The commands of the page still work, like committing or the commands of the commit graph.
 
 #### Searching and filtering files
 
@@ -200,7 +202,7 @@ Everything the app shows, its keys included, is the repository as last loaded. A
 
 #### Picking files
 
-On the local changes page, <kbd>v</kbd> picks files and directories (highlighted, with the count in the panel title).
+On the local changes page, <kbd>v</kbd> starts selecting files and directories: moving extends the selection (highlighted, with the count in the panel title), and <kbd>v</kbd> again ends it, keeping them picked. Another selection adds to them; <kbd>Esc</kbd> clears them.
 A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file.
 
 <kbd>i</kbd> adds the selected file or directory to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
@@ -232,7 +234,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
 | <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `apply_stash` |
-| <kbd>v</kbd>                                       | Pick/Unpick the ref (only refs of one kind together) | `toggle_select` |
+| <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 | <kbd>L</kbd>                                       | Show only the commits of the selected local branch (else the current one), or all | `branch_only` |
 
@@ -241,7 +243,7 @@ The commands on the refs ask first, in a popup:
 - <kbd>b</kbd>: a new branch from the selected branch, remote branch or tag (nothing on the other rows), checking it out or not. The start can be changed to one of the local branches with <kbd>h/l</kbd>, not typed; from the commit list (<kbd>b</kbd> there) it is the selected commit.
 - <kbd>a</kbd> on a remote (like `origin`, under the remotes), or on the remotes header: a new remote, with its name and URL, fetched once added.
 - <kbd>t</kbd>: a new tag at the selected branch, remote branch or tag (nothing on the other rows), annotated when it has a message. It goes where the cursor is, in the sidebar as in the commit list.
-- <kbd>v</kbd> picks refs, all of one kind: branches, remote branches, tags or stashes (picking another kind warns; <kbd>Esc</kbd> clears the picks first). The title of the sidebar shows how many are picked. <kbd>d</kbd> then deletes (or drops) all of them in one popup, and <kbd>D</kbd> diffs the two picked refs.
+- <kbd>v</kbd> selects refs, moving to extend the selection and <kbd>v</kbd> again to end it; another selection adds to them, and <kbd>Esc</kbd> clears them. All picked refs are of one kind: branches, remote branches, tags or stashes; moving to another section stops the selection with a warning. The title of the sidebar shows how many are picked. <kbd>d</kbd> then deletes (or drops) all of them in one popup, and <kbd>D</kbd> diffs the two picked refs.
 - <kbd>D</kbd> diffs two refs: the two picked ones (the first picked is the base), else the current branch and the picked or selected one. The changes between them open in the details, like <kbd>D</kbd> on the graph, and the commit graph shows only the history of the two (its title says which); closing the comparison shows all of it again.
 - <kbd>d</kbd> deletes a local branch (warning when it isn't merged into `HEAD` or its upstream; a checkbox deletes its upstream on the remote too, when it is still there), a remote branch (on the remote, with `git push --delete`), or a tag (optionally from a remote too, `origin` or else the first one, named in the popup); and drops a stash. On a remote (like `origin`, under the remotes) it removes the remote, with its remote branches here; nothing changes on the remote itself.
 - <kbd>e</kbd> on a local branch renames it, or changes its upstream (chosen among the remote branches with <kbd>h/l</kbd>, or None). On a remote (like `origin`, under the remotes) it renames it or changes its URL.
@@ -270,8 +272,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk or line (or the picked files)<br>Type the message, in the commit section | `toggle_stage` |
-| <kbd>v</kbd>                         | Pick/Unpick file or directory                                | `toggle_select`                 |
-| <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked file                              | `next_picked` `previous_picked` |
+| <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it, <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>]f</kbd> <kbd>[f</kbd>          | Go to next/previous file, staying in the diff                | `next_file` `previous_file`     |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk or line (asks first)  | `discard`                       |
@@ -279,6 +280,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>/</kbd>                         | Search files<br>Search the diff, while it has the focus      | `search`                        |
 | <kbd>?</kbd>                         | Filter files                                                 | `filter`                        |
 | <kbd>y/Y</kbd>                       | Copy the relative/absolute path of the file<br>Copy the line or hunk (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
+| <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
 | <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below)        | `ignore`                        |
 | <kbd>B</kbd>                         | Blame the file as of the last commit (see below); the local changes aren't blamed | `blame`     |
 | <kbd>T</kbd>                         | Show the commits changing the file (see below)               | `timeline`                      |
@@ -312,14 +314,15 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
-| <kbd>Esc</kbd>  | Clear the search, back to the commit shown, then close       | `cancel`                |
+| <kbd>Esc</kbd>  | Clear the search, the selected lines, then back to the commit shown, then close | `cancel` |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_1` `focus_panel_2` `focus_up` `focus_down` |
 | <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit of the line on the graph, closing the blame | `confirm`                      |
 | <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the blame    | `checkout`                      |
-| <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the line (<kbd>y</kbd>), on its text | `short_copy` `full_copy` |
+| <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the line, or the selected lines (<kbd>y</kbd>), on its text | `short_copy` `full_copy` |
+| <kbd>v</kbd>                         | Select the lines from the first to the selected one, on the text; another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>o/O</kbd>                       | Open the commit, or the file at the line, on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the lines' commits (by hash, author or date, from one run of lines to the next) or the text, whichever has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
@@ -339,6 +342,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
 | <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the timeline | `checkout`                      |
 | <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the hunk or line (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
+| <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes | `increase_diff_context` `decrease_diff_context` |
 | <kbd>o/O</kbd>                       | Open the commit, or from the diff the file at the selected lines, on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the commits (by hash, date or subject), or the diff while it has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |

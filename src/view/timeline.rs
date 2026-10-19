@@ -76,7 +76,8 @@ impl TimelineView {
                 paths.push(&older.path);
             }
         }
-        let mut diff = parse_diff(&repository.commit_diff(&revision.commit, &paths));
+        let context = self.ctx.diff_context.get();
+        let mut diff = parse_diff(&repository.commit_diff(&revision.commit, &paths, context));
         diff.drop_converted(repository);
         self.pane.set_diff(Some(diff));
     }
@@ -141,7 +142,7 @@ impl TimelineView {
             }
             UserEvent::GoToNext => self.search(SearchDirection::Next, repository),
             UserEvent::GoToPrevious => self.search(SearchDirection::Previous, repository),
-            _ if in_diff => self.handle_diff_event(event),
+            _ if in_diff => self.handle_diff_event(event, repository),
             _ => self.handle_commits_event(event, repository),
         }
     }
@@ -167,7 +168,7 @@ impl TimelineView {
     }
 
     // The keys in the diff: moving the selected hunk or line, copying it and linking to it.
-    fn handle_diff_event(&mut self, event: UserEvent) {
+    fn handle_diff_event(&mut self, event: UserEvent, repository: &Repository) {
         let step = Step::of(event);
         if let Some(step) = step {
             self.pane.step(step);
@@ -176,6 +177,9 @@ impl TimelineView {
         match event {
             UserEvent::Confirm => {
                 self.pane.enter();
+            }
+            UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
+                self.adjust_diff_context(event == UserEvent::IncreaseDiffContext, repository)
             }
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
@@ -194,6 +198,23 @@ impl TimelineView {
                 self.pane.scroll(event);
             }
         }
+    }
+
+    // Shows more or less of the file around the changes in the selected commit.
+    fn adjust_diff_context(&mut self, increase: bool, repository: &Repository) {
+        let context = self.ctx.diff_context.get();
+        let context = if increase {
+            context.saturating_add(1)
+        } else {
+            context.saturating_sub(1)
+        };
+        if context == self.ctx.diff_context.get() {
+            return;
+        }
+        self.ctx.diff_context.set(context);
+        let selection = self.pane.selection();
+        self.load(repository);
+        self.pane.restore(selection);
     }
 
     // Searches the diff while it has the focus, else the commits, by hash, date or subject.
@@ -258,7 +279,11 @@ impl TimelineView {
             "older/newer commit",
             "Select the older/newer commit, from the diff too",
         );
-        register_diff_keys(k, |v| v.pane.is_focused().then_some(&v.pane));
+        register_diff_keys(
+            k,
+            |v| v.pane.is_focused().then_some(&v.pane),
+            |v| v.ctx.diff_context.get(),
+        );
         k.add(
             &[OpenInBrowser],
             "open in browser",

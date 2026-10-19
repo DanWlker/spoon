@@ -128,6 +128,8 @@ pub struct AppContext {
     pub layout: RefCell<PanelLayout>,
     // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
     pub wrap: Cell<bool>,
+    // the lines shown around each change in a diff, see `UserEvent::IncreaseDiffContext`
+    pub diff_context: Cell<usize>,
     // the options of every search, toggled while typing any of them, shared with the commit list
     pub search_options: Rc<Cell<SearchOptions>>,
 }
@@ -694,7 +696,7 @@ impl App<'_> {
                 }
 
                 // key sequences wait for their next key; the focused scope decides, like ]
-                // cycling the tabs of the details where elsewhere it starts "] v"
+                // cycling the tabs of the details where elsewhere it does nothing
                 let had_pending = !self.shell.app_status.pending_keys.is_empty();
                 self.shell.app_status.pending_keys.push(key);
                 match self
@@ -1588,7 +1590,12 @@ impl App<'_> {
             return;
         }
         match event {
-            _ if self.shell.sidebar.handle_move(event) => self.show_sidebar_selection(),
+            _ if self.shell.sidebar.handle_move(event) => {
+                if let Some(message) = self.shell.sidebar.visual_outside_section() {
+                    self.ec.send(AppEvent::NotifyWarn(message));
+                }
+                self.show_sidebar_selection();
+            }
             UserEvent::NavigateRight => {
                 self.shell.sidebar.open_node();
                 self.show_sidebar_selection();
@@ -1601,6 +1608,9 @@ impl App<'_> {
                 self.shell
                     .sidebar
                     .select_section(Toward::of(event, UserEvent::NextSection));
+                if let Some(message) = self.shell.sidebar.visual_outside_section() {
+                    self.ec.send(AppEvent::NotifyWarn(message));
+                }
                 self.show_sidebar_selection();
             }
             UserEvent::Confirm => {
@@ -1618,15 +1628,8 @@ impl App<'_> {
             }
             // on a ref, see `ref_command_applies`
             UserEvent::ToggleSelect => {
-                let pick = match self.shell.sidebar.selection() {
-                    RefSelection::Ref(named) => Some((RefSection::of(&named), named.name().into())),
-                    RefSelection::Stash(name) => Some((RefSection::Stashes, name)),
-                    _ => None,
-                };
-                if let Some((section, name)) = pick {
-                    if let Err(err) = self.shell.sidebar.toggle_pick(section, name) {
-                        self.ec.send(AppEvent::NotifyWarn(err));
-                    }
+                if let Err(err) = self.shell.sidebar.toggle_visual() {
+                    self.ec.send(AppEvent::NotifyWarn(err));
                 }
             }
             UserEvent::ShortCopy | UserEvent::FullCopy => self.copy_sidebar_ref_name(),
@@ -1737,10 +1740,18 @@ impl App<'_> {
         );
         k.add(
             &[ToggleSelect],
-            "pick",
-            "Pick/unpick the ref, refs of one kind together",
+            "select",
+            "Select the refs from the first to the selected one, of one kind",
         )
-        .when(applies(ToggleSelect));
+        .when(applies(ToggleSelect))
+        .short(|app| {
+            if app.shell.sidebar.is_visual() {
+                "end select"
+            } else {
+                "select"
+            }
+            .into()
+        });
         k.add(
             &[ShortCopy, FullCopy],
             "copy name",
@@ -1798,6 +1809,9 @@ impl App<'_> {
     // Whether the event does something on the selected row of the sidebar, see
     // `ref_command_applies`.
     fn sidebar_command_applies(&self, event: UserEvent) -> bool {
+        if event == UserEvent::ToggleSelect && self.shell.sidebar.is_visual() {
+            return true;
+        }
         let selection = self.shell.sidebar.selection();
         let picked = self.shell.sidebar.picked();
         ref_command_applies(self.repository, event, &selection, picked)

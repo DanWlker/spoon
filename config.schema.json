@@ -775,10 +775,10 @@
         "toggle_select": {
           "$ref": "#/definitions/keybindArray"
         },
-        "next_picked": {
+        "increase_diff_context": {
           "$ref": "#/definitions/keybindArray"
         },
-        "previous_picked": {
+        "decrease_diff_context": {
           "$ref": "#/definitions/keybindArray"
         },
         "next_file": {
@@ -1097,10 +1097,10 @@
         "toggle_select": {
           "$ref": "#/definitions/keybindArray"
         },
-        "next_picked": {
+        "increase_diff_context": {
           "$ref": "#/definitions/keybindArray"
         },
-        "previous_picked": {
+        "decrease_diff_context": {
           "$ref": "#/definitions/keybindArray"
         },
         "next_file": {

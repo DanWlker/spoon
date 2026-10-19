@@ -510,7 +510,7 @@ mod tests {
             short_copy = ["y"]
             apply_change = ["space"]
             previous_tab = ["["]
-            previous_picked = ["[ v"]
+            go_to_previous = ["[ p"]
         "#,
         )
         .unwrap();
@@ -541,8 +541,8 @@ mod tests {
             SequenceMatch::Partial
         );
         assert_eq!(
-            keybind.resolve(Scope::CommitList, &[key('['), key('v')]),
-            SequenceMatch::Complete(UserEvent::PreviousPicked)
+            keybind.resolve(Scope::CommitList, &[key('['), key('p')]),
+            SequenceMatch::Complete(UserEvent::GoToPrevious)
         );
 
         // a key bound around a scope takes over the keys inside it
@@ -599,7 +599,7 @@ reset = ["d"]"#
             parse_key_event("space"),
             key(KeyCode::Char(' '), KeyModifiers::empty())
         );
-        // keys pressed together aren't supported, sequences are: "] v"
+        // keys pressed together aren't supported, sequences are: "] m"
         assert!(parse_key_event("a-b").unwrap_err().contains("several keys"));
         assert!(parse_key_event("nope").is_err());
     }

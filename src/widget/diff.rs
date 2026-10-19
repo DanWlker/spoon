@@ -38,11 +38,18 @@ pub struct ParsedDiff {
     pub hunks: Vec<DiffHunk>,
     // hunks were left out, of files diffed as text converted from them
     pub converted: bool,
+    // how many files the diff spans
+    files: usize,
     // the width of the line numbers, of the biggest one
     number_width: usize,
 }
 
 impl ParsedDiff {
+    // Whether the diff is of one file, which shows more or less context around its changes.
+    pub fn is_single_file(&self) -> bool {
+        self.files == 1
+    }
+
     // Leaves out the hunks of files git diffs as text converted from them, like a .docx with a
     // textconv driver: the text isn't in the file, so they can't be staged or applied.
     pub fn drop_converted(&mut self, repository: &Repository) {
@@ -642,6 +649,18 @@ impl DiffCursor {
         }
     }
 
+    // Whether `row` is drawn selected: the selected line, or the changed lines of the selected
+    // hunk, whose context stays as it is.
+    pub fn is_highlighted(&self, diff: &ParsedDiff, part: DiffPart, row: usize) -> bool {
+        match part {
+            DiffPart::Line => row == self.line,
+            DiffPart::Hunk => diff
+                .hunks
+                .get(self.hunk)
+                .is_some_and(|hunk| hunk.rows.contains(&row) && diff.rows[row].is_change()),
+        }
+    }
+
     pub fn selected_hunk<'d>(&self, diff: &'d ParsedDiff) -> Option<&'d DiffHunk> {
         diff.hunks.get(self.hunk)
     }
@@ -725,11 +744,11 @@ impl DiffRow {
 pub fn parse_diff(diff: &str) -> ParsedDiff {
     let shared: Rc<str> = Rc::from(diff);
     // file names are only shown when the diff spans multiple files (a directory)
-    let multiple_files = diff
+    let multiple_files_count = diff
         .lines()
         .filter(|l| l.starts_with("diff --git "))
-        .count()
-        > 1;
+        .count();
+    let multiple_files = multiple_files_count > 1;
 
     let mut rows = Vec::new();
     let mut hunks = Vec::new();
@@ -842,6 +861,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         rows,
         hunks,
         converted: false,
+        files: multiple_files_count,
         number_width: max_line.to_string().len().max(3),
     }
 }
@@ -1073,7 +1093,7 @@ fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
 pub fn render_diff_lines<'a>(
     lines: impl Iterator<Item = (usize, Line<'a>)>,
     screen: Range<usize>,
-    selected: Range<usize>,
+    selected: impl Fn(usize) -> bool,
     wrap: bool,
     theme: &ColorTheme,
     area: Rect,
@@ -1081,7 +1101,7 @@ pub fn render_diff_lines<'a>(
 ) {
     let visual = wrapped_rows(
         lines.map(|(row, mut line)| {
-            if selected.contains(&row) {
+            if selected(row) {
                 select_diff_line(&mut line, theme);
             }
             (row, line)
@@ -1095,7 +1115,7 @@ pub fn render_diff_lines<'a>(
             buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(bg));
         }
     }
-    render_visual_rows(visual, &selected, theme, area, buf);
+    render_visual_rows(visual, selected, theme, area, buf);
 }
 
 // The screen rows `screen` of `lines` with their logical row, wrapped at the width of `area` when
@@ -1124,14 +1144,14 @@ pub fn wrapped_rows<'a>(
 // Draws screen rows, with the bar left of `area` beside the `selected` ones.
 pub fn render_visual_rows(
     visual: Vec<(usize, Line)>,
-    selected: &Range<usize>,
+    selected: impl Fn(usize) -> bool,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) {
     let selected_ys: Vec<u16> = (area.y..)
         .zip(&visual)
-        .filter(|(_, (row, _))| selected.contains(row))
+        .filter(|(_, (row, _))| selected(*row))
         .map(|(y, _)| y)
         .collect();
     let lines: Vec<Line> = visual.into_iter().map(|(_, line)| line).collect();
@@ -1268,6 +1288,20 @@ mod tests {
             ]
         );
         assert_eq!(diff.hunks[2].text(), hunk3);
+    }
+
+    #[test]
+    fn test_a_selected_hunk_highlights_only_its_changed_lines() {
+        let diff = parse_diff(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n ctx\n-old\n+new\n ctx\n",
+        );
+        let mut cursor = DiffCursor::default();
+        assert!(cursor.select_hunk(&diff, 0));
+        let selected: Vec<usize> = (0..diff.rows.len())
+            .filter(|&row| cursor.is_highlighted(&diff, DiffPart::Hunk, row))
+            .collect();
+        // the hunk header and the context around the change stay unselected
+        assert_eq!(selected, [2, 3]);
     }
 
     #[test]

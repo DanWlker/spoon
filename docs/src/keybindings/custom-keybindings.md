@@ -52,7 +52,7 @@ Any single character not listed above (e.g., `a`, `b`, `1`, `!`) can be used as 
 
 ### Key Sequences
 
-Keys separated by spaces are a sequence, pressed one after another, for example `"] v"` (the default of `next_picked`).
+Keys separated by spaces are a sequence, pressed one after another, for example `"] f"` (the default of `next_file`).
 After the first keys, the status line shows them while waiting for the next one; <kbd>Esc</kbd> cancels, and a key that does not continue the sequence acts as usual.
 
 A key cannot both start a sequence and be bound on its own, since the sequence could not be typed.
@@ -98,4 +98,4 @@ quit = ["y"]
 ```
 
 A key bound in your config replaces what that key did by default in its scope and in the scopes inside it.
-A key of an inner scope may also start a key sequence around it: there it acts right away, elsewhere it starts the sequence. For example <kbd>]</kbd> shows the next tab of the details, while <kbd>]</kbd> <kbd>v</kbd> goes to the next picked commit in the commit list.
+A key of an inner scope may also start a key sequence around it: there it acts right away, elsewhere it starts the sequence. For example <kbd>]</kbd> shows the next tab of the details, while <kbd>]</kbd> <kbd>f</kbd> goes to the next file in local changes.

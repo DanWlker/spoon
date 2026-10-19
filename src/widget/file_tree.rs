@@ -1,6 +1,7 @@
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashSet},
+    ops::Range,
 };
 
 use ratatui::{
@@ -19,7 +20,8 @@ use crate::{
     search::SearchOptions,
     widget::{
         style::{
-            change_span, fold_marker, mark_picked_row, mark_selected_row, placeholder, ListCursor,
+            change_span, fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row,
+            placeholder, ListCursor,
         },
         tree_query::{find_around, highlighted_text, name_matches, SearchDirection},
     },
@@ -222,6 +224,26 @@ impl FileTreeState {
 
     pub fn cursor(&self) -> usize {
         self.cursor.get().selected()
+    }
+
+    // Whether the files are being selected from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.cursor.get().is_visual()
+    }
+
+    // Starts or ends a visual selection at the cursor.
+    pub fn toggle_visual(&mut self) {
+        self.cursor.get_mut().toggle_visual();
+    }
+
+    pub fn cancel_visual(&mut self) {
+        self.cursor.get_mut().cancel_visual();
+    }
+
+    // The rows a visual selection covers, from where it started to the cursor; None when it isn't
+    // visual.
+    pub fn visual_range(&self) -> Option<Range<usize>> {
+        self.cursor.get().visual_range()
     }
 
     pub fn selected(&self) -> Option<&FileTreeRow> {
@@ -574,12 +596,14 @@ pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
 }
 
 // How the selected row of a tree is drawn: not at all, quieter while the tree doesn't have the
-// focus, or bright while it has.
+// focus, or bright while it has; picked while the rows are being selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeCursor {
     Hidden,
     Dim,
     Bright,
+    PickedDim,
+    PickedBright,
 }
 
 // Draws the rows of `tree` in `area`, like every file tree: the directories open or closed, the
@@ -646,7 +670,15 @@ pub fn render_tree(
     }
     if cursor != TreeCursor::Hidden {
         let y = area.y + (tree.cursor() - offset) as u16;
-        mark_selected_row(buf, area, y, cursor == TreeCursor::Bright, theme);
+        let focused = matches!(cursor, TreeCursor::Bright | TreeCursor::PickedBright);
+        if matches!(cursor, TreeCursor::PickedDim | TreeCursor::PickedBright) {
+            mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);
+            if area.x > 0 {
+                mark_selected_bar(buf, area.x - 1, y, focused, theme);
+            }
+        } else {
+            mark_selected_row(buf, area, y, focused, theme);
+        }
     }
     unhighlight_guides(buf, area, tree, offset, theme);
     offset
@@ -950,6 +982,13 @@ mod tests {
         let row = Rect::new(1, 3, 20, 1);
         assert_row_bg(&buf, row, theme.list_picked_bg);
         assert_guides_keep_color(&buf, row, &theme);
+
+        // while selecting, the cursor is picked too, with its bar
+        tree.select_path("a/x.rs");
+        let buf = draw_tree(&tree, 5, TreeCursor::PickedBright, "");
+        let row = Rect::new(1, 2, 20, 1);
+        assert_row_bg(&buf, row, theme.list_picked_bg);
+        assert_eq!(buf[(0, 2)].symbol(), "▌");
     }
 
     #[test]

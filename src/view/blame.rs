@@ -19,12 +19,11 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_selection, file_link, not_found, query_status, register_commit_keys,
+        commit_event, file_link, not_found, query_status, register_commit_keys,
         register_moving_keys, revision_spans, type_query, typing_keys,
     },
     widget::{
         commit_list::{format_date, ELLIPSIS},
-        diff::DiffPart,
         diff::Step,
         file_text::{FileText, LineCursor},
         style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
@@ -166,6 +165,8 @@ impl BlameView {
             UserEvent::Cancel => {
                 if self.query.clear().is_some() {
                     self.update_query_status();
+                } else if self.text.has_selection() {
+                    self.text.cancel_visual();
                 } else if body {
                     self.focus = BlameFocus::Revision;
                 } else {
@@ -211,6 +212,10 @@ impl BlameView {
             self.text.step(step);
             return;
         }
+        if event == UserEvent::ToggleSelect && self.focus == BlameFocus::Text {
+            self.text.toggle_visual();
+            return;
+        }
         if self.text.scroll(event) {
             return;
         }
@@ -225,7 +230,12 @@ impl BlameView {
             BlameFocus::Text => match event {
                 UserEvent::ShortCopy => {
                     if let Some(text) = self.text.selected_text() {
-                        self.tx.send(copy_selection(text, DiffPart::Line));
+                        let name = if self.text.has_selection() {
+                            "Lines"
+                        } else {
+                            "Line"
+                        };
+                        self.tx.send(AppEvent::copy(name, text));
                     }
                 }
                 // the file at the commit shown, on the line
@@ -349,7 +359,29 @@ impl BlameView {
         )
         .when(on(Commit));
         k.add(&[ShortCopy], "copy line", "Copy the line, on its text")
-            .when(on(Text));
+            .when(on(Text))
+            .short(|v| {
+                if v.text.has_selection() {
+                    "copy lines"
+                } else {
+                    "copy line"
+                }
+                .into()
+            });
+        k.add(
+            &[ToggleSelect],
+            "select lines",
+            "Select the lines from the first to the selected one, on its text",
+        )
+        .when(on(Text))
+        .short(|v| {
+            if v.text.is_visual() {
+                "end select"
+            } else {
+                "select lines"
+            }
+            .into()
+        });
         k.add(
             &[OpenInBrowser],
             "open in browser",

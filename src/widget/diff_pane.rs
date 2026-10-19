@@ -49,6 +49,11 @@ impl DiffPane {
         self.diff.as_ref()
     }
 
+    // Whether the diff is of one file, which shows more or less context around its changes.
+    pub fn is_single_file(&self) -> bool {
+        self.diff.as_ref().is_some_and(ParsedDiff::is_single_file)
+    }
+
     // What is selected, to select it again in the diff reloaded, see `restore`.
     pub fn selection(&self) -> DiffSelection {
         DiffSelection {
@@ -251,9 +256,10 @@ impl DiffPane {
         let rows = self.cursor.wrap().logical_rows(range.clone());
         let skip = range.start - self.cursor.wrap().visual_start(rows.start);
         let mut lines = diff_lines(diff, theme, rows.clone(), area.width);
-        let highlighted = match self.focus {
-            None => 0..0,
-            Some(part) => self.cursor.highlighted(diff, part),
+        // a hunk selects only its changed lines, the context around them staying as it is
+        let selected = |row: usize| {
+            self.focus
+                .is_some_and(|part| self.cursor.is_highlighted(diff, part, row))
         };
         if let Some(query) = search {
             for line in lines.iter_mut() {
@@ -263,7 +269,7 @@ impl DiffPane {
         render_diff_lines(
             rows.zip(lines),
             skip..skip + range.len(),
-            highlighted,
+            selected,
             wrap,
             theme,
             area,

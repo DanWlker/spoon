@@ -32,7 +32,6 @@ use crate::{
             render_compare_title, render_tab_titles, CommitChangesState, CommitFilesState,
             CommitTab, DetailTab,
         },
-        diff::DiffPart,
         diff::{Step, CONVERTED_DIFF},
         file_tree::{Entry, FileTreeRow, FileTreeState},
         git_dialog::GitDialog,
@@ -198,10 +197,14 @@ impl<'a> DetailView<'a> {
             "Select the lines of the preview",
         )
         .when(|v| entry(v) && tab(DetailTab::Files)(v));
-        register_diff_keys(k, |v| {
-            let diff = v.focus() == Pane && v.tab == DetailTab::Changes;
-            diff.then_some(&v.changes_state.pane)
-        });
+        register_diff_keys(
+            k,
+            |v| {
+                let diff = v.focus() == Pane && v.tab == DetailTab::Changes;
+                diff.then_some(&v.changes_state.pane)
+            },
+            |v| v.ctx.diff_context.get(),
+        );
         k.quiet(&[Confirm], "Close the details").when(on(Info));
         k.add(
             &[ApplyChange],
@@ -214,7 +217,43 @@ impl<'a> DetailView<'a> {
             "copy line",
             "Copy the selected line of the preview",
         )
-        .when(|v| pane(v) && tab(DetailTab::Files)(v));
+        .when(|v| pane(v) && tab(DetailTab::Files)(v))
+        .short(|v| {
+            if v.files_state.has_selection() {
+                "copy lines"
+            } else {
+                "copy line"
+            }
+            .into()
+        });
+        k.add(
+            &[ToggleSelect],
+            "select lines",
+            "Select the lines of the preview from the first to the selected one",
+        )
+        .when(|v| pane(v) && tab(DetailTab::Files)(v))
+        .short(|v| {
+            if v.files_state.is_visual() {
+                "end select"
+            } else {
+                "select lines"
+            }
+            .into()
+        });
+        k.add(
+            &[ToggleSelect],
+            "select",
+            "Select the files from the first to the selected one",
+        )
+        .when(entry)
+        .short(|v| {
+            if v.tree_is_visual() {
+                "end select"
+            } else {
+                "select"
+            }
+            .into()
+        });
         k.add(
             &[Cancel],
             "clear picks",
@@ -793,6 +832,15 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    // Whether the file tree of the tab is being selected from where the visual selection started.
+    fn tree_is_visual(&self) -> bool {
+        match self.tab {
+            DetailTab::Info => false,
+            DetailTab::Changes => self.changes_state.is_visual(),
+            DetailTab::Files => self.files_state.is_tree_visual(),
+        }
+    }
+
     // The path of the selected file, to blame, show the timeline of or reset.
     fn selected_file(&self) -> Option<&str> {
         match self.selected_row()?.entry()? {
@@ -833,6 +881,8 @@ impl<'a> DetailView<'a> {
                         state.back();
                     }
                     UserEvent::ApplyChange => self.apply_change(),
+                    UserEvent::IncreaseDiffContext => self.adjust_diff_context(true),
+                    UserEvent::DecreaseDiffContext => self.adjust_diff_context(false),
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
                             self.tx.send(copy_selection(text, state.selected_part()));
@@ -850,12 +900,19 @@ impl<'a> DetailView<'a> {
                     return;
                 }
                 match event {
+                    UserEvent::Cancel if state.has_selection() => state.cancel_visual(),
                     UserEvent::Cancel => {
                         state.back();
                     }
+                    UserEvent::ToggleSelect => state.toggle_visual(),
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
-                            self.tx.send(copy_selection(text, DiffPart::Line));
+                            let name = if state.has_selection() {
+                                "Lines"
+                            } else {
+                                "Line"
+                            };
+                            self.tx.send(AppEvent::copy(name, text));
                         }
                     }
                     _ => {
@@ -867,8 +924,34 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    // Shows more or less of the file around the changes, loading the diff again.
+    fn adjust_diff_context(&mut self, increase: bool) {
+        if !self.changes_state.pane.is_single_file() {
+            return;
+        }
+        let context = self.ctx.diff_context.get();
+        let context = if increase {
+            context.saturating_add(1)
+        } else {
+            context.saturating_sub(1)
+        };
+        if context == self.ctx.diff_context.get() {
+            return;
+        }
+        self.ctx.diff_context.set(context);
+        self.changes_state.reload_diff();
+    }
+
     // Returns whether the event was handled by the files of the changes tab.
     fn handle_changes_event(&mut self, event: UserEvent) -> bool {
+        if event == UserEvent::Cancel && self.changes_state.has_selection() {
+            self.changes_state.cancel_visual();
+            return true;
+        }
+        if event == UserEvent::ToggleSelect {
+            self.changes_state.toggle_visual();
+            return true;
+        }
         // into the diff; a directory without one opens or closes
         if event == UserEvent::Confirm && self.changes_state.pane.enter() {
             return true;
@@ -934,9 +1017,7 @@ impl<'a> DetailView<'a> {
                 tx.send(AppEvent::NotifyWarn(msg));
                 return true;
             }
-            UserEvent::ToggleSelect => state.toggle_pick(),
-            UserEvent::NextPicked => state.select_next_pick(Toward::Next),
-            UserEvent::PreviousPicked => state.select_next_pick(Toward::Previous),
+            UserEvent::ToggleSelect => state.toggle_visual(),
             // the details of the selected commit, over the comparison
             UserEvent::Confirm if shows_compare => {
                 self.park_compare();
@@ -962,6 +1043,16 @@ impl<'a> DetailView<'a> {
     fn handle_files_event(&mut self, event: UserEvent) -> bool {
         let state = &mut self.files_state;
         let preview_focused = state.is_preview_focused();
+        if !preview_focused {
+            if event == UserEvent::Cancel && state.has_tree_selection() {
+                state.cancel_tree_visual();
+                return true;
+            }
+            if event == UserEvent::ToggleSelect {
+                state.toggle_tree_visual();
+                return true;
+            }
+        }
         match event {
             // into the preview of a file; a directory opens or closes
             UserEvent::Confirm if !preview_focused && state.enter() => {}

@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{collections::BTreeSet, ops::Range};
 
 use ratatui::{
     buffer::Buffer,
@@ -13,7 +13,7 @@ use crate::{
     search::SearchOptions,
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
-        style::{render_scrollbar, scroll_to, ScrollState},
+        style::{picked_style, render_scrollbar, scroll_to, ScrollState},
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
 };
@@ -32,6 +32,10 @@ pub enum LineCursor {
 pub struct FileText {
     lines: Vec<String>,
     selected: usize,
+    // where a visual selection started, the selected line having moved from there
+    visual_anchor: Option<usize>,
+    // the lines selected, kept once the visual selection ends until it is cleared
+    selection: BTreeSet<usize>,
     // the screen rows the lines wrap to, and the scroll among them
     wrap: WrapMap,
     scroll_state: ScrollState,
@@ -44,6 +48,8 @@ impl FileText {
     pub fn set_lines(&mut self, lines: Vec<String>) {
         self.lines = lines;
         self.selected = 0;
+        self.visual_anchor = None;
+        self.selection.clear();
         self.wrap = WrapMap::default();
         self.scroll_state = ScrollState::default();
         self.search_row = None;
@@ -53,9 +59,45 @@ impl FileText {
         &self.lines
     }
 
+    // Whether the lines are being selected from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.visual_anchor.is_some()
+    }
+
+    // Starts or ends a visual selection at the selected line. Ending it keeps the lines selected,
+    // which `cancel_visual` clears.
+    pub fn toggle_visual(&mut self) {
+        if self.visual_anchor.take().is_some() {
+            return;
+        }
+        self.visual_anchor = Some(self.selected);
+        self.sync_selection();
+    }
+
+    // Clears the selected lines; the selected line alone shows afterwards.
+    pub fn cancel_visual(&mut self) {
+        self.visual_anchor = None;
+        self.selection.clear();
+    }
+
+    // Whether lines are selected, while the visual selection or after it ended.
+    pub fn has_selection(&self) -> bool {
+        !self.selection.is_empty()
+    }
+
+    // The visual selection, from where it started to the selected line, keeping the lines selected
+    // before it started.
+    fn sync_selection(&mut self) {
+        if let Some(anchor) = self.visual_anchor {
+            let (start, end) = (anchor.min(self.selected), anchor.max(self.selected));
+            self.selection.extend(start..=end);
+        }
+    }
+
     // Selects the first line shown, to move from there.
     pub fn select_shown(&mut self) {
         self.selected = self.logical_at(self.scroll_state.offset);
+        self.sync_selection();
     }
 
     pub fn step(&mut self, step: Step) {
@@ -119,12 +161,14 @@ impl FileText {
             .visual_start(self.selected)
             .saturating_add_signed(rows);
         self.selected = self.logical_at(screen);
+        self.sync_selection();
     }
 
     // Selects a line, the last one past the end.
     pub fn select_line(&mut self, line: usize) {
         self.selected = line.min(self.lines.len().saturating_sub(1));
         self.search_row = None;
+        self.sync_selection();
         self.scroll_to(self.selected..self.selected + 1);
     }
 
@@ -133,9 +177,18 @@ impl FileText {
         self.selected
     }
 
-    // The selected line as in the file, to copy.
+    // The selected line as in the file, or the selected lines, to copy.
     pub fn selected_text(&self) -> Option<String> {
-        self.lines.get(self.selected).cloned()
+        if self.selection.is_empty() {
+            return self.lines.get(self.selected).cloned();
+        }
+        let lines: Vec<&str> = self
+            .selection
+            .iter()
+            .filter_map(|&line| self.lines.get(line))
+            .map(String::as_str)
+            .collect();
+        Some(lines.join("\n"))
     }
 
     // Selects the line matching `query`, around from the last match; false when nothing matches.
@@ -145,6 +198,7 @@ impl FileText {
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
+        self.visual_anchor = None;
         let lines = &self.lines;
         let start = self.search_row.unwrap_or(self.selected);
         let found = find_around(lines.len(), start, direction, |i| {
@@ -188,11 +242,22 @@ impl FileText {
         // only the lines the screen range overlaps are built
         let rows = self.wrap.logical_rows(screen.clone());
         let skip = screen.start - self.wrap.visual_start(rows.start);
-        let selected = match cursor {
-            LineCursor::Shown => self.selected..self.selected + 1,
-            LineCursor::Hidden => 0..0,
+        let cursor = match cursor {
+            LineCursor::Shown => Some(self.selected),
+            LineCursor::Hidden => None,
         };
-        let highlight_style = Style::default().bg(theme.list_selected_bg);
+        // the selected lines are picked, like the other lists; the cursor is picked too while
+        // selecting, and goes back to its own color once v stops
+        let selected_style = |row: usize| {
+            let selected = self.selection.contains(&row);
+            if selected && (self.visual_anchor.is_some() || cursor != Some(row)) {
+                Some(picked_style(theme))
+            } else if cursor == Some(row) {
+                Some(Style::default().bg(theme.list_selected_bg))
+            } else {
+                None
+            }
+        };
         let width = self.lines.len().to_string().len();
         let lines = rows.clone().map(|row| {
             let mut line = Line::from(vec![
@@ -202,14 +267,28 @@ impl FileText {
             if let Some(query) = search {
                 highlight_match(&mut line, query, ctx.search_options.get(), theme);
             }
-            if selected.contains(&row) {
-                line.style = line.style.patch(highlight_style);
+            if let Some(style) = selected_style(row) {
+                if style.fg.is_some() {
+                    line.spans = line
+                        .spans
+                        .into_iter()
+                        .map(|span| span.patch_style(style))
+                        .collect();
+                }
+                line.style = line.style.patch(style);
             }
             (row, line)
         });
         let visual = wrapped_rows(lines, skip..skip + screen.len(), wrap, area);
         let rows = visual.iter().map(|(row, _)| *row).collect();
-        render_visual_rows(visual, &selected, theme, area, buf);
+        // the background and text color across the row, like the other lists
+        for (y, (row, _)) in (area.y..).zip(&visual) {
+            if let Some(style) = selected_style(*row) {
+                buf.set_style(Rect::new(area.x, y, area.width, 1), style);
+            }
+        }
+        // the bar follows the selected line, which may be outside the selection after it ended
+        render_visual_rows(visual, |row| cursor == Some(row), theme, area, buf);
         rows
     }
 
@@ -343,6 +422,40 @@ mod tests {
         assert_eq!(text.selected_line(), 25);
     }
 
+    // v selects from the line it starts on to the selected one, which the movement keys move.
+    #[test]
+    fn test_visual_selection_copies_the_lines_between() {
+        let mut text = FileText::default();
+        text.set_lines(["one", "two", "three", "four"].map(String::from).to_vec());
+        assert_eq!(text.selected_text().as_deref(), Some("one"));
+
+        text.toggle_visual();
+        text.step(Step::Next);
+        text.step(Step::Next);
+        assert!(text.is_visual());
+        assert_eq!(text.selected_text().as_deref(), Some("one\ntwo\nthree"));
+
+        // ending the visual selection keeps the lines selected
+        text.toggle_visual();
+        assert!(!text.is_visual());
+        assert_eq!(text.selected_text().as_deref(), Some("one\ntwo\nthree"));
+
+        // a new visual selection keeps the lines selected before it
+        text.select_line(2);
+        text.toggle_visual();
+        text.step(Step::Next);
+        text.toggle_visual();
+        assert_eq!(
+            text.selected_text().as_deref(),
+            Some("one\ntwo\nthree\nfour")
+        );
+
+        // only esc clears the selection
+        text.cancel_visual();
+        assert!(!text.has_selection());
+        assert_eq!(text.selected_text().as_deref(), Some("four"));
+    }
+
     // A file shorter than the panel still moves the selected line, like vim: only the window stays.
     #[test]
     fn test_scroll_moves_the_line_when_the_file_fits() {
@@ -364,5 +477,39 @@ mod tests {
         text.scroll(UserEvent::HalfPageDown);
         assert_eq!(text.selected_line(), 3, "the line went to the last one");
         assert_eq!(text.scroll_state.offset, 0, "the window couldn't scroll");
+    }
+
+    // Selected lines fill the row with the picked color, the cursor line keeps the selected color,
+    // and the bar follows the cursor even after it moved out of the selection.
+    #[test]
+    fn test_selection_fills_the_row_and_the_bar_follows_the_cursor() {
+        let ctx = test_ctx();
+        let area = Rect::new(2, 0, 20, 6);
+        let mut text = FileText::default();
+        text.set_lines(["one", "two", "three", "four"].map(String::from).to_vec());
+        text.toggle_visual();
+        text.step(Step::Next);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
+        text.render(area, &mut buf, &ctx, true, LineCursor::Shown, None);
+
+        // while selecting, the cursor is picked like the line it extends, its text too
+        for x in area.left()..area.right() {
+            assert_eq!(buf[(x, 0)].bg, ctx.color_theme.list_picked_bg);
+            assert_eq!(buf[(x, 1)].bg, ctx.color_theme.list_picked_bg);
+        }
+        assert_eq!(buf[(area.x + 4, 0)].fg, ctx.color_theme.list_picked_fg);
+        assert_eq!(buf[(area.x - 1, 1)].symbol(), "▌");
+
+        // ending the selection and moving the cursor below it
+        text.toggle_visual();
+        text.step(Step::Next);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
+        text.render(area, &mut buf, &ctx, true, LineCursor::Shown, None);
+        for x in area.left()..area.right() {
+            assert_eq!(buf[(x, 0)].bg, ctx.color_theme.list_picked_bg);
+            assert_eq!(buf[(x, 1)].bg, ctx.color_theme.list_picked_bg);
+            assert_eq!(buf[(x, 2)].bg, ctx.color_theme.list_selected_bg);
+        }
+        assert_eq!(buf[(area.x - 1, 2)].symbol(), "▌");
     }
 }

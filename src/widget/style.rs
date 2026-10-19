@@ -372,6 +372,8 @@ pub struct ListCursor {
     // as last drawn, 0 before
     height: usize,
     scrolloff: usize,
+    // where a visual selection started, the selection itself having moved from there
+    visual_anchor: Option<usize>,
 }
 
 impl ListCursor {
@@ -390,6 +392,30 @@ impl ListCursor {
     // The row of the selection among those shown.
     pub fn row(&self) -> usize {
         self.selected - self.offset
+    }
+
+    // Whether the selection is a visual one, which the movement keys extend.
+    pub fn is_visual(&self) -> bool {
+        self.visual_anchor.is_some()
+    }
+
+    // Starts a visual selection at the selected row, or ends it where it is.
+    pub fn toggle_visual(&mut self) {
+        if self.visual_anchor.take().is_none() {
+            self.visual_anchor = Some(self.selected);
+        }
+    }
+
+    pub fn cancel_visual(&mut self) {
+        self.visual_anchor = None;
+    }
+
+    // The rows a visual selection covers, from where it started to the selection; None when it
+    // isn't visual.
+    pub fn visual_range(&self) -> Option<Range<usize>> {
+        let anchor = self.visual_anchor?;
+        let (start, end) = (anchor.min(self.selected), anchor.max(self.selected));
+        Some(start..end + 1)
     }
 
     // Selects the row at `index` of `total`, or the last one.

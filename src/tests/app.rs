@@ -1445,6 +1445,41 @@ fn test_esc_clears_the_picks_before_the_search() {
 }
 
 #[test]
+fn test_visual_selects_the_commits_from_the_first_to_the_last_moved_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let picked = |count: usize| {
+        check(move |app| {
+            assert_eq!(
+                app.view
+                    .as_list_state()
+                    .unwrap()
+                    .picked_commit_hashes()
+                    .len(),
+                count
+            );
+        })
+    };
+    harness.run(vec![
+        keys("v"),
+        picked(1),
+        keys("j j"),
+        picked(3),
+        // v ends the selection, the commits staying picked for the commands
+        keys("v"),
+        picked(3),
+        // a new visual selection keeps them too
+        keys("g v"),
+        picked(3),
+        keys("v"),
+        picked(3),
+        keys("esc"),
+        picked(0),
+    ]);
+}
+
+#[test]
 fn test_no_match_said_alike_on_every_page() {
     // the keys to a search, and the page they are on
     let pages = [

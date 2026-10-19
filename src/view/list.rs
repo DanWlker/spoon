@@ -76,13 +76,7 @@ impl<'a> ListView<'a> {
                 }
             }
             UserEvent::ToggleSelect => {
-                self.as_mut_list_state().toggle_pick();
-            }
-            UserEvent::NextPicked => {
-                self.as_mut_list_state().select_next_pick(Toward::Next);
-            }
-            UserEvent::PreviousPicked => {
-                self.as_mut_list_state().select_next_pick(Toward::Previous);
+                self.as_mut_list_state().toggle_visual();
             }
             UserEvent::Confirm => {
                 self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
@@ -204,6 +198,8 @@ impl<'a> ListView<'a> {
 pub struct ListFacts {
     pub picked: usize,
     pub search_applied: bool,
+    // the commits are being selected from where the visual selection started
+    pub visual: bool,
     // a rebase, merge, cherry-pick or revert waits to be finished: the commands moving HEAD are
     // refused meanwhile, see `App::blocked_by_operation`
     pub operation_waits: bool,
@@ -215,6 +211,7 @@ impl ListFacts {
             operation_waits: repository.operation_in_progress().is_some(),
             picked: state.picked_commit_hashes().len(),
             search_applied: state.search_applied(),
+            visual: state.is_visual(),
         }
     }
 }
@@ -244,15 +241,18 @@ pub fn register_commit_list_keys<T: ?Sized>(
     .when(move |v| works(Search)(v) && facts(v).search_applied && facts(v).picked == 0);
     k.add_where(
         &[ToggleSelect],
-        "pick",
-        "Pick/unpick the commit",
+        "select",
+        "Select the commits from the first to the selected one",
         move |v| availability(v, ToggleSelect),
-    );
-    k.quiet(
-        &[NextPicked, PreviousPicked],
-        "Go to the next/previous picked commit",
     )
-    .when(works(NextPicked));
+    .short(move |v| {
+        if facts(v).visual {
+            "end select"
+        } else {
+            "select"
+        }
+        .into()
+    });
     register_graph_commands(
         k,
         availability,

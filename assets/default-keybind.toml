@@ -55,13 +55,13 @@ focus_panel_5 = ["5"]
 
 # stage/unstage the selected file, directory, hunk or line in local changes
 toggle_stage = ["space"]
-# select several items: commits in the commit list, files in local changes
+# select a range of items: commits in the commit list, files in local changes, lines of a file
+# preview; moving extends it, and again ends it
 toggle_select = ["v"]
-# go to the next/previous picked commit or file; keys separated by a space are pressed one after another
-next_picked = ["] v"]
-previous_picked = ["[ v"]
-# switch to the next/previous tab of the commit details (info, changes, files) while one has the focus;
-# elsewhere these keys start the sequences above
+# show more or fewer lines around the changes of a diff of one file
+increase_diff_context = ["+"]
+decrease_diff_context = ["-"]
+# switch to the next/previous tab of the commit details (info, changes, files) while one has the focus
 next_tab = ["]"]
 previous_tab = ["["]
 # apply the selected hunk or line of a commit's diff to the working tree, in the changes tab

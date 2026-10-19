@@ -132,8 +132,6 @@ impl<'a> LocalChangesView<'a> {
                     | UserEvent::GoToNext
                     | UserEvent::GoToPrevious
                     | UserEvent::ToggleSelect
-                    | UserEvent::NextPicked
-                    | UserEvent::PreviousPicked
                     | UserEvent::NextFile
                     | UserEvent::PreviousFile
                     | UserEvent::Discard
@@ -157,13 +155,7 @@ impl<'a> LocalChangesView<'a> {
                     || state.clear_query(options);
             }
             UserEvent::ToggleSelect => {
-                self.local_changes_state.toggle_pick();
-            }
-            UserEvent::NextPicked => {
-                self.local_changes_state.select_next_pick(Toward::Next);
-            }
-            UserEvent::PreviousPicked => {
-                self.local_changes_state.select_next_pick(Toward::Previous);
+                self.local_changes_state.toggle_visual();
             }
             UserEvent::NextFile | UserEvent::PreviousFile => {
                 let toward = Toward::of(event, UserEvent::NextFile);
@@ -236,6 +228,8 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.local_changes_state.toggle_stage();
                 self.after_action(result);
             }
+            UserEvent::IncreaseDiffContext => self.local_changes_state.adjust_diff_context(true),
+            UserEvent::DecreaseDiffContext => self.local_changes_state.adjust_diff_context(false),
             UserEvent::Discard => {
                 if let Err(err) = self.local_changes_state.request_discard() {
                     self.tx.send(AppEvent::NotifyError(err));

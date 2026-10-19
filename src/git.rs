@@ -587,11 +587,11 @@ impl Repository {
             .unwrap_or_else(|| self.local_changes())
     }
 
-    pub fn local_change_diff(&self, paths: &[&str], of: DiffOf) -> String {
+    pub fn local_change_diff(&self, paths: &[&str], of: DiffOf, context: usize) -> String {
         if paths.is_empty() {
             return String::new();
         }
-        load_local_change_diff(&self.path, paths, of)
+        load_local_change_diff(&self.path, paths, of, context)
     }
 
     // The diffs of untracked files, which git diffs only one at a time (against /dev/null), so a few
@@ -610,7 +610,12 @@ impl Repository {
                         chunk
                             .iter()
                             .map(|path| {
-                                load_local_change_diff(work_tree, &[path], DiffOf::Untracked)
+                                load_local_change_diff(
+                                    work_tree,
+                                    &[path],
+                                    DiffOf::Untracked,
+                                    DEFAULT_DIFF_CONTEXT,
+                                )
                             })
                             .collect::<String>()
                     })
@@ -632,17 +637,22 @@ impl Repository {
             .or_else(|_| empty_tree(&self.path))
     }
 
-    // The diff of `paths` (all files when empty) made by a commit, against its first parent.
-    pub fn commit_diff(&self, commit_hash: &CommitHash, paths: &[&str]) -> String {
+    // The diff of `paths` (all files when empty) made by a commit, against its first parent,
+    // showing `context` lines around each change.
+    pub fn commit_diff(&self, commit_hash: &CommitHash, paths: &[&str], context: usize) -> String {
         self.commit_base(commit_hash)
-            .map(|base| self.diff_between(&base, commit_hash.as_str(), paths))
+            .map(|base| self.diff_between(&base, commit_hash.as_str(), paths, context))
             .unwrap_or_default()
     }
 
-    // The diff of `paths` (all files when empty) from one commit to another.
-    pub fn diff_between(&self, base: &str, target: &str, paths: &[&str]) -> String {
+    // The diff of `paths` (all files when empty) from one commit to another, showing `context`
+    // lines around each change.
+    pub fn diff_between(&self, base: &str, target: &str, paths: &[&str], context: usize) -> String {
         let mut args = PATCH_DIFF_ARGS.to_vec();
-        args.extend_from_slice(&["-M", base, target, "--"]);
+        args.extend_from_slice(&["-M", base, target]);
+        let unified = format!("--unified={context}");
+        args.push(&unified);
+        args.push("--");
         let paths = pathspecs(paths);
         args.extend(paths.iter().map(String::as_str));
         git_output(&self.path, &args).unwrap_or_default()
@@ -2126,6 +2136,9 @@ const PATCH_DIFF_ARGS: [&str; 7] = [
     "--dst-prefix=b/",
 ];
 
+// The lines git shows around a change by default.
+pub const DEFAULT_DIFF_CONTEXT: usize = 3;
+
 // Which changes of the working tree a diff shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffOf<'a> {
@@ -2136,8 +2149,9 @@ pub enum DiffOf<'a> {
     Staged { base: Option<&'a str> },
 }
 
-fn load_local_change_diff(path: &Path, targets: &[&str], of: DiffOf) -> String {
+fn load_local_change_diff(path: &Path, targets: &[&str], of: DiffOf, context: usize) -> String {
     let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
+    args.push(format!("--unified={context}"));
     match of {
         DiffOf::Staged { base } => {
             args.push("--cached".into());
@@ -3208,7 +3222,7 @@ mod tests {
         // side by side, the same as one after another, in order
         let one_by_one: String = paths
             .iter()
-            .map(|p| repository.local_change_diff(&[p], DiffOf::Untracked))
+            .map(|p| repository.local_change_diff(&[p], DiffOf::Untracked, DEFAULT_DIFF_CONTEXT))
             .collect();
         assert_eq!(repository.untracked_diff(&paths), one_by_one);
         assert!(one_by_one.contains("+f00") && one_by_one.contains("+f19"));
@@ -3759,8 +3773,11 @@ mod tests {
         repo.add(&["é.txt"]);
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let diff =
-            parse_diff(&repository.local_change_diff(&["é.txt"], DiffOf::Staged { base: None }));
+        let diff = parse_diff(&repository.local_change_diff(
+            &["é.txt"],
+            DiffOf::Staged { base: None },
+            DEFAULT_DIFF_CONTEXT,
+        ));
         // unstaging the second line keeps the file staged with the first
         let patch = diff.hunks[0].partial_patch(&[1], PatchDirection::Reverse);
         repository
@@ -3792,8 +3809,11 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
         // unstaging a hunk of a staged rename keeps the rename and the other hunk staged
-        let staged =
-            parse_diff(&repository.local_change_diff(&[":/"], DiffOf::Staged { base: None }));
+        let staged = parse_diff(&repository.local_change_diff(
+            &[":/"],
+            DiffOf::Staged { base: None },
+            DEFAULT_DIFF_CONTEXT,
+        ));
         assert_eq!(staged.hunks.len(), 2);
         repository
             .apply_patch(&staged.hunks[0].patch(), PatchDirection::Reverse)
@@ -3808,7 +3828,8 @@ mod tests {
         std::fs::write(path.join("new.txt"), &numbers).unwrap();
         let head = read_head_commit(path).unwrap();
         let base = format!("{}~1", head.as_str());
-        let diff = parse_diff(&repository.diff_between(&base, head.as_str(), &[]));
+        let diff =
+            parse_diff(&repository.diff_between(&base, head.as_str(), &[], DEFAULT_DIFF_CONTEXT));
         // to the working tree, as `git apply` does from the changes of a commit
         let task = GitTask {
             commands: vec![GitCommand::Apply.args(["-"])],

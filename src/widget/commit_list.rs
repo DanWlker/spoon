@@ -190,27 +190,43 @@ impl<'a> CommitListState<'a> {
         self.picked_commit_hashes.contains(commit_hash)
     }
 
-    pub fn toggle_pick(&mut self) {
+    // Whether the commits are being selected from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.cursor.is_visual()
+    }
+
+    // Starts or ends a visual selection, picking the commits from where it started to the selected
+    // one.
+    pub fn toggle_visual(&mut self) {
         if self.commits.is_empty() {
             return;
         }
-        let selected = self.selected_commit_hash().clone();
-        if let Some(pos) = self
-            .picked_commit_hashes
+        self.cursor.toggle_visual();
+        self.sync_visual_picks();
+    }
+
+    fn sync_visual_picks(&mut self) {
+        let Some(range) = self.cursor.visual_range() else {
+            return;
+        };
+        let selected: Vec<CommitHash> = self.commits[range]
             .iter()
-            .position(|h| *h == selected)
-        {
-            self.picked_commit_hashes.remove(pos);
-        } else {
-            self.picked_commit_hashes.push(selected);
+            .map(|commit_info| commit_info.commit.commit_hash.clone())
+            .collect();
+        for hash in selected {
+            if !self.picked_commit_hashes.contains(&hash) {
+                self.picked_commit_hashes.push(hash);
+            }
         }
     }
 
     pub fn clear_picks(&mut self) {
+        self.cursor.cancel_visual();
         self.picked_commit_hashes.clear();
     }
 
     pub fn restore_picked_commit_hashes(&mut self, picked_commit_hashes: Vec<CommitHash>) {
+        self.cursor.cancel_visual();
         self.picked_commit_hashes = picked_commit_hashes
             .into_iter()
             .filter(|hash| self.commit_hash_set.contains(hash))
@@ -289,40 +305,49 @@ impl<'a> CommitListState<'a> {
 
     pub fn select_next(&mut self) {
         self.select_visible_index(self.cursor.selected() + 1);
+        self.sync_visual_picks();
     }
 
     pub fn select_prev(&mut self) {
         self.select_visible_index(self.cursor.selected().saturating_sub(1));
+        self.sync_visual_picks();
     }
 
     pub fn select_first(&mut self) {
         self.select_visible_index(0);
+        self.sync_visual_picks();
     }
 
     pub fn select_last(&mut self) {
         self.select_visible_index(usize::MAX);
+        self.sync_visual_picks();
     }
 
     pub fn scroll_down(&mut self) {
         self.cursor.scroll_lines(1, self.commits.len());
+        self.sync_visual_picks();
     }
 
     pub fn scroll_up(&mut self) {
         self.cursor.scroll_lines(-1, self.commits.len());
+        self.sync_visual_picks();
     }
 
     pub fn scroll_down_page(&mut self) {
         self.cursor.scroll_pages(1, self.commits.len());
+        self.sync_visual_picks();
     }
 
     pub fn scroll_up_page(&mut self) {
         self.cursor.scroll_pages(-1, self.commits.len());
+        self.sync_visual_picks();
     }
 
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
         if let Some(index) = self.cursor.moved_to(event, self.commits.len()) {
             self.select_visible_index(index);
+            self.sync_visual_picks();
         }
     }
 
@@ -336,18 +361,6 @@ impl<'a> CommitListState<'a> {
 
     fn select_visible_index(&mut self, index: usize) {
         self.cursor.select(index, self.commits.len());
-    }
-
-    // Selects the next (or previous) picked commit, wrapping around.
-    pub fn select_next_pick(&mut self, toward: Toward) {
-        let direction = SearchDirection::from(toward);
-        let current = self.cursor.selected();
-        let target = find_around(self.commits.len(), current, direction, |i| {
-            self.is_picked(&self.commits[i].commit.commit_hash)
-        });
-        if let Some(index) = target {
-            self.select_visible_index(index);
-        }
     }
 
     // Selects the next (or previous) commit the search matches, wrapping around.
@@ -453,6 +466,7 @@ impl<'a> CommitListState<'a> {
     // Starts typing the search, from the applied one, looking for matches from the selection.
     pub fn start_search(&mut self) {
         if !self.query.is_editing() {
+            self.cursor.cancel_visual();
             self.search_start = self.cursor.selected();
             self.query.start(QueryKind::Search);
         }
@@ -901,9 +915,11 @@ impl CommitList<'_> {
         let mut line = Line::from(spans);
         // the selection only colors the background, the text keeps its colors
         let index = state.cursor.offset() + i;
-        if index == state.cursor.selected() {
-            line = line.bg(self.ctx.color_theme.list_selected_bg);
-        } else if state.is_picked(&state.commits[index].commit.commit_hash) {
+        let selected = index == state.cursor.selected();
+        let picked = state.is_picked(&state.commits[index].commit.commit_hash);
+        // while selecting, the cursor is picked like the rows it extends; after v stops it goes
+        // back to the selected color
+        if picked && (state.is_visual() || !selected) {
             // spans keep their own colors over the line's, so each one takes the picked style
             let picked = picked_style(&self.ctx.color_theme);
             line.spans = line
@@ -912,6 +928,8 @@ impl CommitList<'_> {
                 .map(|span| span.patch_style(picked))
                 .collect();
             line = line.patch_style(picked);
+        } else if selected {
+            line = line.bg(self.ctx.color_theme.list_selected_bg);
         }
         ListItem::new(line)
     }
@@ -1311,13 +1329,14 @@ mod tests {
                 assert_only_bg_changed(&plain, &selected, text);
 
                 // a picked commit: across the row too
-                state.toggle_pick();
+                state.toggle_visual();
+                state.toggle_visual();
                 state.select_next();
                 let buf = draw(state);
                 let text = Rect::new(x, y, row.right() - x, 1);
                 assert_row_bg(&buf, text, theme.list_picked_bg);
                 state.select_prev();
-                state.toggle_pick();
+                state.clear_picks();
             }
         });
     }
@@ -1343,6 +1362,7 @@ mod tests {
                     key_names: Default::default(),
                     layout: Default::default(),
                     wrap: Default::default(),
+                    diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
                     search_options: Default::default(),
                 });
                 let list = CommitList::new(ctx);
@@ -1369,20 +1389,30 @@ mod tests {
     }
 
     #[test]
-    fn test_pick_toggles_commits_in_picking_order() {
+    fn test_visual_selects_the_commits_between_the_ends() {
         with_commit_list_state(&["first", "second", "third"], |state| {
-            let first = state.selected_commit_hash().clone();
-            state.toggle_pick();
+            state.toggle_visual();
             state.select_last();
-            let third = state.selected_commit_hash().clone();
-            let before = status(state);
-            state.toggle_pick();
-            assert_eq!(state.picked_commit_hashes(), [first.clone(), third.clone()]);
-            assert_eq!(status(state), before);
+            assert_eq!(state.picked_commit_hashes().len(), 3);
+            // ending the visual selection keeps the commits picked
+            state.toggle_visual();
+            assert_eq!(state.picked_commit_hashes().len(), 3);
 
+            // a new visual selection keeps the commits picked before it
             state.select_first();
-            state.toggle_pick();
-            assert_eq!(state.picked_commit_hashes(), [third]);
+            state.toggle_visual();
+            assert_eq!(state.picked_commit_hashes().len(), 3);
+            state.toggle_visual();
+
+            state.clear_picks();
+            state.select_first();
+            state.toggle_visual();
+            state.toggle_visual();
+            assert_eq!(state.picked_commit_hashes().len(), 1);
+            state.select_next();
+            state.toggle_visual();
+            state.toggle_visual();
+            assert_eq!(state.picked_commit_hashes().len(), 2);
 
             state.clear_picks();
             assert!(state.picked_commit_hashes().is_empty());
@@ -1390,31 +1420,11 @@ mod tests {
     }
 
     #[test]
-    fn test_select_next_pick_wraps_around() {
-        with_commit_list_state(&["c0", "c1", "c2", "c3", "c4"], |state| {
-            state.reset_height(5);
-            for index in [1, 3] {
-                state.select_index(index);
-                state.toggle_pick();
-            }
-            state.select_index(0);
-            state.select_next_pick(Toward::Next);
-            assert_eq!(state.cursor.selected(), 1);
-            state.select_next_pick(Toward::Next);
-            assert_eq!(state.cursor.selected(), 3);
-            state.select_next_pick(Toward::Next);
-            assert_eq!(state.cursor.selected(), 1);
-            state.select_next_pick(Toward::Previous);
-            assert_eq!(state.cursor.selected(), 3);
-        });
-    }
-
-    #[test]
     fn test_pick_refresh_preserves_loaded_hashes_and_drops_missing_hashes() {
         let context = with_commit_list_state(&["first", "second"], |state| {
-            state.toggle_pick();
+            state.toggle_visual();
             state.select_next();
-            state.toggle_pick();
+            state.toggle_visual();
             ListRefreshViewContext::from(&*state)
         });
         assert_eq!(context.picked_commit_hashes.len(), 2);
@@ -1451,6 +1461,7 @@ mod tests {
                 key_names: Default::default(),
                 layout: Default::default(),
                 wrap: Default::default(),
+                diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
                 search_options: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
@@ -1458,7 +1469,8 @@ mod tests {
             CommitList::new(ctx.clone()).render(area, &mut before, state);
 
             // pick the first commit, then move the cursor away from it
-            state.toggle_pick();
+            state.toggle_visual();
+            state.toggle_visual();
             state.select_next();
             let mut after = Buffer::empty(area);
             CommitList::new(ctx.clone()).render(area, &mut after, state);
@@ -1471,6 +1483,12 @@ mod tests {
             for x in 0..area.width {
                 assert_eq!(after[(x, 0)].symbol(), before[(x, 0)].symbol());
             }
+
+            // while selecting, the cursor row is picked too
+            state.toggle_visual();
+            let mut visual = Buffer::empty(area);
+            CommitList::new(ctx.clone()).render(area, &mut visual, state);
+            assert_eq!(visual[(2, 1)].bg, ctx.color_theme.list_picked_bg);
         });
     }
 

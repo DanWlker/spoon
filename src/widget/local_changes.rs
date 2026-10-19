@@ -697,22 +697,35 @@ impl<'a> LocalChangesState<'a> {
         self.draft = CommitDraft::default();
     }
 
-    // Picks or unpicks the row under the cursor, for actions on several files.
-    pub fn toggle_pick(&mut self) {
+    // Whether the files are being picked from where the visual selection started.
+    pub fn is_visual(&self) -> bool {
+        self.tree().is_visual()
+    }
+
+    // Starts or ends a visual selection, picking the rows from where it started to the selected
+    // one.
+    pub fn toggle_visual(&mut self) {
         if self.is_diff_focused() || self.is_commit_focused() {
             return;
         }
-        let Some(path) = self.selected_path() else {
+        self.tree_mut().toggle_visual();
+        self.sync_visual_picks();
+    }
+
+    fn sync_visual_picks(&mut self) {
+        let Some(range) = self.tree().visual_range() else {
             return;
         };
-        let picked = self.picked_mut();
-        if !picked.remove(&path) {
-            picked.insert(path);
-        }
+        let paths: BTreeSet<String> = self.tree().rows()[range]
+            .iter()
+            .map(|row| row.path.clone())
+            .collect();
+        self.picked_mut().extend(paths);
     }
 
     // Clears the picked rows of the current section. Returns false when there were none.
     pub fn clear_picks(&mut self) -> bool {
+        self.tree_mut().cancel_visual();
         let picked = self.picked_mut();
         let had_picks = !picked.is_empty();
         picked.clear();
@@ -1019,15 +1032,31 @@ impl<'a> LocalChangesState<'a> {
             "On the empty staged files, go to the unstaged ones",
         )
         .when(|v| files(v) && empty(v) && !unstaged(v));
-        register_diff_keys(k, |v| v.is_diff_focused().then_some(&v.pane));
+        register_diff_keys(
+            k,
+            |v| v.is_diff_focused().then_some(&v.pane),
+            |v| v.ctx.diff_context.get(),
+        );
         k.add(
             &[Confirm],
             "choose",
             "Choose the side or the tool of the conflict",
         )
         .when(conflict);
-        k.add(&[ToggleSelect], "pick", "Pick/unpick the file or directory")
-            .when(row);
+        k.add(
+            &[ToggleSelect],
+            "select",
+            "Select the files from the first to the selected one",
+        )
+        .when(row)
+        .short(|v| {
+            if v.is_visual() {
+                "end select"
+            } else {
+                "select"
+            }
+            .into()
+        });
         k.add(
             &[Discard],
             "discard",
@@ -1137,11 +1166,6 @@ impl<'a> LocalChangesState<'a> {
             "Go to the next/previous file, staying in the diff",
         )
         .when(|v| files(v) || diff(v));
-        k.quiet(
-            &[NextPicked, PreviousPicked],
-            "Go to the next/previous picked file",
-        )
-        .when(files);
         k.quiet(
             &[NavigateDown, SelectDown, NavigateUp, SelectUp],
             "Select the next/previous file, hunk, line, conflict choice or message box",
@@ -1398,6 +1422,7 @@ impl<'a> LocalChangesState<'a> {
         let moved = self.cursor() != before;
         if moved {
             self.diff_stale = true;
+            self.sync_visual_picks();
         }
         moved
     }
@@ -1563,6 +1588,7 @@ impl<'a> LocalChangesState<'a> {
         let files = [&self.changes.unstaged, &self.changes.staged];
         for (section, files) in self.sections.iter_mut().zip(files) {
             section.tree.set_tree(file_tree(files));
+            section.tree.cancel_visual();
             // the picks with no changes left, discarded or stashed, go
             section
                 .picked
@@ -1613,6 +1639,7 @@ impl<'a> LocalChangesState<'a> {
             return;
         }
         self.focus_section(self.section);
+        self.tree_mut().cancel_visual();
         self.query_mut().start(kind);
     }
 
@@ -1718,21 +1745,6 @@ impl<'a> LocalChangesState<'a> {
         self.update_tree(|tree| tree.search(&query, direction, options))
     }
 
-    // Moves the cursor to the next (or previous) picked row, wrapping around.
-    pub fn select_next_pick(&mut self, toward: Toward) {
-        if self.focus() != Focus::Files {
-            return;
-        }
-        let direction = SearchDirection::from(toward);
-        let tree = self.tree();
-        let current = self.selected_path();
-        let picked = self.picked();
-        let path = find_next(&tree.all_rows(), current.as_deref(), direction, |row| {
-            picked.contains(&row.path)
-        });
-        self.update_tree(|tree| tree.reveal(path.as_deref()));
-    }
-
     // Goes to the next file of the section, skipping directories; from its diff, on in the diff of
     // the next file. The diff of the picked files has no next one.
     pub fn select_next_file(&mut self, toward: Toward) -> Result<(), String> {
@@ -1760,6 +1772,7 @@ impl<'a> LocalChangesState<'a> {
     fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.selected_path();
         let result = f(self.tree_mut());
+        self.sync_visual_picks();
         if self.selected_path() != before || self.pane.diff().is_none_or(|d| d.raw.is_empty()) {
             self.load_diff();
         }
@@ -1843,6 +1856,7 @@ impl<'a> LocalChangesState<'a> {
         self.tree_mut().select_index(cursor);
         if self.cursor() != before {
             self.diff_stale = true;
+            self.sync_visual_picks();
         }
     }
 
@@ -1863,8 +1877,31 @@ impl<'a> LocalChangesState<'a> {
         self.set_diff(&diff);
     }
 
+    // Shows more or fewer lines around the changes of the selected file, loading its diff again.
+    pub fn adjust_diff_context(&mut self, increase: bool) {
+        if !self.is_diff_focused() || !self.pane.is_single_file() {
+            return;
+        }
+        let context = self.ctx.diff_context.get();
+        let context = if increase {
+            context.saturating_add(1)
+        } else {
+            context.saturating_sub(1)
+        };
+        if context == self.ctx.diff_context.get() {
+            return;
+        }
+        self.ctx.diff_context.set(context);
+        let selection = self.pane.selection();
+        self.load_diff();
+        if self.conflict.is_none() {
+            self.pane.restore(selection);
+        }
+    }
+
     // The diff of the picked files, else of the selected row.
     fn diff_text(&self) -> String {
+        let context = self.ctx.diff_context.get();
         let tracked_of = match self.section {
             LocalChangesSection::Staged => DiffOf::Staged {
                 base: self.draft.amend_base(),
@@ -1877,9 +1914,9 @@ impl<'a> LocalChangesState<'a> {
             let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = targets
                 .into_iter()
                 .partition(|f| f.status == LocalChangeStatus::Untracked);
-            let diff = self
-                .repository
-                .local_change_diff(&file_paths(&tracked), tracked_of);
+            let diff =
+                self.repository
+                    .local_change_diff(&file_paths(&tracked), tracked_of, context);
             return diff + &self.repository.untracked_diff(&file_paths(&untracked));
         }
         self.selected_row()
@@ -1898,7 +1935,7 @@ impl<'a> LocalChangesState<'a> {
                 } else {
                     tracked_of
                 };
-                self.repository.local_change_diff(&paths, of)
+                self.repository.local_change_diff(&paths, of, context)
             })
             .unwrap_or_default()
     }
@@ -2113,10 +2150,12 @@ impl LocalChangesPanel<'_> {
             // the search is highlighted in the section it applies to
             state.query_of(section).search(),
             |path| picked.contains(path),
-            match (active, self.focused) {
-                (false, _) => TreeCursor::Hidden,
-                (true, false) => TreeCursor::Dim,
-                (true, true) => TreeCursor::Bright,
+            match (active, tree.is_visual(), self.focused) {
+                (false, _, _) => TreeCursor::Hidden,
+                (true, false, false) => TreeCursor::Dim,
+                (true, false, true) => TreeCursor::Bright,
+                (true, true, false) => TreeCursor::PickedDim,
+                (true, true, true) => TreeCursor::PickedBright,
             },
             empty,
             &self.ctx,
@@ -2579,6 +2618,36 @@ mod tests {
     }
 
     #[test]
+    fn test_diff_context_shows_more_lines_around_the_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), numbered_lines(20))?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        // a change in the middle, so there are lines to show on both sides
+        fs::write(
+            repo_path.join("a.txt"),
+            numbered_lines(20).replace("line 10\n", "line 10\nnew\n"),
+        )?;
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.enter()?;
+        assert!(state.is_diff_focused());
+        assert!(state.keys().takes(UserEvent::IncreaseDiffContext));
+
+        let before = diff(&state).rows.len();
+        state.adjust_diff_context(true);
+        assert!(diff(&state).rows.len() > before);
+        assert!(state.is_diff_focused(), "the selection stays in the diff");
+        state.adjust_diff_context(false);
+        assert_eq!(diff(&state).rows.len(), before);
+        Ok(())
+    }
+
+    #[test]
     fn test_half_page_moves_the_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -2688,7 +2757,8 @@ mod tests {
 
         // a picked file: across the row, its tree lines as they are
         select_row(&mut state, "dir/b.txt");
-        state.toggle_pick();
+        state.toggle_visual();
+        state.toggle_visual();
         select_row(&mut state, "top.txt");
         let buf = draw(&mut state, true);
         let y = find_row(&buf, "M b.txt");
@@ -2870,7 +2940,11 @@ mod tests {
         state.select_next();
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.unstaged), vec!["a.txt"]);
-        let staged_diff = repository.local_change_diff(&["a.txt"], DiffOf::Staged { base: None });
+        let staged_diff = repository.local_change_diff(
+            &["a.txt"],
+            DiffOf::Staged { base: None },
+            crate::git::DEFAULT_DIFF_CONTEXT,
+        );
         assert!(staged_diff.contains("+line two"));
         assert!(!staged_diff.contains("+line twenty-eight"));
 
@@ -2994,9 +3068,20 @@ mod tests {
 
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
-        let staged_diff =
-            |path| repository.local_change_diff(&[path], DiffOf::Staged { base: None });
-        let unstaged_diff = |path| repository.local_change_diff(&[path], DiffOf::Unstaged);
+        let staged_diff = |path| {
+            repository.local_change_diff(
+                &[path],
+                DiffOf::Staged { base: None },
+                crate::git::DEFAULT_DIFF_CONTEXT,
+            )
+        };
+        let unstaged_diff = |path| {
+            repository.local_change_diff(
+                &[path],
+                DiffOf::Unstaged,
+                crate::git::DEFAULT_DIFF_CONTEXT,
+            )
+        };
 
         // files -> hunks -> lines, starting on the first changed line
         select_row(&mut state, "a.txt");
@@ -3734,19 +3819,36 @@ mod tests {
 
         // pick a file and a directory, then stage both at once
         select_row(&mut state, "a.txt");
-        state.toggle_pick();
+        state.toggle_visual();
         select_row(&mut state, "dir");
-        state.toggle_pick();
+        state.toggle_visual();
         state.toggle_stage()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt", "dir/u.txt"]);
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "c.txt"]);
         assert!(state.picked().is_empty());
 
+        // a new visual selection keeps the files picked before it
+        select_row(&mut state, "b.txt");
+        state.toggle_visual();
+        state.toggle_visual();
+        select_row(&mut state, "c.txt");
+        state.toggle_visual();
+        state.toggle_visual();
+        assert_eq!(
+            state
+                .picked()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["b.txt", "c.txt"]
+        );
+        state.clear_picks();
+
         // enter shows the diff of the picked files, to stage their hunks one by one
         select_row(&mut state, "b.txt");
-        state.toggle_pick();
+        state.toggle_visual();
         select_row(&mut state, "c.txt");
-        state.toggle_pick();
+        state.toggle_visual();
         state.enter()?;
         assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
         assert_eq!(diff(&state).hunks.len(), 2);
@@ -3763,7 +3865,8 @@ mod tests {
         state.reload();
         state.clear_picks();
         select_row(&mut state, "b.txt");
-        state.toggle_pick();
+        state.toggle_visual();
+        state.toggle_visual();
         state.request_discard()?;
         assert_eq!(
             prompt(&state),
@@ -3775,14 +3878,16 @@ mod tests {
         // unstage picked files
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, "a.txt");
-        state.toggle_pick();
+        state.toggle_visual();
+        state.toggle_visual();
         state.toggle_stage()?;
         assert!(!paths(&state.changes.staged).contains(&"a.txt"));
 
         // esc: back from the diff, then the picked files, then the search and filter
         state.focus_section(LocalChangesSection::Unstaged);
         select_row(&mut state, "c.txt");
-        state.toggle_pick();
+        state.toggle_visual();
+        state.toggle_visual();
         type_query(&mut state, QueryKind::Filter, "txt");
         state.enter()?;
         assert!(state.back());
@@ -3820,7 +3925,8 @@ mod tests {
         fs::write(repo_path.join("u.txt"), "u\n")?;
         state.reload();
         select_row(&mut state, "a.txt");
-        state.toggle_pick();
+        state.toggle_visual();
+        state.toggle_visual();
         state.start_stash()?;
         assert_eq!(prompt(&state), Some("Stash 1 picked file".into()));
         let dialog = state.dialog_mut().unwrap();
@@ -4323,40 +4429,6 @@ mod tests {
         state.enter()?;
         assert!(!repo_path.join("a.txt").exists());
         assert!(state.changes.unstaged.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn test_select_next_pick() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let repo_path = dir.path();
-        let git = GitRepository::new(repo_path);
-        git.init();
-        git.commit("init", "2024-01-01");
-        fs::create_dir(repo_path.join("dir"))?;
-        for name in ["a.txt", "b.txt", "dir/c.txt"] {
-            fs::write(repo_path.join(name), "x\n")?;
-        }
-
-        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
-        let mut state = LocalChangesState::load(&repository);
-        for path in ["dir/c.txt", "b.txt"] {
-            select_row(&mut state, path);
-            state.toggle_pick();
-        }
-
-        // jumping to a pick hidden in a collapsed directory expands it
-        select_row(&mut state, "dir");
-        state.collapse();
-        select_row(&mut state, ROOT_PATH);
-        state.select_next_pick(Toward::Next);
-        assert_eq!(state.selected_path().as_deref(), Some("dir/c.txt"));
-        state.select_next_pick(Toward::Next);
-        assert_eq!(state.selected_path().as_deref(), Some("b.txt"));
-        state.select_next_pick(Toward::Next);
-        assert_eq!(state.selected_path().as_deref(), Some("dir/c.txt"));
-        state.select_next_pick(Toward::Previous);
-        assert_eq!(state.selected_path().as_deref(), Some("b.txt"));
         Ok(())
     }
 }
