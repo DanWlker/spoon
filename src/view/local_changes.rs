@@ -12,8 +12,8 @@ use crate::{
     keys::KeyList,
     layout::{Direction, Panel},
     view::{
-        copy_path, copy_selection, not_found, query_status, toggle_search_option, CopyForm,
-        ListRefreshViewContext, RefreshViewContext,
+        copy_path, copy_paths, copy_selection, not_found, query_status, toggle_search_option,
+        CopyForm, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_list::CommitListState,
@@ -278,10 +278,17 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::ShortCopy | UserEvent::FullCopy
                 if !self.local_changes_state.is_commit_focused() =>
             {
-                if let Some(row) = self.local_changes_state.selected_row() {
-                    let repository = self.local_changes_state.repository();
-                    self.tx
-                        .send(copy_path(repository, row, CopyForm::of(event)));
+                let form = CopyForm::of(event);
+                let picked = self.local_changes_state.picked_paths();
+                let repository = self.local_changes_state.repository();
+                if !picked.is_empty() {
+                    self.tx.send(copy_paths(
+                        repository,
+                        picked.iter().map(String::as_str),
+                        form,
+                    ));
+                } else if let Some(row) = self.local_changes_state.selected_row() {
+                    self.tx.send(copy_path(repository, row, form));
                 }
             }
             UserEvent::Ignore if self.local_changes_state.is_files_focused() => {
@@ -356,7 +363,7 @@ impl<'a> LocalChangesView<'a> {
     // Runs the editor or merge tool the state asked for, in place of the app.
     fn run_external(&mut self, request: ExternalRequest) {
         let command = match request {
-            ExternalRequest::Editor(path) => editor_command(&path),
+            ExternalRequest::Editor(paths) => editor_command(&paths),
             ExternalRequest::MergeTool(path) => {
                 let tool = self.ctx.core_config.git.merge_tool.as_deref();
                 merge_tool_command(self.local_changes_state.toplevel(), &path, tool)

@@ -841,6 +841,7 @@ impl App<'_> {
                 self.copy_to_clipboard(name, value);
             }
             AppEvent::Link { target, action } => self.open_link(&target, action),
+            AppEvent::Links { targets, action } => self.handle_links(&targets, action),
             AppEvent::OpenUrl { url, action } => self.open_url(url, action),
             AppEvent::Refresh(context) => {
                 self.cleanup_graph_images()?;
@@ -1924,6 +1925,12 @@ impl App<'_> {
     }
 
     fn copy_sidebar_ref_name(&self) {
+        let picked = self.shell.sidebar.picked();
+        if !picked.is_empty() {
+            self.ec
+                .send(AppEvent::copy("Ref Names", picked.names().join("\n")));
+            return;
+        }
         let (name, value) = match self.shell.sidebar.selection() {
             RefSelection::Ref(NamedRef::Branch(branch) | NamedRef::RemoteBranch(branch)) => {
                 ("Branch Name", branch)
@@ -2541,6 +2548,30 @@ impl App<'_> {
             }
             Ok(links) => self.open_dialog(Ok(GitDialog::open_link(links, action))),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
+        }
+    }
+
+    // Opens each of `targets` in the browser, or copies all their links, one per line.
+    fn handle_links(&mut self, targets: &[LinkTarget], action: LinkAction) {
+        if action == LinkAction::Open {
+            for target in targets {
+                self.open_link(target, action);
+            }
+            return;
+        }
+        let services = &self.ctx.core_config.browser.services;
+        let mut urls = Vec::new();
+        for target in targets {
+            match browse::links(self.repository, services, target) {
+                Ok(links) => urls.extend(links.into_iter().map(|link| link.url)),
+                Err(err) => {
+                    self.ec.send(AppEvent::NotifyError(err));
+                    return;
+                }
+            }
+        }
+        if !urls.is_empty() {
+            self.ec.send(AppEvent::copy("Links", urls.join("\n")));
         }
     }
 

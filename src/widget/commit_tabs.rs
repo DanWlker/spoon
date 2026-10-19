@@ -21,7 +21,9 @@ use crate::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
-        file_tree::{render_tree, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeShape},
+        file_tree::{
+            render_tree, Entry, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeShape,
+        },
         submodule::SubmodulePanel,
         tree_query::SearchDirection,
     },
@@ -149,6 +151,27 @@ impl<'a> CommitChangesState<'a> {
     // Whether files are selected, while the visual selection or after it ended.
     pub fn has_selection(&self) -> bool {
         !self.picked.is_empty()
+    }
+
+    pub fn picked_paths(&self) -> Vec<String> {
+        self.picked.iter().cloned().collect()
+    }
+
+    // The entries to act on: the picked files and directories, or the selected row.
+    pub fn picked_entries(&self) -> Vec<Entry<'_>> {
+        if self.picked.is_empty() {
+            return self
+                .selected_row()
+                .and_then(FileTreeRow::entry)
+                .into_iter()
+                .collect();
+        }
+        self.tree
+            .rows()
+            .iter()
+            .filter(|row| self.picked.contains(&row.path))
+            .filter_map(FileTreeRow::entry)
+            .collect()
     }
 
     // Starts or ends a visual selection, selecting the files from where it started to the selected
@@ -400,6 +423,29 @@ impl<'a> CommitFilesState<'a> {
     // Whether files are selected, while the visual selection or after it ended.
     pub fn has_tree_selection(&self) -> bool {
         !self.picked.is_empty()
+    }
+
+    pub fn picked_paths(&self) -> Vec<String> {
+        self.picked.iter().cloned().collect()
+    }
+
+    // The entries to act on: the picked files and directories, or the selected row.
+    pub fn picked_entries(&self) -> Vec<Entry<'_>> {
+        let Some(tree) = self.tree.as_ref() else {
+            return vec![];
+        };
+        if self.picked.is_empty() {
+            return tree
+                .selected()
+                .and_then(FileTreeRow::entry)
+                .into_iter()
+                .collect();
+        }
+        tree.rows()
+            .iter()
+            .filter(|row| self.picked.contains(&row.path))
+            .filter_map(FileTreeRow::entry)
+            .collect()
     }
 
     // Starts or ends a visual selection, selecting the files from where it started to the selected

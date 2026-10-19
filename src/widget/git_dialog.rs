@@ -159,10 +159,10 @@ enum DialogKind {
         branch: String,
         mode: Choose<ResetMode>,
     },
-    // a file as `change` changed it in `commit`
+    // files as `changes` changed them in `commit`
     ResetFile {
         commit: DialogCommit,
-        change: Box<FileChange>,
+        changes: Vec<FileChange>,
         state: Choose<FileState>,
     },
     // `base` is where the rebase starts, None from the root
@@ -623,6 +623,15 @@ pub struct GitDialog {
     conflicts: Option<String>,
     // the remote branch already having the commits it rewrites, see `GitDialog::pushed`
     pushed: Option<String>,
+}
+
+fn change_path(change: &FileChange) -> &str {
+    match change {
+        FileChange::Add { path } | FileChange::Modify { path } | FileChange::Delete { path } => {
+            path
+        }
+        FileChange::Move { to, .. } => to,
+    }
 }
 
 impl GitDialog {
@@ -1763,71 +1772,89 @@ impl GitDialog {
         ))
     }
 
-    // Resets a file `commit` changed, in the index and the working tree, to how the commit left it
-    // or how it was before it.
-    pub fn reset_file(commit: DialogCommit, change: FileChange) -> Self {
-        let path = match &change {
-            FileChange::Add { path }
-            | FileChange::Modify { path }
-            | FileChange::Delete { path } => path,
-            FileChange::Move { to, .. } => to,
+    // Resets files `commit` changed, in the index and the working tree, to how the commit left
+    // them or how they were before it.
+    pub fn reset_files(commit: DialogCommit, changes: Vec<FileChange>) -> Self {
+        let paths: Vec<&str> = changes.iter().map(change_path).collect();
+        let intro = if let [path] = paths.as_slice() {
+            vec![format!("Reset {path} to"), format!("  {}", commit.line)]
+        } else {
+            let mut intro = vec![
+                format!("Reset {} files to", paths.len()),
+                format!("  {}", commit.line),
+            ];
+            intro.extend(paths.iter().map(|path| format!("  {path}")));
+            intro
         };
-        let intro = vec![format!("Reset {path} to"), format!("  {}", commit.line)];
         let mut form = Form::default();
         let state = form.choose("State", FileState::AtCommit);
         let kind = DialogKind::ResetFile {
             commit,
-            change: Box::new(change),
+            changes,
             state,
         };
-        Self::with(" Reset file ", "reset", intro, kind, form)
+        Self::with(" Reset files ", "reset", intro, kind, form)
     }
 
     fn reset_file_command(
         &self,
         commit: &DialogCommit,
-        change: &FileChange,
+        changes: &[FileChange],
         state: Choose<FileState>,
     ) -> Result<GitTask, String> {
         use FileChange::*;
         use FileState::*;
         let state = self.chosen(state);
-        // the path the file has then, and the one it doesn't, removed: before the commit added
-        // it, after it deleted it, and either name of a renamed file
-        let (present, absent) = match (change, state) {
-            (Modify { path }, _) | (Add { path }, AtCommit) | (Delete { path }, BeforeCommit) => {
-                (Some(path), None)
-            }
-            (Add { path }, BeforeCommit) | (Delete { path }, AtCommit) => (None, Some(path)),
-            (Move { from, to }, AtCommit) => (Some(to), Some(from)),
-            (Move { from, to }, BeforeCommit) => (Some(from), Some(to)),
-        };
         let source = match state {
             AtCommit => commit.hash.as_str().to_string(),
             BeforeCommit => format!("{}^", commit.hash.as_str()),
         };
         let mut commands = vec![];
-        if let Some(path) = absent {
-            let mut args = GitCommand::Rm.args(["-q", "-f", "--ignore-unmatch", "--"]);
-            args.args.extend(pathspecs(&[path]));
-            commands.push(args);
+        for change in changes {
+            // the path the file has then, and the one it doesn't, removed: before the commit
+            // added it, after it deleted it, and either name of a renamed file
+            let (present, absent) = match (change, state) {
+                (Modify { path }, _)
+                | (Add { path }, AtCommit)
+                | (Delete { path }, BeforeCommit) => (Some(path), None),
+                (Add { path }, BeforeCommit) | (Delete { path }, AtCommit) => (None, Some(path)),
+                (Move { from, to }, AtCommit) => (Some(to), Some(from)),
+                (Move { from, to }, BeforeCommit) => (Some(from), Some(to)),
+            };
+            if let Some(path) = absent {
+                let mut args = GitCommand::Rm.args(["-q", "-f", "--ignore-unmatch", "--"]);
+                args.args.extend(pathspecs(&[path]));
+                commands.push(args);
+            }
+            if let Some(path) = present {
+                let args = ["--source", &source, "--staged", "--worktree", "--"];
+                let mut args = GitCommand::Restore.args(args);
+                args.args.extend(pathspecs(&[path]));
+                commands.push(args);
+            }
         }
-        if let Some(path) = present {
-            let args = ["--source", &source, "--staged", "--worktree", "--"];
-            let mut args = GitCommand::Restore.args(args);
-            args.args.extend(pathspecs(&[path]));
-            commands.push(args);
-        }
-        let name = present.or(absent).cloned().unwrap_or_default();
         let at = match state {
             AtCommit => "at",
             BeforeCommit => "before",
         };
         let short = commit.hash.as_short_hash();
+        let (running, done) = if let [change] = changes {
+            let name = change_path(change);
+            (
+                format!("Resetting {name}"),
+                format!("Reset {name} to {at} {short}"),
+            )
+        } else {
+            let count = changes.len();
+            (
+                format!("Resetting {count} files"),
+                format!("Reset {count} files to {at} {short}"),
+            )
+        };
         Ok(GitTask {
             commands,
-            running: format!("Resetting {name}"),
-            done: format!("Reset {name} to {at} {short}"),
+            running,
+            done,
             after: AfterTask::KeepView,
             ..Default::default()
         })
@@ -2296,9 +2323,9 @@ impl GitDialog {
             } => self.reset_command(commit, branch, *mode),
             K::ResetFile {
                 commit,
-                change,
+                changes,
                 state,
-            } => self.reset_file_command(commit, change, *state),
+            } => self.reset_file_command(commit, changes, *state),
         })
     }
 
@@ -2316,7 +2343,11 @@ impl GitDialog {
             DialogKind::Push { fields, .. } if self.checked(fields.force) => {
                 Some("Commits only on the remote branch are lost.")
             }
-            DialogKind::ResetFile { .. } => Some("Its local changes are lost."),
+            DialogKind::ResetFile { changes, .. } => Some(if changes.len() == 1 {
+                "Its local changes are lost."
+            } else {
+                "Their local changes are lost."
+            }),
             DialogKind::Squash { .. } => Some("The commits after them are rewritten too."),
             DialogKind::Drop { .. } => {
                 Some("Their changes are lost, and the commits after them are rewritten.")
@@ -2916,7 +2947,7 @@ mod tests {
                 hash: hash.trim().into(),
                 line: String::new(),
             };
-            let mut dialog = GitDialog::reset_file(commit, change);
+            let mut dialog = GitDialog::reset_files(commit, vec![change]);
             if before {
                 press(&mut dialog, UserEvent::NavigateRight);
             }
@@ -2957,6 +2988,45 @@ mod tests {
             ),
             "D  [b]\n M b\n"
         );
+    }
+
+    #[test]
+    fn test_reset_several_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "t"]);
+        git(path, &["config", "user.email", "t@t"]);
+        git(path, &["config", "commit.gpgsign", "false"]);
+        for name in ["a", "b"] {
+            std::fs::write(path.join(name), "1\n").unwrap();
+        }
+        git(path, &["add", "."]);
+        git(path, &["commit", "-q", "-m", "root"]);
+        for name in ["a", "b"] {
+            std::fs::write(path.join(name), "2\n").unwrap();
+        }
+        git(path, &["add", "."]);
+        git(path, &["commit", "-q", "-m", "c1"]);
+        for name in ["a", "b"] {
+            std::fs::write(path.join(name), "dirty\n").unwrap();
+        }
+
+        let hash = git(path, &["rev-parse", "HEAD"]);
+        let commit = DialogCommit {
+            hash: hash.trim().into(),
+            line: String::new(),
+        };
+        let changes = ["a", "b"]
+            .map(|path| FileChange::Modify {
+                path: path.to_string(),
+            })
+            .to_vec();
+        let dialog = GitDialog::reset_files(commit, changes);
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
+        for name in ["a", "b"] {
+            assert_eq!(std::fs::read_to_string(path.join(name)).unwrap(), "2\n");
+        }
     }
 
     #[test]

@@ -77,8 +77,8 @@ pub enum Request {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalRequest {
-    // an absolute path
-    Editor(PathBuf),
+    // absolute paths
+    Editor(Vec<PathBuf>),
     // a path relative to the top of the working tree
     MergeTool(String),
 }
@@ -196,14 +196,6 @@ enum Focus {
     Typing(CommitField),
 }
 
-// What the diff beside the files shows: the row under the cursor, or all the picked files, to
-// stage hunks and lines from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiffSource {
-    Row,
-    Picked,
-}
-
 // A file section: its tree of files, search and filter, and picked rows.
 #[derive(Debug)]
 struct Section {
@@ -269,9 +261,8 @@ pub struct LocalChangesState<'a> {
     // where the keys were sent; the diff keeps whether it has them itself, see `focus`
     chosen: Focus,
     // the diff beside the files, its selected hunk or line and scroll (or that of the conflict
-    // sides), and what it is of
+    // sides)
     pane: DiffPane,
-    diff_source: DiffSource,
     // searching the diff while it has the focus
     diff_query: TreeQuery,
 
@@ -320,7 +311,6 @@ impl<'a> LocalChangesState<'a> {
             section,
             chosen: Focus::Files,
             pane: DiffPane::default(),
-            diff_source: DiffSource::Row,
             diff_query: TreeQuery::default(),
             draft: CommitDraft::default(),
             request: None,
@@ -736,6 +726,10 @@ impl<'a> LocalChangesState<'a> {
         &self.current().picked
     }
 
+    pub fn picked_paths(&self) -> Vec<String> {
+        self.picked().iter().cloned().collect()
+    }
+
     fn picked_mut(&mut self) -> &mut BTreeSet<String> {
         &mut self.current_mut().picked
     }
@@ -937,23 +931,37 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Asks the view to open the file under the cursor in the editor.
+    // Asks the view to open the picked files, or the file under the cursor, in the editor.
     pub fn request_edit(&mut self) -> Result<(), String> {
         if self.is_commit_focused() {
             self.edit_message();
             return Ok(());
         }
-        let Some(row) = self.selected_row() else {
-            return Ok(());
+        let picked = self.picked().clone();
+        let files: Vec<&LocalChangeFile> = if picked.is_empty() {
+            self.selected_row()
+                .and_then(FileTreeRow::file_index)
+                .and_then(|i| self.files().get(i))
+                .into_iter()
+                .collect()
+        } else {
+            self.files()
+                .iter()
+                .filter(|file| picked.contains(&file.path))
+                .collect()
         };
-        let Some(file) = row.file_index().and_then(|i| self.files().get(i)) else {
+        if files.is_empty() {
             return Err("Select a file to edit".into());
-        };
-        let path = self.repository.path().join(&file.path);
-        if !path.exists() {
-            return Err(format!("{} does not exist in the working tree", file.path));
         }
-        self.request = Some(Request::External(ExternalRequest::Editor(path)));
+        let mut paths = Vec::new();
+        for file in files {
+            let path = self.repository.path().join(&file.path);
+            if !path.exists() {
+                return Err(format!("{} does not exist in the working tree", file.path));
+            }
+            paths.push(path);
+        }
+        self.request = Some(Request::External(ExternalRequest::Editor(paths)));
         Ok(())
     }
 
@@ -1121,13 +1129,13 @@ impl<'a> LocalChangesState<'a> {
             "blame",
             "Blame the selected file as of the last commit",
         )
-        .when(file);
+        .when(|v| file(v) && v.picked().len() <= 1);
         k.add(
             &[Timeline],
             "timeline",
             "Show the commits changing the selected file",
         )
-        .when(file);
+        .when(|v| file(v) && v.picked().len() <= 1);
         k.add(
             &[Search],
             "search",
@@ -1227,14 +1235,32 @@ impl<'a> LocalChangesState<'a> {
         self.repository
     }
 
-    // Adds the selected file or directory to .gitignore; returns what to tell.
+    // Adds the picked files and directories, or the selected one, to .gitignore; returns what to
+    // tell.
     pub fn ignore_selected(&mut self) -> Result<String, String> {
-        let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) else {
-            return Ok(String::new());
+        let picked = self.picked().clone();
+        let entries: Vec<Entry> = if picked.is_empty() {
+            self.selected_row()
+                .and_then(FileTreeRow::entry)
+                .into_iter()
+                .collect()
+        } else {
+            self.tree()
+                .rows()
+                .iter()
+                .filter(|row| picked.contains(&row.path))
+                .filter_map(FileTreeRow::entry)
+                .collect()
         };
-        let message = self.repository.ignore_path(entry)?;
+        if entries.is_empty() {
+            return Ok(String::new());
+        }
+        let mut messages = Vec::new();
+        for entry in entries {
+            messages.push(self.repository.ignore_path(entry)?);
+        }
         self.reload();
-        Ok(message)
+        Ok(messages.join("; "))
     }
 
     pub fn toplevel(&self) -> &std::path::Path {
@@ -1283,7 +1309,7 @@ impl<'a> LocalChangesState<'a> {
             }
             ConflictItem::Editor => {
                 let path = self.repository.path().join(path);
-                self.request = Some(Request::External(ExternalRequest::Editor(path)));
+                self.request = Some(Request::External(ExternalRequest::Editor(vec![path])));
                 return Ok(());
             }
         };
@@ -1325,11 +1351,6 @@ impl<'a> LocalChangesState<'a> {
                 LocalChangesSection::Staged => self.focus_section(LocalChangesSection::Unstaged),
             },
             Focus::Files => {
-                // with picked rows, the diff shows all their files to stage hunks and lines from
-                if !self.picked().is_empty() {
-                    self.diff_source = DiffSource::Picked;
-                    self.load_diff();
-                }
                 if !self.pane.enter() && self.pane.diff().is_some_and(|diff| diff.converted) {
                     return Err(CONVERTED_DIFF.into());
                 }
@@ -1393,9 +1414,6 @@ impl<'a> LocalChangesState<'a> {
     pub fn focus_files(&mut self) {
         self.chosen = Focus::Files;
         self.pane.leave();
-        if std::mem::replace(&mut self.diff_source, DiffSource::Row) == DiffSource::Picked {
-            self.load_diff();
-        }
     }
 
     pub fn select_next(&mut self) {
@@ -1598,17 +1616,8 @@ impl<'a> LocalChangesState<'a> {
         let in_diff = self.is_diff_focused();
         let selection = self.pane.selection();
         self.load_diff();
-        if self.diff_source == DiffSource::Picked
-            && self.pane.diff().is_none_or(|d| d.hunks.is_empty())
-        {
-            // nothing left to stage from the picked files
-            self.diff_source = DiffSource::Row;
-            self.load_diff();
-        }
-        // stay in the diff while the same path (or the picked files) still has hunks left
-        let same_source =
-            self.diff_source == DiffSource::Picked || self.selected_path() == selected_path;
-        if in_diff && same_source && self.conflict.is_none() {
+        // stay in the diff while the same path still has hunks left
+        if in_diff && self.selected_path() == selected_path && self.conflict.is_none() {
             self.pane.restore(selection);
         }
     }
@@ -1749,7 +1758,7 @@ impl<'a> LocalChangesState<'a> {
     // the next file. The diff of the picked files has no next one.
     pub fn select_next_file(&mut self, toward: Toward) -> Result<(), String> {
         let in_diff = self.is_diff_focused();
-        if !(in_diff || self.focus() == Focus::Files) || self.diff_source == DiffSource::Picked {
+        if !(in_diff || self.focus() == Focus::Files) {
             return Ok(());
         }
         let direction = SearchDirection::from(toward);
@@ -1908,17 +1917,6 @@ impl<'a> LocalChangesState<'a> {
             },
             LocalChangesSection::Unstaged => DiffOf::Unstaged,
         };
-        if self.diff_source == DiffSource::Picked {
-            // untracked files are only shown by diffing each against /dev/null
-            let targets = self.target_files();
-            let (untracked, tracked): (Vec<&LocalChangeFile>, Vec<&LocalChangeFile>) = targets
-                .into_iter()
-                .partition(|f| f.status == LocalChangeStatus::Untracked);
-            let diff =
-                self.repository
-                    .local_change_diff(&file_paths(&tracked), tracked_of, context);
-            return diff + &self.repository.untracked_diff(&file_paths(&untracked));
-        }
         self.selected_row()
             .map(|row| {
                 let untracked = row
@@ -1945,9 +1943,7 @@ impl<'a> LocalChangesState<'a> {
         self.selected_row()
             .and_then(FileTreeRow::file_index)
             .and_then(|i| self.files().get(i))
-            .filter(|f| {
-                f.status == LocalChangeStatus::Conflicted && self.diff_source == DiffSource::Row
-            })
+            .filter(|f| f.status == LocalChangeStatus::Conflicted)
             .map(|f| ConflictPanel {
                 view: ConflictView::load(self.repository, &f.path),
                 item: ConflictItem::Existing,
@@ -1979,9 +1975,6 @@ impl<'a> LocalChangesState<'a> {
     // reused when it shows the same submodule, so moving away and back is instant; only its
     // uncommitted count is read again. None for a directory, the picked files or a plain file.
     fn load_submodule(&mut self) -> Option<SubmodulePanel<'a>> {
-        if self.diff_source != DiffSource::Row {
-            return None;
-        }
         let row = self.selected_row()?;
         let is_dir = row.is_dir();
         let path = row.path.clone();
@@ -2166,9 +2159,6 @@ impl LocalChangesPanel<'_> {
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
         let title = match state.selected_row() {
-            _ if state.diff_source == DiffSource::Picked => {
-                picked_files_label(state.target_files().len())
-            }
             Some(row) if row.is_root() => "/".to_string(),
             Some(row) => row.path.clone(),
             None => String::new(),
@@ -3798,6 +3788,36 @@ mod tests {
     }
 
     #[test]
+    fn test_ignore_picked_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for name in ["a.txt", "b.txt"] {
+            fs::write(repo_path.join(name), "x\n")?;
+        }
+        git.add(&["a.txt", "b.txt"]);
+        git.commit("init", "2024-01-01");
+        for name in ["a.txt", "b.txt"] {
+            fs::write(repo_path.join(name), "changed\n")?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+
+        select_row(&mut state, "a.txt");
+        state.toggle_visual();
+        select_row(&mut state, "b.txt");
+        state.toggle_visual();
+        let message = state.ignore_selected()?;
+        assert!(message.contains("a.txt") && message.contains("b.txt"));
+        assert_eq!(
+            fs::read_to_string(repo_path.join(".gitignore"))?,
+            "/a.txt\n/b.txt\n"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_picked_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -3842,22 +3862,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["b.txt", "c.txt"]
         );
+        state.request_edit()?;
+        assert_eq!(
+            state.take_external_request(),
+            Some(ExternalRequest::Editor(vec![
+                repo_path.join("b.txt"),
+                repo_path.join("c.txt"),
+            ]))
+        );
         state.clear_picks();
 
-        // enter shows the diff of the picked files, to stage their hunks one by one
+        // enter opens the cursor row's diff only, even with files picked
         select_row(&mut state, "b.txt");
         state.toggle_visual();
         select_row(&mut state, "c.txt");
         state.toggle_visual();
         state.enter()?;
-        assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
-        assert_eq!(diff(&state).hunks.len(), 2);
-        state.toggle_stage()?;
-        assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
-        assert!(state.is_diff_focused() && state.diff_source == DiffSource::Picked);
-        state.toggle_stage()?;
-        assert!(state.changes.unstaged.is_empty());
-        assert!(!state.is_diff_focused() && state.diff_source == DiffSource::Row);
+        assert!(state.is_diff_focused());
+        assert_eq!(diff(&state).hunks.len(), 1);
+        state.back();
+        state.clear_picks();
 
         // discard the picked files only
         fs::write(repo_path.join("b.txt"), "x\nchanged\nagain\n")?;
@@ -4376,7 +4400,7 @@ mod tests {
         let toplevel = state.toplevel().to_path_buf();
         assert_eq!(
             state.take_external_request(),
-            Some(ExternalRequest::Editor(toplevel.join("a.txt")))
+            Some(ExternalRequest::Editor(vec![toplevel.join("a.txt")]))
         );
 
         // esc goes back to the files
@@ -4387,7 +4411,7 @@ mod tests {
         state.request_edit()?;
         assert_eq!(
             state.take_external_request(),
-            Some(ExternalRequest::Editor(toplevel.join("a.txt")))
+            Some(ExternalRequest::Editor(vec![toplevel.join("a.txt")]))
         );
         select_row(&mut state, ROOT_PATH);
         assert!(state.request_edit().is_err());

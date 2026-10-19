@@ -9,6 +9,7 @@ use ratatui::{
 use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
+    browse::{LinkAction, LinkTarget},
     event::{AppEvent, Sender, UserEvent},
     git::{
         AfterTask, Commit, CommitHash, FileChange, GitCommand, GitTask, PatchDirection, Ref,
@@ -20,10 +21,10 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::SearchKind,
     view::{
-        commit_event, copy_path, copy_selection, file_link, handle_search_event, not_found,
-        query_status, register_commit_link_keys, register_commit_list_keys, register_diff_keys,
-        type_commit_search, type_query, typing_keys, Compare, CopyForm, ListFacts,
-        ListRefreshViewContext, RefreshViewContext,
+        commit_event, copy_hashes, copy_path, copy_paths, copy_selection, file_link,
+        handle_search_event, not_found, query_status, register_commit_link_keys,
+        register_commit_list_keys, register_diff_keys, type_commit_search, type_query, typing_keys,
+        Compare, CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -33,7 +34,7 @@ use crate::{
             CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
-        file_tree::{Entry, FileTreeRow, FileTreeState},
+        file_tree::{path_contains, Entry, FileTreeRow, FileTreeState},
         git_dialog::GitDialog,
         style::{panel_block, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
@@ -287,10 +288,10 @@ impl<'a> DetailView<'a> {
         register_commit_link_keys(k, on(Info));
         k.add(
             &[ResetFile],
-            "reset file",
-            "Reset the selected file to the commit or before it",
+            "reset files",
+            "Reset the selected files to the commit or before it",
         )
-        .when(|v| v.reset_file_change().is_some());
+        .when(|v| !v.reset_file_changes().is_empty());
         k.add(
             &[Search],
             "search",
@@ -328,13 +329,13 @@ impl<'a> DetailView<'a> {
             "blame",
             "Blame the selected file, from the selected line",
         )
-        .when(file_selected);
+        .when(move |v| file_selected(v) && !v.multiple_tree_files_selected());
         k.add(
             &[Timeline],
             "timeline",
             "Show the commits changing the selected file",
         )
-        .when(file_selected);
+        .when(move |v| file_selected(v) && !v.multiple_tree_files_selected());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
             .when(|v| entry(v) || queried(v) || pane(v));
         k.quiet(
@@ -606,11 +607,14 @@ impl<'a> DetailView<'a> {
             return;
         }
 
-        if let (UserEvent::ResetFile, Some(change)) = (event, self.reset_file_change()) {
-            let commit = dialog_commit(self.repository, &self.commit.commit_hash);
-            let dialog = GitDialog::reset_file(commit, change.clone());
-            self.tx.send(AppEvent::OpenDialog(Box::new(dialog)));
-            return;
+        if event == UserEvent::ResetFile {
+            let changes = self.reset_file_changes();
+            if !changes.is_empty() {
+                let commit = dialog_commit(self.repository, &self.commit.commit_hash);
+                let dialog = GitDialog::reset_files(commit, changes);
+                self.tx.send(AppEvent::OpenDialog(Box::new(dialog)));
+                return;
+            }
         }
 
         // the file selected in the tree: its blame, on the line selected in its diff or preview, or
@@ -644,36 +648,88 @@ impl<'a> DetailView<'a> {
             self.handle_pane_event(event);
             return;
         }
-        // in the file trees, y and Y copy the path of the selected file
+        // in the file trees, y and Y copy the paths of the selected files
         if !self.list_focused {
             if let UserEvent::ShortCopy | UserEvent::FullCopy = event {
+                let form = CopyForm::of(event);
+                let picked = match self.tab {
+                    DetailTab::Info => vec![],
+                    DetailTab::Changes => self.changes_state.picked_paths(),
+                    DetailTab::Files => self.files_state.picked_paths(),
+                };
+                if !picked.is_empty() {
+                    self.tx.send(copy_paths(
+                        self.repository,
+                        picked.iter().map(String::as_str),
+                        form,
+                    ));
+                    return;
+                }
                 if let Some(row) = self.selected_row() {
-                    self.tx
-                        .send(copy_path(self.repository, row, CopyForm::of(event)));
+                    self.tx.send(copy_path(self.repository, row, form));
                     return;
                 }
             }
-            // o opens the selected file at this commit on the web host, O copies its link
+            // o opens the picked files at this commit on the web host, O copies their links
             if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-                if let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) {
-                    let link = file_link(event, &self.commit.commit_hash, entry.path(), None);
-                    self.tx.send(link);
-                    return;
+                let entries = match self.tab {
+                    DetailTab::Info => vec![],
+                    DetailTab::Changes => self.changes_state.picked_entries(),
+                    DetailTab::Files => self.files_state.picked_entries(),
+                };
+                let paths: Vec<String> = entries
+                    .into_iter()
+                    .filter_map(|entry| match entry {
+                        Entry::File(path) => Some(path.to_string()),
+                        Entry::Dir(_) => None,
+                    })
+                    .collect();
+                match paths.as_slice() {
+                    [] => {}
+                    [path] => {
+                        let link = file_link(event, &self.commit.commit_hash, path, None);
+                        self.tx.send(link);
+                    }
+                    _ => {
+                        let targets: Vec<LinkTarget> = paths
+                            .into_iter()
+                            .map(|path| LinkTarget::File {
+                                commit: self.commit.commit_hash.clone(),
+                                path,
+                                lines: None,
+                            })
+                            .collect();
+                        self.tx.send(AppEvent::Links {
+                            targets,
+                            action: LinkAction::of(event),
+                        });
+                    }
                 }
+                return;
             }
-            // i adds the selected file or directory to .gitignore
+            // i adds the picked files and directories, or the selected one, to .gitignore
             if event == UserEvent::Ignore {
-                if let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) {
-                    let event = match self.repository.ignore_path(entry) {
-                        Ok(message) => {
-                            self.tx.send(AppEvent::LocalChangesChanged);
-                            AppEvent::NotifySuccess(message)
-                        }
-                        Err(err) => AppEvent::NotifyError(err),
-                    };
-                    self.tx.send(event);
+                let entries = match self.tab {
+                    DetailTab::Info => vec![],
+                    DetailTab::Changes => self.changes_state.picked_entries(),
+                    DetailTab::Files => self.files_state.picked_entries(),
+                };
+                if entries.is_empty() {
                     return;
                 }
+                let mut messages = Vec::new();
+                for entry in entries {
+                    match self.repository.ignore_path(entry) {
+                        Ok(message) => messages.push(message),
+                        Err(err) => {
+                            self.tx.send(AppEvent::NotifyError(err));
+                            return;
+                        }
+                    }
+                }
+                self.tx.send(AppEvent::LocalChangesChanged);
+                self.tx.send(AppEvent::NotifySuccess(messages.join("; ")));
+                return;
             }
         }
 
@@ -804,23 +860,30 @@ impl<'a> DetailView<'a> {
         self.focus() == DetailFocus::Pane
     }
 
-    // The change of the file selected in the files of the changes tab of a commit, which `u` resets; none in a
-    // comparison, having no commit to reset it before or at.
-    fn reset_file_change(&self) -> Option<&FileChange> {
+    // The changes of the files selected in the changes tab of a commit, which `u` resets; none in
+    // a comparison, having no commit to reset them before or at.
+    fn reset_file_changes(&self) -> Vec<FileChange> {
         // on the files, not their diff
         if self.focus() != DetailFocus::Files
             || self.tab != DetailTab::Changes
             || self.shows_compare()
         {
-            return None;
+            return vec![];
         }
-        let path = self.selected_file()?;
-        self.changes.iter().find(|change| match change {
-            FileChange::Move { to, .. } => to == path,
-            FileChange::Add { path: p }
-            | FileChange::Modify { path: p }
-            | FileChange::Delete { path: p } => p == path,
-        })
+        let paths: Vec<String> = if self.changes_state.has_selection() {
+            self.changes_state.picked_paths()
+        } else {
+            self.selected_file().map(String::from).into_iter().collect()
+        };
+        self.changes
+            .iter()
+            .filter(|change| {
+                paths
+                    .iter()
+                    .any(|path| path_contains(path, change_path(change)))
+            })
+            .cloned()
+            .collect()
     }
 
     // The row selected in the file tree of the tab.
@@ -829,6 +892,15 @@ impl<'a> DetailView<'a> {
             DetailTab::Info => None,
             DetailTab::Changes => self.changes_state.selected_row(),
             DetailTab::Files => self.files_state.selected_row(),
+        }
+    }
+
+    // Whether more than one file of the tab's tree is selected, which the one-file views refuse.
+    fn multiple_tree_files_selected(&self) -> bool {
+        match self.tab {
+            DetailTab::Info => false,
+            DetailTab::Changes => self.changes_state.picked_paths().len() > 1,
+            DetailTab::Files => self.files_state.picked_paths().len() > 1,
         }
     }
 
@@ -1018,6 +1090,13 @@ impl<'a> DetailView<'a> {
                 return true;
             }
             UserEvent::ToggleSelect => state.toggle_visual(),
+            UserEvent::ShortCopy | UserEvent::FullCopy
+                if !state.picked_commit_hashes().is_empty() =>
+            {
+                let picked = state.picked_commit_hashes().to_vec();
+                tx.send(copy_hashes(&picked, CopyForm::of(event)));
+                return true;
+            }
             // the details of the selected commit, over the comparison
             UserEvent::Confirm if shows_compare => {
                 self.park_compare();
@@ -1347,4 +1426,13 @@ fn handle_tree_event(
         _ => return false,
     }
     true
+}
+
+fn change_path(change: &FileChange) -> &str {
+    match change {
+        FileChange::Add { path } | FileChange::Modify { path } | FileChange::Delete { path } => {
+            path
+        }
+        FileChange::Move { to, .. } => to,
+    }
 }

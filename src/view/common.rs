@@ -19,7 +19,7 @@ use crate::{
         commit_tabs::DetailTab,
         diff::DiffPart,
         diff_pane::DiffPane,
-        file_tree::{Entry, FileTreeRow},
+        file_tree::{Entry, FileTreeRow, ROOT_PATH},
         style::ListCursor,
         tree_query::{highlighted_text, name_matches, QueryKind, TreeQuery},
     },
@@ -164,6 +164,21 @@ pub fn copy_hash(hash: &CommitHash, form: CopyForm) -> AppEvent {
         CopyForm::Short => ("Commit SHA (short)", hash.as_short_hash()),
     };
     AppEvent::copy(name, value)
+}
+
+// Copies several commit hashes, short or in full, one per line.
+pub fn copy_hashes(hashes: &[CommitHash], form: CopyForm) -> AppEvent {
+    let (name, value): (&str, Vec<&str>) = match form {
+        CopyForm::Full => (
+            "Commit SHAs",
+            hashes.iter().map(CommitHash::as_str).collect(),
+        ),
+        CopyForm::Short => (
+            "Commit SHAs (short)",
+            hashes.iter().map(CommitHash::as_short_hash).collect(),
+        ),
+    };
+    AppEvent::copy(name, value.join("\n"))
 }
 
 // The keys acting on a commit wherever it is shown: copying its hash, opening its page, checking
@@ -388,18 +403,49 @@ pub fn copy_selection(text: String, part: DiffPart) -> AppEvent {
     AppEvent::copy(name, text)
 }
 
-// Copies the path of a file in the repository: relative to its top, or absolute in full.
-pub fn copy_path(repository: &Repository, row: &FileTreeRow, form: CopyForm) -> AppEvent {
-    // the root row stands for the whole repository
-    let relative = row.entry().map_or(".", Entry::path);
+// The value `copy_path` and `copy_paths` copy: relative to the top of the repository, or absolute
+// in full.
+fn path_value(repository: &Repository, relative: &str, form: CopyForm) -> String {
+    let relative = if relative == ROOT_PATH { "." } else { relative };
     match form {
         CopyForm::Full => {
             let absolute = repository.path().join(relative);
             let absolute = absolute.to_string_lossy();
-            AppEvent::copy("Absolute Path", absolute.trim_end_matches("/."))
+            absolute.trim_end_matches("/.").to_string()
         }
-        CopyForm::Short => AppEvent::copy("Path", relative),
+        CopyForm::Short => relative.to_string(),
     }
+}
+
+// Copies the path of a file in the repository: relative to its top, or absolute in full.
+pub fn copy_path(repository: &Repository, row: &FileTreeRow, form: CopyForm) -> AppEvent {
+    // the root row stands for the whole repository
+    let relative = row.entry().map_or(".", Entry::path);
+    let (name, value) = match form {
+        CopyForm::Full => ("Absolute Path", path_value(repository, relative, form)),
+        CopyForm::Short => ("Path", path_value(repository, relative, form)),
+    };
+    AppEvent::copy(name, value)
+}
+
+// Copies the paths of several files, one per line: relative to the top, or absolute in full.
+pub fn copy_paths<'a>(
+    repository: &Repository,
+    paths: impl IntoIterator<Item = &'a str>,
+    form: CopyForm,
+) -> AppEvent {
+    let paths: Vec<&str> = paths.into_iter().collect();
+    let name = match (form, paths.len()) {
+        (CopyForm::Full, 1) => "Absolute Path",
+        (CopyForm::Full, _) => "Absolute Paths",
+        (CopyForm::Short, 1) => "Path",
+        (CopyForm::Short, _) => "Paths",
+    };
+    let value: Vec<String> = paths
+        .into_iter()
+        .map(|path| path_value(repository, path, form))
+        .collect();
+    AppEvent::copy(name, value.join("\n"))
 }
 
 // Two revisions compared in the details: commits, or refs diffed from the sidebar, which are
@@ -490,3 +536,46 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
 }
 
 pub use crate::widget::local_changes::LocalChangesSnapshot as LocalChangesRefreshViewContext;
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::{git::SortCommit, test_support::git::GitRepository};
+
+    #[test]
+    fn test_copy_paths_joins_one_per_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = GitRepository::new(dir.path());
+        git.init();
+        for name in ["a", "b"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        git.add(&["a", "b"]);
+        git.commit("init", "2024-01-01");
+        let repository =
+            Repository::load(dir.path(), SortCommit::Chronological, None, false).unwrap();
+
+        let short = copy_paths(&repository, ["a", "b"], CopyForm::Short);
+        let AppEvent::CopyToClipboard { name, value } = short else {
+            panic!("not a copy event");
+        };
+        assert_eq!(name, "Paths");
+        assert_eq!(value, "a\nb");
+
+        let full = copy_paths(&repository, ["a", "b"], CopyForm::Full);
+        let AppEvent::CopyToClipboard { name, value } = full else {
+            panic!("not a copy event");
+        };
+        assert_eq!(name, "Absolute Paths");
+        assert_eq!(
+            value,
+            format!(
+                "{}\n{}",
+                dir.path().join("a").display(),
+                dir.path().join("b").display()
+            )
+        );
+    }
+}

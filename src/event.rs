@@ -59,6 +59,11 @@ pub enum AppEvent {
         name: String,
         value: String,
     },
+    // opens the links in the browser, or copies them
+    Links {
+        targets: Vec<LinkTarget>,
+        action: LinkAction,
+    },
     // opens the link in the browser, or copies it
     OpenUrl {
         url: String,

@@ -10,8 +10,9 @@ use crate::{
     keys::{Availability, KeyList, Keys},
     search::SearchKind,
     view::{
-        commit_event, query_status, register_commit_link_keys, register_graph_commands, type_query,
-        typing_keys, ListRefreshViewContext, RefreshViewContext, Reselect,
+        commit_event, copy_hashes, query_status, register_commit_link_keys,
+        register_graph_commands, type_query, typing_keys, CopyForm, ListRefreshViewContext,
+        RefreshViewContext, Reselect,
     },
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
@@ -66,10 +67,18 @@ impl<'a> ListView<'a> {
                     self.tx.send(fold);
                 }
             }
-            UserEvent::ShortCopy
-            | UserEvent::FullCopy
-            | UserEvent::OpenInBrowser
-            | UserEvent::CopyLink => {
+            UserEvent::ShortCopy | UserEvent::FullCopy => {
+                let picked = self.as_list_state().picked_commit_hashes();
+                if !picked.is_empty() {
+                    self.tx.send(copy_hashes(picked, CopyForm::of(event)));
+                } else {
+                    let commit = self.as_list_state().selected_commit_hash();
+                    if let Some(event) = commit_event(event, commit) {
+                        self.tx.send(event);
+                    }
+                }
+            }
+            UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                 let commit = self.as_list_state().selected_commit_hash();
                 if let Some(event) = commit_event(event, commit) {
                     self.tx.send(event);

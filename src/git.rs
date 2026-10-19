@@ -594,40 +594,6 @@ impl Repository {
         load_local_change_diff(&self.path, paths, of, context)
     }
 
-    // The diffs of untracked files, which git diffs only one at a time (against /dev/null), so a few
-    // run side by side.
-    pub fn untracked_diff(&self, paths: &[&str]) -> String {
-        // each worker is a git process; more than 8 at once only crowd the disk and the cores
-        // the app draws with, 4 when the core count is unknown
-        let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-        let chunk = paths.len().div_ceil(workers).max(1);
-        let work_tree = self.path.as_path();
-        std::thread::scope(|scope| {
-            let diffs: Vec<_> = paths
-                .chunks(chunk)
-                .map(|chunk| {
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|path| {
-                                load_local_change_diff(
-                                    work_tree,
-                                    &[path],
-                                    DiffOf::Untracked,
-                                    DEFAULT_DIFF_CONTEXT,
-                                )
-                            })
-                            .collect::<String>()
-                    })
-                })
-                .collect();
-            diffs
-                .into_iter()
-                .map(|diff| diff.join().unwrap_or_default())
-                .collect()
-        })
-    }
-
     // The tree to compare the index to while amending: `HEAD^`, or the empty tree for a root
     // commit. The name, not the resolved tree: the commands naming it read like the ones a user
     // would type, see `GitArgs`.
@@ -3203,30 +3169,6 @@ mod tests {
         assert_eq!(toplevel, None);
         assert_eq!(git_dir, path.join("bare.git"));
         assert!(locate_repository(&path).is_err());
-    }
-
-    #[test]
-    fn test_untracked_diff() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let git = crate::test_support::git::GitRepository::new(path);
-        git.init();
-        git.commit("init", "2024-01-01");
-        let names: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
-        for name in &names {
-            std::fs::write(path.join(name), format!("{name}\n")).unwrap();
-        }
-        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let paths: Vec<&str> = names.iter().map(String::as_str).collect();
-
-        // side by side, the same as one after another, in order
-        let one_by_one: String = paths
-            .iter()
-            .map(|p| repository.local_change_diff(&[p], DiffOf::Untracked, DEFAULT_DIFF_CONTEXT))
-            .collect();
-        assert_eq!(repository.untracked_diff(&paths), one_by_one);
-        assert!(one_by_one.contains("+f00") && one_by_one.contains("+f19"));
-        assert_eq!(repository.untracked_diff(&[]), "");
     }
 
     #[test]

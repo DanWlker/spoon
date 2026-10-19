@@ -1,4 +1,8 @@
-use std::{cell::RefCell, path::Path, process::Command};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use arboard::Clipboard;
 
@@ -59,16 +63,17 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-// Opens `path` in the user's editor: $VISUAL, then $EDITOR, then vi.
+// Opens `paths` in the user's editor: $VISUAL, then $EDITOR, then vi.
 // The variables are expanded by the shell, so they may include arguments, like "code --wait".
-pub fn editor_command(path: &Path) -> Vec<String> {
-    vec![
+pub fn editor_command(paths: &[PathBuf]) -> Vec<String> {
+    let mut command = vec![
         "sh".into(),
         "-c".into(),
-        r#"exec ${VISUAL:-${EDITOR:-vi}} "$1""#.into(),
+        r#"exec ${VISUAL:-${EDITOR:-vi}} "$@""#.into(),
         "sh".into(),
-        path.to_string_lossy().into_owned(),
-    ]
+    ];
+    command.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+    command
 }
 
 // Resolves the conflicts of `path` (relative to `toplevel`) in a merge tool, git's merge.tool unless given.
@@ -138,9 +143,13 @@ mod tests {
 
     #[test]
     fn test_editor_and_merge_tool_commands() {
-        let editor = editor_command(Path::new("/repo/a b.txt"));
+        let editor = editor_command(&[
+            PathBuf::from("/repo/a b.txt"),
+            PathBuf::from("/repo/b c.txt"),
+        ]);
         assert_eq!(editor[0], "sh");
         assert_eq!(editor[4], "/repo/a b.txt");
+        assert_eq!(editor[5], "/repo/b c.txt");
 
         let tool = merge_tool_command(Path::new("/repo"), "a.txt", Some("meld"));
         let expected = [
