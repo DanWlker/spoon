@@ -604,6 +604,62 @@ pub fn render_commit_list_panel<'a>(
     );
 }
 
+// A read-only list of commits using the configured columns, the graph left out: the submodule
+// panel beside the local changes, which has nothing to select or search. `offset` is the first
+// row shown; returns the total number of commits, for the scrollbar.
+pub fn render_commit_columns(
+    ctx: &AppContext,
+    area: Rect,
+    buf: &mut Buffer,
+    commits: &[Commit],
+    offset: usize,
+) -> usize {
+    let theme = &ctx.color_theme;
+    // no graph column to give room to, there is no graph here
+    let constraints = calc_cell_widths(
+        area.width,
+        ctx.ui_config.list.subject_min_width,
+        0,
+        ctx.ui_config.list.name_width,
+        ctx.ui_config.list.date_width,
+        &ctx.ui_config.list.columns,
+    );
+    let chunks = Layout::horizontal(constraints).split(area);
+    let search = CommitSearch::default();
+    let options = ctx.search_options.get();
+    let head = Head::None;
+    let tracking = FxHashMap::default();
+    for (row, commit) in commits
+        .iter()
+        .skip(offset)
+        .take(area.height as usize)
+        .enumerate()
+    {
+        let y = area.top() + row as u16;
+        let info = CommitInfo::new(commit, Vec::new(), &tracking, true);
+        for (column, col_area) in ctx.ui_config.list.columns.iter().zip(chunks.iter()) {
+            let width = (col_area.width as usize).saturating_sub(2);
+            let spans = match column {
+                UserListColumnType::Graph => continue,
+                UserListColumnType::Marker => {
+                    vec![Span::styled("│", Style::default().fg(theme.divider_fg))]
+                }
+                UserListColumnType::Subject => {
+                    subject_spans(&info, width, search, options, &head, theme)
+                }
+                UserListColumnType::Name => name_spans(&info, width, search.author, options, theme),
+                UserListColumnType::Hash => hash_spans(&info, search.hash, options, theme),
+                UserListColumnType::Date => vec![date_span(ctx, &info)],
+            };
+            let mut spans = spans;
+            spans.insert(0, Span::raw(" "));
+            spans.push(Span::raw(" "));
+            buf.set_line(col_area.x, y, &Line::from(spans), col_area.width);
+        }
+    }
+    commits.len()
+}
+
 impl<'a> CommitList<'a> {
     pub fn new(ctx: Rc<AppContext>) -> Self {
         Self {
@@ -655,15 +711,6 @@ impl<'a> StatefulWidget for CommitList<'a> {
 }
 
 impl CommitList<'_> {
-    // The color of a commit's text: `fg`, or dimmed when the commit is not on the current branch.
-    fn text_fg(&self, commit_info: &CommitInfo, fg: Color) -> Color {
-        if commit_info.on_head {
-            fg
-        } else {
-            self.ctx.color_theme.list_dimmed_fg
-        }
-    }
-
     fn update_state(&self, area: Rect, state: &mut CommitListState) {
         state.update_height(area.height as usize);
     }
@@ -708,30 +755,22 @@ impl CommitList<'_> {
         if area.is_empty() || max_width == 0 {
             return;
         }
+        let search = CommitSearch {
+            refs: state.search_in(SearchTarget::Ref),
+            subject: state.search_in(SearchTarget::Subject),
+            ..Default::default()
+        };
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(i, commit_info)| {
-                let mut spans = refs_spans(
+                let spans = subject_spans(
                     commit_info,
-                    state.search_in(SearchTarget::Ref),
+                    max_width,
+                    search,
                     state.search_options(),
                     &state.head,
                     &self.ctx.color_theme,
                 );
-                let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
-                let max_width = max_width.saturating_sub(ref_spans_width);
-                let commit = commit_info.commit;
-                let subject_fg = self.text_fg(commit_info, self.ctx.color_theme.list_subject_fg);
-                if max_width > ELLIPSIS.len() {
-                    spans.extend(highlighted_cut(
-                        &commit.subject,
-                        max_width,
-                        Style::default().fg(subject_fg),
-                        state.search_in(SearchTarget::Subject),
-                        state.search_options(),
-                        &self.ctx.color_theme,
-                    ));
-                }
                 self.to_commit_list_item(i, spans, state)
             })
             .collect();
@@ -746,12 +785,9 @@ impl CommitList<'_> {
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(i, commit_info)| {
-                let commit = commit_info.commit;
-                let name_fg = self.text_fg(commit_info, self.ctx.color_theme.list_name_fg);
-                let spans = highlighted_cut(
-                    &commit.author_name,
+                let spans = name_spans(
+                    commit_info,
                     max_width,
-                    Style::default().fg(name_fg),
                     state.search_in(SearchTarget::Author),
                     state.search_options(),
                     &self.ctx.color_theme,
@@ -769,12 +805,8 @@ impl CommitList<'_> {
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(i, commit_info)| {
-                let hash_fg = self.text_fg(commit_info, self.ctx.color_theme.list_hash_fg);
-                let hash = commit_info.commit.commit_hash.as_short_hash();
-                let spans = highlighted_text(
-                    hash,
-                    hash.len(),
-                    Style::default().fg(hash_fg),
+                let spans = hash_spans(
+                    commit_info,
                     state.search_in(SearchTarget::Hash),
                     state.search_options(),
                     &self.ctx.color_theme,
@@ -792,12 +824,7 @@ impl CommitList<'_> {
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
             .map(|(i, commit_info)| {
-                let date_str = format_date(&self.ctx, &commit_info.commit.author_date);
-                self.to_commit_list_item(
-                    i,
-                    vec![date_str.fg(self.text_fg(commit_info, self.ctx.color_theme.list_date_fg))],
-                    state,
-                )
+                self.to_commit_list_item(i, vec![date_span(&self.ctx, commit_info)], state)
             })
             .collect();
         Widget::render(List::new(items), area, buf);
@@ -964,6 +991,95 @@ pub fn ref_label_style(color: Color) -> Style {
 }
 
 const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);
+
+// The search of a commit's parts, for the commit list or a read-only list without a query.
+#[derive(Debug, Default, Clone, Copy)]
+struct CommitSearch<'a> {
+    pub refs: Option<&'a str>,
+    pub subject: Option<&'a str>,
+    pub author: Option<&'a str>,
+    pub hash: Option<&'a str>,
+}
+
+// The color of a commit's text: `fg`, or dimmed when the commit is not on the current branch.
+fn commit_text_fg(info: &CommitInfo, fg: Color, theme: &ColorTheme) -> Color {
+    if info.on_head {
+        fg
+    } else {
+        theme.list_dimmed_fg
+    }
+}
+
+// The subject of a commit with its ref labels before it, cut to `width`, as the commit list shows
+// it; shared with the read-only list in the submodule panel.
+fn subject_spans(
+    info: &CommitInfo,
+    width: usize,
+    search: CommitSearch,
+    options: SearchOptions,
+    head: &Head,
+    theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    let mut spans = refs_spans(info, search.refs, options, head, theme);
+    let refs_width: usize = spans.iter().map(|span| span.width()).sum();
+    let width = width.saturating_sub(refs_width);
+    let fg = commit_text_fg(info, theme.list_subject_fg, theme);
+    if width > ELLIPSIS.len() {
+        spans.extend(highlighted_cut(
+            &info.commit.subject,
+            width,
+            Style::default().fg(fg),
+            search.subject,
+            options,
+            theme,
+        ));
+    }
+    spans
+}
+
+// The author of a commit, cut to `width`.
+fn name_spans(
+    info: &CommitInfo,
+    width: usize,
+    search: Option<&str>,
+    options: SearchOptions,
+    theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    let fg = commit_text_fg(info, theme.list_name_fg, theme);
+    highlighted_cut(
+        &info.commit.author_name,
+        width,
+        Style::default().fg(fg),
+        search,
+        options,
+        theme,
+    )
+}
+
+// The short hash of a commit.
+fn hash_spans(
+    info: &CommitInfo,
+    search: Option<&str>,
+    options: SearchOptions,
+    theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    let fg = commit_text_fg(info, theme.list_hash_fg, theme);
+    let hash = info.commit.commit_hash.as_short_hash();
+    highlighted_text(
+        hash,
+        hash.len(),
+        Style::default().fg(fg),
+        search,
+        options,
+        theme,
+    )
+}
+
+// The date of a commit as the list shows it.
+fn date_span(ctx: &AppContext, info: &CommitInfo) -> Span<'static> {
+    let fg = commit_text_fg(info, ctx.color_theme.list_date_fg, &ctx.color_theme);
+    format_date(ctx, &info.commit.author_date).fg(fg)
+}
 
 fn calc_cell_widths(
     area_width: u16,

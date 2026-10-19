@@ -18,12 +18,14 @@ use crate::{
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
+        SubmoduleChanges,
     },
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions},
     view::register_diff_keys,
     widget::{
+        commit_list::render_commit_columns,
         conflict::ConflictView,
         diff::{parse_diff, DiffPart, Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
@@ -280,6 +282,8 @@ pub struct LocalChangesState<'a> {
     files_stamp: u64,
     // the conflicted file under the cursor, shown instead of its diff
     conflict: Option<ConflictPanel>,
+    // the submodule under the cursor, shown instead of its gitlink diff
+    submodule: Option<SubmoduleChanges>,
 }
 
 impl<'a> LocalChangesState<'a> {
@@ -313,6 +317,7 @@ impl<'a> LocalChangesState<'a> {
             diff_stale: false,
             files_stamp,
             conflict: None,
+            submodule: None,
         };
         if let Some(snapshot) = snapshot {
             state.draft = *snapshot.commit_draft;
@@ -1825,13 +1830,32 @@ impl<'a> LocalChangesState<'a> {
 
     fn set_diff(&mut self, diff: &str) {
         self.conflict = self.load_conflict();
+        self.submodule = self.load_submodule();
         // the diff or conflict selected before is gone, the commit section stays
         if !self.is_commit_focused() {
             self.chosen = Focus::Files;
         }
+        // a submodule has no hunks to select, the panel beside the files shows it instead
+        if self.submodule.is_some() {
+            self.pane.set_diff(None);
+            return;
+        }
         let mut diff = parse_diff(diff);
         diff.drop_converted(self.repository);
         self.pane.set_diff(Some(diff));
+    }
+
+    // The submodule of the selected file, comparing it against the gitlink the index records:
+    // what staging it would record. None for a directory, the picked files or a plain file.
+    fn load_submodule(&self) -> Option<SubmoduleChanges> {
+        if self.diff_source != DiffSource::Row {
+            return None;
+        }
+        let row = self.selected_row()?;
+        if row.is_dir() {
+            return None;
+        }
+        self.repository.submodule_changes(&row.path)
     }
 }
 
@@ -1910,6 +1934,8 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         self.render_file_section(state, LocalChangesSection::Staged, staged_area, buf);
         if state.conflict.is_some() {
             self.render_conflict(state, diff_area, buf);
+        } else if state.submodule.is_some() {
+            self.render_submodule(state, diff_area, buf);
         } else {
             self.render_diff(state, diff_area, buf);
         }
@@ -2000,6 +2026,54 @@ impl LocalChangesPanel<'_> {
             };
             Paragraph::new(placeholder(message, &self.ctx.color_theme)).render(inner, buf);
         }
+    }
+
+    fn render_submodule(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
+        let Some(submodule) = state.submodule.as_ref() else {
+            return;
+        };
+        let theme = &self.ctx.color_theme;
+        let path = state.selected_path().unwrap_or_default();
+        let inner = render_panel(
+            buf,
+            area,
+            Line::from(vec![
+                Span::raw(format!(" {path} ")).fg(theme.fg),
+                badge(" submodule changed ", theme.status_warn_fg, theme),
+            ]),
+            false,
+            theme,
+        );
+        if submodule.head.is_none() {
+            Paragraph::new(placeholder("submodule not checked out", theme)).render(inner, buf);
+            return;
+        }
+        let [header_area, list_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+        let note = match submodule.uncommitted {
+            0 => "no uncommitted files".to_string(),
+            1 => "1 uncommitted file".to_string(),
+            n => format!("{n} uncommitted files"),
+        };
+        buf.set_line(
+            header_area.x,
+            header_area.y,
+            &Line::raw(note).fg(theme.muted_fg),
+            header_area.width,
+        );
+        if submodule.commits.is_empty() {
+            Paragraph::new(placeholder("no commits ahead of the recorded one", theme))
+                .render(list_area, buf);
+            return;
+        }
+        let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
+        let total = submodule.commits.len();
+        let range = state
+            .pane
+            .scroll_state()
+            .fit(total, list_area.height as usize, scrolloff);
+        render_commit_columns(&self.ctx, list_area, buf, &submodule.commits, range.start);
+        render_panel_scrollbar(buf, area, total, range.start, false, theme);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -2192,7 +2266,7 @@ mod tests {
     }
     use crate::{
         git::SortCommit,
-        test_support::git::GitRepository,
+        test_support::git::{git, GitRepository},
         widget::{file_tree::ROOT_PATH, tree_query::QueryKind},
     };
 
@@ -2234,6 +2308,51 @@ mod tests {
         let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         paths.sort_unstable();
         paths
+    }
+
+    #[test]
+    fn test_submodule_shows_its_commits_instead_of_the_gitlink_diff(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("init", "2024-01-01");
+
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                base.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        repo.commit("add sub", "2024-01-02");
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        fs::write(sub.join("a.txt"), "two\n")?;
+        sub_repo.add(&["a.txt"]);
+        sub_repo.commit("second", "2024-01-03");
+
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        assert_eq!(submodule.commits.len(), 1);
+        assert_eq!(submodule.commits[0].subject, "second");
+        // the gitlink diff isn't shown, there is nothing to enter in it
+        assert!(state.pane.diff().is_none());
+        Ok(())
     }
 
     #[test]

@@ -291,6 +291,8 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 
 While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end.
 
+Selecting a submodule shows the panel beside the files in place of the gitlink diff: how many files are uncommitted inside it, and the commits it has that the recorded gitlink doesn't, drawn in the commit list's columns without the graph. The parent repository can only stage the gitlink, so those commits and files are made in the submodule itself. A submodule that isn't checked out says so.
+
 <kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section, or on an empty unstaged section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
 While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, the files that conflicted listed in the description, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
