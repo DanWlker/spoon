@@ -79,10 +79,6 @@ impl<'a> View<'a> {
         }
     }
 
-    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        on_page!(self, view => view.graph_image_ids_sorted(), Vec::new())
-    }
-
     // The keys of what has the focus in the view, see `Keys`.
     pub fn keys(&self) -> KeyList {
         match self {

@@ -625,15 +625,6 @@ pub struct GitDialog {
     pushed: Option<String>,
 }
 
-fn change_path(change: &FileChange) -> &str {
-    match change {
-        FileChange::Add { path } | FileChange::Modify { path } | FileChange::Delete { path } => {
-            path
-        }
-        FileChange::Move { to, .. } => to,
-    }
-}
-
 impl GitDialog {
     fn with(
         title: &'static str,
@@ -1775,7 +1766,7 @@ impl GitDialog {
     // Resets files `commit` changed, in the index and the working tree, to how the commit left
     // them or how they were before it.
     pub fn reset_files(commit: DialogCommit, changes: Vec<FileChange>) -> Self {
-        let paths: Vec<&str> = changes.iter().map(change_path).collect();
+        let paths: Vec<&str> = changes.iter().map(FileChange::path).collect();
         let intro = if let [path] = paths.as_slice() {
             vec![format!("Reset {path} to"), format!("  {}", commit.line)]
         } else {
@@ -1783,7 +1774,12 @@ impl GitDialog {
                 format!("Reset {} files to", paths.len()),
                 format!("  {}", commit.line),
             ];
-            intro.extend(paths.iter().map(|path| format!("  {path}")));
+            let listed: Vec<String> = paths.iter().map(|path| (*path).to_string()).collect();
+            intro.extend(
+                capped(listed, MAX_LISTED)
+                    .iter()
+                    .map(|path| format!("  {path}")),
+            );
             intro
         };
         let mut form = Form::default();
@@ -1839,7 +1835,7 @@ impl GitDialog {
         };
         let short = commit.hash.as_short_hash();
         let (running, done) = if let [change] = changes {
-            let name = change_path(change);
+            let name = change.path();
             (
                 format!("Resetting {name}"),
                 format!("Reset {name} to {at} {short}"),
@@ -3027,6 +3023,24 @@ mod tests {
         for name in ["a", "b"] {
             assert_eq!(std::fs::read_to_string(path.join(name)).unwrap(), "2\n");
         }
+    }
+
+    #[test]
+    fn test_reset_many_files_caps_the_listed_paths() {
+        let commit = DialogCommit {
+            hash: "a".repeat(40).as_str().into(),
+            line: "commit".into(),
+        };
+        let changes: Vec<FileChange> = (0..20)
+            .map(|i| FileChange::Modify {
+                path: format!("f{i:02}"),
+            })
+            .collect();
+        let dialog = GitDialog::reset_files(commit, changes);
+        let intro = dialog.intro();
+        assert_eq!(intro[0], "Reset 20 files to");
+        assert!(intro.iter().any(|line| line.contains("… and 10 more")));
+        assert!(intro.len() <= 2 + MAX_LISTED + 1, "{intro:?}");
     }
 
     #[test]

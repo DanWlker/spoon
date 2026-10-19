@@ -913,7 +913,7 @@ impl Repository {
         if !self.is_submodule(path) {
             return None;
         }
-        let recorded = self.index_submodule_commit(path)?;
+        let index = self.index_submodule_commit(path)?;
         let submodule = self.path.join(path);
         // a checked-out submodule has a `.git` file (or directory) of its own; without it git
         // falls back to the superproject above, which would read the wrong HEAD
@@ -925,14 +925,15 @@ impl Repository {
             .map(|out| out.trim().to_string());
         let Some(head) = head else {
             return Some(SubmoduleInfo {
-                recorded,
+                index,
                 head: None,
-                uncommitted: 0,
+                // nothing can be read in a working tree that isn't checked out
+                uncommitted: None,
             });
         };
         Some(SubmoduleInfo {
-            uncommitted: load_local_changes(&submodule).count(),
-            recorded,
+            uncommitted: Some(load_local_changes(&submodule).count()),
+            index,
             head: Some(head),
         })
     }
@@ -971,11 +972,20 @@ impl Repository {
     }
 
     // The commit `revision` records for the submodule at `path`, or None when it has no gitlink
-    // there (a plain file, or the submodule wasn't in that commit).
-    pub fn gitlink_at(&self, revision: &str, path: &str) -> Option<String> {
-        let spec = format!("{revision}:{path}");
-        let out = git_output(&self.path, &["rev-parse", "--verify", "--quiet", &spec]).ok()?;
-        Some(out.trim().to_string())
+    // there (a plain file or directory, or the submodule wasn't in that commit). The tree is read
+    // rather than the current index, so an old commit that moved a submodule still finds both
+    // gitlinks after the path stops being a submodule at HEAD.
+    pub fn submodule_gitlink_at(&self, revision: &str, path: &str) -> Option<String> {
+        let spec = pathspecs(&[path]);
+        let out = git_output(&self.path, &["ls-tree", "-z", revision, "--", &spec[0]]).ok()?;
+        out.split('\0').find_map(|entry| {
+            let (meta, file) = entry.split_once('\t')?;
+            let mut fields = meta.split(' ');
+            let mode = fields.next()?;
+            let _kind = fields.next()?;
+            let commit = fields.next()?;
+            (mode == "160000" && file == path).then(|| commit.to_string())
+        })
     }
 
     // The message of the commit at HEAD, of which git leaves out the name: `log -1 --format=%B`.
@@ -1616,11 +1626,12 @@ pub struct FileRevision {
 #[derive(Debug, Default, Clone)]
 pub struct SubmoduleInfo {
     // the commit the index records for the submodule
-    pub recorded: String,
+    pub index: String,
     // None when the submodule isn't checked out, so its working tree can't be read
     pub head: Option<String>,
-    // the files with uncommitted changes inside the submodule, counted once each
-    pub uncommitted: usize,
+    // the files with uncommitted changes inside the submodule, counted once each; None without a
+    // working tree
+    pub uncommitted: Option<usize>,
 }
 
 // `git blame --porcelain`: each line is a header "<hash> <line> <line> [<count>]", the details of
@@ -1853,6 +1864,16 @@ pub enum FileChange {
 }
 
 impl FileChange {
+    // The path it leaves the file at, the one the diff names: `to` for a rename.
+    pub fn path(&self) -> &str {
+        match self {
+            FileChange::Add { path }
+            | FileChange::Modify { path }
+            | FileChange::Delete { path } => path,
+            FileChange::Move { to, .. } => to,
+        }
+    }
+
     // Its letter, like git's: "A" added, "M" modified, "D" deleted, "R" renamed.
     pub fn symbol(&self) -> &'static str {
         match self {
@@ -4001,10 +4022,14 @@ mod tests {
         let info = repository.submodule_info("sub").unwrap();
         let head = info.head.clone().unwrap();
         assert_eq!(head, sub_repo.rev_parse_head());
-        assert_eq!(info.uncommitted, 2);
+        assert_eq!(info.uncommitted, Some(2));
+        assert_eq!(
+            repository.submodule_gitlink_at("HEAD", "sub"),
+            Some(info.index.clone())
+        );
         // the commits the recorded gitlink doesn't have
         let sub_repository = repository
-            .submodule_repository("sub", &info.recorded, &head)
+            .submodule_repository("sub", &info.index, &head)
             .unwrap()
             .unwrap();
         let subjects: Vec<&str> = sub_repository
@@ -4017,13 +4042,13 @@ mod tests {
         assert!(std::ptr::eq(
             sub_repository,
             repository
-                .submodule_repository("sub", &info.recorded, &head)
+                .submodule_repository("sub", &info.index, &head)
                 .unwrap()
                 .unwrap()
         ));
         // the other way round has no commits, the recorded one being the older:
         assert!(repository
-            .submodule_repository("sub", &head, &info.recorded)
+            .submodule_repository("sub", &head, &info.index)
             .unwrap()
             .is_none());
         // a plain path is not a submodule
@@ -4042,6 +4067,6 @@ mod tests {
             Repository::load(&superproject, SortCommit::Chronological, None, false).unwrap();
         let info = repository.submodule_info("sub").unwrap();
         assert_eq!(info.head, None);
-        assert_eq!(info.uncommitted, 0);
+        assert_eq!(info.uncommitted, None);
     }
 }

@@ -362,6 +362,48 @@ pub fn scroll_to(
         .min(total.saturating_sub(height))
 }
 
+// Where a visual selection started, the selection itself having moved from there. Lists and file
+// text keep it here, so the same keys start, extend and end a selection everywhere.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct VisualSelection {
+    anchor: Option<usize>,
+}
+
+impl VisualSelection {
+    pub fn is_visual(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    // Starts a visual selection at `selected`, or ends it; true when it started.
+    pub fn toggle(&mut self, selected: usize) -> bool {
+        if self.anchor.take().is_some() {
+            return false;
+        }
+        self.anchor = Some(selected);
+        true
+    }
+
+    pub fn cancel(&mut self) {
+        self.anchor = None;
+    }
+
+    // Ends a selection whose start is past the `total` rows shown, which a rebuild can leave behind.
+    pub fn keep_in(&mut self, total: usize) {
+        if self.anchor.is_some_and(|anchor| anchor >= total) {
+            self.cancel();
+        }
+    }
+
+    // The rows from where the selection started to `selected`, none when it isn't visual or there
+    // are no rows; the ends are kept within `total`, so a stale selection cannot index past them.
+    pub fn range(&self, selected: usize, total: usize) -> Option<Range<usize>> {
+        let anchor = self.anchor?.min(total.checked_sub(1)?);
+        let selected = selected.min(total - 1);
+        let (start, end) = (anchor.min(selected), anchor.max(selected));
+        Some(start..end + 1)
+    }
+}
+
 // The selected row of a list and the rows shown from `offset`, `height` at a time: the commit list,
 // the file trees, the command log and the timeline. The selection moves keep it in view with
 // `scrolloff` rows around it, scrolling as little as can be, see `scroll_to`.
@@ -372,8 +414,7 @@ pub struct ListCursor {
     // as last drawn, 0 before
     height: usize,
     scrolloff: usize,
-    // where a visual selection started, the selection itself having moved from there
-    visual_anchor: Option<usize>,
+    visual: VisualSelection,
 }
 
 impl ListCursor {
@@ -396,26 +437,27 @@ impl ListCursor {
 
     // Whether the selection is a visual one, which the movement keys extend.
     pub fn is_visual(&self) -> bool {
-        self.visual_anchor.is_some()
+        self.visual.is_visual()
     }
 
     // Starts a visual selection at the selected row, or ends it where it is.
     pub fn toggle_visual(&mut self) {
-        if self.visual_anchor.take().is_none() {
-            self.visual_anchor = Some(self.selected);
-        }
+        self.visual.toggle(self.selected);
     }
 
     pub fn cancel_visual(&mut self) {
-        self.visual_anchor = None;
+        self.visual.cancel();
+    }
+
+    // Ends a visual selection whose start is past the `total` rows now shown.
+    pub fn keep_visual_in(&mut self, total: usize) {
+        self.visual.keep_in(total);
     }
 
     // The rows a visual selection covers, from where it started to the selection; None when it
-    // isn't visual.
-    pub fn visual_range(&self) -> Option<Range<usize>> {
-        let anchor = self.visual_anchor?;
-        let (start, end) = (anchor.min(self.selected), anchor.max(self.selected));
-        Some(start..end + 1)
+    // isn't visual. `total` keeps the ends within the rows now shown.
+    pub fn visual_range(&self, total: usize) -> Option<Range<usize>> {
+        self.visual.range(self.selected, total)
     }
 
     // Selects the row at `index` of `total`, or the last one.

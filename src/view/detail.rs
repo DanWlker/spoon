@@ -30,8 +30,8 @@ use crate::{
         commit_detail::CommitDetail,
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::{
-            render_compare_title, render_tab_titles, CommitChangesState, CommitFilesState,
-            CommitTab, DetailTab,
+            changes_side_area, render_compare_title, render_tab_titles, CommitChangesState,
+            CommitFilesState, CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
         file_tree::{path_contains, Entry, FileTreeRow, FileTreeState},
@@ -149,7 +149,6 @@ impl<'a> DetailView<'a> {
         let files = on(Files);
         let pane = on(Pane);
         let tab = |tab: DetailTab| move |v: &Self| v.tab == tab;
-        let file_selected = |v: &Self| !v.list_focused && v.selected_file().is_some();
         // a row of the files, which a commit without changes has none of
         let entry = move |v: &Self| files(v) && v.selected_row().is_some();
         // a file or directory, not the root row standing for all of them
@@ -329,13 +328,13 @@ impl<'a> DetailView<'a> {
             "blame",
             "Blame the selected file, from the selected line",
         )
-        .when(move |v| file_selected(v) && !v.multiple_tree_files_selected());
+        .when(|v| v.action_file().is_some());
         k.add(
             &[Timeline],
             "timeline",
             "Show the commits changing the selected file",
         )
-        .when(move |v| file_selected(v) && !v.multiple_tree_files_selected());
+        .when(|v| v.action_file().is_some());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
             .when(|v| entry(v) || queried(v) || pane(v));
         k.quiet(
@@ -357,7 +356,7 @@ impl<'a> DetailView<'a> {
                 ScrollDown,
                 ScrollUp,
             ],
-            "Scroll the info, diff or preview",
+            "Scroll the info, diff or preview; move the files a page or a line at a time",
         )
         .when(|v| !v.list_focused);
         k.quiet(&[SelectDown, SelectUp], "Select the older/newer commit")
@@ -620,26 +619,32 @@ impl<'a> DetailView<'a> {
         // the file selected in the tree: its blame, on the line selected in its diff or preview, or
         // its timeline
         if let (UserEvent::Blame | UserEvent::Timeline, false) = (event, self.list_focused) {
-            let line = match self.tab {
-                DetailTab::Changes => self
-                    .changes_state
-                    .pane
-                    .selected_lines()
-                    .map(|lines| *lines.start()),
-                DetailTab::Files => self.files_state.selected_line(),
-                DetailTab::Info => None,
+            let Some(path) = self.action_file().map(String::from) else {
+                return;
             };
-            if let Some(path) = self.selected_file() {
-                let (commit, path) = (self.commit.commit_hash.clone(), path.into());
-                self.tx.send(match event {
-                    UserEvent::Blame => AppEvent::OpenBlame {
-                        commit,
-                        path,
-                        line: line.map(|line| line.saturating_sub(1)),
-                    },
-                    _ => AppEvent::OpenTimeline { commit, path },
-                });
-            }
+            // the selected line belongs to the row under the cursor, not to another picked file
+            let line = if self.selected_file() == Some(path.as_str()) {
+                match self.tab {
+                    DetailTab::Changes => self
+                        .changes_state
+                        .pane
+                        .selected_lines()
+                        .map(|lines| *lines.start()),
+                    DetailTab::Files => self.files_state.selected_line(),
+                    DetailTab::Info => None,
+                }
+            } else {
+                None
+            };
+            let commit = self.commit.commit_hash.clone();
+            self.tx.send(match event {
+                UserEvent::Blame => AppEvent::OpenBlame {
+                    commit,
+                    path,
+                    line: line.map(|line| line.saturating_sub(1)),
+                },
+                _ => AppEvent::OpenTimeline { commit, path },
+            });
             return;
         }
         // the diff or preview beside the files gets only its own keys and those of the whole app
@@ -843,9 +848,17 @@ impl<'a> DetailView<'a> {
 
     pub fn update_layout(&mut self, area: Rect) {
         self.load_selected();
-        let [list_area, _] = self.split_areas(area);
+        let [list_area, panel_area] = self.split_areas(area);
         self.as_mut_list_state()
             .update_height(commit_list_inner_height(list_area.height));
+        if self.tab == DetailTab::Changes {
+            // the submodule panel beside the files is drawn without the details' border; knowing
+            // its height before the graph images are prepared keeps it to the rows shown
+            let inner = panel_block(false, &self.ctx.color_theme).inner(panel_area);
+            let side = changes_side_area(&self.ctx, inner);
+            self.changes_state
+                .set_submodule_height(side.height as usize);
+        }
     }
 
     pub fn prepare_graph_uploads(&mut self) {
@@ -877,11 +890,7 @@ impl<'a> DetailView<'a> {
         };
         self.changes
             .iter()
-            .filter(|change| {
-                paths
-                    .iter()
-                    .any(|path| path_contains(path, change_path(change)))
-            })
+            .filter(|change| paths.iter().any(|path| path_contains(path, change.path())))
             .cloned()
             .collect()
     }
@@ -895,21 +904,25 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    // Whether more than one file of the tab's tree is selected, which the one-file views refuse.
-    fn multiple_tree_files_selected(&self) -> bool {
-        match self.tab {
-            DetailTab::Info => false,
-            DetailTab::Changes => self.changes_state.picked_paths().len() > 1,
-            DetailTab::Files => self.files_state.picked_paths().len() > 1,
-        }
-    }
-
     // Whether the file tree of the tab is being selected from where the visual selection started.
     fn tree_is_visual(&self) -> bool {
         match self.tab {
             DetailTab::Info => false,
             DetailTab::Changes => self.changes_state.is_visual(),
             DetailTab::Files => self.files_state.is_tree_visual(),
+        }
+    }
+
+    // The one file the views of a single file work on: the picked file (or the file under a picked
+    // directory), else the selected one. None when several files are picked.
+    fn action_file(&self) -> Option<&str> {
+        if self.list_focused {
+            return None;
+        }
+        match self.tab {
+            DetailTab::Info => self.selected_file(),
+            DetailTab::Changes => self.changes_state.single_picked_file(),
+            DetailTab::Files => self.files_state.single_picked_file(),
         }
     }
 
@@ -1315,15 +1328,6 @@ impl<'a> DetailView<'a> {
         uploads
     }
 
-    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        let mut ids = self.as_list_state().graph_image_ids_sorted();
-        ids.extend(self.changes_state.submodule_image_ids());
-        if let Comparing::Parked(_, changes) = &self.compare {
-            ids.extend(changes.submodule_image_ids());
-        }
-        ids
-    }
-
     pub fn image_clear_area(&self, area: Rect) -> Rect {
         let [_, detail_area] = self.split_areas(area);
         detail_area
@@ -1426,13 +1430,4 @@ fn handle_tree_event(
         _ => return false,
     }
     true
-}
-
-fn change_path(change: &FileChange) -> &str {
-    match change {
-        FileChange::Add { path } | FileChange::Modify { path } | FileChange::Delete { path } => {
-            path
-        }
-        FileChange::Move { to, .. } => to,
-    }
 }

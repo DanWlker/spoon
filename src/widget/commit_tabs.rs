@@ -22,7 +22,8 @@ use crate::{
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
         file_tree::{
-            render_tree, Entry, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeShape,
+            render_tree, Entry, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeSelection,
+            TreeShape,
         },
         submodule::SubmodulePanel,
         tree_query::SearchDirection,
@@ -125,8 +126,8 @@ pub struct CommitChangesState<'a> {
     files: Vec<ChangedFile>,
     // under the root row, expanded by default to show every changed file, like the local changes
     tree: FileTreeState,
-    // paths of the rows selected with v, which moving extends and esc clears
-    picked: BTreeSet<String>,
+    // the rows selected with v, which moving extends and esc clears
+    picked: TreeSelection,
     // the diff of the selected file, loaded lazily, only while the tab is shown
     pub pane: DiffPane,
     // the selected submodule's commits, shown instead of its gitlink diff
@@ -154,47 +155,43 @@ impl<'a> CommitChangesState<'a> {
     }
 
     pub fn picked_paths(&self) -> Vec<String> {
-        self.picked.iter().cloned().collect()
+        self.picked.paths()
+    }
+
+    // The one file a single-file view works on: the selected file, or the only changed file under
+    // the picked rows. None when several files are picked.
+    pub fn single_picked_file(&self) -> Option<&str> {
+        if self.picked.is_empty() {
+            return match self.selected_row()?.entry()? {
+                Entry::File(path) => Some(path),
+                Entry::Dir(_) => None,
+            };
+        }
+        let files: Vec<&str> = self
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .filter(|path| self.picked.contains_under(path))
+            .collect();
+        match files.as_slice() {
+            [path] => Some(path),
+            _ => None,
+        }
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
     pub fn picked_entries(&self) -> Vec<Entry<'_>> {
-        if self.picked.is_empty() {
-            return self
-                .selected_row()
-                .and_then(FileTreeRow::entry)
-                .into_iter()
-                .collect();
-        }
-        self.tree
-            .rows()
-            .iter()
-            .filter(|row| self.picked.contains(&row.path))
-            .filter_map(FileTreeRow::entry)
-            .collect()
+        self.picked.entries(&self.tree)
     }
 
     // Starts or ends a visual selection, selecting the files from where it started to the selected
     // one.
     pub fn toggle_visual(&mut self) {
-        self.tree.toggle_visual();
-        self.sync_visual_picked();
+        self.picked.toggle_visual(&mut self.tree);
     }
 
     pub fn cancel_visual(&mut self) {
-        self.tree.cancel_visual();
-        self.picked.clear();
-    }
-
-    fn sync_visual_picked(&mut self) {
-        let Some(range) = self.tree.visual_range() else {
-            return;
-        };
-        let paths: Vec<String> = self.tree.rows()[range]
-            .iter()
-            .map(|row| row.path.clone())
-            .collect();
-        self.picked.extend(paths);
+        self.picked.clear(&mut self.tree);
     }
 
     pub fn new(
@@ -250,7 +247,7 @@ impl<'a> CommitChangesState<'a> {
             base,
             files,
             tree,
-            picked: BTreeSet::new(),
+            picked: TreeSelection::default(),
             pane: DiffPane::default(),
             submodule: None,
         }
@@ -317,31 +314,36 @@ impl<'a> CommitChangesState<'a> {
             return None;
         }
         let path = &row.path;
-        if !self.repository.is_submodule(path) {
-            return None;
-        }
         let to = self
             .repository
-            .gitlink_at(self.commit_hash.as_str(), path)?;
+            .submodule_gitlink_at(self.commit_hash.as_str(), path)?;
         let from = match &self.base {
-            Some(base) => self.repository.gitlink_at(base.as_str(), path)?,
+            Some(base) => self.repository.submodule_gitlink_at(base.as_str(), path)?,
             None => {
                 let parent = self
                     .repository
                     .commit(&self.commit_hash)?
                     .parent_commit_hashes
                     .first()?;
-                self.repository.gitlink_at(parent.as_str(), path)?
+                self.repository
+                    .submodule_gitlink_at(parent.as_str(), path)?
             }
         };
-        SubmodulePanel::between(self.repository, &self.ctx, path, &from, &to)
+        Some(SubmodulePanel::between(
+            self.repository,
+            &self.ctx,
+            path,
+            &from,
+            Some(&to),
+            None,
+        ))
     }
 
     // Applies a tree operation, reloading the diff when the selection changed.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
-        self.sync_visual_picked();
+        self.picked.sync_visual(&self.tree);
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
             self.pane.set_diff(None);
             self.submodule = None;
@@ -370,10 +372,11 @@ impl<'a> CommitChangesState<'a> {
             .map_or_else(Vec::new, SubmodulePanel::drain_pending_graph_uploads)
     }
 
-    pub fn submodule_image_ids(&self) -> Vec<u32> {
-        self.submodule
-            .as_ref()
-            .map_or_else(Vec::new, SubmodulePanel::graph_image_ids_sorted)
+    // The height the submodule's commits are drawn in, set before their graph images are prepared.
+    pub fn set_submodule_height(&mut self, height: usize) {
+        if let Some(submodule) = &mut self.submodule {
+            submodule.set_list_height(height);
+        }
     }
 }
 
@@ -401,8 +404,8 @@ pub struct CommitFilesState<'a> {
     paths: Option<BTreeSet<String>>,
     // loaded lazily, only once the tab is shown
     tree: Option<FileTreeState>,
-    // paths of the rows selected with v, which moving extends and esc clears
-    picked: BTreeSet<String>,
+    // the rows selected with v, which moving extends and esc clears
+    picked: TreeSelection,
     // the tree of the previously shown commit, whose expanded directories and selection are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
@@ -426,56 +429,53 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn picked_paths(&self) -> Vec<String> {
-        self.picked.iter().cloned().collect()
+        self.picked.paths()
+    }
+
+    // The one file a single-file view works on: the selected file, or the only file under the
+    // picked rows. None when several files are picked.
+    pub fn single_picked_file(&self) -> Option<&str> {
+        if self.picked.is_empty() {
+            return match self.selected_row()?.entry()? {
+                Entry::File(path) => Some(path),
+                Entry::Dir(_) => None,
+            };
+        }
+        let files: Vec<&str> = self
+            .paths
+            .as_ref()?
+            .iter()
+            .map(String::as_str)
+            .filter(|path| self.picked.contains_under(path))
+            .collect();
+        match files.as_slice() {
+            [path] => Some(path),
+            _ => None,
+        }
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
     pub fn picked_entries(&self) -> Vec<Entry<'_>> {
-        let Some(tree) = self.tree.as_ref() else {
-            return vec![];
-        };
-        if self.picked.is_empty() {
-            return tree
-                .selected()
-                .and_then(FileTreeRow::entry)
-                .into_iter()
-                .collect();
-        }
-        tree.rows()
-            .iter()
-            .filter(|row| self.picked.contains(&row.path))
-            .filter_map(FileTreeRow::entry)
-            .collect()
+        self.tree
+            .as_ref()
+            .map_or_else(Vec::new, |tree| self.picked.entries(tree))
     }
 
     // Starts or ends a visual selection, selecting the files from where it started to the selected
     // one.
     pub fn toggle_tree_visual(&mut self) {
-        if let Some(tree) = self.tree.as_mut() {
-            tree.toggle_visual();
+        let Self { tree, picked, .. } = self;
+        if let Some(tree) = tree {
+            picked.toggle_visual(tree);
         }
-        self.sync_visual_picked();
     }
 
     pub fn cancel_tree_visual(&mut self) {
-        if let Some(tree) = self.tree.as_mut() {
-            tree.cancel_visual();
+        let Self { tree, picked, .. } = self;
+        match tree {
+            Some(tree) => picked.clear(tree),
+            None => picked.clear_picks(),
         }
-        self.picked.clear();
-    }
-
-    fn sync_visual_picked(&mut self) {
-        let Some(tree) = self.tree.as_ref() else {
-            return;
-        };
-        let Some(range) = tree.visual_range() else {
-            return;
-        };
-        let paths: Vec<String> = tree.rows()[range]
-            .iter()
-            .map(|row| row.path.clone())
-            .collect();
-        self.picked.extend(paths);
     }
 
     pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {
@@ -486,7 +486,7 @@ impl<'a> CommitFilesState<'a> {
             changes: changes.to_vec(),
             paths: None,
             tree: None,
-            picked: BTreeSet::new(),
+            picked: TreeSelection::default(),
             previous_tree: None,
             preview: None,
             text: FileText::default(),
@@ -521,7 +521,7 @@ impl<'a> CommitFilesState<'a> {
         if let Some(tree) = self.tree.as_mut() {
             tree.cancel_visual();
         }
-        self.picked.clear();
+        self.picked.clear_picks();
         if !same_paths {
             if let Some(tree) = self.tree.take() {
                 self.previous_tree = Some(tree);
@@ -563,7 +563,9 @@ impl<'a> CommitFilesState<'a> {
             let changed = tree.selected().map(|r| &r.path) != before.as_ref();
             (result, changed)
         };
-        self.sync_visual_picked();
+        if let Some(tree) = self.tree.as_ref() {
+            self.picked.sync_visual(tree);
+        }
         if selected_changed {
             self.load_preview();
         }
@@ -840,31 +842,55 @@ impl CommitTab {
     }
 }
 
-// Draws the divider, returning the tree area and the area beside it.
-fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect; 2] {
-    let theme = &ctx.color_theme;
+// Where the tree and the side beside it are drawn, before either has the room of its border.
+struct TreeSideAreas {
+    tree: Rect,
+    tree_inner: Rect,
+    side: Rect,
+}
+
+fn tree_and_side_areas(ctx: &AppContext, inner: Rect) -> TreeSideAreas {
     let default = tree_panel_width(inner.width);
     let tree_width = ctx.layout.borrow().size(Panel::DetailTree, default);
     // both keep some room
     let tree_width = fit_size(tree_width, inner.width, 10, 10);
     let [tree_area, side_area] =
         Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(0)]).areas(inner);
-    ctx.layout
-        .borrow_mut()
-        .place(Panel::DetailTree, tree_area, Edge::Right);
-    let tree_block = Block::default()
+    let tree_inner = Block::default()
         .borders(Borders::RIGHT)
-        .style(Style::default().fg(theme.divider_fg))
-        .padding(Padding::horizontal(1));
-    let tree_inner = tree_block.inner(tree_area);
-    tree_block.render(tree_area, buf);
-
-    let side_area = Rect {
+        .padding(Padding::horizontal(1))
+        .inner(tree_area);
+    let side = Rect {
         x: side_area.x + 1,
         width: side_area.width.saturating_sub(1),
         ..side_area
     };
-    [tree_inner, side_area]
+    TreeSideAreas {
+        tree: tree_area,
+        tree_inner,
+        side,
+    }
+}
+
+// The area beside the tree, for the page to size the submodule panel before its graph images are
+// prepared.
+pub fn changes_side_area(ctx: &AppContext, inner: Rect) -> Rect {
+    tree_and_side_areas(ctx, inner).side
+}
+
+// Draws the divider, returning the tree area and the area beside it.
+fn split_tree_and_side(ctx: &AppContext, inner: Rect, buf: &mut Buffer) -> [Rect; 2] {
+    let theme = &ctx.color_theme;
+    let areas = tree_and_side_areas(ctx, inner);
+    ctx.layout
+        .borrow_mut()
+        .place(Panel::DetailTree, areas.tree, Edge::Right);
+    let tree_block = Block::default()
+        .borders(Borders::RIGHT)
+        .style(Style::default().fg(theme.divider_fg))
+        .padding(Padding::horizontal(1));
+    tree_block.render(areas.tree, buf);
+    [areas.tree_inner, areas.side]
 }
 
 // The scrollbar of a tree beside a diff or a preview, on the divider past its padding.
@@ -936,6 +962,31 @@ mod tests {
         let repository =
             Repository::load(&superproject, SortCommit::Chronological, None, false).unwrap();
         (repository, superproject, first, second)
+    }
+
+    #[test]
+    fn test_a_bumped_submodule_is_found_after_it_leaves_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, superproject, _first, _second) = repository_with_a_bumped_submodule(dir.path());
+        // the submodule is gone from HEAD and the index, but its checkout is still there
+        git(&superproject, &["rm", "--cached", "-q", "sub"]);
+        let repo = GitRepository::new(&superproject);
+        repo.commit("remove the submodule", "2024-01-05");
+
+        let repository =
+            Repository::load(&superproject, SortCommit::Chronological, None, false).unwrap();
+        let bump = repository
+            .all_commits()
+            .iter()
+            .find(|commit| commit.subject == "bump the submodule")
+            .unwrap()
+            .commit_hash
+            .clone();
+        let (_, changes) = repository.commit_detail(&bump);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), bump, &changes);
+        state.ensure_loaded();
+        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        assert_eq!(submodule.subjects(), ["second"]);
     }
 
     #[test]

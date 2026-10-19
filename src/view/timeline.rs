@@ -151,14 +151,17 @@ impl TimelineView {
     // the commits.
     fn handle_commits_event(&mut self, event: UserEvent, repository: &Repository) {
         let total = self.history.len();
-        let moved = self.cursor.moved_to(event, total);
-        if let Some(index) = moved {
-            self.select(index, repository);
-            return;
-        }
-        let mut cursor = self.cursor;
-        if cursor.navigate(event, total) {
-            self.select(cursor.selected(), repository);
+        let before = self.cursor.selected();
+        if self.cursor.navigate(event, total) {
+            // the offset moves even when the selection stays, like ctrl-e/y; the diff only reloads
+            // when another commit is selected
+            if self.cursor.selected() != before {
+                let in_diff = self.pane.is_focused();
+                self.load(repository);
+                if in_diff {
+                    self.pane.enter();
+                }
+            }
             return;
         }
         let commit = &self.history[self.cursor.selected()].commit;
@@ -477,5 +480,38 @@ mod tests {
             view.handle_event(UserEvent::Unknown, key, &repository);
         }
         assert_eq!(view.history[view.cursor.selected()].subject, "c2");
+    }
+
+    #[test]
+    fn test_scroll_keys_scroll_the_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        for i in 0..20 {
+            fs::write(path.join("a"), format!("{i}\n")).unwrap();
+            repo.add(&["a"]);
+            repo.commit(&format!("c{i}"), "2024-01-01");
+        }
+        let head = CommitHash::from(repo.rev_parse_head().as_str());
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let mut view = TimelineView::new(&repository, &head, "a", test_ctx(), ec.sender()).unwrap();
+        view.cursor.fit(5, view.history.len(), 0);
+        view.cursor.select(5, view.history.len());
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+
+        // ctrl-e and ctrl-y scroll the window alone, the selected commit staying
+        let before = (view.cursor.selected(), view.cursor.offset());
+        view.handle_event(UserEvent::ScrollDown, key, &repository);
+        assert_eq!(view.cursor.selected(), before.0);
+        assert_eq!(view.cursor.offset(), before.1 + 1);
+        view.handle_event(UserEvent::ScrollUp, key, &repository);
+        assert_eq!(view.cursor.offset(), before.1);
+
+        // a page moves the selection and keeps the rows it scrolled
+        view.handle_event(UserEvent::PageDown, key, &repository);
+        assert!(view.cursor.selected() > before.0);
+        assert!(view.cursor.offset() >= before.1);
     }
 }

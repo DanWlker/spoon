@@ -30,6 +30,9 @@ pub struct TextArea {
     scroll: i16,
     // the rows last drawn, for a page or half a page
     height: Cell<u16>,
+    // the width of the rows drawn, and whether they wrapped, to count the rows to scroll to
+    width: Cell<u16>,
+    wrap: Cell<bool>,
 }
 
 impl Default for TextArea {
@@ -51,6 +54,8 @@ impl TextArea {
             inner,
             scroll: 0,
             height: Cell::new(0),
+            width: Cell::new(0),
+            wrap: Cell::new(false),
         }
     }
 
@@ -79,8 +84,13 @@ impl TextArea {
     // one of them.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
         let page = self.height.get().max(1) as i16;
-        // the last row the text can be scrolled to, from the lines it has
-        let last = self.inner.lines().len().max(1) as i16;
+        // the last row the text can be scrolled to, from the rows it takes once wrapped
+        let rows = if self.wrap.get() {
+            self.wrapped_rows()
+        } else {
+            self.inner.lines().len()
+        };
+        let last = rows.max(1) as i16;
         let max = (last - page).max(0);
         let rows = match event {
             UserEvent::ScrollDown => 1,
@@ -103,10 +113,23 @@ impl TextArea {
         true
     }
 
+    // The screen rows the lines take, wrapped at the last width drawn, like the textarea wraps
+    // them at words.
+    fn wrapped_rows(&self) -> usize {
+        let width = (self.width.get() as usize).max(1);
+        self.inner
+            .lines()
+            .iter()
+            .map(|line| textwrap::wrap(line, width).len().max(1))
+            .sum()
+    }
+
     // Draws the text in `style`: while typing with the caret, scrolled to it, else from the last
     // rows scrolled to by the scroll keys.
     pub fn render(&self, area: Rect, buf: &mut Buffer, style: Style, caret: Caret, lines: Lines) {
         self.height.set(area.height);
+        self.width.set(area.width);
+        self.wrap.set(lines == Lines::Wrapped);
         // a copy to style and scroll, the text is short
         let mut inner = self.inner.clone();
         inner.set_style(style);
@@ -118,6 +141,10 @@ impl TextArea {
             inner.move_cursor(CursorMove::Top);
             inner.move_cursor(CursorMove::Head);
             if self.scroll != 0 {
+                // the textarea works out how its lines wrap while drawing; a first draw fills that
+                // in, so scrolling counts the wrapped rows instead of the logical lines
+                let mut settle = Buffer::empty(area);
+                inner.render(area, &mut settle);
                 inner.scroll((self.scroll, 0));
             }
         }
@@ -201,5 +228,27 @@ mod tests {
         // typing shows the caret again, from the top
         text.handle_key(KeyEvent::from(KeyCode::Char('x')));
         assert_eq!(first(&text), "a");
+    }
+
+    #[test]
+    fn test_scrolls_a_wrapped_long_line() {
+        let mut text = TextArea::new(&(0..20).map(|i| format!("word{i} ")).collect::<String>());
+        let area = Rect::new(0, 0, 10, 3);
+        let style = Style::default();
+        let shown = |text: &TextArea| {
+            let mut buf = Buffer::empty(area);
+            text.render(area, &mut buf, style, Caret::Hidden, Lines::Wrapped);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = shown(&text);
+        assert!(text.scroll(UserEvent::PageDown));
+        assert!(text.scroll > 0, "the scroll moved");
+        assert_ne!(shown(&text), before, "a wrapped long line scrolled");
     }
 }

@@ -13,7 +13,7 @@ use crate::{
     search::SearchOptions,
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
-        style::{picked_style, render_scrollbar, scroll_to, ScrollState},
+        style::{picked_style, render_scrollbar, scroll_to, ScrollState, VisualSelection},
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
 };
@@ -33,7 +33,7 @@ pub struct FileText {
     lines: Vec<String>,
     selected: usize,
     // where a visual selection started, the selected line having moved from there
-    visual_anchor: Option<usize>,
+    visual: VisualSelection,
     // the lines selected, kept once the visual selection ends until it is cleared
     selection: BTreeSet<usize>,
     // the screen rows the lines wrap to, and the scroll among them
@@ -48,7 +48,7 @@ impl FileText {
     pub fn set_lines(&mut self, lines: Vec<String>) {
         self.lines = lines;
         self.selected = 0;
-        self.visual_anchor = None;
+        self.visual.cancel();
         self.selection.clear();
         self.wrap = WrapMap::default();
         self.scroll_state = ScrollState::default();
@@ -61,22 +61,20 @@ impl FileText {
 
     // Whether the lines are being selected from where the visual selection started.
     pub fn is_visual(&self) -> bool {
-        self.visual_anchor.is_some()
+        self.visual.is_visual()
     }
 
     // Starts or ends a visual selection at the selected line. Ending it keeps the lines selected,
     // which `cancel_visual` clears.
     pub fn toggle_visual(&mut self) {
-        if self.visual_anchor.take().is_some() {
-            return;
+        if self.visual.toggle(self.selected) {
+            self.sync_selection();
         }
-        self.visual_anchor = Some(self.selected);
-        self.sync_selection();
     }
 
     // Clears the selected lines; the selected line alone shows afterwards.
     pub fn cancel_visual(&mut self) {
-        self.visual_anchor = None;
+        self.visual.cancel();
         self.selection.clear();
     }
 
@@ -88,9 +86,8 @@ impl FileText {
     // The visual selection, from where it started to the selected line, keeping the lines selected
     // before it started.
     fn sync_selection(&mut self) {
-        if let Some(anchor) = self.visual_anchor {
-            let (start, end) = (anchor.min(self.selected), anchor.max(self.selected));
-            self.selection.extend(start..=end);
+        if let Some(range) = self.visual.range(self.selected, self.lines.len()) {
+            self.selection.extend(range);
         }
     }
 
@@ -198,7 +195,7 @@ impl FileText {
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
-        self.visual_anchor = None;
+        self.visual.cancel();
         let lines = &self.lines;
         let start = self.search_row.unwrap_or(self.selected);
         let found = find_around(lines.len(), start, direction, |i| {
@@ -250,7 +247,7 @@ impl FileText {
         // selecting, and goes back to its own color once v stops
         let selected_style = |row: usize| {
             let selected = self.selection.contains(&row);
-            if selected && (self.visual_anchor.is_some() || cursor != Some(row)) {
+            if selected && (self.visual.is_visual() || cursor != Some(row)) {
                 Some(picked_style(theme))
             } else if cursor == Some(row) {
                 Some(Style::default().bg(theme.list_selected_bg))
@@ -269,10 +266,18 @@ impl FileText {
             }
             if let Some(style) = selected_style(row) {
                 if style.fg.is_some() {
+                    // a search match keeps its own colors, so a selected line still shows where
+                    // the match is
                     line.spans = line
                         .spans
                         .into_iter()
-                        .map(|span| span.patch_style(style))
+                        .map(|span| {
+                            if span.style.bg == Some(theme.list_match_bg) {
+                                span
+                            } else {
+                                span.patch_style(style)
+                            }
+                        })
                         .collect();
                 }
                 line.style = line.style.patch(style);
@@ -511,5 +516,25 @@ mod tests {
             assert_eq!(buf[(x, 2)].bg, ctx.color_theme.list_selected_bg);
         }
         assert_eq!(buf[(area.x - 1, 2)].symbol(), "▌");
+    }
+
+    #[test]
+    fn test_a_search_match_stays_visible_on_a_picked_line() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut text = FileText::default();
+        text.set_lines(vec!["abc".into()]);
+        text.toggle_visual();
+        let mut buf = Buffer::empty(area);
+        text.render(area, &mut buf, &ctx, true, LineCursor::Shown, Some("a"));
+        let (x, y) = (area.left()..area.right())
+            .zip(std::iter::repeat(area.top()))
+            .find(|(x, y)| buf[(*x, *y)].symbol() == "a")
+            .expect("the match shown");
+        assert_eq!(
+            buf[(x, y)].bg,
+            ctx.color_theme.list_match_bg,
+            "the picked style hid the match"
+        );
     }
 }

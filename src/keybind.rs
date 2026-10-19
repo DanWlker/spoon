@@ -243,10 +243,13 @@ enum KeyBindEntry {
 fn parse_user_event(name: &str) -> Result<UserEvent, String> {
     use serde::de::{value::StrDeserializer, IntoDeserializer};
     if let Some(n) = name.strip_prefix("focus_panel_") {
-        return n
+        let panel: usize = n
             .parse()
-            .map(UserEvent::FocusPanel)
-            .map_err(|_| format!("Invalid focus_panel_n format: {name}"));
+            .map_err(|_| format!("Invalid focus_panel_n format: {name}"))?;
+        if panel == 0 {
+            return Err("focus_panel_0 is not a panel; panels start at 1".into());
+        }
+        return Ok(UserEvent::FocusPanel(panel));
     }
     let deserializer: StrDeserializer<serde::de::value::Error> = name.into_deserializer();
     // serde's error lists every event, too long to read
@@ -431,6 +434,8 @@ mod tests {
         );
         let err = parse_user_event("focus_panel_x").unwrap_err();
         assert_eq!(err, "Invalid focus_panel_n format: focus_panel_x");
+        let err = parse_user_event("focus_panel_0").unwrap_err();
+        assert_eq!(err, "focus_panel_0 is not a panel; panels start at 1");
         assert_eq!(
             parse_user_event("nope"),
             Err("Unknown user event: nope".into())

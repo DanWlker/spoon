@@ -166,7 +166,7 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::Blame | UserEvent::Timeline => {
                 let state = &self.local_changes_state;
                 let head = state.repository().head_commit();
-                if let (Some(path), Some(commit)) = (state.selected_file(), head) {
+                if let (Some(path), Some(commit)) = (state.single_target_file(), head) {
                     let path = path.into();
                     self.tx.send(match event {
                         UserEvent::Blame => AppEvent::OpenBlame {
@@ -343,12 +343,6 @@ impl<'a> LocalChangesView<'a> {
 
     pub fn local_change_count(&self) -> usize {
         self.local_changes_state.count()
-    }
-
-    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        let mut ids = self.as_list_state().graph_image_ids_sorted();
-        ids.extend(self.local_changes_state.submodule_graph_image_ids());
-        ids
     }
 
     // The submodule panel's graph images, drawn beside the files, see `CommitListState`.

@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::UserEvent,
-    git::{Repository, SubmoduleInfo},
+    git::Repository,
     graph,
     widget::{
         commit_list::{submodule_commit_list, CommitList, CommitListState},
@@ -39,49 +39,28 @@ pub struct SubmodulePanel<'a> {
 }
 
 impl<'a> SubmodulePanel<'a> {
-    // The same, from the `submodule_info` the page already read to look the panel up.
-    pub fn from_info(
-        repository: &'a Repository,
-        ctx: &AppContext,
-        path: &str,
-        info: SubmoduleInfo,
-    ) -> Self {
-        let key = submodule_key(path, &info.recorded, info.head.as_deref());
-        Self::load(
-            repository,
-            ctx,
-            path,
-            &info.recorded,
-            info.head.as_deref(),
-            Some(info.uncommitted),
-            key,
-        )
-    }
-
-    // The panel for a commit's change of `path`, between two recorded gitlinks. None when `path`
-    // isn't a submodule.
+    // The same, between the two gitlinks a page compares, like the index and the submodule's HEAD
+    // on the local changes page, or two commits of its history.
     pub fn between(
         repository: &'a Repository,
         ctx: &AppContext,
         path: &str,
         from: &str,
-        to: &str,
-    ) -> Option<Self> {
-        if !repository.is_submodule(path) {
-            return None;
-        }
-        let key = submodule_key(path, from, Some(to));
-        Some(Self::load(repository, ctx, path, from, Some(to), None, key))
+        to: Option<&str>,
+        uncommitted: Option<usize>,
+    ) -> Self {
+        let key = submodule_key(path, from, to);
+        Self::load(repository, ctx, path, from, to, uncommitted, key)
     }
 
-    // What the panel shows, to reuse it for the same submodule, see `from_info`.
+    // What the panel shows, to reuse it for the same submodule.
     pub fn key(&self) -> &str {
         &self.key
     }
 
     // The files uncommitted inside the submodule, re-read when the panel is reused.
-    pub fn set_uncommitted(&mut self, uncommitted: usize) {
-        self.uncommitted = Some(uncommitted);
+    pub fn set_uncommitted(&mut self, uncommitted: Option<usize>) {
+        self.uncommitted = uncommitted;
     }
 
     fn load(
@@ -201,12 +180,6 @@ impl<'a> SubmodulePanel<'a> {
         self.list
             .as_mut()
             .map_or_else(Vec::new, |list| list.drain_pending_graph_uploads())
-    }
-
-    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        self.list
-            .as_ref()
-            .map_or_else(Vec::new, |list| list.graph_image_ids_sorted())
     }
 
     #[cfg(test)]

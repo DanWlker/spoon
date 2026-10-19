@@ -206,7 +206,7 @@ impl<'a> CommitListState<'a> {
     }
 
     fn sync_visual_picks(&mut self) {
-        let Some(range) = self.cursor.visual_range() else {
+        let Some(range) = self.cursor.visual_range(self.commits.len()) else {
             return;
         };
         let selected: Vec<CommitHash> = self.commits[range]
@@ -290,17 +290,6 @@ impl<'a> CommitListState<'a> {
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
         self.graph_image_manager.drain_pending_uploads()
-    }
-
-    pub fn graph_image_ids_sorted(&self) -> Vec<u32> {
-        let mut image_ids: Vec<u32> = self
-            .graph_image_manager
-            .image_ids()
-            .iter()
-            .copied()
-            .collect();
-        image_ids.sort_unstable();
-        image_ids
     }
 
     pub fn select_next(&mut self) {

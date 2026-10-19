@@ -92,10 +92,6 @@ impl<'a> GraphImageManager<'a> {
         }
     }
 
-    pub fn image_ids(&self) -> &FxHashSet<u32> {
-        &self.image_ids
-    }
-
     pub fn drain_pending_uploads(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pending_uploads)
     }
@@ -120,6 +116,16 @@ impl<'a> GraphImageManager<'a> {
         }
         self.prepared_image_map.insert(commit_hash.clone(), image);
         self.image_ids.insert(image_id);
+    }
+}
+
+// The manager owns the images it uploaded: deleting them when it is dropped keeps a page switch or
+// a replaced submodule panel from leaving them in the terminal until the app quits.
+impl Drop for GraphImageManager<'_> {
+    fn drop(&mut self) {
+        let mut image_ids: Vec<u32> = self.image_ids.iter().copied().collect();
+        image_ids.sort_unstable();
+        let _ = self.image_protocol.delete_images(&image_ids);
     }
 }
 

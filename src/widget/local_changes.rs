@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf, rc::Rc};
+use std::{path::PathBuf, rc::Rc};
 
 use ratatui::{
     buffer::Buffer,
@@ -29,7 +29,7 @@ use crate::{
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
-            TreeCursor, TreeShape,
+            TreeCursor, TreeSelection, TreeShape,
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
@@ -203,8 +203,8 @@ struct Section {
     tree: FileTreeState,
     // the search and filter, applying to this section only
     query: TreeQuery,
-    // paths of the rows picked with `v`, which actions apply to instead of the cursor
-    picked: BTreeSet<String>,
+    // the rows picked with `v`, which actions apply to instead of the cursor
+    picked: TreeSelection,
 }
 
 impl Section {
@@ -212,7 +212,7 @@ impl Section {
         Self {
             tree: FileTreeState::new(file_tree(files), TreeShape::Rooted),
             query: TreeQuery::default(),
-            picked: BTreeSet::new(),
+            picked: TreeSelection::default(),
         }
     }
 }
@@ -363,6 +363,18 @@ impl<'a> LocalChangesState<'a> {
         match self.selected_row()?.entry()? {
             Entry::File(path) => Some(path),
             Entry::Dir(_) => None,
+        }
+    }
+
+    // The one file an action on a single file works on: the picked file (or the file under a picked
+    // directory), else the selected one. None when several files are picked.
+    pub fn single_target_file(&self) -> Option<&str> {
+        if self.picked().is_empty() {
+            return self.selected_file();
+        }
+        match self.target_files().as_slice() {
+            [file] => Some(file.path.as_str()),
+            _ => None,
         }
     }
 
@@ -698,40 +710,29 @@ impl<'a> LocalChangesState<'a> {
         if self.is_diff_focused() || self.is_commit_focused() {
             return;
         }
-        self.tree_mut().toggle_visual();
-        self.sync_visual_picks();
+        let section = self.current_mut();
+        section.picked.toggle_visual(&mut section.tree);
     }
 
     fn sync_visual_picks(&mut self) {
-        let Some(range) = self.tree().visual_range() else {
-            return;
-        };
-        let paths: BTreeSet<String> = self.tree().rows()[range]
-            .iter()
-            .map(|row| row.path.clone())
-            .collect();
-        self.picked_mut().extend(paths);
+        let section = self.current_mut();
+        section.picked.sync_visual(&section.tree);
     }
 
     // Clears the picked rows of the current section. Returns false when there were none.
     pub fn clear_picks(&mut self) -> bool {
-        self.tree_mut().cancel_visual();
-        let picked = self.picked_mut();
-        let had_picks = !picked.is_empty();
-        picked.clear();
+        let section = self.current_mut();
+        let had_picks = !section.picked.is_empty();
+        section.picked.clear(&mut section.tree);
         had_picks
     }
 
-    fn picked(&self) -> &BTreeSet<String> {
+    fn picked(&self) -> &TreeSelection {
         &self.current().picked
     }
 
     pub fn picked_paths(&self) -> Vec<String> {
-        self.picked().iter().cloned().collect()
-    }
-
-    fn picked_mut(&mut self) -> &mut BTreeSet<String> {
-        &mut self.current_mut().picked
+        self.picked().paths()
     }
 
     // The files actions apply to: those in the picked rows, or else in the row under the cursor.
@@ -745,7 +746,7 @@ impl<'a> LocalChangesState<'a> {
         }
         self.files()
             .iter()
-            .filter(|f| self.picked().iter().any(|p| path_contains(p, &f.path)))
+            .filter(|f| self.picked().contains_under(&f.path))
             .filter(|f| self.tree().keeps(&f.path))
             .collect()
     }
@@ -1129,13 +1130,13 @@ impl<'a> LocalChangesState<'a> {
             "blame",
             "Blame the selected file as of the last commit",
         )
-        .when(|v| file(v) && v.picked().len() <= 1);
+        .when(|v| v.single_target_file().is_some());
         k.add(
             &[Timeline],
             "timeline",
             "Show the commits changing the selected file",
         )
-        .when(|v| file(v) && v.picked().len() <= 1);
+        .when(|v| v.single_target_file().is_some());
         k.add(
             &[Search],
             "search",
@@ -1197,7 +1198,7 @@ impl<'a> LocalChangesState<'a> {
                 ScrollDown,
                 ScrollUp,
             ],
-            "Scroll the diff; jump half a page while selecting lines",
+            "Scroll the focused panel; from the files, move a page or a line at a time",
         );
         k.quiet(
             &[FocusPanel(1), FocusPanel(2), FocusPanel(3)],
@@ -1510,13 +1511,6 @@ impl<'a> LocalChangesState<'a> {
         self.submodule
             .as_mut()
             .map_or_else(Vec::new, SubmodulePanel::drain_pending_graph_uploads)
-    }
-
-    // The graph images the submodule panel has, to clean up.
-    pub fn submodule_graph_image_ids(&self) -> Vec<u32> {
-        self.submodule
-            .as_ref()
-            .map_or_else(Vec::new, SubmodulePanel::graph_image_ids_sorted)
     }
 
     // Staging the unstaged changes, unstaging the staged ones.
@@ -1982,18 +1976,30 @@ impl<'a> LocalChangesState<'a> {
             return None;
         }
         let info = self.repository.submodule_info(&path)?;
-        let key = submodule_key(&path, &info.recorded, info.head.as_deref());
+        // the two gitlinks the section compares: the index and the working tree when unstaged,
+        // the base commit and the index when staged
+        let (from, to) = match self.section {
+            LocalChangesSection::Unstaged => (info.index.clone(), info.head.clone()),
+            LocalChangesSection::Staged => {
+                let base = self.draft.amend_base().unwrap_or("HEAD");
+                let from = self.repository.submodule_gitlink_at(base, &path)?;
+                (from, Some(info.index.clone()))
+            }
+        };
+        let key = submodule_key(&path, &from, to.as_deref());
         if let Some((cached_key, mut panel)) = self.submodule_cache.take() {
             if cached_key == key {
                 panel.set_uncommitted(info.uncommitted);
                 return Some(panel);
             }
         }
-        Some(SubmodulePanel::from_info(
+        Some(SubmodulePanel::between(
             self.repository,
             &self.ctx,
             &path,
-            info,
+            &from,
+            to.as_deref(),
+            info.uncommitted,
         ))
     }
 }
@@ -2578,6 +2584,60 @@ mod tests {
         let submodule = state.submodule.as_ref().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
         assert_eq!(submodule.uncommitted(), Some(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_staged_submodule_shows_the_staged_commits() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("init", "2024-01-01");
+
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                base.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        repo.commit("add sub", "2024-01-02");
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        fs::write(sub.join("a.txt"), "two\n")?;
+        sub_repo.add(&["a.txt"]);
+        sub_repo.commit("second", "2024-01-03");
+
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        assert_eq!(
+            state.submodule.as_ref().unwrap().subjects(),
+            ["second"],
+            "unstaged: index to the working tree"
+        );
+
+        // the new gitlink is staged; the staged section compares HEAD to the index
+        state.toggle_stage()?;
+        state.focus_section(LocalChangesSection::Staged);
+        select_row(&mut state, "sub");
+        assert_eq!(
+            state.submodule.as_ref().unwrap().subjects(),
+            ["second"],
+            "staged: HEAD to the index"
+        );
         Ok(())
     }
 
@@ -3818,6 +3878,30 @@ mod tests {
     }
 
     #[test]
+    fn test_single_target_file_expands_a_picked_directory() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::create_dir(repo_path.join("dir"))?;
+        fs::write(repo_path.join("dir/u.txt"), "u\n")?;
+        fs::write(repo_path.join("b.txt"), "b\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "dir");
+        state.toggle_visual();
+        assert_eq!(state.single_target_file(), Some("dir/u.txt"));
+
+        // the selection extends to b.txt: two files, so no single-file view
+        select_row(&mut state, "b.txt");
+        assert_eq!(state.single_target_file(), None);
+        Ok(())
+    }
+
+    #[test]
     fn test_picked_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -3855,11 +3939,7 @@ mod tests {
         state.toggle_visual();
         state.toggle_visual();
         assert_eq!(
-            state
-                .picked()
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+            state.picked().names().collect::<Vec<_>>(),
             ["b.txt", "c.txt"]
         );
         state.request_edit()?;

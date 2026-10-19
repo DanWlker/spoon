@@ -274,7 +274,7 @@ impl RefListState {
     }
 
     fn sync_visual_picks(&mut self) {
-        let Some(range) = self.cursor.visual_range() else {
+        let Some(range) = self.cursor.visual_range(self.visible_rows.len()) else {
             return;
         };
         let Some(section) = self.visual_section else {
@@ -498,6 +498,9 @@ impl RefListState {
 
     // Keeps the cursor on the row of `selected`, scrolling to it, once it moved or the rows changed.
     fn sync_cursor(&mut self) {
+        // a collapsed folder or a reload can leave the start of a selection past the rows now
+        // shown; the selection ends rather than picking rows that moved under it
+        self.cursor.keep_visual_in(self.visible_rows.len());
         if let Some(index) = self.selected_index() {
             self.cursor.select(index, self.visible_rows.len());
         }
@@ -1170,5 +1173,32 @@ mod tests {
         // from a row in the section
         state.select_section(Toward::Previous);
         assert_eq!(section(&state), Some(RefSection::Branches));
+    }
+
+    #[test]
+    fn test_visual_selection_ends_when_a_collapse_hides_its_start() {
+        let branch = |name: String| Ref::Branch {
+            name,
+            target: "a".repeat(40).as_str().into(),
+        };
+        let refs: Vec<Ref> = (0..20)
+            .map(|i| branch(format!("feature/f{i:02}")))
+            .collect();
+        let refs: Vec<&Ref> = refs.iter().collect();
+        let mut state = RefListState::new(&refs, &[]);
+        select(&mut state, "feature");
+        state.open_node();
+        select(&mut state, "feature/f19");
+        state.toggle_visual().unwrap();
+        assert!(state.is_visual());
+
+        // back to the folder, then collapse it
+        state.close_node();
+        state.close_node();
+        assert!(
+            !state.is_visual(),
+            "the selection starts past the rows left"
+        );
+        assert_eq!(state.picked().len(), 20);
     }
 }

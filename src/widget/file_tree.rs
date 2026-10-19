@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     ops::Range,
 };
 
@@ -243,7 +243,7 @@ impl FileTreeState {
     // The rows a visual selection covers, from where it started to the cursor; None when it isn't
     // visual.
     pub fn visual_range(&self) -> Option<Range<usize>> {
-        self.cursor.get().visual_range()
+        self.cursor.get().visual_range(self.rows.len())
     }
 
     pub fn selected(&self) -> Option<&FileTreeRow> {
@@ -381,10 +381,97 @@ impl FileTreeState {
             rows
         };
         self.guides = tree_guides(self.rows.iter().map(|r| (r.depth, r.is_dir())));
+        // a filter or a collapsed directory can leave the start of a selection past the rows now
+        // shown; the selection ends rather than picking rows that moved under it
+        self.cursor.get_mut().keep_visual_in(self.rows.len());
         self.select_index(self.cursor());
         if let Some(path) = selected {
             self.select_path(&path);
         }
+    }
+}
+
+// The rows of a tree picked with `v`, kept after the visual selection ends until they are cleared:
+// the local changes sections, the changes and files tabs of the commit details. The same type keeps
+// the visual selection, so a filter, a collapse or a reload cannot leave it indexing rows that are
+// gone.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TreeSelection {
+    picked: BTreeSet<String>,
+}
+
+impl TreeSelection {
+    pub fn is_empty(&self) -> bool {
+        self.picked.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.picked.len()
+    }
+
+    #[cfg(test)]
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.picked.iter().map(String::as_str)
+    }
+
+    pub fn paths(&self) -> Vec<String> {
+        self.picked.iter().cloned().collect()
+    }
+
+    pub fn contains(&self, path: &str) -> bool {
+        self.picked.contains(path)
+    }
+
+    // Whether any picked row is `path` or contains it, like a picked directory.
+    pub fn contains_under(&self, path: &str) -> bool {
+        self.picked.iter().any(|picked| path_contains(picked, path))
+    }
+
+    // Clears the picked rows, and the visual selection with them.
+    pub fn clear(&mut self, tree: &mut FileTreeState) {
+        tree.cancel_visual();
+        self.picked.clear();
+    }
+
+    // Clears the picked rows when there is no tree to end a visual selection in.
+    pub fn clear_picks(&mut self) {
+        self.picked.clear();
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.picked.retain(|path| keep(path));
+    }
+
+    // Starts or ends a visual selection, picking the rows from where it started to the selected
+    // one and keeping those picked before.
+    pub fn toggle_visual(&mut self, tree: &mut FileTreeState) {
+        tree.toggle_visual();
+        self.sync_visual(tree);
+    }
+
+    // Picks the rows the visual selection now covers.
+    pub fn sync_visual(&mut self, tree: &FileTreeState) {
+        let Some(range) = tree.visual_range() else {
+            return;
+        };
+        self.picked
+            .extend(tree.rows()[range].iter().map(|row| row.path.clone()));
+    }
+
+    // The entries to act on: the picked rows, or the selected row when nothing is picked.
+    pub fn entries<'a>(&self, tree: &'a FileTreeState) -> Vec<Entry<'a>> {
+        if self.picked.is_empty() {
+            return tree
+                .selected()
+                .and_then(FileTreeRow::entry)
+                .into_iter()
+                .collect();
+        }
+        tree.rows()
+            .iter()
+            .filter(|row| self.picked.contains(&row.path))
+            .filter_map(FileTreeRow::entry)
+            .collect()
     }
 }
 
@@ -1065,5 +1152,21 @@ mod tests {
             tree.navigate(UserEvent::HalfPageDown);
         }
         assert_eq!(tree.cursor(), 10);
+    }
+
+    #[test]
+    fn test_visual_selection_ends_when_a_filter_hides_its_start() {
+        let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
+        let mut tree = FileTreeState::new(
+            FileTree::new(paths.iter().map(String::as_str)),
+            TreeShape::Rooted,
+        );
+        tree.select_index(5);
+        tree.toggle_visual();
+        assert!(tree.is_visual());
+
+        tree.set_filter(Some("f0"), SearchOptions::default());
+        assert!(!tree.is_visual(), "the selection starts past the rows left");
+        assert_eq!(tree.visual_range(), None);
     }
 }

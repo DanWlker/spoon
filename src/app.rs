@@ -767,7 +767,6 @@ impl App<'_> {
                     return Ok(None);
                 }
                 drop(running);
-                self.cleanup_graph_images()?;
                 return Ok(Some(Ret::Quit));
             }
             AppEvent::OpenDetail(tab) => {
@@ -844,7 +843,6 @@ impl App<'_> {
             AppEvent::Links { targets, action } => self.handle_links(&targets, action),
             AppEvent::OpenUrl { url, action } => self.open_url(url, action),
             AppEvent::Refresh(context) => {
-                self.cleanup_graph_images()?;
                 // the graph is drawn again from scratch
                 self.shell.last_frame = None;
                 return Ok(Some(Ret::Refresh(Box::new(context))));
@@ -855,7 +853,6 @@ impl App<'_> {
                     Fold::Unfolded => self.shell.folded_merges.remove(&commit),
                 };
                 if let Some(context) = self.view.refresh_context() {
-                    self.cleanup_graph_images()?;
                     self.shell.last_frame = None;
                     return Ok(Some(Ret::Regraph(Box::new(context))));
                 }
@@ -1064,11 +1061,6 @@ impl App<'_> {
             stdout.write_all(upload.as_bytes())?;
         }
         stdout.flush()
-    }
-
-    fn cleanup_graph_images(&self) -> Result<(), std::io::Error> {
-        let image_ids = self.view.graph_image_ids_sorted();
-        self.ctx.image_protocol.delete_images(&image_ids)
     }
 
     fn render(&mut self, f: &mut Frame, keys: &[KeyLabel]) {
@@ -2553,13 +2545,26 @@ impl App<'_> {
 
     // Opens each of `targets` in the browser, or copies all their links, one per line.
     fn handle_links(&mut self, targets: &[LinkTarget], action: LinkAction) {
+        let services = &self.ctx.core_config.browser.services;
         if action == LinkAction::Open {
+            // one dialog per target would replace the one before it, so several files open their
+            // default link (the first remote's page) right away; one file still chooses the remote
+            // and page in a dialog
             for target in targets {
-                self.open_link(target, action);
+                match browse::links(self.repository, services, target) {
+                    Ok(links) => {
+                        if let Some(link) = links.into_iter().next() {
+                            self.open_url(link.url, action);
+                        }
+                    }
+                    Err(err) => {
+                        self.ec.send(AppEvent::NotifyError(err));
+                        return;
+                    }
+                }
             }
             return;
         }
-        let services = &self.ctx.core_config.browser.services;
         let mut urls = Vec::new();
         for target in targets {
             match browse::links(self.repository, services, target) {
