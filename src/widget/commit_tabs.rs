@@ -158,8 +158,8 @@ impl<'a> CommitChangesState<'a> {
         self.picked.paths()
     }
 
-    // The one file a single-file view works on: the selected file, or the only changed file under
-    // the picked rows. None when several files are picked.
+    // The one file a single-file view works on: the selected file, or the one picked file. A
+    // picked directory is not expanded.
     pub fn single_picked_file(&self) -> Option<&str> {
         if self.picked.is_empty() {
             return match self.selected_row()?.entry()? {
@@ -167,16 +167,11 @@ impl<'a> CommitChangesState<'a> {
                 Entry::Dir(_) => None,
             };
         }
-        let files: Vec<&str> = self
-            .files
+        let path = self.picked.single_path()?;
+        self.files
             .iter()
+            .find(|file| file.path == path)
             .map(|file| file.path.as_str())
-            .filter(|path| self.picked.contains_under(path))
-            .collect();
-        match files.as_slice() {
-            [path] => Some(path),
-            _ => None,
-        }
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
@@ -432,8 +427,8 @@ impl<'a> CommitFilesState<'a> {
         self.picked.paths()
     }
 
-    // The one file a single-file view works on: the selected file, or the only file under the
-    // picked rows. None when several files are picked.
+    // The one file a single-file view works on: the selected file, or the one picked file. A
+    // picked directory is not expanded.
     pub fn single_picked_file(&self) -> Option<&str> {
         if self.picked.is_empty() {
             return match self.selected_row()?.entry()? {
@@ -441,17 +436,8 @@ impl<'a> CommitFilesState<'a> {
                 Entry::Dir(_) => None,
             };
         }
-        let files: Vec<&str> = self
-            .paths
-            .as_ref()?
-            .iter()
-            .map(String::as_str)
-            .filter(|path| self.picked.contains_under(path))
-            .collect();
-        match files.as_slice() {
-            [path] => Some(path),
-            _ => None,
-        }
+        let path = self.picked.single_path()?;
+        self.paths.as_ref()?.contains(path).then_some(path)
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
@@ -1105,6 +1091,12 @@ mod tests {
         assert!(!state.is_visual() && state.has_selection());
         state.cancel_visual();
         assert!(!state.has_selection());
+
+        // a picked directory is not expanded for the one-file views
+        state.update_tree(|tree| tree.select_path("src"));
+        state.toggle_visual();
+        assert_eq!(state.single_picked_file(), None);
+        state.cancel_visual();
 
         // changes: folders collapse, and the diff follows the selection
         state.update_tree(|tree| tree.select_path("src"));

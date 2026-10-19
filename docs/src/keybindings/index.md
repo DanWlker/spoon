@@ -208,6 +208,7 @@ A file git diffs as text converted from it (a `textconv` diff driver in `.gitatt
 <kbd>i</kbd> adds the selected files and directories to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
 
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor; <kbd>Enter</kbd> opens the diff of the row under the cursor only.
+<kbd>e</kbd> opens the picked files only, and <kbd>B</kbd>/<kbd>T</kbd> work only when exactly one file is picked: a picked directory is not expanded into the files under it.
 <kbd>s</kbd> opens a popup asking for a stash message (it may be empty), and stashes including untracked files.
 
 #### Refs Sidebar

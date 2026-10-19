@@ -418,6 +418,13 @@ impl TreeSelection {
         self.picked.iter().cloned().collect()
     }
 
+    // The one picked path, or None when none or more than one is picked.
+    pub fn single_path(&self) -> Option<&str> {
+        let mut paths = self.picked.iter();
+        let path = paths.next()?;
+        paths.next().is_none().then_some(path.as_str())
+    }
+
     pub fn contains(&self, path: &str) -> bool {
         self.picked.contains(path)
     }

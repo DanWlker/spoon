@@ -366,16 +366,17 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // The one file an action on a single file works on: the picked file (or the file under a picked
-    // directory), else the selected one. None when several files are picked.
+    // The one file an action on a single file works on: the selected file, or the one picked file.
+    // A picked directory is not expanded, and several picks leave no one file.
     pub fn single_target_file(&self) -> Option<&str> {
         if self.picked().is_empty() {
             return self.selected_file();
         }
-        match self.target_files().as_slice() {
-            [file] => Some(file.path.as_str()),
-            _ => None,
-        }
+        let path = self.picked().single_path()?;
+        self.files()
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| file.path.as_str())
     }
 
     pub fn selected_path(&self) -> Option<String> {
@@ -3878,8 +3879,8 @@ mod tests {
     }
 
     #[test]
-    fn test_single_target_file_expands_a_picked_directory() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_single_target_file_does_not_expand_a_picked_directory(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
         let git = GitRepository::new(repo_path);
@@ -3893,11 +3894,52 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "dir");
         state.toggle_visual();
+        assert_eq!(
+            state.single_target_file(),
+            None,
+            "a directory is not a file"
+        );
+
+        // one picked file, exact
+        state.clear_picks();
+        select_row(&mut state, "dir/u.txt");
+        state.toggle_visual();
+        state.toggle_visual();
         assert_eq!(state.single_target_file(), Some("dir/u.txt"));
 
-        // the selection extends to b.txt: two files, so no single-file view
+        // another pick leaves no one file
         select_row(&mut state, "b.txt");
+        state.toggle_visual();
+        state.toggle_visual();
         assert_eq!(state.single_target_file(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_edit_opens_only_the_exact_picked_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::create_dir(repo_path.join("dir"))?;
+        fs::write(repo_path.join("dir/u.txt"), "u\n")?;
+        fs::write(repo_path.join("b.txt"), "b\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        // the directory is closed, so the range picks it and the file, not the file under it
+        select_row(&mut state, "dir");
+        state.collapse();
+        state.toggle_visual();
+        select_row(&mut state, "b.txt");
+        state.toggle_visual();
+        state.request_edit()?;
+        assert_eq!(
+            state.take_external_request(),
+            Some(ExternalRequest::Editor(vec![repo_path.join("b.txt")])),
+            "the directory was expanded"
+        );
         Ok(())
     }
 
