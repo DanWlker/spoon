@@ -87,27 +87,47 @@ impl<'a> SubmodulePanel<'a> {
                 message: Some("no commits ahead of the recorded one".into()),
             };
         }
-        match repository.submodule_repository(path, from, to) {
-            Ok(submodule) => {
-                let graph = graph::calc_graph(submodule, None, &Default::default());
-                let manager = ctx.graph_image_manager(graph);
-                let list = submodule_commit_list(
-                    submodule,
-                    manager,
-                    ctx.search_options.clone(),
-                    ctx.ui_config.common.scrolloff as usize,
-                );
-                Self {
-                    uncommitted,
-                    list: Some(list),
-                    message: None,
+        // the commits between the two gitlinks, in the direction they differ: the checked-out
+        // commit may be behind the recorded one, then its missing commits are listed
+        let submodule = match repository.submodule_repository(path, from, to) {
+            Ok(Some(submodule)) => submodule,
+            Ok(None) => match repository.submodule_repository(path, to, from) {
+                Ok(Some(submodule)) => submodule,
+                Ok(None) => {
+                    return Self {
+                        uncommitted,
+                        list: None,
+                        message: Some("no commits ahead of the recorded one".into()),
+                    };
                 }
-            }
-            Err(err) => Self {
-                uncommitted,
-                list: None,
-                message: Some(err),
+                Err(err) => {
+                    return Self {
+                        uncommitted,
+                        list: None,
+                        message: Some(err),
+                    };
+                }
             },
+            Err(err) => {
+                return Self {
+                    uncommitted,
+                    list: None,
+                    message: Some(err),
+                };
+            }
+        };
+        let graph = graph::calc_graph(submodule, None, &Default::default());
+        let manager = ctx.graph_image_manager(graph);
+        let list = submodule_commit_list(
+            submodule,
+            manager,
+            ctx.search_options.clone(),
+            ctx.ui_config.common.scrolloff as usize,
+        );
+        Self {
+            uncommitted,
+            list: Some(list),
+            message: None,
         }
     }
 

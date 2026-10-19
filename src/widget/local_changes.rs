@@ -2354,6 +2354,51 @@ mod tests {
     }
 
     #[test]
+    fn test_submodule_checked_out_before_the_recorded_commit_still_lists_its_commits(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("init", "2024-01-01");
+        let first = base_repo.rev_parse_head();
+        fs::write(base.join("a.txt"), "two\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("second", "2024-01-02");
+
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                base.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        repo.commit("add sub", "2024-01-03");
+        // the submodule is checked out before the commit the superproject records
+        git(&superproject.join("sub"), &["checkout", "-q", &first]);
+
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        // the commits the recorded gitlink has that the checked-out one doesn't
+        assert_eq!(submodule.subjects(), ["second"]);
+        assert!(state.pane.diff().is_none());
+        Ok(())
+    }
+
+    #[test]
     fn test_diff_loads_once_the_cursor_settles() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();

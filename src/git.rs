@@ -935,19 +935,27 @@ impl Repository {
     // A submodule's own repository, for the pages that list its commits. Loaded once per path and
     // pair of recorded commits (`from..to`), then kept: the parent owns it for the rest of this
     // repository's life, so the reference a page holds stays valid, and it all goes on reload.
+    // None when `from..to` has no commits (equal, or `to` behind `from`).
     pub fn submodule_repository(
         &self,
         path: &str,
         from: &str,
         to: &str,
-    ) -> std::result::Result<&Repository, String> {
+    ) -> std::result::Result<Option<&Repository>, String> {
         let key = format!("{path}\0{from}..{to}");
         if let Some(repository) = self.submodule_repositories.get(&key) {
-            return Ok(repository);
+            return Ok(Some(repository));
         }
+        let submodule = self.path.join(path);
         let range = format!("{from}..{to}");
+        // an empty range has no repository to load (no commits of its own)
+        let count = git_output(&submodule, &["rev-list", "--count", &range])
+            .map_err(|err| err.to_string())?;
+        if count.trim() == "0" {
+            return Ok(None);
+        }
         let repository = Repository::load_scoped(
-            &self.path.join(path),
+            &submodule,
             SortCommit::Chronological,
             None,
             false,
@@ -955,7 +963,7 @@ impl Repository {
             Default::default(),
         )
         .map_err(|err| err.to_string())?;
-        Ok(self.submodule_repositories.insert(key, repository))
+        Ok(Some(self.submodule_repositories.insert(key, repository)))
     }
 
     // The gitlink (commit) the index records for the submodule at `path`.
@@ -4018,6 +4026,7 @@ mod tests {
         // the commits the recorded gitlink doesn't have
         let sub_repository = repository
             .submodule_repository("sub", &info.recorded, &head)
+            .unwrap()
             .unwrap();
         let subjects: Vec<&str> = sub_repository
             .all_commits()
@@ -4031,7 +4040,13 @@ mod tests {
             repository
                 .submodule_repository("sub", &info.recorded, &head)
                 .unwrap()
+                .unwrap()
         ));
+        // the other way round has no commits, the recorded one being the older:
+        assert!(repository
+            .submodule_repository("sub", &head, &info.recorded)
+            .unwrap()
+            .is_none());
         // a plain path is not a submodule
         assert!(repository.submodule_info("base").is_none());
     }
