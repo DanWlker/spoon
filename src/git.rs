@@ -343,6 +343,35 @@ impl Repository {
         })
     }
 
+    // A repository loaded for its commit graph only: a submodule's, shown beside the parent's.
+    // Unlike `load_scoped` it skips the status, remotes, tracking, textconv drivers, submodules
+    // and stashes, none of which the panel needs, cutting the git commands run when it is picked.
+    // None when the revisions have no commits.
+    pub fn load_graph(path: &Path, revisions: &[String]) -> Result<Option<Self>> {
+        let (toplevel, git_dir) = locate_repository(path)?;
+        let path = toplevel.as_deref().unwrap_or(path);
+        let (ref_map, head) = load_refs(path);
+        let commits = load_all_commits(
+            path,
+            SortCommit::Chronological,
+            &head,
+            &[],
+            None,
+            false,
+            Some(revisions),
+        )?;
+        if commits.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self::new(
+            path.to_path_buf(),
+            git_dir,
+            commits,
+            ref_map,
+            head,
+        )))
+    }
+
     // The commits and refs, see `load_scoped`.
     fn load_commits(
         path: &Path,
@@ -948,22 +977,9 @@ impl Repository {
         }
         let submodule = self.path.join(path);
         let range = format!("{from}..{to}");
-        // an empty range has no repository to load (no commits of its own)
-        let count = git_output(&submodule, &["rev-list", "--count", &range])
-            .map_err(|err| err.to_string())?;
-        if count.trim() == "0" {
-            return Ok(None);
-        }
-        let repository = Repository::load_scoped(
-            &submodule,
-            SortCommit::Chronological,
-            None,
-            false,
-            Some(&[range]),
-            Default::default(),
-        )
-        .map_err(|err| err.to_string())?;
-        Ok(Some(self.submodule_repositories.insert(key, repository)))
+        let repository =
+            Repository::load_graph(&submodule, &[range]).map_err(|err| err.to_string())?;
+        Ok(repository.map(|repository| self.submodule_repositories.insert(key, repository)))
     }
 
     // The gitlink (commit) the index records for the submodule at `path`.

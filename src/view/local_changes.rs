@@ -53,8 +53,9 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // Before drawing: the diff of the row the cursor moved to.
-    pub fn update_layout(&mut self, _area: Rect) {
+    pub fn update_layout(&mut self, area: Rect) {
         self.local_changes_state.load_stale_diff();
+        self.local_changes_state.update_submodule_height(area);
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {

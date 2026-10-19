@@ -1409,6 +1409,19 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // Tells the submodule panel the height its list is drawn in, before its graph images are
+    // prepared: only the rows shown are drawn, not every commit in the range.
+    pub fn update_submodule_height(&mut self, area: Rect) {
+        if self.submodule.is_none() {
+            return;
+        }
+        let diff = local_changes_areas(&self.ctx, area).diff;
+        if let Some(submodule) = &mut self.submodule {
+            // the panel's borders and the note line
+            submodule.set_list_height(diff.height.saturating_sub(3) as usize);
+        }
+    }
+
     // The graph images the submodule panel has queued, to write to the terminal.
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
         self.submodule
@@ -1931,54 +1944,69 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
     type State = LocalChangesState<'a>;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let mut layout = self.ctx.layout.borrow_mut();
-        // each keeps some room
-        let files_width = fit_size(
-            layout.size(Panel::Files, tree_panel_width(area.width)),
-            area.width,
-            10,
-            20,
-        );
-        let [files_area, right_area] =
-            Layout::horizontal([Constraint::Length(files_width), Constraint::Min(0)]).areas(area);
-        let commit_height = fit_size(
-            layout.size(Panel::Commit, COMMIT_AREA_HEIGHT),
-            right_area.height,
-            3,
-            3,
-        );
-        let [diff_area, commit_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(commit_height)])
-                .areas(right_area);
-        let unstaged_height = fit_size(
-            layout.size(Panel::Unstaged, files_area.height / 2),
-            files_area.height,
-            3,
-            3,
-        );
-        let [unstaged_area, staged_area] =
-            Layout::vertical([Constraint::Length(unstaged_height), Constraint::Min(0)])
-                .areas(files_area);
-        layout.place(Panel::Files, files_area, Edge::Right);
-        layout.place(Panel::Unstaged, unstaged_area, Edge::Bottom);
-        layout.place(Panel::Commit, commit_area, Edge::Top);
-        drop(layout);
-
-        self.render_file_section(state, LocalChangesSection::Unstaged, unstaged_area, buf);
-        self.render_file_section(state, LocalChangesSection::Staged, staged_area, buf);
+        let areas = local_changes_areas(&self.ctx, area);
+        self.render_file_section(state, LocalChangesSection::Unstaged, areas.unstaged, buf);
+        self.render_file_section(state, LocalChangesSection::Staged, areas.staged, buf);
         if state.conflict.is_some() {
-            self.render_conflict(state, diff_area, buf);
+            self.render_conflict(state, areas.diff, buf);
         } else if state.submodule.is_some() {
-            self.render_submodule(state, diff_area, buf);
+            self.render_submodule(state, areas.diff, buf);
         } else {
-            self.render_diff(state, diff_area, buf);
+            self.render_diff(state, areas.diff, buf);
         }
-        self.render_commit(state, commit_area, buf);
+        self.render_commit(state, areas.commit, buf);
     }
 }
 
 // the summary, a line, the description with 3 lines, and the borders
 const COMMIT_AREA_HEIGHT: u16 = 1 + 1 + 3 + 2;
+
+// Where the local changes page draws its panels.
+struct LocalChangesAreas {
+    unstaged: Rect,
+    staged: Rect,
+    diff: Rect,
+    commit: Rect,
+}
+
+fn local_changes_areas(ctx: &AppContext, area: Rect) -> LocalChangesAreas {
+    let mut layout = ctx.layout.borrow_mut();
+    // each keeps some room
+    let files_width = fit_size(
+        layout.size(Panel::Files, tree_panel_width(area.width)),
+        area.width,
+        10,
+        20,
+    );
+    let [files_area, right_area] =
+        Layout::horizontal([Constraint::Length(files_width), Constraint::Min(0)]).areas(area);
+    let commit_height = fit_size(
+        layout.size(Panel::Commit, COMMIT_AREA_HEIGHT),
+        right_area.height,
+        3,
+        3,
+    );
+    let [diff_area, commit_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(commit_height)]).areas(right_area);
+    let unstaged_height = fit_size(
+        layout.size(Panel::Unstaged, files_area.height / 2),
+        files_area.height,
+        3,
+        3,
+    );
+    let [unstaged_area, staged_area] =
+        Layout::vertical([Constraint::Length(unstaged_height), Constraint::Min(0)])
+            .areas(files_area);
+    layout.place(Panel::Files, files_area, Edge::Right);
+    layout.place(Panel::Unstaged, unstaged_area, Edge::Bottom);
+    layout.place(Panel::Commit, commit_area, Edge::Top);
+    LocalChangesAreas {
+        unstaged: unstaged_area,
+        staged: staged_area,
+        diff: diff_area,
+        commit: commit_area,
+    }
+}
 
 impl LocalChangesPanel<'_> {
     fn render_file_section(

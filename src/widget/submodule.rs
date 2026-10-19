@@ -147,6 +147,13 @@ impl<'a> SubmodulePanel<'a> {
         }
     }
 
+    // The height the list is drawn in, set by the page before the graph images are prepared.
+    pub fn set_list_height(&mut self, height: usize) {
+        if let Some(list) = &mut self.list {
+            list.update_height(height);
+        }
+    }
+
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
         self.list
             .as_mut()
