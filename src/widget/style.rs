@@ -362,16 +362,6 @@ pub fn scroll_to(
         .min(total.saturating_sub(height))
 }
 
-// Where ctrl-d and ctrl-u go in a list: the list, moving its selection half a page, where the list
-// is what is read (the commit graph, the sidebar, the commits of the timeline); or the pane beside
-// it, scrolled like with the other scroll keys, where that is (the output of the command log, the
-// diff or preview beside the file trees).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HalfPage {
-    List,
-    Pane,
-}
-
 // The selected row of a list and the rows shown from `offset`, `height` at a time: the commit list,
 // the file trees, the command log and the timeline. The selection moves keep it in view with
 // `scrolloff` rows around it, scrolling as little as can be, see `scroll_to`.
@@ -423,20 +413,34 @@ impl ListCursor {
     }
 
     // The row the movement keys select in `total` rows: j and k (and J and K), g and G, and ctrl-d
-    // and ctrl-u where `half_page` gives them to the list, see `half_page_jump`; None for other
-    // events.
-    pub fn moved_to(&self, event: UserEvent, total: usize, half_page: HalfPage) -> Option<usize> {
+    // and ctrl-u, see `half_page_jump`; None for other events.
+    pub fn moved_to(&self, event: UserEvent, total: usize) -> Option<usize> {
         let last = total.checked_sub(1)?;
         match event {
             UserEvent::NavigateDown | UserEvent::SelectDown => Some((self.selected + 1).min(last)),
             UserEvent::NavigateUp | UserEvent::SelectUp => Some(self.selected.saturating_sub(1)),
             UserEvent::GoToTop => Some(0),
             UserEvent::GoToBottom => Some(last),
-            _ if half_page == HalfPage::List => {
-                half_page_jump(event, self.selected, self.height, total)
-            }
-            _ => None,
+            _ => half_page_jump(event, self.selected, self.height, total),
         }
+    }
+
+    // Moves by every key scrolling a list: the movement keys, ctrl-d and ctrl-u, and the page and
+    // line keys; returns whether `event` was one of them.
+    pub fn navigate(&mut self, event: UserEvent, total: usize) -> bool {
+        match event {
+            UserEvent::ScrollDown => self.scroll_lines(1, total),
+            UserEvent::ScrollUp => self.scroll_lines(-1, total),
+            UserEvent::PageDown => self.scroll_pages(1, total),
+            UserEvent::PageUp => self.scroll_pages(-1, total),
+            _ => {
+                let Some(index) = self.moved_to(event, total) else {
+                    return false;
+                };
+                self.select(index, total);
+            }
+        }
+        true
     }
 
     // Scrolls a row at a time with ctrl-e and ctrl-y, the selection staying put until it would
@@ -564,16 +568,30 @@ mod tests {
     }
 
     #[test]
-    fn test_half_page_goes_to_the_list_or_the_pane() {
+    fn test_half_page_moves_the_list() {
         let mut cursor = ListCursor::default();
         cursor.fit(10, 30, 0);
-        let moved = |half_page| cursor.moved_to(UserEvent::HalfPageDown, 30, half_page);
-        assert_eq!(moved(HalfPage::List), Some(5));
-        // left to the pane, which scrolls
-        assert_eq!(moved(HalfPage::Pane), None);
-        // the other movement keys move the list either way
-        let down = cursor.moved_to(UserEvent::NavigateDown, 30, HalfPage::Pane);
-        assert_eq!(down, Some(1));
+        // half of the rows shown
+        assert_eq!(cursor.moved_to(UserEvent::HalfPageDown, 30), Some(5));
+        // the other movement keys move it a row
+        assert_eq!(cursor.moved_to(UserEvent::NavigateDown, 30), Some(1));
+    }
+
+    #[test]
+    fn test_navigate_moves_by_every_scroll_key() {
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 30, 0);
+        assert!(cursor.navigate(UserEvent::ScrollDown, 30));
+        assert_eq!(cursor.selected(), 1);
+        assert!(cursor.navigate(UserEvent::PageDown, 30));
+        assert_eq!(cursor.selected(), 11);
+        assert!(cursor.navigate(UserEvent::HalfPageDown, 30));
+        assert_eq!(cursor.selected(), 16);
+        assert!(cursor.navigate(UserEvent::GoToBottom, 30));
+        assert_eq!(cursor.selected(), 29);
+        assert!(cursor.navigate(UserEvent::GoToTop, 30));
+        assert_eq!(cursor.selected(), 0);
+        assert!(!cursor.navigate(UserEvent::Cancel, 30));
     }
 
     #[test]

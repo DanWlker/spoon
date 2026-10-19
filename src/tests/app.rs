@@ -2,6 +2,7 @@
 // made to the repository meanwhile are the steps of a script, see `Harness::run`.
 
 use std::{
+    cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
@@ -355,6 +356,22 @@ fn draft(app: &App) -> String {
     }
 }
 
+// The file selected in the local changes page.
+fn local_change_path(app: &App) -> Option<String> {
+    match &app.view {
+        View::LocalChanges(view) => view.context().selected_path,
+        _ => panic!("not on the local changes page"),
+    }
+}
+
+// The file selected in the tree of the open details tab.
+fn detail_path(app: &App) -> Option<String> {
+    match &app.view {
+        View::Detail(view) => view.selected_path(),
+        _ => panic!("not in the commit details"),
+    }
+}
+
 // The launch options
 
 #[test]
@@ -400,14 +417,14 @@ fn test_sidebar_focused_shrunk_and_grown_back() {
     };
     harness.run(vec![
         mode(false, false),
-        keys("0"),
+        keys("1"),
         mode(true, false),
         // again, it shrinks and the page has the focus
-        keys("0"),
-        mode(false, true),
-        keys("0"),
-        mode(true, false),
         keys("1"),
+        mode(false, true),
+        keys("1"),
+        mode(true, false),
+        keys("2"),
         mode(false, false),
     ]);
 }
@@ -420,15 +437,15 @@ fn test_sidebar_only_beside_the_graph() {
     let focused =
         |focused| check(move |app: &App| assert_eq!(app.shell.sidebar_focused(), focused));
     harness.run(vec![
-        keys("0"),
+        keys("1"),
         focused(true),
         // the local changes page takes the focus from it, and has none to give it
         keys("tab"),
         check(|app| assert!(matches!(app.view, View::LocalChanges(_)))),
         focused(false),
-        keys("0 alt-h"),
+        keys("1 alt-h"),
         focused(false),
-        keys("tab 0"),
+        keys("tab 1"),
         focused(true),
     ]);
 }
@@ -471,7 +488,7 @@ fn test_page_bar_names_the_window_over_the_pages() {
         named("Help"),
         keys("esc @"),
         named("Command Log"),
-        keys("esc 4 shift-b"),
+        keys("esc 5 shift-b"),
         named("Blame"),
         named("f.txt"),
         // back to the commit shown, then closed
@@ -672,7 +689,7 @@ fn test_ctrl_c_quits() {
 
 // Diffs feat with HEAD from the sidebar.
 fn compare_feat() -> Vec<Step> {
-    let mut steps = keys("0 j shift-d");
+    let mut steps = keys("1 j shift-d");
     steps.extend(check(|app| {
         assert_eq!(graph_note(app).as_deref(), Some("master ↔ feat"));
         assert_eq!(compared(app), Some(vec!["f.txt".to_string()]));
@@ -699,7 +716,7 @@ fn test_sidebar_branch_shows_its_commit_not_its_tags() {
     git(&path, &["tag", "feat", "master"]);
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("0 j"),
+        keys("1 j"),
         check(move |app| {
             let state = app.view.as_list_state().unwrap();
             assert_eq!(state.selected_commit_hash().as_str(), feat);
@@ -778,7 +795,7 @@ fn test_files_keys_do_nothing_in_their_diff() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         // the files of the changes tab reset a file; their diff doesn't
-        keys("3 u"),
+        keys("4 u"),
         check(|app| assert!(app.shell.dialog.is_some())),
         keys("esc enter u"),
         check(|app| assert!(app.shell.dialog.is_none())),
@@ -827,7 +844,7 @@ fn test_details_list_only_their_own_keys() {
     };
     harness.run(vec![
         // the files of the changes tab, not the commit list above them
-        keys("3"),
+        keys("4"),
         check(move |app| {
             let shown = shown(app);
             assert!(shown.contains(&"copy path".to_string()), "{shown:?}");
@@ -835,7 +852,7 @@ fn test_details_list_only_their_own_keys() {
             assert!(!shown.contains(&"details".to_string()), "{shown:?}");
         }),
         // and the other way round
-        keys("1"),
+        keys("2"),
         check(move |app| {
             let shown = shown(app);
             assert!(shown.contains(&"copy hash".to_string()), "{shown:?}");
@@ -958,7 +975,7 @@ fn test_no_file_keys_on_a_commit_without_changes() {
     assert!(status.success());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("3"),
+        keys("4"),
         check(|app| {
             let shown: Vec<String> = app
                 .view
@@ -989,7 +1006,7 @@ fn test_no_other_diff_while_one_is_open() {
     // in the commit list over the diff, picking and diffing say why they don't work
     harness.run(vec![
         compare_feat(),
-        keys("1 v"),
+        keys("2 v"),
         check(|app| assert_notice(app, "Close the diff first (esc) to pick other commits")),
         keys(", shift-d"),
         check(|app| assert_notice(app, "A diff is open, close it first (esc)")),
@@ -1019,7 +1036,7 @@ fn test_branch_only_of_the_sidebar_branch() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         // feat, under master
-        keys("0 j shift-l"),
+        keys("1 j shift-l"),
         check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
         // another branch shows its commits instead, the same one all of them again
         keys("k shift-l"),
@@ -1065,13 +1082,118 @@ fn test_half_page_jump_in_the_sidebar() {
         })
     };
     harness.run(vec![
-        keys("0 g j"),
+        keys("1 g j"),
         selected("b00"),
         // half of the 36 rows shown
         keys("ctrl-d"),
         selected("b18"),
         keys("ctrl-d ctrl-u"),
         selected("b18"),
+    ]);
+}
+
+#[test]
+fn test_half_page_jump_in_the_local_changes_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..30 {
+        std::fs::write(path.join(format!("u{i:02}.txt")), "x\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let first = Rc::new(RefCell::new(None));
+    let jumped = Rc::new(RefCell::new(None));
+    let record_first = first.clone();
+    let record_jumped = jumped.clone();
+    let compare = (first.clone(), jumped.clone());
+    let back = first.clone();
+    harness.run(vec![
+        check(move |app| *record_first.borrow_mut() = local_change_path(app)),
+        // half of the rows shown, like the other lists
+        keys("ctrl-d"),
+        check(move |app| *record_jumped.borrow_mut() = local_change_path(app)),
+        check(move |_app| {
+            let (first, jumped) = &compare;
+            assert!(first.borrow().is_some());
+            assert_ne!(*jumped.borrow(), *first.borrow());
+        }),
+        keys("ctrl-u"),
+        check(move |app| assert_eq!(local_change_path(app), *back.borrow())),
+    ]);
+}
+
+#[test]
+fn test_half_page_jump_in_the_details_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("work");
+    std::fs::create_dir(&path).unwrap();
+    git(&path, &["init", "-q", "-b", "master"]);
+    git(&path, &["config", "user.name", "t"]);
+    git(&path, &["config", "user.email", "t@t"]);
+    git(&path, &["config", "commit.gpgsign", "false"]);
+    for i in 0..30 {
+        std::fs::write(path.join(format!("f{i:02}.txt")), "x\n").unwrap();
+    }
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "many"]);
+    let mut harness = Harness::new(&path, launch());
+    let first = Rc::new(RefCell::new(None));
+    let jumped = Rc::new(RefCell::new(None));
+    let record_first = first.clone();
+    let record_jumped = jumped.clone();
+    let compare = (first.clone(), jumped.clone());
+    let back = first.clone();
+    harness.run(vec![
+        // the files of the changes tab, focused
+        keys("4"),
+        check(move |app| *record_first.borrow_mut() = detail_path(app)),
+        keys("ctrl-d"),
+        check(move |app| *record_jumped.borrow_mut() = detail_path(app)),
+        check(move |_app| {
+            let (first, jumped) = &compare;
+            assert!(first.borrow().is_some());
+            assert_ne!(*jumped.borrow(), *first.borrow());
+        }),
+        keys("ctrl-u"),
+        check(move |app| assert_eq!(detail_path(app), *back.borrow())),
+    ]);
+}
+
+#[test]
+fn test_page_keys_move_the_details_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("work");
+    std::fs::create_dir(&path).unwrap();
+    git(&path, &["init", "-q", "-b", "master"]);
+    git(&path, &["config", "user.name", "t"]);
+    git(&path, &["config", "user.email", "t@t"]);
+    git(&path, &["config", "commit.gpgsign", "false"]);
+    for i in 0..30 {
+        std::fs::write(path.join(format!("f{i:02}.txt")), "x\n").unwrap();
+    }
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "many"]);
+    let mut harness = Harness::new(&path, launch());
+    let first = Rc::new(RefCell::new(None));
+    let jumped = Rc::new(RefCell::new(None));
+    let record_first = first.clone();
+    let record_jumped = jumped.clone();
+    let compare = (first.clone(), jumped.clone());
+    harness.run(vec![
+        // the files tab, its tree focused: the page keys move the files, not the hidden info tab
+        keys("5"),
+        draw(),
+        check(move |app| *record_first.borrow_mut() = detail_path(app)),
+        keys("ctrl-f"),
+        check(move |app| *record_jumped.borrow_mut() = detail_path(app)),
+        check(move |_app| {
+            let (first, jumped) = &compare;
+            assert!(first.borrow().is_some());
+            assert_ne!(*jumped.borrow(), *first.borrow());
+        }),
     ]);
 }
 
@@ -1164,15 +1286,15 @@ fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
     };
     harness.run(vec![
         // f.txt in the files of c2, the latest commit
-        keys("4 shift-b"),
+        keys("5 shift-b"),
         overlay("blame"),
         // the commit of its first line, c1, on the graph, the details still open
         keys("enter"),
         overlay("none"),
         selected("c1"),
         // checking out the commit shown, c1 again, closes the blame once confirmed
-        keys("k 4 shift-b ["),
-        keys("0 space"),
+        keys("k 5 shift-b ["),
+        keys("1 space"),
         overlay("blame"),
         keys("enter"),
         overlay("none"),
@@ -1198,7 +1320,7 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
         })
     };
     harness.run(vec![
-        keys("4 shift-b shift-h"),
+        keys("5 shift-b shift-h"),
         popup_has(&[
             "older/newer commit",
             "show on graph",
@@ -1244,7 +1366,7 @@ fn test_search_options_toggled_in_any_search() {
     };
     harness.run(vec![
         // in the files tree, both
-        keys("4 / ctrl-g ctrl-x"),
+        keys("5 / ctrl-g ctrl-x"),
         options(true, true),
         // in the preview, searched as text, only smart case
         keys("esc enter / ctrl-g ctrl-x"),
@@ -1258,7 +1380,7 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("4 shift-b l"),
+        keys("5 shift-b l"),
         vec![Step::Event(Box::new(AppEvent::NotifyWarn("warned".into())))],
         check(|app| assert_notice(app, "warned")),
         // dismissed, and the long lines wrapped, without closing the blame
@@ -1327,9 +1449,9 @@ fn test_no_match_said_alike_on_every_page() {
     // the keys to a search, and the page they are on
     let pages = [
         ("", StartPage::Graph),
-        ("4", StartPage::Graph),
-        ("4 shift-b l", StartPage::Graph),
-        ("4 shift-t", StartPage::Graph),
+        ("5", StartPage::Graph),
+        ("5 shift-b l", StartPage::Graph),
+        ("5 shift-t", StartPage::Graph),
         ("", StartPage::LocalChanges),
     ];
     for (to_search, page) in pages {
@@ -1364,8 +1486,8 @@ fn test_no_match_said_alike_on_every_page() {
 fn test_diff_keys_alike_on_every_page() {
     // the keys into a diff, at its hunks, and the page they are on
     let pages = [
-        ("3 enter", StartPage::Graph),
-        ("4 shift-t l", StartPage::Graph),
+        ("4 enter", StartPage::Graph),
+        ("5 shift-t l", StartPage::Graph),
         ("enter", StartPage::LocalChanges),
     ];
     // what the keys popup names enter and y
@@ -1403,10 +1525,10 @@ fn test_diff_keys_alike_on_every_page() {
 fn test_search_shown_in_the_title_of_its_panel() {
     // the keys to the panel searched, the page they are on, and its title
     let panels = [
-        ("3 enter", StartPage::Graph, "[2] Info"),
-        ("4 shift-t", StartPage::Graph, "[0] Commits"),
-        ("4 shift-t l", StartPage::Graph, "[1] Diff"),
-        ("4 shift-b l", StartPage::Graph, "[1] Blame"),
+        ("4 enter", StartPage::Graph, "[3] Info"),
+        ("5 shift-t", StartPage::Graph, "[1] Commits"),
+        ("5 shift-t l", StartPage::Graph, "[2] Diff"),
+        ("5 shift-b l", StartPage::Graph, "[2] Blame"),
         ("enter", StartPage::LocalChanges, "╭ / "),
     ];
     for (to, page, label) in panels {
@@ -1437,7 +1559,7 @@ fn test_timeline_shows_a_commit_on_the_graph() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         // f.txt in the files of c2, then c1, the commit before changing it
-        keys("4 shift-t"),
+        keys("5 shift-t"),
         overlay("timeline"),
         keys("j enter"),
         overlay("none"),
@@ -1492,7 +1614,7 @@ fn test_compare_follows_a_ref_the_launch_fetch_moves() {
     );
     harness.run(vec![
         // origin/feat, diffed with HEAD
-        keys("0 ] j l j shift-d"),
+        keys("1 ] j l j shift-d"),
         check(|app| {
             assert_eq!(graph_note(app).as_deref(), Some("master ↔ origin/feat"));
             assert_eq!(compared(app), Some(vec!["f.txt".to_string()]));
@@ -1695,7 +1817,7 @@ fn test_delete_tag_also_on_an_unreachable_remote_keeps_it() {
     git(&path, &["remote", "set-url", "origin", "/nowhere"]);
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("0 ] ] j"),
+        keys("1 ] ] j"),
         check(|app| {
             let selection = app.shell.sidebar.selection();
             assert_eq!(selection, RefSelection::Ref(NamedRef::Tag("v1".into())));
@@ -1712,7 +1834,7 @@ fn test_edit_branch_upstream_only_chosen() {
     let dir = tempfile::tempdir().unwrap();
     let path = with_remote(dir.path());
     let mut harness = Harness::new(&path, launch());
-    let mut steps = vec![keys("0 j e")];
+    let mut steps = vec![keys("1 j e")];
     // renamed; e doesn't type into the upstream, l chooses a remote branch
     steps.push(typing("x"));
     steps.push(keys("esc j e l enter"));
@@ -1733,7 +1855,7 @@ fn test_add_remote_fetching_nothing_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = with_remote(dir.path());
     let mut harness = Harness::new(&path, launch());
-    let mut steps = vec![keys("0 ] j a")];
+    let mut steps = vec![keys("1 ] j a")];
     steps.push(typing("bad"));
     steps.push(keys("esc j e"));
     steps.push(typing("/nonexistent/repo.git"));

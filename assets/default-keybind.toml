@@ -44,14 +44,14 @@ focus_down = ["alt-down", "alt-j"]
 # show the keys of the focused panel in a popup
 keys_toggle = ["shift-h"]
 
-# focus the refs sidebar on the left
-focus_panel_0 = ["0"]
-# switch between panels: unstaged/staged/commit in local changes; the commit list and the
-# info/changes/files tabs of the commit details on the graph (opened right away)
+# focus the panels of a page: the refs sidebar is [1] on the graph, the local changes page uses [1]-[3]
+# for the unstaged/staged files and the commit message, and the commit details add [3]-[5] for the
+# info/changes/files tabs (the commit list is [2])
 focus_panel_1 = ["1"]
 focus_panel_2 = ["2"]
 focus_panel_3 = ["3"]
 focus_panel_4 = ["4"]
+focus_panel_5 = ["5"]
 
 # stage/unstage the selected file, directory, hunk or line in local changes
 toggle_stage = ["space"]

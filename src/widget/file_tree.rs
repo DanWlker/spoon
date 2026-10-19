@@ -15,6 +15,7 @@ pub use crate::git::Entry;
 use crate::{
     app::AppContext,
     color::ColorTheme,
+    event::UserEvent,
     search::SearchOptions,
     widget::{
         style::{
@@ -289,20 +290,14 @@ impl FileTreeState {
         }
     }
 
-    pub fn select_next(&mut self) {
-        self.select_index(self.cursor() + 1);
-    }
-
-    pub fn select_prev(&mut self) {
-        self.select_index(self.cursor().saturating_sub(1));
-    }
-
-    pub fn select_first(&mut self) {
-        self.select_index(0);
-    }
-
-    pub fn select_last(&mut self) {
-        self.select_index(usize::MAX);
+    // Moves by every key scrolling the tree: the movement keys, ctrl-d and ctrl-u, and the page
+    // and line keys; returns whether `event` was one of them.
+    pub fn navigate(&mut self, event: UserEvent) -> bool {
+        let total = self.rows.len();
+        let mut cursor = self.cursor.get();
+        let handled = cursor.navigate(event, total);
+        self.cursor.set(cursor);
+        handled
     }
 
     pub fn expand(&mut self) {
@@ -772,8 +767,8 @@ mod tests {
         );
 
         // collapsing from a file goes to its directory first, then collapses it
-        state.select_next();
-        state.select_next();
+        state.navigate(UserEvent::NavigateDown);
+        state.navigate(UserEvent::NavigateDown);
         state.collapse();
         assert_eq!(state.selected().unwrap().path, "src");
         state.collapse();
@@ -814,7 +809,7 @@ mod tests {
             .is_empty());
 
         // a file at the top goes to the root row, then the root row collapses everything
-        state.select_last();
+        state.navigate(UserEvent::GoToBottom);
         state.collapse();
         assert_eq!(state.selected().unwrap().path, ROOT_PATH);
         state.collapse();
@@ -1008,5 +1003,28 @@ mod tests {
         // up past the top: it follows again
         tree.select_index(1);
         assert!(top(&tree).contains("f0.rs"), "{}", top(&tree));
+    }
+
+    #[test]
+    fn test_half_page_jumps() {
+        let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
+        let mut tree = FileTreeState::new(
+            FileTree::new(paths.iter().map(String::as_str)),
+            TreeShape::Rooted,
+        );
+        // drawn once: the half page counts the rows the tree is shown in
+        let _ = draw_tree(&tree, 4, TreeCursor::Bright, "");
+        tree.select_index(0);
+        tree.navigate(UserEvent::HalfPageDown);
+        assert_eq!(tree.cursor(), 2);
+        tree.navigate(UserEvent::HalfPageDown);
+        assert_eq!(tree.cursor(), 4);
+        tree.navigate(UserEvent::HalfPageUp);
+        assert_eq!(tree.cursor(), 2);
+        // the last row, not past it
+        for _ in 0..10 {
+            tree.navigate(UserEvent::HalfPageDown);
+        }
+        assert_eq!(tree.cursor(), 10);
     }
 }

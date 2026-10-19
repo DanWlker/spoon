@@ -23,10 +23,7 @@ use crate::{
     widget::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
-        style::{
-            mark_selected_row, panel_block, panel_title, render_panel_scrollbar, HalfPage,
-            ListCursor,
-        },
+        style::{mark_selected_row, panel_block, panel_title, render_panel_scrollbar, ListCursor},
         tree_query::{find_around, QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -127,8 +124,8 @@ impl TimelineView {
                     self.tx.send(AppEvent::CloseOverlay);
                 }
             }
-            UserEvent::FocusPanel(0) => while self.pane.back() {},
-            UserEvent::FocusPanel(1) | UserEvent::NavigateRight if !in_diff => {
+            UserEvent::FocusPanel(1) => while self.pane.back() {},
+            UserEvent::FocusPanel(2) | UserEvent::NavigateRight if !in_diff => {
                 self.pane.enter();
             }
             UserEvent::NavigateLeft if in_diff => {
@@ -149,19 +146,23 @@ impl TimelineView {
         }
     }
 
-    // The keys on the commits: moving, and acting on the selected one; the scroll keys scroll the
-    // diff.
+    // The keys on the commits: moving, and acting on the selected one; every scroll key moves
+    // the commits.
     fn handle_commits_event(&mut self, event: UserEvent, repository: &Repository) {
-        let moved = self
-            .cursor
-            .moved_to(event, self.history.len(), HalfPage::List);
+        let total = self.history.len();
+        let moved = self.cursor.moved_to(event, total);
         if let Some(index) = moved {
             self.select(index, repository);
-        } else if !self.pane.scroll(event) {
-            let commit = &self.history[self.cursor.selected()].commit;
-            if let Some(event) = commit_event(event, commit) {
-                self.tx.send(event);
-            }
+            return;
+        }
+        let mut cursor = self.cursor;
+        if cursor.navigate(event, total) {
+            self.select(cursor.selected(), repository);
+            return;
+        }
+        let commit = &self.history[self.cursor.selected()].commit;
+        if let Some(event) = commit_event(event, commit) {
+            self.tx.send(event);
         }
     }
 
@@ -297,7 +298,7 @@ impl TimelineView {
             "Go to the next/previous match",
         );
         k.add(
-            &[FocusPanel(0), FocusPanel(1)],
+            &[FocusPanel(1), FocusPanel(2)],
             "focus panel",
             "Focus the commits/the diff",
         );
@@ -348,7 +349,7 @@ impl TimelineView {
         let position = format!("{}/{count}", count - self.cursor.selected());
         let notes = [position].into_iter().chain(indicator(focused));
         let block =
-            panel_block(focused, theme).title(panel_title("[0] Commits", notes, focused, theme));
+            panel_block(focused, theme).title(panel_title("[1] Commits", notes, focused, theme));
         let inner = block.inner(list_area);
         block.render(list_area, buf);
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
@@ -368,7 +369,7 @@ impl TimelineView {
         // the file's changes in it
         let path = self.history[self.cursor.selected()].path.clone();
         let notes = [path].into_iter().chain(indicator(!focused));
-        let title = panel_title("[1] Diff", notes, !focused, theme);
+        let title = panel_title("[2] Diff", notes, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
         self.pane
             .render_panel(diff_area, title, buf, &ctx, !focused, search);

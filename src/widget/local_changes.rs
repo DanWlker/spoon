@@ -185,6 +185,8 @@ pub enum CommitField {
 enum Focus {
     // the files of the current section
     Files,
+    // the submodule panel beside the files, shown in place of the gitlink diff
+    Submodule,
     // the panel beside the files: the hunks or lines of the diff (see `DiffPane`), or the
     // choices of the conflict panel shown instead for a conflicted file
     Side,
@@ -436,7 +438,7 @@ impl<'a> LocalChangesState<'a> {
     // in the details, and the conflict panel once entered.
     fn focus(&self) -> Focus {
         match self.chosen {
-            Focus::Files | Focus::Side if self.conflict.is_none() => {
+            Focus::Files | Focus::Side if self.conflict.is_none() && self.submodule.is_none() => {
                 if self.pane.is_focused() {
                     Focus::Side
                 } else {
@@ -450,6 +452,11 @@ impl<'a> LocalChangesState<'a> {
     // Selecting hunks or lines in the diff.
     pub fn is_diff_focused(&self) -> bool {
         self.focus() == Focus::Side && self.conflict.is_none()
+    }
+
+    // Scrolling the submodule panel shown in place of a gitlink diff.
+    pub fn is_submodule_focused(&self) -> bool {
+        self.focus() == Focus::Submodule
     }
 
     #[cfg(test)]
@@ -1274,6 +1281,9 @@ impl<'a> LocalChangesState<'a> {
                     self.pane.enter();
                 }
             },
+            Focus::Submodule => {}
+            // the submodule panel is read on its own, like the diff
+            Focus::Files if self.submodule.is_some() => self.chosen = Focus::Submodule,
             Focus::Files if self.picked().is_empty() && self.conflict.is_some() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
                 if let Some(conflict) = self.conflict.as_mut() {
@@ -1311,6 +1321,7 @@ impl<'a> LocalChangesState<'a> {
             Focus::Typing(field) => self.chosen = Focus::Commit(field),
             Focus::Commit(_) => self.chosen = Focus::Files,
             Focus::Side if self.conflict.is_some() => self.chosen = Focus::Files,
+            Focus::Submodule => self.chosen = Focus::Files,
             Focus::Side if self.pane.is_selecting_lines() => {
                 self.pane.back();
             }
@@ -1337,9 +1348,11 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(self.focus() != Focus::Files);
             }
             (Focus::Side, Direction::Down) => self.focus_commit(),
-            (Focus::Side | Focus::Commit(_) | Focus::Typing(_), Direction::Left) => {
-                self.focus_files()
-            }
+            (Focus::Submodule, Direction::Down) => self.focus_commit(),
+            (
+                Focus::Submodule | Focus::Side | Focus::Commit(_) | Focus::Typing(_),
+                Direction::Left,
+            ) => self.focus_files(),
             // into the diff of the selected file, else its files
             (Focus::Commit(_) | Focus::Typing(_), Direction::Up) => {
                 self.focus_files();
@@ -1377,10 +1390,27 @@ impl<'a> LocalChangesState<'a> {
         self.step(Step::Last, |_| usize::MAX);
     }
 
+    // Moves the cursor of the files by every key scrolling the list; returns whether the cursor
+    // moved.
+    pub fn navigate_files(&mut self, event: UserEvent) -> bool {
+        let before = self.cursor();
+        self.tree_mut().navigate(event);
+        let moved = self.cursor() != before;
+        if moved {
+            self.diff_stale = true;
+        }
+        moved
+    }
+
     // Moves the selected line or hunk, else the cursor of the files to `row`.
     fn step(&mut self, step: Step, row: impl Fn(&Self) -> usize) {
         match self.focus() {
             Focus::Side if self.conflict.is_none() => self.pane.step(step),
+            Focus::Submodule => {
+                if let Some(submodule) = &mut self.submodule {
+                    submodule.step(step);
+                }
+            }
             // the summary, or the description under it
             Focus::Commit(_) | Focus::Typing(_) => {
                 let field = match step {
@@ -1396,13 +1426,20 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Scrolls the diff by the scroll keys, or moves the selected line half a page; returns
-    // whether `event` was one. The submodule panel scrolls itself, there being no diff.
-    pub fn scroll_diff(&mut self, event: UserEvent) -> bool {
-        if let Some(submodule) = &mut self.submodule {
-            return submodule.scroll(event);
+    // Scrolls what has the focus by every key scrolling it: the files or the submodule move, the
+    // commit message scrolls, and the diff or the conflict sides scroll. Returns whether `event`
+    // was one of them.
+    pub fn scroll(&mut self, event: UserEvent) -> bool {
+        match self.focus() {
+            Focus::Files => self.navigate_files(event),
+            Focus::Submodule => self
+                .submodule
+                .as_mut()
+                .is_some_and(|submodule| submodule.navigate(event)),
+            Focus::Commit(field) => self.draft.field_mut(field).scroll(event),
+            Focus::Side => self.pane.scroll(event),
+            Focus::Typing(_) => false,
         }
-        self.pane.scroll(event)
     }
 
     // Prepares the graph images of the submodule panel, if one is shown, see `CommitListState`.
@@ -1455,6 +1492,8 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(());
             }
             Focus::Side if self.conflict.is_some() => return Ok(()),
+            // the submodule panel is read-only
+            Focus::Submodule => Ok(()),
             Focus::Side => {
                 // the patch is made and applied the same way
                 let direction = self.patch_direction();
@@ -2120,10 +2159,11 @@ impl LocalChangesPanel<'_> {
             Span::raw(format!(" {path} ")).fg(theme.fg),
             badge(" submodule changed ", theme.status_warn_fg, theme),
         ]);
+        let focused = self.focused && state.is_submodule_focused();
         let Some(submodule) = state.submodule.as_mut() else {
             return;
         };
-        submodule.render_framed(&self.ctx, area, buf, title, false);
+        submodule.render_framed(&self.ctx, area, buf, title, focused);
     }
 
     fn render_commit(&self, state: &LocalChangesState, area: Rect, buf: &mut Buffer) {
@@ -2401,6 +2441,14 @@ mod tests {
         assert_eq!(submodule.subjects(), ["second"]);
         // the gitlink diff isn't shown, there is nothing to enter in it
         assert!(state.pane.diff().is_none());
+
+        // the files have the focus; Enter focuses the submodule panel, Esc goes back
+        assert!(state.is_files_focused());
+        state.enter()?;
+        assert!(state.is_submodule_focused());
+        assert!(!state.is_files_focused());
+        state.back();
+        assert!(state.is_files_focused());
         Ok(())
     }
 
@@ -2527,6 +2575,70 @@ mod tests {
         // the row it stops on is loaded once, before the next key or the next frame
         state.load_stale_diff();
         assert!(diff(&state).raw.contains("+c.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_half_page_moves_the_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        for i in 0..30 {
+            fs::write(repo_path.join(format!("u{i:02}.txt")), "x\n")?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        // drawn once: the half page counts the rows the files are shown in
+        let area = Rect::new(0, 0, 90, 20);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+            .render(area, &mut buf, &mut state);
+
+        let first = state.cursor();
+        state.scroll(UserEvent::HalfPageDown);
+        let jumped = state.cursor();
+        assert!(jumped > first, "the files didn't move");
+        // down again, then back up: the same rows as coming down
+        state.scroll(UserEvent::HalfPageDown);
+        assert!(state.cursor() > jumped);
+        state.scroll(UserEvent::HalfPageUp);
+        assert_eq!(state.cursor(), jumped);
+        state.scroll(UserEvent::HalfPageUp);
+        assert_eq!(state.cursor(), first);
+        Ok(())
+    }
+
+    #[test]
+    fn test_scroll_keys_scroll_the_commit_message() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let body: String = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state.draft.set_message(&format!("subject\n\n{body}"));
+        // the message is on the description box, its 3 lines shown
+        state.focus_commit();
+        state.select_next();
+        let area = Rect::new(0, 0, 90, 20);
+        let shown = |state: &mut LocalChangesState| {
+            let mut buf = ratatui::buffer::Buffer::empty(area);
+            LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+                .render(area, &mut buf, state);
+            crate::test_support::ui::dump(&buf)
+        };
+        let top = shown(&mut state);
+        assert!(state.scroll(UserEvent::HalfPageDown));
+        assert_ne!(shown(&mut state), top, "the message didn't scroll");
+        assert!(state.scroll(UserEvent::GoToTop));
+        assert_eq!(shown(&mut state), top);
         Ok(())
     }
 

@@ -172,8 +172,8 @@ impl BlameView {
                     self.tx.send(AppEvent::CloseOverlay);
                 }
             }
-            UserEvent::FocusPanel(0) => self.focus = BlameFocus::Revision,
-            UserEvent::FocusPanel(1) if !body => self.focus = BlameFocus::Commit,
+            UserEvent::FocusPanel(1) => self.focus = BlameFocus::Revision,
+            UserEvent::FocusPanel(2) if !body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateLeft if body => self.focus = BlameFocus::Commit,
             UserEvent::NavigateRight if body => self.focus = BlameFocus::Text,
             UserEvent::NavigateDown if !body => self.focus = BlameFocus::Commit,
@@ -382,7 +382,7 @@ impl BlameView {
         )
         .when(body);
         k.quiet(
-            &[FocusPanel(0), FocusPanel(1)],
+            &[FocusPanel(1), FocusPanel(2)],
             "Focus the commit shown (also up from the first line)/the lines",
         );
         k.add(
@@ -419,7 +419,7 @@ impl BlameView {
         let (count, revision) = (self.history.len(), &self.history[self.index]);
         let position = format!("{}/{count}", count - self.index);
         let block = panel_block(focused, theme).title(panel_title(
-            "[0] Commit",
+            "[1] Commit",
             [position],
             focused,
             theme,
@@ -441,7 +441,7 @@ impl BlameView {
             .into_iter()
             .chain(self.query.indicator());
         let block =
-            panel_block(focused, theme).title(panel_title("[1] Blame", notes, focused, theme));
+            panel_block(focused, theme).title(panel_title("[2] Blame", notes, focused, theme));
         let inner = block.inner(body);
         block.render(body, buf);
         let author_width = self.author_width;
@@ -605,10 +605,10 @@ mod tests {
         assert_eq!(view.focus, BlameFocus::Revision);
         view.move_focus(Direction::Down);
         assert_eq!(view.focus, BlameFocus::Commit);
-        // 0 and 1 too
-        press(&mut view, UserEvent::FocusPanel(0));
-        assert_eq!(view.focus, BlameFocus::Revision);
+        // 1 and 2 too
         press(&mut view, UserEvent::FocusPanel(1));
+        assert_eq!(view.focus, BlameFocus::Revision);
+        press(&mut view, UserEvent::FocusPanel(2));
         assert_eq!(view.focus, BlameFocus::Commit);
 
         // left and right on the commit shown step through the history too

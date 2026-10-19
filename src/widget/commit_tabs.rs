@@ -46,7 +46,7 @@ impl DetailTab {
     }
 
     pub fn from_number(n: usize) -> Option<Self> {
-        Self::ALL.get(n.checked_sub(2)?).copied()
+        Self::ALL.get(n.checked_sub(3)?).copied()
     }
 
     fn title(self) -> &'static str {
@@ -73,7 +73,7 @@ pub fn render_tab_titles(
         .iter()
         .enumerate()
         .map(|(i, tab)| {
-            let title = format!(" [{}] {} ", i + 2, tab.title());
+            let title = format!(" [{}] {} ", i + 3, tab.title());
             if *tab == current && focused {
                 focused_title(title, theme)
             } else if *tab == current {
@@ -798,10 +798,10 @@ mod tests {
             let mut buf = Buffer::empty(area);
             render_tab_titles(DetailTab::Changes, focused, None, &theme, area, &mut buf);
             let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-            let x = row.find("[3] Changes").unwrap() as u16;
+            let x = row.find("[4] Changes").unwrap() as u16;
             // the same title drawn like the other panels'
             let mut expected = Buffer::empty(area);
-            panel_title("[3] Changes", [], focused, &theme).render(area, &mut expected);
+            panel_title("[4] Changes", [], focused, &theme).render(area, &mut expected);
             assert_eq!(buf[(x, 0)], expected[(1, 0)], "focused: {focused}");
         }
     }
@@ -847,7 +847,9 @@ mod tests {
         );
         assert_eq!(selected(&state.tree), "src/a.rs");
         assert!(state.pane.diff().unwrap().raw.contains("+changed"));
-        state.update_tree(FileTreeState::select_last);
+        state.update_tree(|tree| {
+            tree.navigate(UserEvent::GoToBottom);
+        });
         assert!(state
             .pane
             .diff()
@@ -856,7 +858,9 @@ mod tests {
             .contains("rename from README"));
 
         // the root row shows the diff of the whole commit
-        state.update_tree(FileTreeState::select_first);
+        state.update_tree(|tree| {
+            tree.navigate(UserEvent::GoToTop);
+        });
         let raw = &state.pane.diff().unwrap().raw;
         assert!(raw.contains("+changed") && raw.contains("rename from README"));
 
@@ -881,7 +885,9 @@ mod tests {
         assert_eq!(visible(tree), vec!["src", "DOC.md", "image.bin"]);
         assert!(matches!(state.preview, Some(FilePreview::Directory)));
         state.update_tree(FileTreeState::toggle);
-        state.update_tree(FileTreeState::select_next);
+        state.update_tree(|tree| {
+            tree.navigate(UserEvent::NavigateDown);
+        });
         assert_eq!(selected(state.tree.as_ref().unwrap()), "src/a.rs");
         assert!(
             matches!(
@@ -889,12 +895,18 @@ mod tests {
                 Some(FilePreview::Text | FilePreview::TextFocused)
             ) && state.text.lines() == ["a", "changed"]
         );
-        state.update_tree(FileTreeState::select_last);
+        state.update_tree(|tree| {
+            tree.navigate(UserEvent::GoToBottom);
+        });
         assert!(matches!(state.preview, Some(FilePreview::Binary)));
 
         // another commit keeps the expanded directories and the selection
-        state.update_tree(FileTreeState::select_first);
-        state.update_tree(FileTreeState::select_next);
+        state.update_tree(|tree| {
+            tree.navigate(UserEvent::GoToTop);
+        });
+        state.update_tree(|tree| {
+            tree.navigate(UserEvent::NavigateDown);
+        });
         let (first_commit, first_changes) = repository.commit_detail(&first);
         state.set_commit(&first_commit, &first_changes);
         state.ensure_loaded();

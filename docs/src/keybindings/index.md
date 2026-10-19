@@ -15,7 +15,7 @@ The default key bindings can be overridden.
 | <kbd>Ctrl-c</kbd> <kbd>q</kbd> | Quit app    | `force_quit` `quit`   |
 | <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
 | <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
-| <kbd>0</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_0` |
+| <kbd>1</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_1` |
 | <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> | Move the border beside the focused panel: the sidebar's, the one between the files and the diff, or after the commits of the blame and the timeline | `resize_left` `resize_right` |
 | <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
 | <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> <kbd>Alt-h</kbd> <kbd>Alt-l</kbd> <kbd>Alt-k</kbd> <kbd>Alt-j</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
@@ -28,7 +28,7 @@ The default key bindings can be overridden.
 | <kbd>p</kbd>                   | Pull a branch of a remote (chosen in a popup) | `pull` |
 | <kbd>P</kbd>                   | Push a branch to a remote (chosen in a popup) | `push` |
 
-The command log (<kbd>@</kbd>) lists the git commands the app ran that changed the repository, the newest first: whether each succeeded, when it ran, how long it took, and the command. The output of the selected one (its last 200 lines) is under them, the full story of an error shown at the top right. <kbd>j/k</kbd> move, <kbd>Ctrl-d/u</kbd> scroll the output, <kbd>y</kbd> copies the command and its output, <kbd>Esc</kbd> or <kbd>@</kbd> closes it. Reading commands, like those of the refresh every few seconds, aren't logged; the last 500 commands are kept until the app quits, and a password in a URL is shown as `***`.
+The command log (<kbd>@</kbd>) lists the git commands the app ran that changed the repository, the newest first: whether each succeeded, when it ran, how long it took, and the command. The output of the selected one (its last 200 lines) is under them, the full story of an error shown at the top right. <kbd>1</kbd> and <kbd>2</kbd> focus the commands and the output. With the commands focused, every scroll key (<kbd>j/k</kbd>, <kbd>Ctrl-d/u</kbd>, the page and line keys, <kbd>g/G</kbd>) moves between them, the output shown from the top; with the output focused, they scroll it. <kbd>y</kbd> copies the command and its output, <kbd>Esc</kbd> or <kbd>@</kbd> closes it. Reading commands, like those of the refresh every few seconds, aren't logged; the last 500 commands are kept until the app quits, and a password in a URL is shown as `***`.
 
 The borders between the panels can also be dragged with the mouse. The sizes are kept until the app quits.
 With the mouse captured, the terminal selects text while Shift is held.
@@ -60,7 +60,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
-| <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show commit details on the info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
+| <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show commit details on the info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
 | <kbd>v</kbd>                         | Pick/Unpick commit (the status line shows how many) | `toggle_select`                             |
 | <kbd>]v</kbd> <kbd>[v</kbd>          | Go to next/previous picked commit                  | `next_picked` `previous_picked`              |
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
@@ -117,7 +117,7 @@ Drop rewrites the commits after the ones dropped too, so like squash and amend t
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
 The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them.
 
-These keys are bound for the commit graph only: the local changes page uses <kbd>d</kbd> <kbd>c</kbd> <kbd>C</kbd> <kbd>s</kbd> for its own commands. While the commit details are open, they work with the commit list focused (<kbd>1</kbd>), not from the tabs of the details.
+These keys are bound for the commit graph only: the local changes page uses <kbd>d</kbd> <kbd>c</kbd> <kbd>C</kbd> <kbd>s</kbd> for its own commands. While the commit details are open, they work with the commit list focused (<kbd>2</kbd>), not from the tabs of the details.
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash                        | `short_copy` `full_copy`                     |
 
 #### Commit Detail
@@ -126,15 +126,15 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | ------------------------------------ | ------------------------------- | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the picked commits, then the search and filter, then close commit details | `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll half page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-f/b</kbd>                  | Select the files page down/up; scroll the diff or preview page down/up while it has the focus; jump a page while selecting hunks or lines | `page_down` `page_up`           |
+| <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
 | <kbd>y/Y</kbd>                       | Copy commit short/full hash; in the changes and files tabs, the relative/absolute path of the selected file | `short_copy` `full_copy` |
 | <kbd>i</kbd>                         | Add the selected file or directory to `.gitignore`, in the changes and files tabs | `ignore` |
-| <kbd>1</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_1` |
-| <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> | Show info / changes / files tab | `focus_panel_2` `focus_panel_3` `focus_panel_4` |
+| <kbd>2</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_2` |
+| <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus (with the commit list focused, they start <kbd>]v</kbd> <kbd>[v</kbd>) | `next_tab` `previous_tab` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs); search the diff while it has the focus | `search` `filter` |
@@ -148,8 +148,8 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 The commit detail has three tabs:
 
 - **Info**: the commit information. <kbd>j/k</kbd> scroll it.
-- **Changes**: the changed files as a tree under a `/` row standing for all of them, like on the local changes page, expanded by default, with the diff of the selected file (or directory, or `/` for the whole commit) beside it. <kbd>j/k</kbd> select a file, the scroll keys scroll the diff (from the files too).
-- **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> select a file, the scroll keys scroll the preview.
+- **Changes**: the changed files as a tree under a `/` row standing for all of them, like on the local changes page, expanded by default, with the diff of the selected file (or directory, or `/` for the whole commit) beside it. <kbd>j/k</kbd> and the scroll keys select a file; the diff is scrolled with them only while it has the focus.
+- **Files**: all files of the commit as a tree, collapsed by default, with a preview of the selected file beside it. <kbd>j/k</kbd> and the scroll keys select a file; the preview is scrolled with them only while it has the focus.
 
 In the files tab, <kbd>Enter</kbd> moves the focus into the preview of the selected file (on a directory, it expands or collapses it instead of closing the details): <kbd>j/k</kbd> select a line, <kbd>y</kbd> copies it as in the file, <kbd>/</kbd> searches the file (<kbd>n/N</kbd> next/previous match), and <kbd>Esc</kbd> goes back to the files.
 
@@ -214,11 +214,13 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | ---------------------------------------------------- | ---------------- | -------------------------------- |
 | <kbd>Esc</kbd>                  | Back to the page | `cancel`                 |
 | <kbd>Enter</kbd>                                     | Open/Close node, else back to the page | `confirm`              |
-| <kbd>1</kbd> - <kbd>4</kbd>                          | Focus a panel of the page | `focus_panel_1` ... `focus_panel_4` |
+| <kbd>2</kbd> - <kbd>5</kbd>                          | Focus a panel of the page | `focus_panel_2` ... `focus_panel_5` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
 | <kbd>Ctrl-d/u</kbd>                                | Jump half page down/up, scrolling as needed | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-f/b</kbd>                                | Scroll a page down/up | `page_down` `page_up`           |
+| <kbd>Ctrl-e/y</kbd>                                | Scroll down/up   | `scroll_down` `scroll_up`        |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
 | <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
@@ -247,13 +249,13 @@ The commands on the refs ask first, in a popup:
 - <kbd>L</kbd> on a local branch shows only its commits in the graph, and on it again all of them; on other rows, only those of the current branch, like on the graph.
 - <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
 
-The refs are always shown on the left. <kbd>0</kbd> focuses them, and the page shows what is selected:
+The refs are always shown on the left. <kbd>1</kbd> focuses them, and the page shows what is selected:
 `Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.
 <kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file). The bar at the top shows the page open and the count of local changes; the sidebar is on the commit graph only.
 
-In the commit graph, <kbd>1</kbd> focuses the commit list and <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd> open the details of the selected commit on the info / changes / files tab.
+In the commit graph, <kbd>2</kbd> focuses the commit list and <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> open the details of the selected commit on the info / changes / files tab.
 Coming back to the commit graph from the local changes page (<kbd>Tab</kbd>), the details open again as they were, with the focus on the commit list.
-While the details are open, <kbd>1</kbd> moves the focus to the commit list above, where moving the selection shows the details of each commit, and <kbd>2</kbd> - <kbd>4</kbd> or <kbd>Enter</kbd> go back to the details; <kbd>Esc</kbd> there clears the picked commits, but doesn't close the details.
+While the details are open, <kbd>2</kbd> moves the focus to the commit list above, where moving the selection shows the details of each commit, and <kbd>3</kbd> - <kbd>5</kbd> or <kbd>Enter</kbd> go back to the details; <kbd>Esc</kbd> there clears the picked commits, but doesn't close the details.
 
 #### Local Changes
 
@@ -284,14 +286,14 @@ While the details are open, <kbd>1</kbd> moves the focus to the commit list abov
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Select next/previous file, hunk or line                      | `navigate_down` `navigate_up`   |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
-| <kbd>Ctrl-f/b</kbd>                  | Scroll diff page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll diff half page down/up; jump half page while selecting hunks or lines | `half_page_down` `half_page_up` |
-| <kbd>Ctrl-e/y</kbd>                  | Scroll diff down/up                                          | `scroll_down` `scroll_up`       |
+| <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
+| <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                                | `scroll_down` `scroll_up`       |
 | <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
 
-While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end.
+While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end. From the files, every scroll key moves the files, like the other lists; the diff, the commit message or a submodule panel is scrolled with them only while it has the focus.
 
-Selecting a submodule shows the panel beside the files in place of the gitlink diff: how many files are uncommitted inside it, and the commits it has that the recorded gitlink doesn't, drawn with the graph like the commit list. A submodule changed by a commit shows the same list, between the gitlink it recorded and the previous one, on the changes tab of the commit details. The parent repository can only stage the gitlink, so those commits and files are made in the submodule itself. A submodule that isn't checked out says so.
+Selecting a submodule shows the panel beside the files in place of the gitlink diff: how many files are uncommitted inside it, and the commits it has that the recorded gitlink doesn't, drawn with the graph like the commit list. <kbd>Enter</kbd> focuses it, so the scroll keys move its commits; <kbd>Esc</kbd> goes back to the files. A submodule changed by a commit shows the same list, between the gitlink it recorded and the previous one, on the changes tab of the commit details. The parent repository can only stage the gitlink, so those commits and files are made in the submodule itself. A submodule that isn't checked out says so.
 
 <kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section, or on an empty unstaged section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
@@ -306,12 +308,12 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 
 #### Blame
 
-<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **[0] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **[1] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
+<kbd>B</kbd> on a file shows who last changed each line of it, in a window over everything, named in the page bar with the file: at the top, **[1] Commit**, the commit it is shown as of (the last one changing the file, up to the commit of the details) with its date and subject; below, **[2] Blame**, the commit, author and date of each line beside its text, given on the first line of each run of lines from the same commit.
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the search, back to the commit shown, then close       | `cancel`                |
-| <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_0` `focus_panel_1` `focus_up` `focus_down` |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_1` `focus_panel_2` `focus_up` `focus_down` |
 | <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
@@ -326,12 +328,12 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 
 #### Timeline
 
-<kbd>T</kbd> on a file shows the commits changing it, renames followed, in a window over everything, named in the page bar with the file: **[0] Commits**, the newest first, on the last one changing it up to the commit of the details; beside them, **[1] Diff**, the file's changes in the selected commit.
+<kbd>T</kbd> on a file shows the commits changing it, renames followed, in a window over everything, named in the page bar with the file: **[1] Commits**, the newest first, on the last one changing it up to the commit of the details; beside them, **[2] Diff**, the file's changes in the selected commit.
 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the search, back out of the lines and hunks, then close | `cancel`               |
-| <kbd>0</kbd> <kbd>1</kbd> <kbd>Alt-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_0` `focus_panel_1` `focus_left` `focus_right` |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>Alt-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_1` `focus_panel_2` `focus_left` `focus_right` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Into the diff (its hunks)/back out of it                     | `navigate_right` `navigate_left` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
@@ -341,7 +343,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the commits (by hash, date or subject), or the diff while it has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
 
-In both windows, <kbd>,</kbd> dismisses the notices, <kbd>w</kbd> wraps long lines and <kbd>Ctrl-Left/Right</kbd> move the border after the commits, as everywhere. The scroll keys scroll the diff from the commits too. A commit whose diff has no hunk, like a rename, puts the focus back on the commits.
+In both windows, <kbd>,</kbd> dismisses the notices, <kbd>w</kbd> wraps long lines and <kbd>Ctrl-Left/Right</kbd> move the border after the commits, as everywhere. Every scroll key moves the commits. A commit whose diff has no hunk, like a rename, puts the focus back on the commits.
 
 #### Help
 

@@ -19,7 +19,7 @@ use crate::{
         file_tree::{keep_guide_color, tree_guides},
         style::{
             fold_marker, mark_picked_row, mark_selected_row, panel_title, render_panel,
-            render_panel_scrollbar, spinner, HalfPage, ListCursor,
+            render_panel_scrollbar, spinner, ListCursor,
         },
     },
 };
@@ -255,14 +255,16 @@ impl RefListState {
         self.cursor.fit(height, self.visible_rows.len(), scrolloff);
     }
 
-    // Moves the selection by the movement keys, see `ListCursor::moved_to`; returns whether
-    // `event` was one of them.
+    // Moves by every key scrolling the sidebar: the movement keys, ctrl-d and ctrl-u, and the
+    // page and line keys; returns whether `event` was one of them.
     pub fn handle_move(&mut self, event: UserEvent) -> bool {
         let total = self.visible_rows.len();
-        let Some(index) = self.cursor.moved_to(event, total, HalfPage::List) else {
+        let mut cursor = self.cursor;
+        if !cursor.navigate(event, total) {
             return false;
-        };
-        self.select_visible_index(index);
+        }
+        self.cursor = cursor;
+        self.select_visible_index(self.cursor.selected());
         true
     }
 
@@ -512,7 +514,7 @@ impl StatefulWidget for RefList {
         let focused = self.mode == SidebarMode::Focused;
         // only the title is shown
         let collapsed = self.mode == SidebarMode::Collapsed;
-        let label = if collapsed { "[0]" } else { "[0] Refs" };
+        let label = if collapsed { "[1]" } else { "[1] Refs" };
         let picked = match state.picked.len() {
             0 => None,
             n if collapsed => Some(n.to_string()),

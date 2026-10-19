@@ -24,7 +24,7 @@ use crate::{
     widget::{
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
-            HalfPage, ListCursor,
+            ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
@@ -243,26 +243,6 @@ impl<'a> CommitListState<'a> {
         self.cursor.fit(height, self.commits.len(), self.scrolloff);
     }
 
-    // Scrolls a read-only list by the scroll keys, moving the selection along like the commit
-    // list does; the submodule panel, which has no keys of its own. False for other events.
-    pub fn scroll(&mut self, event: UserEvent) -> bool {
-        let total = self.commits.len();
-        match event {
-            UserEvent::ScrollDown => self.cursor.scroll_lines(1, total),
-            UserEvent::ScrollUp => self.cursor.scroll_lines(-1, total),
-            UserEvent::PageDown => self.cursor.scroll_pages(1, total),
-            UserEvent::PageUp => self.cursor.scroll_pages(-1, total),
-            UserEvent::HalfPageDown => self
-                .cursor
-                .scroll_lines(self.cursor.height() as isize / 2, total),
-            UserEvent::HalfPageUp => self
-                .cursor
-                .scroll_lines(-(self.cursor.height() as isize / 2), total),
-            _ => return false,
-        }
-        true
-    }
-
     pub fn ensure_visible_graph_uploaded(&mut self) {
         self.commits
             .iter()
@@ -341,10 +321,7 @@ impl<'a> CommitListState<'a> {
 
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
-        if let Some(index) = self
-            .cursor
-            .moved_to(event, self.commits.len(), HalfPage::List)
-        {
+        if let Some(index) = self.cursor.moved_to(event, self.commits.len()) {
             self.select_visible_index(index);
         }
     }
@@ -644,7 +621,7 @@ pub fn render_commit_list_panel<'a>(
     };
     let notes = state.filter_note.iter().cloned().chain(picked);
     let block =
-        panel_block(focused, theme).title(panel_title("[1] Commits", notes, focused, theme));
+        panel_block(focused, theme).title(panel_title("[2] Commits", notes, focused, theme));
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);

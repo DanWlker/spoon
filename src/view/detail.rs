@@ -323,7 +323,7 @@ impl<'a> DetailView<'a> {
         k.quiet(&[SelectDown, SelectUp], "Select the older/newer commit")
             .when(|v| on(Info)(v) || files(v));
         k.quiet(
-            &[FocusPanel(1), FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+            &[FocusPanel(2), FocusPanel(3), FocusPanel(4), FocusPanel(5)],
             "Focus the commit list, the info, changes or files",
         );
     }
@@ -403,6 +403,12 @@ impl<'a> DetailView<'a> {
     #[cfg(test)]
     pub fn changed_paths(&self) -> Vec<&str> {
         self.changes_state.paths()
+    }
+
+    // The path selected in the file tree of the tab, for the tests.
+    #[cfg(test)]
+    pub fn selected_path(&self) -> Option<String> {
+        self.selected_row().map(|row| row.path.clone())
     }
 
     // Whether the comparison is shown.
@@ -518,11 +524,11 @@ impl<'a> DetailView<'a> {
             return;
         }
         if let UserEvent::FocusPanel(n) = event {
-            if n == 1 {
+            if n == 2 {
                 self.list_focused = true;
             } else if self.shows_compare() {
-                // the comparison only has changes, in [2]
-                if n == 2 {
+                // the comparison only has changes, in [3]
+                if n == 3 {
                     self.list_focused = false;
                 }
             } else if let Some(tab) = DetailTab::from_number(n) {
@@ -720,9 +726,9 @@ impl<'a> DetailView<'a> {
         let indicator = self.query().and_then(TreeQuery::indicator);
         let detail_area = panel_area;
         match &self.compare {
-            // the panel 2, like the tabs
+            // the panel 3, like the tabs
             Comparing::Shown(compare) => render_compare_title(
-                &format!("[2] {}", compare.title()),
+                &format!("[3] {}", compare.title()),
                 focused,
                 indicator,
                 &self.ctx.color_theme,
@@ -871,7 +877,12 @@ impl<'a> DetailView<'a> {
             self.tx.send(AppEvent::NotifyWarn(CONVERTED_DIFF.into()));
             return true;
         }
-        if event == UserEvent::ApplyChange || self.changes_state.pane.scroll(event) {
+        if event == UserEvent::ApplyChange {
+            return true;
+        }
+        // the diff gets the scroll keys while it has the focus; from the files they move the
+        // files, like the other lists
+        if self.changes_state.pane.is_focused() && self.changes_state.pane.scroll(event) {
             return true;
         }
         let state = &mut self.changes_state;
@@ -946,15 +957,15 @@ impl<'a> DetailView<'a> {
         true
     }
 
-    // Returns whether the event was handled by the files tab: scrolling the preview from the files
-    // or the preview, and the files.
+    // Returns whether the event was handled by the files tab: the files, or the scroll keys on
+    // the preview while it has the focus.
     fn handle_files_event(&mut self, event: UserEvent) -> bool {
         let state = &mut self.files_state;
         let preview_focused = state.is_preview_focused();
         match event {
             // into the preview of a file; a directory opens or closes
             UserEvent::Confirm if !preview_focused && state.enter() => {}
-            // ctrl-d and ctrl-u too, the preview being what is read, see `HalfPage::Pane`
+            // the page and line scroll keys scroll the preview while it has the focus
             _ if state.scroll_preview(event) => {}
             _ if preview_focused => return false,
             _ => {
@@ -1226,10 +1237,18 @@ fn handle_tree_event(
     mut update: impl FnMut(&dyn Fn(&mut FileTreeState)),
 ) -> bool {
     match event {
-        UserEvent::NavigateDown => update(&FileTreeState::select_next),
-        UserEvent::NavigateUp => update(&FileTreeState::select_prev),
-        UserEvent::GoToTop => update(&FileTreeState::select_first),
-        UserEvent::GoToBottom => update(&FileTreeState::select_last),
+        UserEvent::NavigateDown
+        | UserEvent::NavigateUp
+        | UserEvent::GoToTop
+        | UserEvent::GoToBottom
+        | UserEvent::HalfPageDown
+        | UserEvent::HalfPageUp
+        | UserEvent::PageDown
+        | UserEvent::PageUp
+        | UserEvent::ScrollDown
+        | UserEvent::ScrollUp => update(&|tree: &mut FileTreeState| {
+            tree.navigate(event);
+        }),
         UserEvent::NavigateRight => update(&FileTreeState::expand),
         UserEvent::NavigateLeft => update(&FileTreeState::collapse),
         // enter expands and collapses directories instead of closing the details

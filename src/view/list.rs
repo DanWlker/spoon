@@ -293,7 +293,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
             "Fold/unfold the selected merge commit",
         ),
         (
-            vec![FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+            vec![FocusPanel(3), FocusPanel(4), FocusPanel(5)],
             "Show the info/changes/files of the commit",
         ),
     ];

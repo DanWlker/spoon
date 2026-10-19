@@ -15,6 +15,7 @@ use crate::{
     graph,
     widget::{
         commit_list::{submodule_commit_list, CommitList, CommitListState},
+        diff::Step,
         style::{placeholder, render_panel, render_panel_scrollbar, render_scrollbar},
     },
 };
@@ -157,9 +158,25 @@ impl<'a> SubmodulePanel<'a> {
         }
     }
 
-    // Scrolls the commits by the scroll keys; false for other events or nothing to scroll.
-    pub fn scroll(&mut self, event: UserEvent) -> bool {
-        self.list.as_mut().is_some_and(|list| list.scroll(event))
+    // Moves by every key scrolling the commits: the movement keys, ctrl-d and ctrl-u, and the
+    // page and line keys; false for other events or nothing to show.
+    pub fn navigate(&mut self, event: UserEvent) -> bool {
+        self.list
+            .as_mut()
+            .is_some_and(|list| list.handle_navigation(event))
+    }
+
+    // Moves the selected commit by `step`, for the movement keys of the page.
+    pub fn step(&mut self, step: Step) {
+        let Some(list) = &mut self.list else {
+            return;
+        };
+        match step {
+            Step::Next => list.select_next(),
+            Step::Prev => list.select_prev(),
+            Step::First => list.select_first(),
+            Step::Last => list.select_last(),
+        }
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {

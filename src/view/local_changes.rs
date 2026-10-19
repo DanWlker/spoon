@@ -270,8 +270,16 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::NavigateLeft => {
                 self.local_changes_state.collapse();
             }
-            // ctrl-d and ctrl-u too, the diff being what is read, see `HalfPage::Pane`
-            _ if self.local_changes_state.scroll_diff(event) => {}
+            // every scroll key scrolls what has the focus: the files or the submodule move, the
+            // commit message, the diff or the conflict sides scroll
+            UserEvent::HalfPageDown
+            | UserEvent::HalfPageUp
+            | UserEvent::PageDown
+            | UserEvent::PageUp
+            | UserEvent::ScrollDown
+            | UserEvent::ScrollUp => {
+                self.local_changes_state.scroll(event);
+            }
             // y and Y copy the path of the selected file
             UserEvent::ShortCopy | UserEvent::FullCopy
                 if !self.local_changes_state.is_commit_focused() =>

@@ -957,6 +957,7 @@ impl App<'_> {
         };
         match event {
             UserEvent::Cancel | UserEvent::CommandLog => self.shell.overlay = None,
+            UserEvent::FocusPanel(n) => state.focus_panel(n),
             event if state.move_selection(event) => {}
             event if state.scroll_output(event) => {}
             UserEvent::ShortCopy | UserEvent::FullCopy => {
@@ -1326,7 +1327,7 @@ impl App<'_> {
     }
 }
 
-// " [0] " and the border on its right
+// " [1] " and the border on its right
 const COLLAPSED_SIDEBAR_WIDTH: u16 = 7;
 
 // The page bar, the app, and the status bar.
@@ -1508,10 +1509,10 @@ impl App<'_> {
         )
         .when(page_or_window);
         k.quiet(
-            &[FocusPanel(0)],
+            &[FocusPanel(1)],
             "Focus the refs sidebar, again to shrink/grow it",
         )
-        .when(page);
+        .when(|app| app.sidebar_shown() && app.shell.overlay.is_none());
         k.quiet(&[ForceQuit, Quit], "Quit app");
     }
 
@@ -1563,7 +1564,7 @@ impl App<'_> {
             }
             UserEvent::DismissNotifications => self.shell.notices.clear(),
             UserEvent::ToggleWrap => self.ctx.wrap.set(!self.ctx.wrap.get()),
-            UserEvent::FocusPanel(0) => {
+            UserEvent::FocusPanel(1) => {
                 // again on the focused sidebar, it shrinks out of the way; on a shrunk one, it grows back
                 if self.shell.sidebar_mode == SidebarMode::Focused {
                     self.shell.sidebar_mode = SidebarMode::Collapsed;
@@ -1775,13 +1776,15 @@ impl App<'_> {
         );
         k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
         k.quiet(&[HalfPageDown, HalfPageUp], "Jump half a page down/up");
+        k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
+        k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
         k.quiet(&[NavigateRight, NavigateLeft], "Open/close the node");
         k.quiet(
             &[NextSection, PreviousSection],
             "Go to the next/previous section, opening it",
         );
         k.quiet(
-            &[FocusPanel(1), FocusPanel(2), FocusPanel(3), FocusPanel(4)],
+            &[FocusPanel(2), FocusPanel(3), FocusPanel(4), FocusPanel(5)],
             "Focus a panel of the page",
         );
     }
