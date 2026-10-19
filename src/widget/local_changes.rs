@@ -36,7 +36,7 @@ use crate::{
             badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
             render_panel_scrollbar, tree_panel_width,
         },
-        submodule::SubmodulePanel,
+        submodule::{submodule_key, SubmodulePanel},
         text_area::{Caret, Lines, TextArea},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
@@ -285,6 +285,8 @@ pub struct LocalChangesState<'a> {
     conflict: Option<ConflictPanel>,
     // the submodule under the cursor, shown instead of its gitlink diff
     submodule: Option<SubmodulePanel<'a>>,
+    // the submodule panel shown before, keyed by what it shows, to reuse when selected again
+    submodule_cache: Option<(String, SubmodulePanel<'a>)>,
 }
 
 impl<'a> LocalChangesState<'a> {
@@ -324,6 +326,7 @@ impl<'a> LocalChangesState<'a> {
             files_stamp,
             conflict: None,
             submodule: None,
+            submodule_cache: None,
         };
         if let Some(snapshot) = snapshot {
             state.draft = *snapshot.commit_draft;
@@ -1877,6 +1880,10 @@ impl<'a> LocalChangesState<'a> {
 
     fn set_diff(&mut self, diff: &str) {
         self.conflict = self.load_conflict();
+        // park the submodule panel shown before, to reuse it when it is selected again
+        if let Some(panel) = self.submodule.take() {
+            self.submodule_cache = Some((panel.key().to_string(), panel));
+        }
         self.submodule = self.load_submodule();
         // the diff or conflict selected before is gone, the commit section stays
         if !self.is_commit_focused() {
@@ -1892,17 +1899,33 @@ impl<'a> LocalChangesState<'a> {
         self.pane.set_diff(Some(diff));
     }
 
-    // The submodule of the selected file, shown in place of its gitlink diff. None for a
-    // directory, the picked files or a plain file.
-    fn load_submodule(&self) -> Option<SubmodulePanel<'a>> {
+    // The submodule of the selected file, shown in place of its gitlink diff. The last panel is
+    // reused when it shows the same submodule, so moving away and back is instant; only its
+    // uncommitted count is read again. None for a directory, the picked files or a plain file.
+    fn load_submodule(&mut self) -> Option<SubmodulePanel<'a>> {
         if self.diff_source != DiffSource::Row {
             return None;
         }
         let row = self.selected_row()?;
-        if row.is_dir() {
+        let is_dir = row.is_dir();
+        let path = row.path.clone();
+        if is_dir {
             return None;
         }
-        SubmodulePanel::changes(self.repository, &self.ctx, &row.path)
+        let info = self.repository.submodule_info(&path)?;
+        let key = submodule_key(&path, &info.recorded, info.head.as_deref());
+        if let Some((cached_key, mut panel)) = self.submodule_cache.take() {
+            if cached_key == key {
+                panel.set_uncommitted(info.uncommitted);
+                return Some(panel);
+            }
+        }
+        Some(SubmodulePanel::from_info(
+            self.repository,
+            &self.ctx,
+            &path,
+            info,
+        ))
     }
 }
 
@@ -2423,6 +2446,61 @@ mod tests {
         // the commits the recorded gitlink has that the checked-out one doesn't
         assert_eq!(submodule.subjects(), ["second"]);
         assert!(state.pane.diff().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_submodule_panel_reads_its_uncommitted_count_again_when_reused(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("init", "2024-01-01");
+
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                base.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        repo.commit("add sub", "2024-01-02");
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        fs::write(sub.join("a.txt"), "two\n")?;
+        sub_repo.add(&["a.txt"]);
+        sub_repo.commit("second", "2024-01-03");
+        fs::write(sub.join("a.txt"), "three\n")?;
+        fs::write(sub.join("one.txt"), "one\n")?;
+        fs::write(superproject.join("newfile.txt"), "new\n")?;
+
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        assert_eq!(submodule.subjects(), ["second"]);
+        assert_eq!(submodule.uncommitted(), Some(2));
+
+        // a third uncommitted file, then away and back: the panel is reused, its count read again
+        fs::write(sub.join("two.txt"), "two\n")?;
+        select_row(&mut state, "newfile.txt");
+        assert!(state.submodule.is_none());
+        select_row(&mut state, "sub");
+        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        assert_eq!(submodule.subjects(), ["second"]);
+        assert_eq!(submodule.uncommitted(), Some(3));
         Ok(())
     }
 

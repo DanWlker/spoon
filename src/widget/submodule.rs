@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::UserEvent,
-    git::Repository,
+    git::{Repository, SubmoduleInfo},
     graph,
     widget::{
         commit_list::{submodule_commit_list, CommitList, CommitListState},
@@ -25,6 +25,9 @@ use crate::{
 // graph borrow it like the pages borrow the parent.
 #[derive(Debug)]
 pub struct SubmodulePanel<'a> {
+    // what the panel shows, to reuse it when the same submodule is selected again: the path and
+    // the two gitlinks
+    key: String,
     // the files uncommitted inside the submodule; None in a commit's historical changes, where the
     // working tree says nothing
     uncommitted: Option<usize>,
@@ -35,18 +38,23 @@ pub struct SubmodulePanel<'a> {
 }
 
 impl<'a> SubmodulePanel<'a> {
-    // The panel for the local changes: the commits between the gitlink the index records and the
-    // submodule's HEAD. None when `path` isn't a submodule.
-    pub fn changes(repository: &'a Repository, ctx: &AppContext, path: &str) -> Option<Self> {
-        let info = repository.submodule_info(path)?;
-        Some(Self::load(
+    // The same, from the `submodule_info` the page already read to look the panel up.
+    pub fn from_info(
+        repository: &'a Repository,
+        ctx: &AppContext,
+        path: &str,
+        info: SubmoduleInfo,
+    ) -> Self {
+        let key = submodule_key(path, &info.recorded, info.head.as_deref());
+        Self::load(
             repository,
             ctx,
             path,
             &info.recorded,
             info.head.as_deref(),
             Some(info.uncommitted),
-        ))
+            key,
+        )
     }
 
     // The panel for a commit's change of `path`, between two recorded gitlinks. None when `path`
@@ -61,7 +69,18 @@ impl<'a> SubmodulePanel<'a> {
         if !repository.is_submodule(path) {
             return None;
         }
-        Some(Self::load(repository, ctx, path, from, Some(to), None))
+        let key = submodule_key(path, from, Some(to));
+        Some(Self::load(repository, ctx, path, from, Some(to), None, key))
+    }
+
+    // What the panel shows, to reuse it for the same submodule, see `from_info`.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    // The files uncommitted inside the submodule, re-read when the panel is reused.
+    pub fn set_uncommitted(&mut self, uncommitted: usize) {
+        self.uncommitted = Some(uncommitted);
     }
 
     fn load(
@@ -71,9 +90,11 @@ impl<'a> SubmodulePanel<'a> {
         from: &str,
         to: Option<&str>,
         uncommitted: Option<usize>,
+        key: String,
     ) -> Self {
         let Some(to) = to else {
             return Self {
+                key,
                 uncommitted,
                 list: None,
                 message: Some("submodule not checked out".into()),
@@ -82,6 +103,7 @@ impl<'a> SubmodulePanel<'a> {
         // nothing to load when the gitlink is unchanged: only the uncommitted files are new
         if from == to {
             return Self {
+                key,
                 uncommitted,
                 list: None,
                 message: Some("no commits ahead of the recorded one".into()),
@@ -95,6 +117,7 @@ impl<'a> SubmodulePanel<'a> {
                 Ok(Some(submodule)) => submodule,
                 Ok(None) => {
                     return Self {
+                        key,
                         uncommitted,
                         list: None,
                         message: Some("no commits ahead of the recorded one".into()),
@@ -102,6 +125,7 @@ impl<'a> SubmodulePanel<'a> {
                 }
                 Err(err) => {
                     return Self {
+                        key,
                         uncommitted,
                         list: None,
                         message: Some(err),
@@ -110,6 +134,7 @@ impl<'a> SubmodulePanel<'a> {
             },
             Err(err) => {
                 return Self {
+                    key,
                     uncommitted,
                     list: None,
                     message: Some(err),
@@ -125,6 +150,7 @@ impl<'a> SubmodulePanel<'a> {
             ctx.ui_config.common.scrolloff as usize,
         );
         Self {
+            key,
             uncommitted,
             list: Some(list),
             message: None,
@@ -171,6 +197,11 @@ impl<'a> SubmodulePanel<'a> {
         self.list
             .as_ref()
             .map_or_else(Vec::new, |list| list.subjects())
+    }
+
+    #[cfg(test)]
+    pub fn uncommitted(&self) -> Option<usize> {
+        self.uncommitted
     }
 
     // Draws the panel with a border and `title` over `area`, like the panels beside the files: the
@@ -240,4 +271,10 @@ impl<'a> SubmodulePanel<'a> {
         StatefulWidget::render(CommitList::new(ctx.clone()), list_area, buf, list);
         Some((total, offset))
     }
+}
+
+// What a submodule panel shows: its path and the two gitlinks, so a page can reuse the panel when
+// the same submodule is selected again.
+pub fn submodule_key(path: &str, from: &str, to: Option<&str>) -> String {
+    format!("{path}\0{from}\0{}", to.unwrap_or_default())
 }
