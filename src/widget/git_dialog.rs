@@ -1970,6 +1970,17 @@ impl GitDialog {
         self.fields[remote_branch.0].1 = Field::text(&value, options, Need::Required);
     }
 
+    // Whether the field at `index` is a branch name, where a space is typed as `-`.
+    fn is_branch_name(&self, index: usize) -> bool {
+        let name = match &self.kind {
+            DialogKind::CreateBranch { name, .. } => *name,
+            DialogKind::EditBranch { new_name, .. } => *new_name,
+            DialogKind::Push { fields, .. } => fields.remote_branch,
+            _ => return false,
+        };
+        name.0 == index
+    }
+
     // `event` is what the key is bound to, keys are typed as they are while editing a text field.
     pub fn handle_key(&mut self, event: Option<UserEvent>, key: KeyEvent) -> DialogOutcome {
         if self.editing {
@@ -1981,8 +1992,10 @@ impl GitDialog {
                 },
                 KeyCode::Esc => self.editing = false,
                 _ => {
+                    // a branch name has no spaces in git: they show as `-` as they are typed
+                    let dashes = self.is_branch_name(self.selected);
                     if let Field::Text { input, .. } = &mut self.fields[self.selected].1 {
-                        input.handle_event(&Event::Key(key));
+                        input.handle_event(&Event::Key(typed_key(key, dashes)));
                     }
                 }
             }
@@ -2456,6 +2469,14 @@ fn names_intro(one: &str, many: &str, names: &[String]) -> Vec<String> {
             );
             lines
         }
+    }
+}
+
+// The key typed into a field, `dashes` writing a space as the `-` a branch name takes instead.
+fn typed_key(key: KeyEvent, dashes: bool) -> KeyEvent {
+    match key.code {
+        KeyCode::Char(' ') if dashes => KeyEvent::new(KeyCode::Char('-'), key.modifiers),
+        _ => key,
     }
 }
 
@@ -3141,6 +3162,55 @@ mod tests {
             commands(&dialog),
             ["push origin --delete refs/heads/a", "branch -D a"]
         );
+    }
+
+    #[test]
+    fn test_a_space_typed_in_a_branch_name_is_a_dash() {
+        let typed = |dialog: &mut GitDialog, text: &str| {
+            for c in text.chars() {
+                dialog.handle_key(None, key(KeyCode::Char(c)));
+            }
+        };
+
+        // a new branch: the name git takes, as it is typed
+        let mut dialog = GitDialog::create_branch_from(NamedRef::Branch("main".into()), vec![]);
+        typed(&mut dialog, "my new branch");
+        assert_eq!(args(&dialog), "checkout -b my-new-branch refs/heads/main");
+
+        // a rename
+        let mut dialog = GitDialog::edit_branch("topic", None, vec![]);
+        dialog.handle_key(None, key(KeyCode::End));
+        typed(&mut dialog, " and more");
+        assert_eq!(args(&dialog), "branch -m topic topic-and-more");
+
+        // the branch named on the remote by a push
+        let info = RemoteInfo {
+            current_branch: Some("topic".into()),
+            remotes: vec!["origin".into()],
+            branches: vec!["topic".into()],
+            ..Default::default()
+        };
+        let mut dialog = GitDialog::remote(RemoteAction::Push, info).unwrap();
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::DialogEdit);
+        for _ in 0.."topic".len() {
+            dialog.handle_key(None, key(KeyCode::Backspace));
+        }
+        typed(&mut dialog, "my branch");
+        assert_eq!(
+            args(&dialog),
+            "push --set-upstream origin refs/heads/topic:my-branch"
+        );
+
+        // other text keeps its spaces, like the message of a tag
+        let mut dialog = GitDialog::create_tag(StartPoint::Commit("a".repeat(40).as_str().into()));
+        typed(&mut dialog, "v1");
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::DialogEdit);
+        typed(&mut dialog, "a message");
+        let task = dialog.command().unwrap().unwrap();
+        assert!(task.commands[0].to_string().contains("a message"));
     }
 
     #[test]

@@ -2223,3 +2223,25 @@ fn test_clearing_a_search_clears_its_status_line() {
         harness.run(steps);
     }
 }
+
+#[test]
+fn test_compare_with_the_current_branch_dims_the_commits_off_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    // the commits shown with whether they are on the current branch
+    let on_head = |app: &App| -> Vec<String> {
+        let state = app.view.as_list_state().expect("a commit list");
+        state
+            .on_head()
+            .into_iter()
+            .map(|(subject, on_head)| format!("{subject}{}", if on_head { "" } else { " dimmed" }))
+            .collect()
+    };
+    harness.run(vec![
+        check(move |app| assert_eq!(on_head(app), ["feat1 dimmed", "c2", "c1"])),
+        // comparing with feat, its own commit stays dimmed, the graph loaded from the two refs
+        compare_feat(),
+        check(move |app| assert_eq!(on_head(app), ["c2", "feat1 dimmed", "c1"])),
+    ]);
+}

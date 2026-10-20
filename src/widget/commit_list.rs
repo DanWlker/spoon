@@ -36,7 +36,7 @@ pub const ELLIPSIS: &str = "...";
 
 // before the labels of refs (Nerd Font): a branch whose upstream is on the same commit, a remote
 // branch, a tag and a stash; a plain branch has none
-const UPSTREAM_ICON: &str = "\u{f0160}";
+const UPSTREAM_ICON: &str = "\u{ec63}";
 const REMOTE_BRANCH_ICON: &str = "\u{f015f}";
 const TAG_ICON: &str = "\u{f04f9}";
 const STASH_ICON: &str = "\u{f01c}";
@@ -344,6 +344,15 @@ impl<'a> CommitListState<'a> {
         };
         let commit = commit.clone();
         Some(AppEvent::FoldMerge { commit, fold })
+    }
+
+    // The subject of each commit shown, and whether it is on the current branch; for the tests.
+    #[cfg(test)]
+    pub fn on_head(&self) -> Vec<(&str, bool)> {
+        self.commits
+            .iter()
+            .map(|info| (info.commit.subject.as_str(), info.on_head))
+            .collect()
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {

@@ -439,9 +439,6 @@ impl<'a> App<'a> {
         let warning = graph.warning.clone();
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let head_history = repository.head_history();
-        let comparing_refs = shell
-            .as_ref()
-            .is_some_and(|s| matches!(s.graph_filter, GraphFilter::Compare { .. }));
         let commits = graph
             .commits
             .iter()
@@ -458,8 +455,8 @@ impl<'a> App<'a> {
                 {
                     ref_name_to_commit_index_map.insert("HEAD".to_string(), i);
                 }
-                // comparing two refs, both are shown alike
-                let on_head = comparing_refs || head_history.contains(&commit.commit_hash);
+                // dimmed off the current branch, also while two refs are compared
+                let on_head = head_history.contains(&commit.commit_hash);
                 CommitInfo::new(commit, refs, repository.branch_tracking(), on_head)
             })
             .collect();
