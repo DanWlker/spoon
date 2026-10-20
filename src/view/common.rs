@@ -13,6 +13,7 @@ use crate::{
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
     search::{SearchKind, SearchOptions},
+    view::detail::DetailFocus,
     widget::{
         commit_list::format_date,
         commit_list::{CommitListState, SearchOutcome, SearchRefreshContext},
@@ -473,6 +474,8 @@ pub enum RefreshViewContext {
         tab: DetailTab,
         // the comparison shown, opened again once reloaded
         compare: Option<Compare>,
+        // what had the focus, which reloading the page puts back
+        focus: DetailFocus,
     },
     LocalChanges {
         list_context: ListRefreshViewContext,

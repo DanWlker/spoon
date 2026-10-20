@@ -293,22 +293,22 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_next(&mut self) {
-        self.select_visible_index(self.cursor.selected() + 1);
+        self.select_in_view(self.cursor.selected() + 1);
         self.sync_visual_picks();
     }
 
     pub fn select_prev(&mut self) {
-        self.select_visible_index(self.cursor.selected().saturating_sub(1));
+        self.select_in_view(self.cursor.selected().saturating_sub(1));
         self.sync_visual_picks();
     }
 
     pub fn select_first(&mut self) {
-        self.select_visible_index(0);
+        self.select_in_view(0);
         self.sync_visual_picks();
     }
 
     pub fn select_last(&mut self) {
-        self.select_visible_index(usize::MAX);
+        self.select_in_view(usize::MAX);
         self.sync_visual_picks();
     }
 
@@ -335,20 +335,14 @@ impl<'a> CommitListState<'a> {
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
         if let Some(index) = self.cursor.moved_to(event, self.commits.len()) {
-            self.select_visible_index(index);
+            self.select_in_view(index);
             self.sync_visual_picks();
         }
     }
 
-    // Selects the commit at `index` near the top, the scrolloff above it: a match jumped to.
-    fn select_index(&mut self, index: usize) {
-        if index < self.commits.len() {
-            let margin = self.cursor.margin();
-            self.cursor.select_at(index, margin, self.commits.len());
-        }
-    }
-
-    fn select_visible_index(&mut self, index: usize) {
+    // Selects the commit at `index`, scrolling only when it isn't in view: the movement keys, the
+    // search, and the refs and hashes picked elsewhere.
+    fn select_in_view(&mut self, index: usize) {
         self.cursor.select(index, self.commits.len());
     }
 
@@ -363,7 +357,7 @@ impl<'a> CommitListState<'a> {
         if let Some(index) = find_around(self.commits.len(), from, direction, |i| {
             self.search_matches[i]
         }) {
-            self.select_index(index);
+            self.select_in_view(index);
         }
     }
 
@@ -415,7 +409,7 @@ impl<'a> CommitListState<'a> {
 
     pub fn select_ref(&mut self, ref_name: &str) {
         if let Some(&index) = self.ref_name_to_commit_index_map.get(ref_name) {
-            self.select_index(index);
+            self.select_in_view(index);
         }
     }
 
@@ -429,7 +423,7 @@ impl<'a> CommitListState<'a> {
             .iter()
             .position(|commit_info| commit_info.commit.commit_hash == *commit_hash);
         if let Some(index) = index {
-            self.select_index(index);
+            self.select_in_view(index);
         }
         index.is_some()
     }
@@ -1496,12 +1490,12 @@ mod tests {
             state.select_prev();
             assert_eq!(status(state), (2, 0, 6));
 
-            state.select_index(7);
-            assert_eq!(status(state), (2, 5, 6));
+            state.select_in_view(7);
+            assert_eq!(status(state), (3, 4, 6));
             state.scroll_down();
-            assert_eq!(status(state), (2, 6, 6));
+            assert_eq!(status(state), (2, 5, 6));
             state.scroll_up();
-            assert_eq!(status(state), (3, 5, 6));
+            assert_eq!(status(state), (3, 4, 6));
 
             state.select_last();
             assert_eq!(status(state), (5, 6, 6));
@@ -1520,7 +1514,7 @@ mod tests {
             state.select_next();
             assert_eq!(status(state), (1, 1, 2));
 
-            state.select_index(6);
+            state.select_in_view(6);
             state.restore_selected_row(1);
             assert_eq!(status(state), (1, 5, 2));
         });
@@ -1555,8 +1549,8 @@ mod tests {
         with_commit_list_state(&["commit"; 26], |state| {
             state.scrolloff = 2;
             state.reset_height(10);
-            state.select_index(12);
-            assert_eq!(status(state), (2, 10, 10));
+            state.select_in_view(12);
+            assert_eq!(status(state), (7, 5, 10));
 
             // the selection moves down the page, the list stays
             state.jump_half_page(UserEvent::HalfPageDown);
@@ -1577,7 +1571,7 @@ mod tests {
         with_commit_list_state(&["commit"; 25], |state| {
             state.scrolloff = 2;
             state.reset_height(10);
-            state.select_index(12);
+            state.select_in_view(12);
 
             state.scroll_down_page();
             assert_eq!(status(state), (7, 15, 10));
@@ -1591,7 +1585,9 @@ mod tests {
         with_commit_list_state(&["commit"; 30], |state| {
             state.scrolloff = 2;
             state.reset_height(10);
-            state.select_index(15);
+            state.select_in_view(15);
+            // at the row a reload restores it to
+            state.restore_selected_row(2);
             assert_eq!(status(state), (2, 13, 10));
 
             state.restore_selected_row(7);
@@ -1604,13 +1600,48 @@ mod tests {
     fn test_zero_scrolloff_preserves_page_scroll_behavior() {
         with_commit_list_state(&["commit"; 25], |state| {
             state.reset_height(10);
-            state.select_index(12);
+            state.select_in_view(12);
+            // at the row a reload restores it to
+            state.restore_selected_row(0);
             assert_eq!(status(state), (0, 12, 10));
 
             state.scroll_down_page();
             assert_eq!(status(state), (7, 15, 10));
             state.scroll_down_page();
             assert_eq!(status(state), (9, 15, 10));
+        });
+    }
+
+    #[test]
+    fn test_search_moves_the_selection_without_scrolling_to_a_match_in_view() {
+        let mut subjects: Vec<String> = (0..30).map(|i| format!("commit {i}")).collect();
+        subjects[3] = "target above".into();
+        subjects[20] = "target shown".into();
+        subjects[25] = "target below".into();
+        let subjects: Vec<&str> = subjects.iter().map(String::as_str).collect();
+        with_commit_list_state(&subjects, |state| {
+            state.scrolloff = 2;
+            state.reset_height(10);
+            state.select_in_view(15);
+            // at the row a reload restores it to
+            state.restore_selected_row(2);
+            assert_eq!(status(state), (2, 13, 10));
+
+            // a match already shown: the list stays where it is
+            input_search_query(state, "target");
+            apply_search(state);
+            assert_eq!(state.cursor.selected(), 20);
+            assert_eq!(status(state), (7, 13, 10));
+
+            // past the rows shown: as little scrolling as shows it, with the scrolloff under it
+            state.select_next_match(Toward::Next);
+            assert_eq!(state.cursor.selected(), 25);
+            assert_eq!(status(state), (7, 18, 10));
+
+            // and above them, with the scrolloff over it
+            state.select_next_match(Toward::Next);
+            assert_eq!(state.cursor.selected(), 3);
+            assert_eq!(status(state), (2, 1, 10));
         });
     }
 
@@ -1699,8 +1730,7 @@ mod tests {
 
         with_commit_list_state(&["first", "second", "fix", "last"], |state| {
             state.reset_height(2);
-            state.select_index(2);
-            state.scroll_up();
+            state.select_in_view(2);
             assert_eq!(status(state), (1, 1, 2));
 
             state.restore_search(&context);
@@ -1742,7 +1772,6 @@ mod tests {
             type_key(state, KeyEvent::from(KeyCode::Left));
             apply_search(state);
             state.select_next_match(Toward::Next);
-            state.scroll_up();
 
             let options = state.search_options();
             let position = status(state);

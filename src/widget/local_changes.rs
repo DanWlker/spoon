@@ -228,6 +228,8 @@ pub struct LocalChangesSnapshot {
     pub selected_path: Option<String>,
     // boxed to keep the refresh context small
     pub commit_draft: Box<CommitDraft>,
+    // what had the keys, put back once the page is loaded again
+    focus: Focus,
 }
 
 impl LocalChangesSnapshot {
@@ -244,6 +246,7 @@ impl Default for LocalChangesSnapshot {
             section: LocalChangesSection::Unstaged,
             selected_path: None,
             commit_draft: Box::default(),
+            focus: Focus::Files,
         }
     }
 }
@@ -320,6 +323,7 @@ impl<'a> LocalChangesState<'a> {
             submodule: None,
             submodule_cache: None,
         };
+        let focus = snapshot.as_ref().map(|snapshot| snapshot.focus);
         if let Some(snapshot) = snapshot {
             state.draft = *snapshot.commit_draft;
             if state.draft.amend.is_some() {
@@ -334,7 +338,26 @@ impl<'a> LocalChangesState<'a> {
         state.prepare_message();
         state.sync_amend();
         state.load_diff();
+        // the loaded diff and the submodule panel show what the focus may be on
+        if let Some(focus) = focus {
+            state.restore_focus(focus);
+        }
         state
+    }
+
+    // Puts the keys back where they were: in the diff, the submodule panel or the commit section,
+    // a box being typed into staying selected rather than typed into again.
+    fn restore_focus(&mut self, focus: Focus) {
+        match focus {
+            Focus::Files => self.focus_files(),
+            Focus::Side => {
+                self.focus_files();
+                self.pane.enter();
+            }
+            Focus::Submodule => self.chosen = Focus::Submodule,
+            Focus::Commit(field) => self.chosen = Focus::Commit(field),
+            Focus::Typing(field) => self.chosen = Focus::Commit(field),
+        }
     }
 
     // What to restore of the page, after a refresh or coming back to it.
@@ -343,6 +366,7 @@ impl<'a> LocalChangesState<'a> {
             section: self.section,
             selected_path: self.selected_path(),
             commit_draft: Box::new(self.draft.clone()),
+            focus: self.focus(),
         }
     }
 
@@ -2397,7 +2421,10 @@ mod tests {
     }
     use crate::{
         git::SortCommit,
-        test_support::git::{git, GitRepository},
+        test_support::{
+            git::{git, GitRepository},
+            ui::test_ctx,
+        },
         widget::{file_tree::ROOT_PATH, tree_query::QueryKind},
     };
 
@@ -3202,6 +3229,43 @@ mod tests {
         assert!(staged.contains("+u1") && staged.contains("+u2"));
         assert!(!staged.contains("+u3"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_a_reload_keeps_where_the_keys_go() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), numbered_lines(5))?;
+        git.add(&["a.txt"]);
+        git.commit("first", "2024-01-01");
+        fs::write(repo_path.join("a.txt"), "changed\n")?;
+        let repository = reload(repo_path);
+
+        // in the diff beside the files
+        let mut state = LocalChangesState::load(&repository);
+        assert!(state.is_files_focused());
+        state.enter()?;
+        assert!(state.is_diff_focused());
+        let reloaded = LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()));
+        assert!(reloaded.is_diff_focused());
+
+        // in the commit section, a box being typed into only staying selected
+        let mut state = LocalChangesState::load(&repository);
+        state.focus_commit();
+        assert!(state.is_editing());
+        let reloaded = LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()));
+        assert!(reloaded.is_commit_focused());
+        assert!(!reloaded.is_editing());
+
+        // and on the files
+        let mut state = LocalChangesState::load(&repository);
+        state.focus_commit();
+        state.focus_files();
+        let reloaded = LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()));
+        assert!(reloaded.is_files_focused());
         Ok(())
     }
 

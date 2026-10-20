@@ -41,8 +41,8 @@ use crate::{
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::SearchOptions,
     view::{
-        register_graph_commands, BlameView, Compare, HelpView, LocalChangesRefreshViewContext,
-        RefreshViewContext, Reselect, TimelineView, View, ViewKind,
+        register_graph_commands, BlameView, Compare, DetailFocus, HelpView,
+        LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -2386,6 +2386,8 @@ impl App<'_> {
             list_context: context.list_context().clone(),
             tab: DetailTab::Changes,
             compare: Some(shown),
+            // the changes of the comparison have it, like one opened from the graph
+            focus: DetailFocus::Files,
         }));
     }
 
@@ -2509,9 +2511,16 @@ impl App<'_> {
             RefreshViewContext::List { .. } => {}
             RefreshViewContext::Detail {
                 compare: Some(compare),
+                focus,
                 ..
-            } => self.open_compare(compare),
-            RefreshViewContext::Detail { tab, .. } => self.open_detail(tab),
+            } => {
+                self.open_compare(compare);
+                self.restore_details_focus(focus);
+            }
+            RefreshViewContext::Detail { tab, focus, .. } => {
+                self.open_detail(tab);
+                self.restore_details_focus(focus);
+            }
             RefreshViewContext::LocalChanges {
                 local_changes_context,
                 ..
@@ -2519,6 +2528,13 @@ impl App<'_> {
                 self.shell.parked_local_changes = Some(local_changes_context);
                 self.show_local_changes_page();
             }
+        }
+    }
+
+    // Puts the focus of the details back where it was before the page was reloaded.
+    fn restore_details_focus(&mut self, focus: DetailFocus) {
+        if let View::Detail(view) = &mut self.view {
+            view.restore_focus(focus);
         }
     }
 

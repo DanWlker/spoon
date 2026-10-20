@@ -26,7 +26,7 @@ use crate::{
     layout::Panel,
     protocol::ImageProtocol,
     test_support::{git::git, ui::test_ctx},
-    view::View,
+    view::{DetailFocus, View},
     widget::{commit_list::SearchOutcome, ref_list::RefSelection},
     Loader, Refresh,
 };
@@ -2040,4 +2040,106 @@ fn test_commit_made_clears_the_message() {
         check(|app| assert_eq!(draft(app), "")),
     ]);
     assert_eq!(git(&path, &["log", "-1", "--format=%s"]), "my message\n");
+}
+
+#[test]
+fn test_fold_merge_keeps_the_focus_of_the_commit_list_in_the_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let focused = |expected: DetailFocus| {
+        check(move |app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            assert_eq!(view.focus(), expected);
+        })
+    };
+    harness.run(vec![
+        // the details on the changes tab, the commit list above them focused
+        keys("4 2"),
+        focused(DetailFocus::List),
+        // folding the merge draws the graph again, a new page from the same context
+        keys("h"),
+        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        focused(DetailFocus::List),
+        // and into the details, which the focus leaves the list for
+        keys("enter"),
+        focused(DetailFocus::Files),
+    ]);
+}
+
+#[test]
+fn test_refresh_keeps_the_focus_of_the_panels_in_the_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let focused = |expected: DetailFocus| {
+        check(move |app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            assert_eq!(view.focus(), expected);
+        })
+    };
+    harness.run(vec![
+        // the diff beside the files of the changes tab, then refreshed
+        keys("4 enter"),
+        focused(DetailFocus::Pane),
+        keys("shift-r"),
+        focused(DetailFocus::Pane),
+        // and the preview beside the files of the files tab
+        keys("esc 5 enter"),
+        focused(DetailFocus::Pane),
+        keys("shift-r"),
+        focused(DetailFocus::Pane),
+        // the files, back from the preview
+        keys("esc"),
+        focused(DetailFocus::Files),
+        keys("shift-r"),
+        focused(DetailFocus::Files),
+    ]);
+}
+
+#[test]
+fn test_refresh_keeps_the_focus_of_the_panels_on_the_local_changes_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "a\nCHANGED\nc\n").unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    // whether the diff beside the files has the keys, by what only it lists
+    let in_diff = |expected: bool| {
+        let listed = |app: &App| {
+            app.view
+                .keys()
+                .hints()
+                .iter()
+                .any(|(_, short)| short == "stage hunk")
+        };
+        check(move |app| assert_eq!(listed(app), expected))
+    };
+    harness.run(vec![
+        in_diff(false),
+        // into the diff of the selected file, then refreshed
+        keys("enter"),
+        in_diff(true),
+        keys("shift-r"),
+        in_diff(true),
+        // and back to the files
+        keys("esc"),
+        in_diff(false),
+        keys("shift-r"),
+        in_diff(false),
+    ]);
 }

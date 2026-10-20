@@ -416,6 +416,24 @@ impl<'a> DetailView<'a> {
         self.list_focused = true;
     }
 
+    // Puts the focus back where it was before the page was reloaded: on the commit list, in the
+    // diff or preview, or on the files, where the tab leaves it.
+    pub fn restore_focus(&mut self, focus: DetailFocus) {
+        match focus {
+            DetailFocus::List => self.focus_list(),
+            DetailFocus::Pane => match self.tab {
+                DetailTab::Changes => {
+                    self.changes_state.pane.enter();
+                }
+                DetailTab::Files => {
+                    self.files_state.enter();
+                }
+                DetailTab::Info => {}
+            },
+            DetailFocus::Info | DetailFocus::Files => {}
+        }
+    }
+
     // The scope of the keys: the commit list, the diff or preview beside the files, or the rest
     // of the details.
     pub fn scope(&self) -> Scope {
@@ -1401,6 +1419,7 @@ impl<'a> DetailView<'a> {
             list_context,
             tab: self.tab,
             compare,
+            focus: self.focus(),
         }
     }
 }

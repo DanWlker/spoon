@@ -175,6 +175,7 @@ Matching ignores case unless the query has an uppercase letter.
 
 Every search shares its options with the commit list's: while typing any of them, <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
 Like the file trees', the title of the diffs, previews, the blame and the timeline shows the active search; the commit list's search instead shows its matches in the status line.
+A match is shown as it is: a search moves the selection and scrolls the list only when the match isn't shown already, keeping the `scrolloff` rows around it like the movement keys do.
 On the local changes page, the unstaged and staged files each have their own search and filter, applying to the focused section only, and staging, unstaging and discarding a directory only affect the files shown.
 
 #### Resolving conflicts
