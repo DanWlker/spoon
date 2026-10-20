@@ -1525,7 +1525,8 @@ fn test_found_match_counted_alike_on_every_page() {
         ("", StartPage::Graph, "feat1", 1),
         ("4", StartPage::Graph, "f.txt", 1),
         ("5", StartPage::Graph, "f.txt", 1),
-        ("5 shift-b l", StartPage::Graph, "FEAT", 1),
+        // the graph selects either of the two newest commits first, whose file has an "a" line
+        ("5 shift-b l", StartPage::Graph, "a", 2),
         ("5 shift-t", StartPage::Graph, "feat1", 1),
         ("", StartPage::LocalChanges, "f.txt", 1),
     ];
@@ -1544,11 +1545,13 @@ fn test_found_match_counted_alike_on_every_page() {
             keys("enter"),
             check(move |app| {
                 let said = &app.shell.app_status.status_line;
+                // which match it is on depends on the order the page shows them in, the count
+                // doesn't
                 assert!(
                     matches!(said, StatusLine::SearchResult {
-                        outcome: SearchOutcome::Found { index, total: found, query: asked },
+                        outcome: SearchOutcome::Found { total: found, query: asked, .. },
                         ..
-                    } if *index == 1 && *found == total && asked == query),
+                    } if *found == total && asked == query),
                     "{to_search:?} {said:?}"
                 );
             }),
@@ -2229,20 +2232,23 @@ fn test_compare_with_the_current_branch_dims_the_commits_off_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
-    // the commits shown with whether they are on the current branch
+    // the commits shown with whether they are on the current branch, in any order, as the two
+    // newest ones share a timestamp and either may come first
     let on_head = |app: &App| -> Vec<String> {
         let state = app.view.as_list_state().expect("a commit list");
-        state
+        let mut shown: Vec<String> = state
             .on_head()
             .into_iter()
             .map(|(subject, on_head)| format!("{subject}{}", if on_head { "" } else { " dimmed" }))
-            .collect()
+            .collect();
+        shown.sort();
+        shown
     };
     harness.run(vec![
-        check(move |app| assert_eq!(on_head(app), ["feat1 dimmed", "c2", "c1"])),
+        check(move |app| assert_eq!(on_head(app), ["c1", "c2", "feat1 dimmed"])),
         // comparing with feat, its own commit stays dimmed, the graph loaded from the two refs
         compare_feat(),
-        check(move |app| assert_eq!(on_head(app), ["c2", "feat1 dimmed", "c1"])),
+        check(move |app| assert_eq!(on_head(app), ["c1", "c2", "feat1 dimmed"])),
     ]);
 }
 
@@ -2285,13 +2291,15 @@ fn test_the_graph_follows_the_sidebar_only_when_configured() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
 
-    // by default the sidebar moves alone; leaving it selects the ref it was on
+    // by default the sidebar moves alone; leaving it selects the ref it was on, master's commit
+    let first = Rc::new(RefCell::new(String::new()));
+    let (start, unchanged) = (first.clone(), first.clone());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        // the newest commit, which no branch shows at its tip
-        check(|app| assert_eq!(selected(app), "feat1")),
+        check(move |app| *start.borrow_mut() = selected(app)),
+        // the sidebar walks on to master
         keys("1 j j"),
-        check(|app| assert_eq!(selected(app), "feat1")),
+        check(move |app| assert_eq!(selected(app), *unchanged.borrow())),
         keys("enter"),
         check(|app| assert_eq!(selected(app), "c2")),
     ]);
@@ -2300,7 +2308,6 @@ fn test_the_graph_follows_the_sidebar_only_when_configured() {
     let mut harness = Harness::new(&path, launch());
     Rc::get_mut(&mut harness.ctx).unwrap().ui_config.refs.follow = true;
     harness.run(vec![
-        check(|app| assert_eq!(selected(app), "feat1")),
         keys("1 j j"),
         check(|app| assert_eq!(selected(app), "c2")),
     ]);
