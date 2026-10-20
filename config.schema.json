@@ -327,6 +327,11 @@
               "minimum": 1,
               "maximum": 65535,
               "default": 26
+            },
+            "follow": {
+              "type": "boolean",
+              "description": "Whether the commit graph follows the refs list, selecting the commit of the ref it moves onto.",
+              "default": false
             }
           },
           "additionalProperties": false

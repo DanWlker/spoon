@@ -45,6 +45,7 @@ date_local = true
 
 [ui.refs]
 width = 26
+follow = false
 
 [graph]
 row_image_width = "compact"
@@ -391,6 +392,13 @@ The width of the refs sidebar on the left.
 
 - type: `u16`
 - default: `26`
+
+### `ui.refs.follow`
+
+Whether the commit graph follows the refs sidebar, selecting the commit of the branch, remote branch, tag or stash it moves onto. Off, the graph keeps its selection as the sidebar moves, and takes the ref's commit when <kbd>Enter</kbd> leaves the sidebar.
+
+- type: `boolean`
+- default: `false`
 
 ### `graph.color.branches`
 

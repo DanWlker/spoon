@@ -277,6 +277,10 @@ pub struct UiRefsConfig {
     #[garde(range(min = 1))]
     #[default = 26]
     pub width: u16,
+    // whether the commit graph follows the sidebar, selecting the commit of the ref it shows
+    #[garde(skip)]
+    #[default = false]
+    pub follow: bool,
 }
 
 #[optional(derives = [Deserialize])]
@@ -368,7 +372,10 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
-                refs: UiRefsConfig { width: 26 },
+                refs: UiRefsConfig {
+                    width: 26,
+                    follow: false,
+                },
             },
             graph: GraphConfig {
                 row_image_width: GraphImageWidthMode::Compact,
@@ -426,6 +433,7 @@ mod tests {
             date_local = false
             [ui.refs]
             width = 40
+            follow = true
             [graph]
             row_image_width = "fixed"
             [graph.color]
@@ -497,7 +505,10 @@ mod tests {
                     date_format: "%Y/%m/%d %H:%M:%S".into(),
                     date_local: false,
                 },
-                refs: UiRefsConfig { width: 40 },
+                refs: UiRefsConfig {
+                    width: 40,
+                    follow: true,
+                },
             },
             graph: GraphConfig {
                 row_image_width: GraphImageWidthMode::Fixed,
@@ -571,7 +582,10 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
-                refs: UiRefsConfig { width: 26 },
+                refs: UiRefsConfig {
+                    width: 26,
+                    follow: false,
+                },
             },
             graph: GraphConfig {
                 row_image_width: GraphImageWidthMode::Compact,

@@ -343,6 +343,18 @@ struct Popup {
     reveal: Option<Instant>,
 }
 
+// Whether diffing `compare` is diffing with the current branch, whose commits the graph then dims
+// off it like everywhere; two other refs are shown alike.
+fn compare_with_head(compare: &Compare, repository: &Repository) -> bool {
+    let branch = repository.current_branch();
+    let is_head = |rev: &Rev| match rev {
+        Rev::Head => true,
+        Rev::Ref(NamedRef::Branch(name)) => branch.as_deref() == Some(name),
+        Rev::Commit(_) | Rev::Ref(_) => false,
+    };
+    is_head(&compare.base) || is_head(&compare.target)
+}
+
 // The history the graph shows, its commits only are loaded.
 #[derive(Debug, Default, Clone)]
 enum GraphFilter {
@@ -439,6 +451,12 @@ impl<'a> App<'a> {
         let warning = graph.warning.clone();
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let head_history = repository.head_history();
+        // diffing a ref from the sidebar, the commits off the current branch are dimmed as
+        // everywhere when one of the two is it, else both are shown alike
+        let dim_off_head = shell.as_ref().is_none_or(|s| match &s.graph_filter {
+            GraphFilter::Compare { refs, .. } => compare_with_head(refs, repository),
+            _ => true,
+        });
         let commits = graph
             .commits
             .iter()
@@ -455,8 +473,7 @@ impl<'a> App<'a> {
                 {
                     ref_name_to_commit_index_map.insert("HEAD".to_string(), i);
                 }
-                // dimmed off the current branch, also while two refs are compared
-                let on_head = head_history.contains(&commit.commit_hash);
+                let on_head = !dim_off_head || head_history.contains(&commit.commit_hash);
                 CommitInfo::new(commit, refs, repository.branch_tracking(), on_head)
             })
             .collect();
@@ -1606,6 +1623,7 @@ impl App<'_> {
             UserEvent::Confirm => {
                 // a folder opens or closes, else back to the page showing what is selected
                 if !self.shell.sidebar.toggle_node() {
+                    self.select_sidebar_selection();
                     self.blur_sidebar();
                 }
             }
@@ -1822,8 +1840,15 @@ impl App<'_> {
         }
     }
 
-    // Shows the selected ref on the graph; the commit details stay open, showing its commit.
+    // Shows the selected ref on the graph as the sidebar moves, when `ui.refs.follow` is on.
     fn show_sidebar_selection(&mut self) {
+        if self.ctx.ui_config.refs.follow {
+            self.select_sidebar_selection();
+        }
+    }
+
+    // Shows the selected ref on the graph; the commit details stay open, showing its commit.
+    fn select_sidebar_selection(&mut self) {
         let Some(name) = self.shell.sidebar.selected_git_name() else {
             return;
         };

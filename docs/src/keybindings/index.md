@@ -254,7 +254,7 @@ The commands on the refs ask first, in a popup:
 - <kbd>Space</kbd> on a stash applies it, keeping it in the stash list, or pops it (applies, then drops it; git keeps it when it stops on conflicts), optionally restoring what was staged as staged (`--index`); the local changes page shows the result.
 
 The refs are always shown on the left. <kbd>1</kbd> focuses them, and the page shows what is selected:
-`Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it.
+`Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it, as the sidebar moves with `ui.refs.follow` on, else when <kbd>Enter</kbd> leaves the sidebar.
 <kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file). The bar at the top shows the page open and the count of local changes; the sidebar is on the commit graph only.
 
 In the commit graph, <kbd>2</kbd> focuses the commit list and <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> open the details of the selected commit on the info / changes / files tab.

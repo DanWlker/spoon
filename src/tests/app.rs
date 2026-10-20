@@ -2245,3 +2245,63 @@ fn test_compare_with_the_current_branch_dims_the_commits_off_it() {
         check(move |app| assert_eq!(on_head(app), ["c2", "feat1 dimmed", "c1"])),
     ]);
 }
+
+// What a sidebar diff compares, and whether the graph then dims the commits off the current
+// branch: only when one of the two is it.
+#[test]
+fn test_compare_with_the_current_branch() {
+    use crate::git::{NamedRef, Repository as Repo, Rev, SortCommit};
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let loaded = Repo::load(&path, SortCommit::Chronological, None, false).unwrap();
+    let branch = |name: &str| Rev::Ref(NamedRef::Branch(name.into()));
+    let compare = |base: Rev, target: Rev| super::Compare { base, target };
+
+    // the current branch is master
+    assert!(super::compare_with_head(
+        &compare(branch("master"), branch("feat")),
+        &loaded
+    ));
+    assert!(super::compare_with_head(
+        &compare(Rev::Head, branch("feat")),
+        &loaded
+    ));
+    // two others, or a commit, are not it
+    assert!(!super::compare_with_head(
+        &compare(branch("feat"), Rev::Commit("a".repeat(40).as_str().into())),
+        &loaded
+    ));
+}
+
+#[test]
+fn test_the_graph_follows_the_sidebar_only_when_configured() {
+    // the subject of the commit the graph selects
+    fn selected(app: &App) -> String {
+        let state = app.view.as_list_state().expect("a commit list");
+        let hash = state.selected_commit_hash();
+        app.repository.commit(hash).unwrap().subject.clone()
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+
+    // by default the sidebar moves alone; leaving it selects the ref it was on
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // the newest commit, which no branch shows at its tip
+        check(|app| assert_eq!(selected(app), "feat1")),
+        keys("1 j j"),
+        check(|app| assert_eq!(selected(app), "feat1")),
+        keys("enter"),
+        check(|app| assert_eq!(selected(app), "c2")),
+    ]);
+
+    // following it, the graph selects the commit of the ref the sidebar shows
+    let mut harness = Harness::new(&path, launch());
+    Rc::get_mut(&mut harness.ctx).unwrap().ui_config.refs.follow = true;
+    harness.run(vec![
+        check(|app| assert_eq!(selected(app), "feat1")),
+        keys("1 j j"),
+        check(|app| assert_eq!(selected(app), "c2")),
+    ]);
+}
