@@ -8,3 +8,6 @@ TODO:
 1. Interactive rebase, switch refresh to Ctrl-R, use shift r for interactive rebase
 1. [5] Files, [4] Changes when pressing e doesnt open file, can we make all files automatically have the e key to open file?
 1. when in line mode in diffpanel, v should be able to select, and y also should be able to copy the line
+1. The conflict existing incoming should:
+   - show when a file was deleted instead of an empty box
+   - use the diff panel styling to show what was added deleted
