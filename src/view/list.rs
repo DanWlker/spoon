@@ -11,8 +11,8 @@ use crate::{
     search::SearchKind,
     view::{
         commit_event, copy_hashes, query_status, register_commit_link_keys,
-        register_graph_commands, type_query, typing_keys, CopyForm, ListRefreshViewContext,
-        RefreshViewContext, Reselect,
+        register_graph_commands, search_status, type_query, typing_keys, CopyForm,
+        ListRefreshViewContext, RefreshViewContext, Reselect,
     },
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
@@ -378,12 +378,9 @@ fn update_search_options_message(state: &CommitListState, tx: &Sender) {
 }
 
 fn update_matched_message(state: &CommitListState, tx: &Sender) {
-    if let Some(outcome) = state.search_outcome() {
-        tx.send(AppEvent::UpdateSearchResult {
-            outcome,
-            options: state.search_options().status_string(SearchKind::Commits),
-        });
-    } else {
-        tx.send(AppEvent::ClearStatusLine);
-    }
+    tx.send(search_status(
+        SearchKind::Commits,
+        state.search_options(),
+        state.search_outcome(),
+    ));
 }

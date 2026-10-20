@@ -12,7 +12,7 @@ use crate::{
     keys::KeyList,
     layout::{Direction, Panel},
     view::{
-        copy_path, copy_paths, copy_selection, not_found, query_status, toggle_search_option,
+        copy_path, copy_paths, copy_selection, query_status, search_status, toggle_search_option,
         CopyForm, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
@@ -210,15 +210,8 @@ impl<'a> LocalChangesView<'a> {
             }
             UserEvent::GoToNext | UserEvent::GoToPrevious => {
                 let state = &mut self.local_changes_state;
-                if !state.search_next(Toward::of(event, UserEvent::GoToNext), options) {
-                    let search = state
-                        .active_query()
-                        .search()
-                        .unwrap_or_default()
-                        .to_string();
-                    self.tx
-                        .send(not_found(&self.ctx, search, state.query_kind()));
-                }
+                state.search_next(Toward::of(event, UserEvent::GoToNext), options);
+                self.update_query_status();
             }
             UserEvent::Confirm => {
                 let result = self.local_changes_state.enter();
@@ -371,10 +364,14 @@ impl<'a> LocalChangesView<'a> {
         state.is_editing() || state.is_typing_query()
     }
 
-    // Shows the search or filter being typed in the status line.
+    // Shows the search or filter being typed in the status line, else how the search went.
     fn update_query_status(&self) {
         let state = &self.local_changes_state;
-        let event = query_status(&self.ctx, state.active_query(), state.query_kind());
+        let kind = state.query_kind();
+        let event = match state.is_typing_query() {
+            true => query_status(&self.ctx, state.active_query(), kind),
+            false => search_status(kind, self.ctx.search_options.get(), state.search_outcome()),
+        };
         self.tx.send(event);
     }
 

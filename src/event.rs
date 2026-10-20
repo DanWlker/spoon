@@ -15,8 +15,9 @@ use crate::{
     git::{CommitHash, FilesSnapshot, GitTask},
     graph::Fold,
     keybind::Scope,
+    search::SearchOutcome,
     view::RefreshViewContext,
-    widget::{commit_list::SearchOutcome, commit_tabs::DetailTab},
+    widget::commit_tabs::DetailTab,
 };
 
 #[derive(Debug)]

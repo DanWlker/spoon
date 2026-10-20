@@ -26,6 +26,8 @@ pub struct TreeQuery {
     editing: Option<(QueryKind, Input)>,
     search: Option<String>,
     filter: Option<String>,
+    // the row of what is searched, from which a search finds its matches while it is typed
+    from: usize,
 }
 
 impl TreeQuery {
@@ -37,13 +39,25 @@ impl TreeQuery {
         }
     }
 
-    // Starts typing a query, from its current value.
-    pub fn start(&mut self, kind: QueryKind) {
+    // Starts typing a query, from its current value, `from` being the row of what has the focus,
+    // which a search goes from while it is typed.
+    pub fn start(&mut self, kind: QueryKind, from: usize) {
         let value = match kind {
             QueryKind::Search => self.search.clone(),
             QueryKind::Filter => self.filter.clone(),
         };
+        self.from = from;
         self.editing = Some((kind, Input::new(value.unwrap_or_default())));
+    }
+
+    // The row a search goes from: the one it started from while it is typed, else the selected
+    // one, so the query finds its first match from where it began, and the next ones from the
+    // selection.
+    pub fn step_from(&self, selected: usize) -> usize {
+        match self.editing {
+            Some((QueryKind::Search, _)) => self.from,
+            _ => selected,
+        }
     }
 
     pub fn is_editing(&self) -> bool {
@@ -390,7 +404,7 @@ mod tests {
         assert_eq!(query.indicator(), None);
 
         // typing applies the search live, enter keeps it
-        query.start(QueryKind::Search);
+        query.start(QueryKind::Search, 0);
         type_str(&mut query, "ma");
         assert_eq!(query.search(), Some("ma"));
         assert_eq!(query.status_input(), Some(("/ma".into(), 3)));
@@ -398,7 +412,7 @@ mod tests {
         assert!(!query.is_editing());
 
         // esc while typing clears that query only
-        query.start(QueryKind::Filter);
+        query.start(QueryKind::Filter, 0);
         type_str(&mut query, "src");
         assert_eq!(query.filter(), Some("src"));
         assert_eq!(query.indicator(), Some("/ma  filter: src".into()));
@@ -406,8 +420,17 @@ mod tests {
         assert_eq!(query.filter(), None);
         assert_eq!(query.search(), Some("ma"));
 
+        // a search goes from where it started while it is typed, else from the selection
+        query.start(QueryKind::Search, 4);
+        assert_eq!(query.step_from(7), 4);
+        query.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(query.step_from(7), 7);
+        query.start(QueryKind::Filter, 4);
+        assert_eq!(query.step_from(7), 7);
+        query.handle_key(KeyEvent::from(KeyCode::Enter));
+
         // clearing removes the search first, then the filter
-        query.start(QueryKind::Filter);
+        query.start(QueryKind::Filter, 0);
         type_str(&mut query, "x");
         query.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(query.clear(), Some(QueryKind::Search));

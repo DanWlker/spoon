@@ -12,11 +12,11 @@ use crate::{
     git::{CommitHash, FileRevision, Repository, Rev},
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
-    search::{SearchKind, SearchOptions},
+    search::{SearchKind, SearchOptions, SearchOutcome},
     view::detail::DetailFocus,
     widget::{
         commit_list::format_date,
-        commit_list::{CommitListState, SearchOutcome, SearchRefreshContext},
+        commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
         diff::DiffPart,
         diff_pane::DiffPane,
@@ -387,11 +387,19 @@ pub fn query_status(ctx: &AppContext, query: &TreeQuery, kind: SearchKind) -> Ap
     }
 }
 
-// The status line telling the search for `query`, of `kind`, matched nothing, alike on every page.
-pub fn not_found(ctx: &AppContext, query: String, kind: SearchKind) -> AppEvent {
-    AppEvent::UpdateSearchResult {
-        outcome: SearchOutcome::NotFound { query },
-        options: ctx.search_options.get().status_string(kind),
+// The status line telling how a search of `kind` went, alike on every page; the line is cleared
+// when there is none.
+pub fn search_status(
+    kind: SearchKind,
+    options: SearchOptions,
+    outcome: Option<SearchOutcome>,
+) -> AppEvent {
+    match outcome {
+        Some(outcome) => AppEvent::UpdateSearchResult {
+            outcome,
+            options: options.status_string(kind),
+        },
+        None => AppEvent::ClearStatusLine,
     }
 }
 

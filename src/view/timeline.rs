@@ -14,11 +14,11 @@ use crate::{
     git::{CommitHash, FileRevision, Repository},
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
-    search::SearchKind,
+    search::{SearchKind, SearchOutcome},
     view::{
-        commit_event, copy_selection, file_link, not_found, query_status, register_commit_keys,
-        register_diff_keys, register_moving_keys, revision_matches, revision_spans, type_query,
-        typing_keys,
+        commit_event, copy_selection, file_link, query_status, register_commit_keys,
+        register_diff_keys, register_moving_keys, revision_matches, revision_spans, search_status,
+        type_query, typing_keys,
     },
     widget::{
         diff::{parse_diff, Step},
@@ -137,7 +137,12 @@ impl TimelineView {
                 self.select(self.cursor.selected().saturating_sub(1), repository)
             }
             UserEvent::Search => {
-                self.query.start(QueryKind::Search);
+                // from the commits, or from the diff while it has the focus
+                let from = match in_diff {
+                    true => self.pane.selected_row(),
+                    false => self.cursor.selected(),
+                };
+                self.query.start(QueryKind::Search, from);
                 self.update_query_status();
             }
             UserEvent::GoToNext => self.search(SearchDirection::Next, repository),
@@ -226,28 +231,48 @@ impl TimelineView {
             return;
         };
         let options = self.ctx.search_options.get();
-        let found = if self.pane.is_focused() {
-            self.pane.search(&search, direction, options)
+        let from = self.query.step_from(if self.pane.is_focused() {
+            self.pane.selected_row()
+        } else {
+            self.cursor.selected()
+        });
+        if self.pane.is_focused() {
+            self.pane.search(&search, from, direction, options);
         } else {
             let history = &self.history;
-            let found = find_around(history.len(), self.cursor.selected(), direction, |i| {
+            let found = find_around(history.len(), from, direction, |i| {
                 revision_matches(&self.ctx, &history[i], &search, options)
             });
             if let Some(index) = found {
                 self.select(index, repository);
             }
-            found.is_some()
-        };
-        // while typing, the status line shows the query instead
-        if !found && !self.query.is_editing() {
-            self.tx
-                .send(not_found(&self.ctx, search, self.query_kind()));
         }
+        self.update_query_status();
+    }
+
+    // How the search of what has the focus went: the commits, or the rows of the diff.
+    fn search_outcome(&self) -> Option<SearchOutcome> {
+        let query = self.query.search()?;
+        let options = self.ctx.search_options.get();
+        let selected = match self.pane.is_focused() {
+            true => return self.pane.search_outcome(query, options),
+            false => self.cursor.selected(),
+        };
+        let matched = self
+            .history
+            .iter()
+            .map(|revision| revision_matches(&self.ctx, revision, query, options))
+            .collect::<Vec<_>>();
+        Some(SearchOutcome::of(query, selected, matched.into_iter()))
     }
 
     fn update_query_status(&self) {
-        self.tx
-            .send(query_status(&self.ctx, &self.query, self.query_kind()));
+        let kind = self.query_kind();
+        let event = match self.query.is_editing() {
+            true => query_status(&self.ctx, &self.query, kind),
+            false => search_status(kind, self.ctx.search_options.get(), self.search_outcome()),
+        };
+        self.tx.send(event);
     }
 
     // The text or the diff is searched as text, the commits by name.

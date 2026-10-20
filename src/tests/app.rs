@@ -25,9 +25,10 @@ use crate::{
     keybind::parse_key_event,
     layout::Panel,
     protocol::ImageProtocol,
+    search::SearchOutcome,
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
-    widget::{commit_list::SearchOutcome, ref_list::RefSelection},
+    widget::ref_list::RefSelection,
     Loader, Refresh,
 };
 
@@ -1518,6 +1519,45 @@ fn test_no_match_said_alike_on_every_page() {
 }
 
 #[test]
+fn test_found_match_counted_alike_on_every_page() {
+    // the keys to a search, the page they are on, the query, and what it matches there
+    let pages = [
+        ("", StartPage::Graph, "feat1", 1),
+        ("4", StartPage::Graph, "f.txt", 1),
+        ("5", StartPage::Graph, "f.txt", 1),
+        ("5 shift-b l", StartPage::Graph, "FEAT", 1),
+        ("5 shift-t", StartPage::Graph, "feat1", 1),
+        ("", StartPage::LocalChanges, "f.txt", 1),
+    ];
+    for (to_search, page, query, total) in pages {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        let mut steps = vec![];
+        if !to_search.is_empty() {
+            steps.push(keys(to_search));
+        }
+        steps.extend([
+            keys("/"),
+            typing(query),
+            keys("enter"),
+            check(move |app| {
+                let said = &app.shell.app_status.status_line;
+                assert!(
+                    matches!(said, StatusLine::SearchResult {
+                        outcome: SearchOutcome::Found { index, total: found, query: asked },
+                        ..
+                    } if *index == 1 && *found == total && asked == query),
+                    "{to_search:?} {said:?}"
+                );
+            }),
+        ]);
+        harness.run(steps);
+    }
+}
+
+#[test]
 fn test_diff_keys_alike_on_every_page() {
     // the keys into a diff, at its hunks, and the page they are on
     let pages = [
@@ -2142,4 +2182,44 @@ fn test_refresh_keeps_the_focus_of_the_panels_on_the_local_changes_page() {
         keys("shift-r"),
         in_diff(false),
     ]);
+}
+
+#[test]
+fn test_clearing_a_search_clears_its_status_line() {
+    // the keys to a search, and the page they are on
+    let pages = [
+        ("", StartPage::Graph),
+        ("4", StartPage::Graph),
+        ("5 shift-b l", StartPage::Graph),
+        ("5 shift-t", StartPage::Graph),
+        ("", StartPage::LocalChanges),
+    ];
+    for (to_search, page) in pages {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        let mut steps = vec![];
+        if !to_search.is_empty() {
+            steps.push(keys(to_search));
+        }
+        steps.extend([
+            keys("/"),
+            typing("f"),
+            keys("enter"),
+            check(move |app| {
+                let said = &app.shell.app_status.status_line;
+                assert!(
+                    matches!(said, StatusLine::SearchResult { .. }),
+                    "{to_search:?} {said:?}"
+                );
+            }),
+            keys("esc"),
+            check(move |app| {
+                let said = &app.shell.app_status.status_line;
+                assert!(matches!(said, StatusLine::None), "{to_search:?} {said:?}");
+            }),
+        ]);
+        harness.run(steps);
+    }
 }

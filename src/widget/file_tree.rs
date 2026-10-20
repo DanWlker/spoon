@@ -17,7 +17,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     event::UserEvent,
-    search::SearchOptions,
+    search::{SearchOptions, SearchOutcome},
     widget::{
         style::{
             change_span, fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row,
@@ -271,19 +271,36 @@ impl FileTreeState {
             .is_none_or(|(filter, options)| name_matches(path, filter, *options))
     }
 
-    // Selects the next match of `query`, expanding the directories that hide it. Returns whether
-    // there was one.
+    // Selects the match of `query` from the row `from` of `all_rows`, expanding the directories
+    // that hide it. Returns whether there was one.
     pub fn search(
         &mut self,
         query: &str,
+        from: usize,
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
-        let all_rows = self.all_rows();
-        let current = self.selected().map(|r| r.path.as_str());
-        let path = find_match(&all_rows, current, query, direction, options);
+        let path = find_match(&self.all_rows(), from, query, direction, options);
         self.reveal(path.as_deref());
         path.is_some()
+    }
+
+    // The row of the selection among `all_rows`, where a search goes from.
+    pub fn all_rows_index(&self) -> usize {
+        let path = self.selected().map(|row| row.path.as_str());
+        let all_rows = self.all_rows();
+        index_in(&all_rows, path)
+    }
+
+    // How the search for `query` went over the paths, the selection among them.
+    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> SearchOutcome {
+        let all_rows = self.all_rows();
+        let selected = index_in(&all_rows, self.selected().map(|row| row.path.as_str()));
+        let matched = all_rows
+            .iter()
+            .map(|row| row_matches(row, query, options))
+            .collect::<Vec<_>>();
+        SearchOutcome::of(query, selected, matched.into_iter())
     }
 
     // Selects `path`, expanding the directories that hide it.
@@ -522,31 +539,39 @@ pub fn tree_guides(rows: impl IntoIterator<Item = (usize, bool)>) -> Vec<String>
         .collect()
 }
 
-// The path of the match of `query` in `rows` from `current` in `direction`, wrapping around.
+// Whether a row is one a search matches: a path matching `query`, the root row never.
+pub fn row_matches(row: &FileTreeRow, query: &str, options: SearchOptions) -> bool {
+    !row.is_root() && name_matches(&row.path, query, options)
+}
+
+// The path of the match of `query` in `rows` from `from` in `direction`, wrapping around.
 pub fn find_match(
     rows: &[FileTreeRow],
-    current: Option<&str>,
+    from: usize,
     query: &str,
     direction: SearchDirection,
     options: SearchOptions,
 ) -> Option<String> {
-    find_next(rows, current, direction, |row| {
-        name_matches(&row.path, query, options)
+    find_next(rows, from, direction, |row| {
+        row_matches(row, query, options)
     })
 }
 
-// The path of the next row in `rows` for which `wanted` is true, from `current` in `direction`,
+// The row of `rows` at `path`, or 0 without it.
+fn index_in(rows: &[FileTreeRow], path: Option<&str>) -> usize {
+    path.and_then(|path| rows.iter().position(|row| row.path == path))
+        .unwrap_or(0)
+}
+
+// The path of the next row in `rows` for which `wanted` is true, from `from` in `direction`,
 // wrapping around. The root row is never one.
 pub fn find_next(
     rows: &[FileTreeRow],
-    current: Option<&str>,
+    from: usize,
     direction: SearchDirection,
     wanted: impl Fn(&FileTreeRow) -> bool,
 ) -> Option<String> {
-    let cur = current
-        .and_then(|path| rows.iter().position(|r| r.path == path))
-        .unwrap_or(0);
-    find_around(rows.len(), cur, direction, |i| {
+    find_around(rows.len(), from, direction, |i| {
         !rows[i].is_root() && wanted(&rows[i])
     })
     .map(|i| rows[i].path.clone())
@@ -966,9 +991,21 @@ mod tests {
         assert_eq!(visible(&state), vec!["docs", "src", "README.md"]);
 
         // searching expands the directories hiding the match, and wraps around
-        state.search("list", SearchDirection::Current, SearchOptions::default());
+        let from = state.all_rows_index();
+        state.search(
+            "list",
+            from,
+            SearchDirection::Current,
+            SearchOptions::default(),
+        );
         assert_eq!(state.selected().unwrap().path, "docs/list.md");
-        state.search("list", SearchDirection::Next, SearchOptions::default());
+        let from = state.all_rows_index();
+        state.search(
+            "list",
+            from,
+            SearchDirection::Next,
+            SearchOptions::default(),
+        );
         assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
         assert_eq!(
             visible(&state),
@@ -982,9 +1019,21 @@ mod tests {
                 "README.md"
             ]
         );
-        state.search("list", SearchDirection::Next, SearchOptions::default());
+        let from = state.all_rows_index();
+        state.search(
+            "list",
+            from,
+            SearchDirection::Next,
+            SearchOptions::default(),
+        );
         assert_eq!(state.selected().unwrap().path, "docs/list.md");
-        state.search("list", SearchDirection::Previous, SearchOptions::default());
+        let from = state.all_rows_index();
+        state.search(
+            "list",
+            from,
+            SearchDirection::Previous,
+            SearchOptions::default(),
+        );
         assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
 
         // filtering shows only matching files, expanded, keeping the selection

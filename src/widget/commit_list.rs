@@ -20,7 +20,7 @@ use crate::{
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
     graph::{Fold, GraphImageManager},
     protocol::PreparedImage,
-    search::{SearchOptions, SearchTarget},
+    search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
@@ -34,32 +34,6 @@ use crate::{
 
 pub const ELLIPSIS: &str = "...";
 
-// How the search of the commit list went, shown in the status line; `index` is 0 while the
-// selected commit isn't a match.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SearchOutcome {
-    Found {
-        index: usize,
-        total: usize,
-        query: String,
-    },
-    NotFound {
-        query: String,
-    },
-}
-
-impl std::fmt::Display for SearchOutcome {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SearchOutcome::Found {
-                index,
-                total,
-                query,
-            } => write!(f, "Match {index} of {total} (query: \"{query}\")"),
-            SearchOutcome::NotFound { query } => write!(f, "No matches found (query: \"{query}\")"),
-        }
-    }
-}
 // before the labels of refs (Nerd Font): a branch whose upstream is on the same commit, a remote
 // branch, a tag and a stash; a plain branch has none
 const UPSTREAM_ICON: &str = "\u{f0160}";
@@ -132,8 +106,6 @@ pub struct CommitListState<'a> {
 
     // the search, typed like the others, see `TreeQuery`
     query: TreeQuery,
-    // the commit selected when typing it started, the matches are looked for from
-    search_start: usize,
     // the app's, see `AppContext::search_options`
     search_options: Rc<Cell<SearchOptions>>,
     // the commits the search matches
@@ -167,7 +139,6 @@ impl<'a> CommitListState<'a> {
             graph_cell_width,
             ref_name_to_commit_index_map,
             query: TreeQuery::default(),
-            search_start: 0,
             search_options,
             search_matches,
             picked_commit_hashes: Vec::new(),
@@ -450,8 +421,8 @@ impl<'a> CommitListState<'a> {
     pub fn start_search(&mut self) {
         if !self.query.is_editing() {
             self.cursor.cancel_visual();
-            self.search_start = self.cursor.selected();
-            self.query.start(QueryKind::Search);
+            let from = self.cursor.selected();
+            self.query.start(QueryKind::Search, from);
         }
     }
 
@@ -474,11 +445,7 @@ impl<'a> CommitListState<'a> {
     // Finds the matches again once the search or its options changed: while typing, the first
     // from where it started; else the selected commit stays, or the next match.
     pub fn search_changed(&mut self) {
-        let from = if self.query.is_editing() {
-            self.search_start
-        } else {
-            self.cursor.selected()
-        };
+        let from = self.query.step_from(self.cursor.selected());
         self.update_search_matches();
         self.select_match_from(from, SearchDirection::Current);
     }
@@ -538,32 +505,15 @@ impl<'a> CommitListState<'a> {
         self.search_changed();
     }
 
-    // How the applied search went: the selected match of how many, and whether there are any.
     // How the applied search went, None without one.
     pub fn search_outcome(&self) -> Option<SearchOutcome> {
-        let query = self
-            .query
-            .search()
-            .filter(|_| self.search_applied())?
-            .to_string();
-        let total = self.search_matches.iter().filter(|m| **m).count();
-        if total == 0 {
-            return Some(SearchOutcome::NotFound { query });
-        }
+        let query = self.query.search().filter(|_| self.search_applied())?;
         let selected = self.cursor.selected();
-        let index = if self.search_matches[selected] {
-            self.search_matches[..=selected]
-                .iter()
-                .filter(|m| **m)
-                .count()
-        } else {
-            0
-        };
-        Some(SearchOutcome::Found {
-            index,
-            total,
+        Some(SearchOutcome::of(
             query,
-        })
+            selected,
+            self.search_matches.iter().copied(),
+        ))
     }
 
     fn update_search_matches(&mut self) {

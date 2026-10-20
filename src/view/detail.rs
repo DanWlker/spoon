@@ -19,12 +19,12 @@ use crate::{
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
-    search::SearchKind,
+    search::{SearchKind, SearchOutcome},
     view::{
         commit_event, copy_hashes, copy_path, copy_paths, copy_selection, file_link,
-        handle_search_event, not_found, query_status, register_commit_link_keys,
-        register_commit_list_keys, register_diff_keys, type_commit_search, type_query, typing_keys,
-        Compare, CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
+        handle_search_event, query_status, register_commit_link_keys, register_commit_list_keys,
+        register_diff_keys, search_status, type_commit_search, type_query, typing_keys, Compare,
+        CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -1225,13 +1225,15 @@ impl<'a> DetailView<'a> {
     fn handle_query_event(&mut self, event: UserEvent) -> bool {
         // the diff is searched, not filtered
         let in_diff = self.is_pane_focused();
+        // where the query starts from, which a search goes from while it is typed
+        let from = self.focus_row();
         let Some(query) = self.query_mut() else {
             return false;
         };
         match event {
-            UserEvent::Search => query.start(QueryKind::Search),
+            UserEvent::Search => query.start(QueryKind::Search, from),
             UserEvent::Filter if in_diff => return true,
-            UserEvent::Filter => query.start(QueryKind::Filter),
+            UserEvent::Filter => query.start(QueryKind::Filter, from),
             UserEvent::GoToNext | UserEvent::GoToPrevious => {
                 let direction = if event == UserEvent::GoToNext {
                     SearchDirection::Next
@@ -1279,41 +1281,76 @@ impl<'a> DetailView<'a> {
     }
 
     fn search(&mut self, direction: SearchDirection) {
-        let Some(search) = self.query().and_then(TreeQuery::search).map(String::from) else {
+        let Some(query) = self.query() else {
             return;
         };
+        let Some(search) = query.search().map(String::from) else {
+            return;
+        };
+        let from = query.step_from(self.focus_row());
         let options = self.ctx.search_options.get();
-        let found = match (self.tab, self.is_pane_focused()) {
-            (DetailTab::Info, _) => true,
+        match (self.tab, self.is_pane_focused()) {
+            (DetailTab::Info, _) => {}
             (DetailTab::Changes, true) => {
-                self.changes_state.pane.search(&search, direction, options)
+                self.changes_state
+                    .pane
+                    .search(&search, from, direction, options);
             }
             (DetailTab::Files, true) => {
-                self.files_state.search_preview(&search, direction, options)
+                self.files_state
+                    .search_preview(&search, from, direction, options);
             }
-            (DetailTab::Changes, false) => self
-                .changes_state
-                .update_tree(|t| t.search(&search, direction, options)),
-            (DetailTab::Files, false) => self
-                .files_state
-                .update_tree(|t| t.search(&search, direction, options))
-                .unwrap_or(true),
-        };
-        // while typing, the status line shows the query instead
-        if !found && !self.is_typing_query() {
-            self.tx
-                .send(not_found(&self.ctx, search, self.query_kind()));
+            (DetailTab::Changes, false) => {
+                self.changes_state
+                    .update_tree(|t| t.search(&search, from, direction, options));
+            }
+            (DetailTab::Files, false) => {
+                self.files_state
+                    .update_tree(|t| t.search(&search, from, direction, options));
+            }
+        }
+        self.update_query_status();
+    }
+
+    // How the search of what has the focus went: the row of its file tree, or of the diff or the
+    // preview.
+    fn search_outcome(&self) -> Option<SearchOutcome> {
+        let query = self.query()?.search()?;
+        let options = self.ctx.search_options.get();
+        match (self.tab, self.is_pane_focused()) {
+            (DetailTab::Info, _) => None,
+            (DetailTab::Changes, true) => self.changes_state.search_outcome(query, options),
+            (DetailTab::Files, true) => self.files_state.search_outcome(query, options),
+            (DetailTab::Changes, false) => self.changes_state.search_outcome(query, options),
+            (DetailTab::Files, false) => self.files_state.search_outcome(query, options),
         }
     }
 
-    // Shows the search or filter being typed in the status line.
+    // Shows the search or filter being typed in the status line, else how the search went.
     fn update_query_status(&self) {
         // the info tab has no search
-        let event = match self.query() {
-            Some(query) => query_status(&self.ctx, query, self.query_kind()),
-            None => AppEvent::ClearStatusLine,
+        let event = match (self.query(), self.is_typing_query()) {
+            (Some(query), true) => query_status(&self.ctx, query, self.query_kind()),
+            (Some(_), false) => search_status(
+                self.query_kind(),
+                self.ctx.search_options.get(),
+                self.search_outcome(),
+            ),
+            (None, _) => AppEvent::ClearStatusLine,
         };
         self.tx.send(event);
+    }
+
+    // The row of what has the focus: the row of its file tree, or of the diff or the preview,
+    // from which a search starts.
+    fn focus_row(&self) -> usize {
+        match (self.tab, self.is_pane_focused()) {
+            (DetailTab::Info, _) => 0,
+            (DetailTab::Changes, true) => self.changes_state.pane.selected_row(),
+            (DetailTab::Files, true) => self.files_state.preview_selected_row(),
+            (DetailTab::Changes, false) => self.changes_state.tree_row(),
+            (DetailTab::Files, false) => self.files_state.tree_row(),
+        }
     }
 
     // The diff or preview is searched as text, the file trees by name.

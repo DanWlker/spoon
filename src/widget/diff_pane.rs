@@ -6,11 +6,11 @@ use crate::{
     app::AppContext,
     event::UserEvent,
     git::PatchDirection,
-    search::SearchOptions,
+    search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, render_diff_lines, DiffCursor, DiffHunk, DiffPart, ParsedDiff, Step,
-            WrapMap,
+            diff_lines, render_diff_lines, row_matches, DiffCursor, DiffHunk, DiffPart, ParsedDiff,
+            Step, WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -184,22 +184,41 @@ impl DiffPane {
         self.cursor.selected_text(diff, self.selected_part())
     }
 
-    // Selects a row matching `query`, see `DiffCursor::search`. Returns false when nothing matches.
+    // Selects a row matching `query` from the row `from`, see `DiffCursor::search`. Returns false
+    // when nothing matches.
     pub fn search(
         &mut self,
         query: &str,
+        from: usize,
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
         let Some(diff) = &self.diff else {
             return false;
         };
-        let part = self.selected_part();
-        let found = self.cursor.search(diff, query, direction, part, options);
+        let found = self.cursor.search(diff, query, from, direction, options);
         if found.is_some() {
             self.focus = found;
         }
         found.is_some()
+    }
+
+    // The row a search goes from: the one the keys are on.
+    pub fn selected_row(&self) -> usize {
+        self.cursor.selected_row()
+    }
+
+    // How the search for `query` went over the rows of the diff, None without one.
+    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
+        let diff = self.diff.as_ref()?;
+        let matched = (0..diff.rows.len())
+            .map(|row| row_matches(diff, row, query, options))
+            .collect::<Vec<_>>();
+        Some(SearchOutcome::of(
+            query,
+            self.selected_row(),
+            matched.into_iter(),
+        ))
     }
 
     // Draws the diff in a panel titled `title`, like the timeline and the local changes do: the

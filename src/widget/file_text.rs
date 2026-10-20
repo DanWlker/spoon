@@ -10,7 +10,7 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::UserEvent,
-    search::SearchOptions,
+    search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
         style::{picked_style, render_scrollbar, scroll_to, ScrollState, VisualSelection},
@@ -39,8 +39,6 @@ pub struct FileText {
     // the screen rows the lines wrap to, and the scroll among them
     wrap: WrapMap,
     scroll_state: ScrollState,
-    // the line the search last matched, where the next one starts from
-    search_row: Option<usize>,
 }
 
 impl FileText {
@@ -52,7 +50,6 @@ impl FileText {
         self.selection.clear();
         self.wrap = WrapMap::default();
         self.scroll_state = ScrollState::default();
-        self.search_row = None;
     }
 
     pub fn lines(&self) -> &[String] {
@@ -164,7 +161,6 @@ impl FileText {
     // Selects a line, the last one past the end.
     pub fn select_line(&mut self, line: usize) {
         self.selected = line.min(self.lines.len().saturating_sub(1));
-        self.search_row = None;
         self.sync_selection();
         self.scroll_to(self.selected..self.selected + 1);
     }
@@ -172,6 +168,16 @@ impl FileText {
     // The selected line, from 0.
     pub fn selected_line(&self) -> usize {
         self.selected
+    }
+
+    // How the search for `query` went over the lines, the selected one among them.
+    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> SearchOutcome {
+        let matched = self
+            .lines
+            .iter()
+            .map(|line| match_range(line, query, options).is_some())
+            .collect::<Vec<_>>();
+        SearchOutcome::of(query, self.selected, matched.into_iter())
     }
 
     // The selected line as in the file, or the selected lines, to copy.
@@ -188,24 +194,23 @@ impl FileText {
         Some(lines.join("\n"))
     }
 
-    // Selects the line matching `query`, around from the last match; false when nothing matches.
+    // Selects the line matching `query` from the line `from`; false when nothing matches.
     pub fn search(
         &mut self,
         query: &str,
+        from: usize,
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
         self.visual.cancel();
         let lines = &self.lines;
-        let start = self.search_row.unwrap_or(self.selected);
-        let found = find_around(lines.len(), start, direction, |i| {
+        let found = find_around(lines.len(), from, direction, |i| {
             match_range(&lines[i], query, options).is_some()
         });
         let Some(line) = found else {
             return false;
         };
         self.select_line(line);
-        self.search_row = Some(line);
         true
     }
 

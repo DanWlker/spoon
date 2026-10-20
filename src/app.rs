@@ -39,14 +39,14 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel, PanelLayout, Size},
     protocol::ImageProtocol,
     ref_commands::{diff_refs, ref_command, ref_command_applies},
-    search::SearchOptions,
+    search::{SearchOptions, SearchOutcome},
     view::{
         register_graph_commands, BlameView, Compare, DetailFocus, HelpView,
         LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
-        commit_list::{CommitInfo, CommitListState, SearchOutcome},
+        commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
         keys_popup::KeysPopup,

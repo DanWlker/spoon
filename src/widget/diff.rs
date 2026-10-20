@@ -383,6 +383,11 @@ impl WrapMap {
     }
 }
 
+// Whether the row of `diff` at `row` is one a search matches.
+pub fn row_matches(diff: &ParsedDiff, row: usize, query: &str, options: SearchOptions) -> bool {
+    match_range(&diff.rows[row].text, query, options).is_some()
+}
+
 // The screen rows `line` takes in `width`, wrapped when `wrap`.
 fn visual_height(line: Line, width: u16, wrap: bool) -> usize {
     if wrap {
@@ -397,13 +402,12 @@ fn visual_height(line: Line, width: u16, wrap: bool) -> usize {
 #[derive(Debug, Default, Clone)]
 pub struct DiffCursor {
     pub hunk: usize,
-    // a row of `ParsedDiff::rows`, a change of the hunk
+    // the row of `ParsedDiff::rows` the keys are on: a change of the hunk, or the row a search
+    // matched in it, which the next search goes on from
     pub line: usize,
     pub scroll: ScrollState,
     // the screen rows the diff's rows wrap to, for the scroll to count
     wrap: WrapMap,
-    // the row the search last matched, where the next one starts from
-    search_row: Option<usize>,
 }
 
 impl DiffCursor {
@@ -430,8 +434,14 @@ impl DiffCursor {
             return false;
         };
         self.hunk = index.min(last);
+        let rows = &diff.hunks[self.hunk].rows;
+        // the row a search goes on from: the first change of the hunk
+        self.line = rows
+            .clone()
+            .find(|&row| diff.rows[row].is_change())
+            .unwrap_or(rows.start);
         // show the whole hunk, or at least its beginning
-        self.scroll_to(diff.hunks[self.hunk].rows.clone());
+        self.scroll_to(rows.clone());
         true
     }
 
@@ -458,41 +468,38 @@ impl DiffCursor {
         }
     }
 
-    // Selects the row matching `query` in `direction` from the last match, else from the selection:
-    // the changed line it is on, else its hunk. Returns which of them it selected, None when
-    // nothing matches.
+    // Selects the row matching `query` in `direction` from the row `from`: the row itself when it
+    // is a change, else its hunk. Returns which of them it selected, None when nothing matches.
     pub fn search(
         &mut self,
         diff: &ParsedDiff,
         query: &str,
+        from: usize,
         direction: SearchDirection,
-        selected: DiffPart,
         options: SearchOptions,
     ) -> Option<DiffPart> {
-        let selected = match selected {
-            DiffPart::Line => self.line,
-            DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0, |h| h.rows.start),
-        };
-        let start = self.search_row.unwrap_or(selected);
-        let row = find_around(diff.rows.len(), start, direction, |r| {
-            match_range(&diff.rows[r].text, query, options).is_some()
+        let row = find_around(diff.rows.len(), from, direction, |r| {
+            row_matches(diff, r, query, options)
         })?;
-        let part = if diff.rows[row].is_change() {
-            self.select_line(diff, row);
+        // the row the next search goes on from, in the hunk it is in
+        self.line = row;
+        if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
+            self.hunk = index;
+        }
+        self.scroll_to(row..row + 1);
+        Some(if diff.rows[row].is_change() {
             DiffPart::Line
         } else {
-            if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
-                self.hunk = index;
-            }
-            self.scroll_to(row..row + 1);
             DiffPart::Hunk
-        };
-        self.search_row = Some(row);
-        Some(part)
+        })
+    }
+
+    // The row a search goes from: the one the keys are on.
+    pub fn selected_row(&self) -> usize {
+        self.line
     }
 
     pub fn move_hunk(&mut self, diff: &ParsedDiff, step: Step) {
-        self.search_row = None;
         let index = match step {
             Step::Next => self.hunk + 1,
             Step::Prev => self.hunk.saturating_sub(1),
@@ -504,7 +511,6 @@ impl DiffCursor {
 
     // Moves between the changed lines, across hunks.
     pub fn move_line(&mut self, diff: &ParsedDiff, step: Step) {
-        self.search_row = None;
         let mut changed = changed_rows(diff);
         let row = match step {
             Step::Next => changed.find(|&r| r > self.line),
@@ -577,7 +583,6 @@ impl DiffCursor {
                 });
                 match found {
                     Some(row) if row != self.line => {
-                        self.search_row = None;
                         self.select_line(diff, row);
                     }
                     _ => self.scroll_to_edge(down),

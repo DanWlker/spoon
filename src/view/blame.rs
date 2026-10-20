@@ -17,10 +17,10 @@ use crate::{
     git::{CommitHash, FileRevision, Repository},
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
-    search::SearchKind,
+    search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
-        commit_event, file_link, not_found, query_status, register_commit_keys,
-        register_moving_keys, revision_spans, type_query, typing_keys,
+        commit_event, file_link, query_status, register_commit_keys, register_moving_keys,
+        revision_spans, search_status, type_query, typing_keys,
     },
     widget::{
         commit_list::{format_date, ELLIPSIS},
@@ -190,7 +190,9 @@ impl BlameView {
                 self.select(self.index.saturating_sub(1), repository)
             }
             UserEvent::Search if body => {
-                self.query.start(QueryKind::Search);
+                // from the commits of the lines, or from the text, wherever the line is
+                self.query
+                    .start(QueryKind::Search, self.text.selected_line());
                 self.update_query_status();
             }
             UserEvent::GoToNext if body => self.search(SearchDirection::Next),
@@ -271,37 +273,64 @@ impl BlameView {
             return;
         };
         let options = self.ctx.search_options.get();
-        let found = match self.focus {
+        match self.focus {
             // the commit shown isn't searched
             BlameFocus::Revision => return,
             BlameFocus::Commit => {
-                let commits = &self.commits;
-                let found = find_around(commits.len(), self.text.selected_line(), direction, |i| {
-                    let commit = &commits[i];
-                    let starts = i == 0 || commits[i - 1] != *commit;
-                    let BlameLabel { author, date } = &self.labels[commit];
-                    starts
-                        && [commit.as_str(), author, date]
-                            .iter()
-                            .any(|text| name_matches(text, &search, options))
+                let from = self.query.step_from(self.text.selected_line());
+                let found = find_around(self.commits.len(), from, direction, |i| {
+                    self.commit_matches(i, &search, options)
                 });
                 if let Some(line) = found {
                     self.text.select_line(line);
                 }
-                found.is_some()
             }
-            BlameFocus::Text => self.text.search(&search, direction, options),
-        };
-        // while typing, the status line shows the query instead
-        if !found && !self.query.is_editing() {
-            self.tx
-                .send(not_found(&self.ctx, search, self.query_kind()));
+            BlameFocus::Text => {
+                let from = self.query.step_from(self.text.selected_line());
+                self.text.search(&search, from, direction, options);
+            }
         }
+        self.update_query_status();
+    }
+
+    // Whether the line at `line` starts the commit a search for `query` matches: the blame shows a
+    // commit once, on its first line.
+    fn commit_matches(&self, line: usize, query: &str, options: SearchOptions) -> bool {
+        let commit = &self.commits[line];
+        let starts = line == 0 || self.commits[line - 1] != *commit;
+        let BlameLabel { author, date } = &self.labels[commit];
+        starts
+            && [commit.as_str(), author, date]
+                .iter()
+                .any(|text| name_matches(text, query, options))
+    }
+
+    // How the search of what has the focus went: the commit of the line, or the text.
+    fn search_outcome(&self) -> Option<SearchOutcome> {
+        let query = self.query.search()?;
+        let options = self.ctx.search_options.get();
+        let matched = match self.focus {
+            // the commit shown isn't searched
+            BlameFocus::Revision => return None,
+            BlameFocus::Commit => (0..self.commits.len())
+                .map(|line| self.commit_matches(line, query, options))
+                .collect::<Vec<_>>(),
+            BlameFocus::Text => return Some(self.text.search_outcome(query, options)),
+        };
+        Some(SearchOutcome::of(
+            query,
+            self.text.selected_line(),
+            matched.into_iter(),
+        ))
     }
 
     fn update_query_status(&self) {
-        self.tx
-            .send(query_status(&self.ctx, &self.query, self.query_kind()));
+        let kind = self.query_kind();
+        let event = match self.query.is_editing() {
+            true => query_status(&self.ctx, &self.query, kind),
+            false => search_status(kind, self.ctx.search_options.get(), self.search_outcome()),
+        };
+        self.tx.send(event);
     }
 
     // The text or the diff is searched as text, the commits by name.

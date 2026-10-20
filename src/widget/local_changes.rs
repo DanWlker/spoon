@@ -21,7 +21,7 @@ use crate::{
     },
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
-    search::{SearchKind, SearchOptions},
+    search::{SearchKind, SearchOptions, SearchOutcome},
     view::register_diff_keys,
     widget::{
         conflict::ConflictView,
@@ -1663,17 +1663,20 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Starts typing a search of the diff while it has the focus, else a search or filter of the
-    // files, moving the focus back to them.
+    // files, moving the focus back to them; a search goes from the row of what had the focus while
+    // it is typed.
     pub fn start_query(&mut self, kind: QueryKind) {
         if self.is_diff_focused() {
             if kind == QueryKind::Search {
-                self.diff_query.start(kind);
+                let from = self.pane.selected_row();
+                self.diff_query.start(kind, from);
             }
             return;
         }
         self.focus_section(self.section);
         self.tree_mut().cancel_visual();
-        self.query_mut().start(kind);
+        let from = self.tree().all_rows_index();
+        self.query_mut().start(kind, from);
     }
 
     pub fn is_typing_query(&self) -> bool {
@@ -1686,6 +1689,16 @@ impl<'a> LocalChangesState<'a> {
             &self.diff_query
         } else {
             self.query()
+        }
+    }
+
+    // How the search of the diff while it has the focus, else of the focused section, went.
+    pub fn search_outcome(&self) -> Option<SearchOutcome> {
+        let query = self.active_query().search()?;
+        let options = self.ctx.search_options.get();
+        match self.is_diff_focused() {
+            true => self.pane.search_outcome(query, options),
+            false => Some(self.tree().search_outcome(query, options)),
         }
     }
 
@@ -1747,7 +1760,8 @@ impl<'a> LocalChangesState<'a> {
         let Some(query) = self.diff_query.search().map(String::from) else {
             return true;
         };
-        self.pane.search(&query, direction, options)
+        let from = self.diff_query.step_from(self.pane.selected_row());
+        self.pane.search(&query, from, direction, options)
     }
 
     // The selected line as in the file, or the selected hunk as a diff, to copy.
@@ -1775,7 +1789,8 @@ impl<'a> LocalChangesState<'a> {
         let Some(query) = self.query().search().map(String::from) else {
             return true;
         };
-        self.update_tree(|tree| tree.search(&query, direction, options))
+        let from = self.query().step_from(self.tree().all_rows_index());
+        self.update_tree(|tree| tree.search(&query, from, direction, options))
     }
 
     // Goes to the next file of the section, skipping directories; from its diff, on in the diff of
@@ -1786,13 +1801,12 @@ impl<'a> LocalChangesState<'a> {
             return Ok(());
         }
         let direction = SearchDirection::from(toward);
-        let current = self.selected_path();
-        let path = find_next(
-            &self.tree().all_rows(),
-            current.as_deref(),
-            direction,
-            |row| !row.is_dir(),
-        );
+        let rows = self.tree().all_rows();
+        let current = self
+            .selected_path()
+            .and_then(|path| rows.iter().position(|row| row.path == path))
+            .unwrap_or(0);
+        let path = find_next(&rows, current, direction, |row| !row.is_dir());
         self.chosen = Focus::Files;
         self.update_tree(|tree| tree.reveal(path.as_deref()));
         if in_diff && self.picked().is_empty() {
@@ -3832,6 +3846,60 @@ mod tests {
             state.handle_query_key(key(KeyCode::Char(c)), SearchOptions::default());
         }
         state.handle_query_key(key(KeyCode::Enter), SearchOptions::default());
+    }
+
+    #[test]
+    fn test_a_search_goes_from_where_it_started_and_steps_from_the_selection(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        for name in ["apple", "avocado", "banana", "grape"] {
+            fs::write(repo_path.join(name), "x\n")?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let options = SearchOptions::default();
+
+        // typed from banana, "av" goes around to avocado
+        select_row(&mut state, "banana");
+        state.start_query(QueryKind::Search);
+        for c in "av".chars() {
+            state.handle_query_key(key(KeyCode::Char(c)), options);
+        }
+        assert_eq!(state.selected_path().as_deref(), Some("avocado"));
+
+        // backspacing goes on from where the search started, and banana matches the shorter query
+        state.handle_query_key(key(KeyCode::Backspace), options);
+        assert_eq!(state.selected_path().as_deref(), Some("banana"));
+
+        // how the search went: the third of the four paths matching "a"
+        assert_eq!(
+            state.search_outcome(),
+            Some(SearchOutcome::Found {
+                index: 3,
+                total: 4,
+                query: "a".into(),
+            })
+        );
+
+        // kept, the step keys go on from the selection
+        state.handle_query_key(key(KeyCode::Enter), options);
+        state.search_next(Toward::Next, options);
+        assert_eq!(state.selected_path().as_deref(), Some("grape"));
+        assert_eq!(
+            state.search_outcome(),
+            Some(SearchOutcome::Found {
+                index: 4,
+                total: 4,
+                query: "a".into(),
+            })
+        );
+        state.search_next(Toward::Previous, options);
+        assert_eq!(state.selected_path().as_deref(), Some("banana"));
+        Ok(())
     }
 
     #[test]

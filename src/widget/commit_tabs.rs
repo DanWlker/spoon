@@ -17,7 +17,7 @@ use crate::{
     event::UserEvent,
     git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
     layout::{fit_size, Edge, Panel},
-    search::SearchOptions,
+    search::{SearchOptions, SearchOutcome},
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
         diff::{parse_diff, Step},
@@ -147,6 +147,19 @@ impl<'a> CommitChangesState<'a> {
 
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
         self.tree.selected()
+    }
+
+    // The row of the selection among the rows a search goes through.
+    pub fn tree_row(&self) -> usize {
+        self.tree.all_rows_index()
+    }
+
+    // How the search for `query` went over the files, or the diff while it has the focus.
+    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
+        match self.pane.is_focused() {
+            true => self.pane.search_outcome(query, options),
+            false => Some(self.tree.search_outcome(query, options)),
+        }
     }
 
     // Whether the files are being selected from where the visual selection started.
@@ -447,6 +460,26 @@ impl<'a> CommitFilesState<'a> {
         self.tree.as_ref()?.selected()
     }
 
+    // The row of the selection among the rows a search goes through, and of the preview's line.
+    pub fn tree_row(&self) -> usize {
+        self.tree.as_ref().map_or(0, FileTreeState::all_rows_index)
+    }
+
+    pub fn preview_selected_row(&self) -> usize {
+        self.text.selected_line()
+    }
+
+    // How the search for `query` went over the files, or the preview while it has the focus.
+    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
+        match self.is_preview_focused() {
+            true => Some(self.text.search_outcome(query, options)),
+            false => self
+                .tree
+                .as_ref()
+                .map(|tree| tree.search_outcome(query, options)),
+        }
+    }
+
     // Whether the files are being selected from where the visual selection started.
     pub fn is_tree_visual(&self) -> bool {
         self.tree.as_ref().is_some_and(FileTreeState::is_visual)
@@ -687,15 +720,16 @@ impl<'a> CommitFilesState<'a> {
         self.selected_text().map(|_| self.text.selected_line() + 1)
     }
 
-    // Selects the line of the preview matching `query`, around from the last match; false when
-    // nothing matches.
+    // Selects the line of the preview matching `query` from the line `from`; false when nothing
+    // matches.
     pub fn search_preview(
         &mut self,
         query: &str,
+        from: usize,
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
-        if !self.has_text() || !self.text.search(query, direction, options) {
+        if !self.has_text() || !self.text.search(query, from, direction, options) {
             return false;
         }
         self.preview = Some(FilePreview::TextFocused);
@@ -1349,27 +1383,42 @@ mod tests {
         assert_eq!(state.pane.selected_text().as_deref(), Some("eighteen"));
         assert!(state.pane.back() && state.pane.back() && !state.pane.back());
 
-        // searching selects the line matched, around from the last match
-        assert!(!state
-            .pane
-            .search("TWO", SearchDirection::Current, SearchOptions::default()));
-        assert!(state
-            .pane
-            .search("two", SearchDirection::Current, SearchOptions::default()));
+        // searching selects the line matched, from the row the keys are on
+        let from = state.pane.selected_row();
+        assert!(!state.pane.search(
+            "TWO",
+            from,
+            SearchDirection::Current,
+            SearchOptions::default()
+        ));
+        assert!(state.pane.search(
+            "two",
+            from,
+            SearchDirection::Current,
+            SearchOptions::default()
+        ));
         assert_eq!(state.pane.selected_text().as_deref(), Some("two"));
-        assert!(state
-            .pane
-            .search("line 1", SearchDirection::Next, SearchOptions::default()));
+        let from = state.pane.selected_row();
         assert!(state.pane.search(
             "line 1",
+            from,
+            SearchDirection::Next,
+            SearchOptions::default()
+        ));
+        let from = state.pane.selected_row();
+        assert!(state.pane.search(
+            "line 1",
+            from,
             SearchDirection::Previous,
             SearchOptions::default()
         ));
 
         // applying the added line to a working tree going back to the first commit
         fs::write(repo_path.join("f"), lines.concat())?;
+        let from = state.pane.selected_row();
         state.pane.search(
             "eighteen",
+            from,
             SearchDirection::Current,
             SearchOptions::default(),
         );
@@ -1413,12 +1462,20 @@ mod tests {
         state.step(Step::Next);
         assert_eq!(state.selected_text().as_deref(), Some("three"));
 
-        // searching goes around from the last match
-        assert!(state.search_preview("o", SearchDirection::Next, SearchOptions::default()));
+        // searching goes around from the line the keys are on, from the last one on to the first
+        let from = state.preview_selected_row();
+        assert!(state.search_preview("o", from, SearchDirection::Next, SearchOptions::default()));
         assert_eq!(state.selected_text().as_deref(), Some("one"));
-        assert!(state.search_preview("o", SearchDirection::Next, SearchOptions::default()));
+        let from = state.preview_selected_row();
+        assert!(state.search_preview("o", from, SearchDirection::Next, SearchOptions::default()));
         assert_eq!(state.selected_text().as_deref(), Some("\ttwo"));
-        assert!(!state.search_preview("zzz", SearchDirection::Next, SearchOptions::default()));
+        let from = state.preview_selected_row();
+        assert!(!state.search_preview(
+            "zzz",
+            from,
+            SearchDirection::Next,
+            SearchOptions::default()
+        ));
         assert!(state.back() && !state.back());
         assert_eq!(state.selected_text(), None);
         Ok(())

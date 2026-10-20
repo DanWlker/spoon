@@ -1,5 +1,59 @@
 use serde::Deserialize;
 
+// How a search went, shown in the status line on every page; `index` is 0 while the selected row
+// isn't a match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchOutcome {
+    Found {
+        index: usize,
+        total: usize,
+        query: String,
+    },
+    NotFound {
+        query: String,
+    },
+}
+
+impl SearchOutcome {
+    // How the search for `query` went over the rows `matched` says match, in order, the row
+    // `selected` among them.
+    pub fn of(query: &str, selected: usize, matched: impl Iterator<Item = bool>) -> Self {
+        let mut total = 0;
+        let mut index = 0;
+        for (row, matched) in matched.enumerate() {
+            if matched {
+                total += 1;
+                if row == selected {
+                    index = total;
+                }
+            }
+        }
+        if total == 0 {
+            return SearchOutcome::NotFound {
+                query: query.to_string(),
+            };
+        }
+        SearchOutcome::Found {
+            index,
+            total,
+            query: query.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for SearchOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchOutcome::Found {
+                index,
+                total,
+                query,
+            } => write!(f, "Match {index} of {total} (query: \"{query}\")"),
+            SearchOutcome::NotFound { query } => write!(f, "No matches found (query: \"{query}\")"),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchTarget {
@@ -100,6 +154,37 @@ pub fn case_insensitive(smart_case: bool, query: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_search_outcome_counts_the_matches_and_the_selected_one() {
+        let matched = [true, false, true, true, false];
+        let outcome = |selected: usize| SearchOutcome::of("a", selected, matched.into_iter());
+
+        // the third row is the second match
+        assert_eq!(
+            outcome(2),
+            SearchOutcome::Found {
+                index: 2,
+                total: 3,
+                query: "a".into(),
+            }
+        );
+        // a row that doesn't match is no match of the search
+        assert_eq!(
+            outcome(1),
+            SearchOutcome::Found {
+                index: 0,
+                total: 3,
+                query: "a".into(),
+            }
+        );
+        assert_eq!(
+            SearchOutcome::of("zzz", 0, [false, false].into_iter()),
+            SearchOutcome::NotFound {
+                query: "zzz".into()
+            }
+        );
+    }
 
     #[test]
     fn test_search_target_next_cycles_through_all_targets() {
