@@ -1,11 +1,6 @@
 use std::ops::RangeInclusive;
 
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    text::Line,
-    widgets::{Paragraph, Widget},
-};
+use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use crate::{
     app::AppContext,
@@ -18,7 +13,7 @@ use crate::{
             diff_lines, parse_diff, render_diff_lines, row_matches, DiffCursor, DiffHunk, DiffPart,
             ParsedDiff, Step, WrapMap,
         },
-        style::{placeholder, render_panel, render_scrollbar, ScrollState},
+        style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
     },
 };
@@ -39,6 +34,8 @@ pub struct DiffPane {
     diff: Option<ParsedDiff>,
     // the diff loading in the background, shown once loaded, see `load_in_background`
     loading: Option<Job<String>>,
+    // the diff shown before the one loading, drawn meanwhile; no key acts on it
+    previous: Option<ParsedDiff>,
     // the hunks or the lines while the diff has the focus, None while what is beside it does (the
     // files of the changes tab, the commits of the timeline)
     focus: Option<DiffPart>,
@@ -49,9 +46,17 @@ impl DiffPane {
     // Shows another diff, from the top, the focus beside it.
     pub fn set_diff(&mut self, diff: Option<ParsedDiff>) {
         self.loading = None;
+        self.previous = None;
         self.diff = diff;
         self.focus = None;
         self.cursor.reset();
+    }
+
+    // The diff is no longer the one selected: drawn until the next one is shown, where it was
+    // scrolled, the focus beside it so no key acts on it.
+    pub fn outdate(&mut self) {
+        self.previous = self.diff.take().or(self.previous.take());
+        self.focus = None;
     }
 
     pub fn diff(&self) -> Option<&ParsedDiff> {
@@ -59,13 +64,14 @@ impl DiffPane {
     }
 
     // Loads another diff with `work`, the git command giving it, on another thread, the focus
-    // beside it; none is shown meanwhile, so no key acts on the one before. See `poll_loading`.
+    // beside it; the one before is only drawn meanwhile, where it was scrolled, so no key acts on
+    // it. See `poll_loading`.
     pub fn load_in_background(
         &mut self,
         tx: Sender,
         work: impl FnOnce() -> String + Send + 'static,
     ) {
-        self.set_diff(None);
+        self.outdate();
         self.loading = Some(Job::spawn(tx, work));
     }
 
@@ -325,10 +331,7 @@ impl DiffPane {
         let theme = &ctx.color_theme;
         let wrap = ctx.wrap.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
-        let Some(diff) = &self.diff else {
-            if self.loading.is_some() {
-                Paragraph::new(placeholder("Loading…", theme)).render(area, buf);
-            }
+        let Some(diff) = self.diff.as_ref().or(self.previous.as_ref()) else {
             return;
         };
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
@@ -435,5 +438,30 @@ mod tests {
         pane.scroll(UserEvent::PageDown);
         draw(&mut pane, &ctx, area);
         assert_eq!(pane.cursor.scroll.offset, 0);
+    }
+
+    // The diff before stays drawn while the next one loads, without a key acting on it.
+    #[test]
+    fn test_diff_before_drawn_while_loading() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 20, 5);
+        let ec = crate::event::EventController::without_terminal();
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(long_line_diff()));
+        pane.enter();
+        assert!(pane.is_focused());
+
+        let next = "diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-gone\n+new\n";
+        pane.load_in_background(ec.sender(), move || next.to_string());
+        let shown = dump(&draw(&mut pane, &ctx, area));
+        assert!(shown.contains("old"), "{shown}");
+        assert!(!pane.is_focused());
+        assert!(pane.diff().is_none());
+        assert!(pane.selected_text().is_none());
+
+        // loaded, as `poll_loading` shows it
+        pane.set_diff(Some(parse_diff(next)));
+        let shown = dump(&draw(&mut pane, &ctx, area));
+        assert!(shown.contains("new") && !shown.contains("old"), "{shown}");
     }
 }

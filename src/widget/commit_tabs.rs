@@ -65,12 +65,13 @@ impl DetailTab {
 }
 
 // Draws the tab titles over the top border of the detail section.
-// The search and filter of the current tab are shown after the titles.
+// `notes`, like the search and filter of the current tab, are shown after the titles, as a
+// panel's.
 pub fn render_tab_titles(
     current: DetailTab,
     // false while the commit list has the focus
     focused: bool,
-    indicator: Option<String>,
+    notes: Vec<String>,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
@@ -89,8 +90,8 @@ pub fn render_tab_titles(
             }
         })
         .collect();
-    if let Some(indicator) = indicator {
-        spans.push(Span::raw(format!(" {indicator} ")).fg(theme.highlight_fg));
+    if !notes.is_empty() {
+        spans.push(Span::raw(format!(" {} ", notes.join(" · "))).fg(theme.highlight_fg));
     }
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     Line::from(spans).render(area, buf);
@@ -100,12 +101,12 @@ pub fn render_tab_titles(
 pub fn render_compare_title(
     title: &str,
     focused: bool,
-    indicator: Option<String>,
+    notes: Vec<String>,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let spans = panel_title(title, indicator, focused, theme).spans;
+    let spans = panel_title(title, notes, focused, theme).spans;
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     Line::from(spans).render(area, buf);
 }
@@ -334,7 +335,6 @@ impl<'a> CommitChangesState<'a> {
     }
 
     // Whether its diff or submodule loads in the background.
-    #[cfg(test)]
     pub fn is_loading(&self) -> bool {
         let submodule = self
             .submodule
@@ -438,7 +438,7 @@ impl<'a> CommitChangesState<'a> {
         let result = f(&mut self.tree);
         self.picked.sync_visual(&self.tree);
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
-            self.pane.set_diff(None);
+            self.pane.outdate();
             self.submodule = None;
         }
         result
@@ -510,6 +510,9 @@ pub struct CommitFilesState<'a> {
     // the tree of the previously shown commit, whose expanded directories and selection are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
+    // the preview shown before the one loading, drawn meanwhile with the lines still in `text`;
+    // no key acts on it
+    shown_before: Option<FilePreview>,
     // the lines of a file with text, see `FilePreview::Text`
     text: FileText,
 }
@@ -620,6 +623,7 @@ impl<'a> CommitFilesState<'a> {
             picked: TreeSelection::default(),
             previous_tree: None,
             preview: None,
+            shown_before: None,
             text: FileText::default(),
         }
     }
@@ -673,7 +677,7 @@ impl<'a> CommitFilesState<'a> {
                 self.previous_tree = Some(tree);
             }
         }
-        self.preview = None;
+        self.replace_preview();
     }
 
     // Loads the files and the preview of the selected one, or waits for those loading in the
@@ -730,9 +734,17 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    #[cfg(test)]
     pub fn is_loading(&self) -> bool {
         self.tree_loading.is_some() || matches!(self.preview, Some(FilePreview::Loading(_)))
+    }
+
+    // Another row or commit: its preview loads once used, see `ensure_loaded`; the one shown
+    // stays drawn meanwhile.
+    fn replace_preview(&mut self) {
+        match self.preview.take() {
+            None | Some(FilePreview::Loading(_)) => {}
+            shown => self.shown_before = shown,
+        }
     }
 
     fn set_tree(&mut self, (paths, gitlinks): crate::git::CommitTree) {
@@ -752,7 +764,7 @@ impl<'a> CommitFilesState<'a> {
                 // collapsed by default, a whole repository is too much to show at once
                 None => FileTreeState::new(tree, TreeShape::Closed),
             });
-            self.preview = None;
+            self.replace_preview();
         }
     }
 
@@ -768,10 +780,8 @@ impl<'a> CommitFilesState<'a> {
         if let Some(tree) = self.tree.as_ref() {
             self.picked.sync_visual(tree);
         }
-        // the preview of another row loads once used, see `ensure_loaded`
         if selected_changed {
-            self.text.set_lines(Vec::new());
-            self.preview = None;
+            self.replace_preview();
         }
         Some(result)
     }
@@ -875,7 +885,6 @@ impl<'a> CommitFilesState<'a> {
     fn preview_work(
         &mut self,
     ) -> Option<impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static> {
-        self.text.set_lines(Vec::new());
         self.ensure_gitlinks();
         let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
@@ -1039,12 +1048,18 @@ impl CommitTab {
         }
 
         let dim = |text: String| vec![placeholder(text, theme)];
-        let lines = match &state.preview {
+        // while the next preview loads, the one before without its cursor
+        let loading = matches!(state.preview, Some(FilePreview::Loading(_)));
+        let preview = match loading {
+            true => &state.shown_before,
+            false => &state.preview,
+        };
+        let lines = match preview {
             Some(preview @ (FilePreview::Text | FilePreview::TextFocused)) => {
                 let search = self.pane_search.as_deref();
                 let ctx = &self.ctx;
                 let cursor = match preview {
-                    FilePreview::TextFocused => LineCursor::Shown,
+                    FilePreview::TextFocused if !loading => LineCursor::Shown,
                     _ => LineCursor::Hidden,
                 };
                 state
@@ -1057,8 +1072,7 @@ impl CommitTab {
                 dim("Submodule, its commits are on the Changes tab".into())
             }
             Some(FilePreview::Error(err)) => dim(err.clone()),
-            Some(FilePreview::Loading(_)) => dim("Loading…".into()),
-            Some(FilePreview::Directory) | None => Vec::new(),
+            Some(FilePreview::Directory | FilePreview::Loading(_)) | None => Vec::new(),
         };
         Paragraph::new(lines).render(preview_area, buf);
     }
@@ -1296,7 +1310,7 @@ mod tests {
         for focused in [true, false] {
             let area = Rect::new(0, 0, 60, 1);
             let mut buf = Buffer::empty(area);
-            render_tab_titles(DetailTab::Changes, focused, None, &theme, area, &mut buf);
+            render_tab_titles(DetailTab::Changes, focused, vec![], &theme, area, &mut buf);
             let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
             let x = row.find("[4] Changes").unwrap() as u16;
             // the same title drawn like the other panels'
@@ -1350,8 +1364,19 @@ mod tests {
         state.update_tree(|tree| {
             tree.navigate(UserEvent::GoToBottom);
         });
-        // loaded once used
+        // loaded once used, the diff before drawn meanwhile, no key acting on it
         assert!(state.pane.diff().is_none());
+        let ec = crate::event::EventController::without_terminal();
+        state.ensure_loaded_in_background(&ec.sender());
+        assert!(state.pane.is_loading());
+        let area = Rect::new(0, 0, 100, 12);
+        let mut buf = Buffer::empty(area);
+        CommitTab::new(test_ctx(), None, None, true).render_changes(area, &mut buf, &mut state);
+        let drawn = crate::test_support::ui::dump(&buf);
+        assert!(
+            drawn.contains("changed") && !drawn.contains("README"),
+            "{drawn}"
+        );
         state.ensure_loaded();
         assert!(state
             .pane
@@ -1433,6 +1458,27 @@ mod tests {
                 Some(FilePreview::Text | FilePreview::TextFocused)
             ) && state.text.lines() == ["a", "changed"]
         );
+        // another file: the preview before drawn while it loads, no key acting on it
+        state.update_tree(|tree| tree.navigate(UserEvent::NavigateDown));
+        state.ensure_loaded_in_background(&ec.sender());
+        assert!(matches!(state.preview, Some(FilePreview::Loading(_))));
+        assert!(
+            matches!(
+                &state.shown_before,
+                Some(FilePreview::Text | FilePreview::TextFocused)
+            ) && state.text.lines() == ["a", "changed"]
+        );
+        assert!(!state.has_text());
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buf = Buffer::empty(area);
+        CommitTab::new(test_ctx(), None, None, true).render_files(area, &mut buf, &mut state);
+        let drawn = crate::test_support::ui::dump(&buf);
+        assert!(
+            drawn.contains("changed") && !drawn.contains("Loading"),
+            "{drawn}"
+        );
+        state.update_tree(|tree| tree.navigate(UserEvent::NavigateUp));
+        state.ensure_loaded();
 
         // files: v selects the rows too
         state.toggle_tree_visual();

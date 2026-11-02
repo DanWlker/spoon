@@ -26,6 +26,12 @@ pub fn spinner() -> &'static str {
     FRAMES[(now.as_millis() / SPINNER_RATE.as_millis()) as usize % FRAMES.len()]
 }
 
+// The note in the title of a panel loading on another thread, what it showed before staying
+// meanwhile.
+pub fn loading_note(loading: bool) -> Option<String> {
+    loading.then(|| "loading…".to_string())
+}
+
 // The title of a panel, like "[1] Unstaged (3)": a badge while it has the focus.
 // `notes`, like "2 picked" and the search, follow it.
 pub fn panel_title(

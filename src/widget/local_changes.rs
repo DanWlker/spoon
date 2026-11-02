@@ -34,8 +34,8 @@ use crate::{
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
-            badge, divider, mark_selected_bar, panel_title, placeholder, render_panel,
-            render_panel_scrollbar, tree_panel_width,
+            badge, divider, loading_note, mark_selected_bar, panel_title, placeholder,
+            render_panel, render_panel_scrollbar, tree_panel_width,
         },
         submodule::{submodule_key, SubmodulePanel},
         text_area::{Caret, Lines, TextArea},
@@ -2062,8 +2062,11 @@ impl<'a> LocalChangesState<'a> {
         if !self.is_commit_focused() {
             self.chosen = Focus::Files;
         }
-        // a submodule has no hunks to select, the panel beside the files shows it instead
-        self.pane.set_diff(None);
+        // a submodule has no hunks to select, the panel beside the files shows it instead; else
+        // the diff loaded replaces the one shown, see `DiffPane::load_in_background`
+        if self.submodule.is_some() {
+            self.pane.set_diff(None);
+        }
         self.submodule.is_none()
     }
 
@@ -2273,8 +2276,9 @@ impl LocalChangesPanel<'_> {
             None => String::new(),
         };
         let diff_focused = self.focused && state.is_diff_focused();
-        let indicator = state.diff_query.indicator();
-        let title = panel_title(&title, indicator, diff_focused, &self.ctx.color_theme);
+        let notes = state.diff_query.indicator().into_iter();
+        let notes = notes.chain(loading_note(state.pane.is_loading()));
+        let title = panel_title(&title, notes, diff_focused, &self.ctx.color_theme);
         let search = state.diff_query.search();
         let inner = state
             .pane

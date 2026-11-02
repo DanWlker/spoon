@@ -1507,6 +1507,116 @@ fn test_blame_and_timeline_say_they_are_loading_until_they_open() {
     ]);
 }
 
+// Moving in the commit list, the details of the commit before stay shown until those of the one
+// selected load, the title saying so.
+#[test]
+fn test_details_stay_while_the_next_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let tips =
+        ["master", "feat"].map(|branch| git(&path, &["rev-parse", branch]).trim().to_string());
+    // the tips whose full hash is on the screen, as the info shows it
+    fn shown(tips: &[String], screen: &str) -> Vec<String> {
+        tips.iter()
+            .filter(|hash| screen.contains(hash.as_str()))
+            .cloned()
+            .collect()
+    }
+    let after = tips.clone();
+    let draw_now = |app: &mut App| -> String {
+        let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let keys = app.keys_popup_keys();
+        let frame = terminal.draw(|f| app.render(f, &keys)).unwrap();
+        let rows = frame.buffer.content.chunks(SIZE.0 as usize);
+        rows.map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // the info of the first tip, its full hash
+        keys("3 2"),
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            let before = shown(&tips, &draw_now(app));
+            assert_eq!(before.len(), 1, "one commit's details");
+            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()))
+                .unwrap();
+            app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
+            // loaded already on a fast machine, nothing to see in between
+            if !app.is_loading() {
+                return;
+            }
+            let screen = draw_now(app);
+            assert_eq!(shown(&tips, &screen), before);
+            assert!(screen.contains("loading…") && !screen.contains("Loading…"));
+        }))],
+        // once loaded, the other tip's
+        screen(move |screen| {
+            assert!(!screen.contains("loading…"));
+            assert_eq!(shown(&after, screen).len(), 1);
+        }),
+    ]);
+}
+
+// Moving to another file of the local changes, the diff before stays shown until the file's
+// loads, the title saying so.
+#[test]
+fn test_local_changes_diff_stays_while_the_next_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    std::fs::write(path.join("f.txt"), "FFFF\n").unwrap();
+    std::fs::write(path.join("g.txt"), "GGGG\n").unwrap();
+    let draw_now = |app: &mut App| -> String {
+        let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let keys = app.keys_popup_keys();
+        let frame = terminal.draw(|f| app.render(f, &keys)).unwrap();
+        let rows = frame.buffer.content.chunks(SIZE.0 as usize);
+        rows.map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        // the diff of all the files, then of f.txt alone
+        check(|app| assert_eq!(local_change_path(app), Some(":/".into()))),
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            let screen = draw_now(app);
+            assert!(
+                screen.contains("FFFF") && screen.contains("GGGG"),
+                "{screen}"
+            );
+            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()))
+                .unwrap();
+            app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
+            // loaded already on a fast machine, nothing to see in between
+            if !app.is_loading() {
+                return;
+            }
+            let screen = draw_now(app);
+            assert!(
+                screen.contains("GGGG") && screen.contains("loading…"),
+                "{screen}"
+            );
+        }))],
+        screen(|screen| {
+            assert!(
+                screen.contains("FFFF") && !screen.contains("GGGG"),
+                "{screen}"
+            );
+            assert!(!screen.contains("loading…"));
+        }),
+    ]);
+}
+
 #[test]
 fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
     let dir = tempfile::tempdir().unwrap();

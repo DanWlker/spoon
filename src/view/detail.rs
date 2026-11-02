@@ -3,7 +3,6 @@ use std::rc::Rc;
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    widgets::Paragraph,
     Frame,
 };
 
@@ -38,7 +37,7 @@ use crate::{
         diff::{Step, CONVERTED_DIFF},
         file_tree::{path_contains, Entry, FileTreeRow, FileTreeState},
         git_dialog::GitDialog,
-        style::{panel_block, placeholder, ScrollState},
+        style::{loading_note, panel_block, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -836,11 +835,8 @@ impl<'a> DetailView<'a> {
             .borrow_mut()
             .place(Panel::Details, panel_area, Edge::Top);
 
+        // the commit shown before stays while the details of the one selected load
         match self.tab {
-            _ if self.loading.is_some() => {
-                let loading = placeholder("Loading…", &self.ctx.color_theme);
-                f.render_widget(Paragraph::new(loading), detail_area);
-            }
             DetailTab::Info => {
                 let commit_detail = CommitDetail::new(
                     &self.commit,
@@ -872,14 +868,22 @@ impl<'a> DetailView<'a> {
                 );
             }
         }
-        let indicator = self.query().and_then(TreeQuery::indicator);
+        let loading = self.loading.is_some()
+            || match self.tab {
+                DetailTab::Info => false,
+                DetailTab::Changes => self.changes_state.is_loading(),
+                DetailTab::Files => self.files_state.is_loading(),
+            };
+        let notes: Vec<String> = (self.query().and_then(TreeQuery::indicator).into_iter())
+            .chain(loading_note(loading))
+            .collect();
         let detail_area = panel_area;
         match &self.compare {
             // the panel 3, like the tabs
             Comparing::Shown(compare) => render_compare_title(
                 &format!("[3] {}", compare.title()),
                 focused,
-                indicator,
+                notes,
                 &self.ctx.color_theme,
                 detail_area,
                 f.buffer_mut(),
@@ -887,7 +891,7 @@ impl<'a> DetailView<'a> {
             _ => render_tab_titles(
                 self.tab,
                 focused,
-                indicator,
+                notes,
                 &self.ctx.color_theme,
                 detail_area,
                 f.buffer_mut(),

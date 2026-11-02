@@ -23,7 +23,10 @@ use crate::{
     widget::{
         diff::{parse_diff, Step},
         diff_pane::DiffPane,
-        style::{mark_selected_row, panel_block, panel_title, render_panel_scrollbar, ListCursor},
+        style::{
+            loading_note, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
+            ListCursor,
+        },
         tree_query::{find_around, QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -468,6 +471,7 @@ impl TimelineView {
         // the file's changes in it
         let path = self.history[self.cursor.selected()].path.clone();
         let notes = [path].into_iter().chain(indicator(!focused));
+        let notes = notes.chain(loading_note(self.pane.is_loading()));
         let title = panel_title("[2] Diff", notes, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
         self.pane
@@ -479,7 +483,11 @@ impl TimelineView {
 mod tests {
     use std::fs;
 
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::{
+        backend::TestBackend,
+        crossterm::event::{KeyCode, KeyModifiers},
+        Terminal,
+    };
 
     use super::*;
     use crate::{
@@ -559,6 +567,49 @@ mod tests {
             view.handle_event(UserEvent::Unknown, key, &repository);
         }
         assert_eq!(view.history[view.cursor.selected()].subject, "c2");
+    }
+
+    // Selecting another commit, its diff loading, the diff before stays shown, the title saying so.
+    #[test]
+    fn test_diff_stays_while_the_next_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        for (text, date) in [("first", "2024-01-01"), ("second", "2024-01-02")] {
+            fs::write(path.join("a"), format!("{text}\n")).unwrap();
+            repo.add(&["a"]);
+            repo.commit(text, date);
+        }
+        let head = CommitHash::from(repo.rev_parse_head().as_str());
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let mut view = TimelineView::new(&repository, &head, "a", test_ctx(), ec.sender()).unwrap();
+        // the diff panel alone, the subjects of the commits beside it naming them too
+        let diff = |view: &mut TimelineView| {
+            let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
+            let frame = terminal.draw(|f| view.render(f, f.area())).unwrap();
+            let rows = frame.buffer.content.chunks(100);
+            rows.map(|r| r[40..].iter().map(|c| c.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(diff(&mut view).contains("second"));
+
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+        view.handle_event(UserEvent::OlderCommit, key, &repository);
+        assert!(view.is_loading());
+        let loading = diff(&mut view);
+        assert!(
+            loading.contains("second") && loading.contains("loading…"),
+            "{loading}"
+        );
+        view.pane.wait_loading(&repository);
+        let loaded = diff(&mut view);
+        assert!(
+            loaded.contains("first") && !loaded.contains("second") && !loaded.contains("loading…"),
+            "{loaded}"
+        );
     }
 
     #[test]

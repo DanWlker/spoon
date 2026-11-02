@@ -145,7 +145,6 @@ impl<'a> SubmodulePanel<'a> {
         }
     }
 
-    #[cfg(test)]
     pub fn is_loading(&self) -> bool {
         self.loading.is_some()
     }

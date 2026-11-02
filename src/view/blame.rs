@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::Widget,
     Frame,
 };
 use rustc_hash::FxHashMap;
@@ -28,7 +28,7 @@ use crate::{
         commit_list::{format_date, ELLIPSIS},
         diff::Step,
         file_text::{FileText, LineCursor},
-        style::{choice_arrows, mark_selected_bar, panel_block, panel_title, placeholder},
+        style::{choice_arrows, loading_note, mark_selected_bar, panel_block, panel_title},
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
         },
@@ -570,15 +570,12 @@ impl BlameView {
         // the search applies to the text or the commits, both in this panel
         let notes = [revision.path.clone()]
             .into_iter()
-            .chain(self.query.indicator());
+            .chain(self.query.indicator())
+            .chain(loading_note(self.loading.is_some()));
         let block =
             panel_block(focused, theme).title(panel_title("[2] Blame", notes, focused, theme));
         let inner = block.inner(body);
         block.render(body, buf);
-        if self.loading.is_some() {
-            Paragraph::new(placeholder("Loading…", theme)).render(inner, buf);
-            return;
-        }
         // no room for the commits' divider
         if inner.is_empty() {
             return;
@@ -881,6 +878,45 @@ mod tests {
         };
         assert_eq!(popup_arrows(&["main", "feat"]), (lit, lit));
         assert_eq!(popup_arrows(&["main"]), (muted, muted));
+    }
+
+    // Stepping to another commit, the lines before stay shown until its blame loads, the title
+    // saying so.
+    #[test]
+    fn test_lines_stay_while_the_next_blame_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        for (i, date) in ["2024-01-01", "2024-01-02"].iter().enumerate() {
+            fs::write(path.join("a"), format!("text{i}\n")).unwrap();
+            repo.add(&["a"]);
+            repo.commit("c", date);
+        }
+        let head = CommitHash::from(repo.rev_parse_head().as_str());
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let mut view =
+            BlameView::new(&repository, &head, "a", None, test_ctx(), ec.sender()).unwrap();
+        let screen = |view: &mut BlameView| {
+            let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+            crate::test_support::ui::dump(
+                terminal.draw(|f| view.render(f, f.area())).unwrap().buffer,
+            )
+        };
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+        view.handle_event(UserEvent::OlderCommit, key, &repository);
+        let loading = screen(&mut view);
+        assert!(
+            loading.contains("text1") && loading.contains("loading…"),
+            "{loading}"
+        );
+        view.wait_loading();
+        let loaded = screen(&mut view);
+        assert!(
+            loaded.contains("text0") && !loaded.contains("loading…"),
+            "{loaded}"
+        );
     }
 
     // A search's matches look the same in the blame's commits and the timeline's as everywhere.
