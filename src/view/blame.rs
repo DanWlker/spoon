@@ -22,6 +22,7 @@ use crate::{
     view::{
         commit_event, edit_files, file_link, query_status, register_commit_keys,
         register_moving_keys, revision_spans, search_status, type_query, typing_keys,
+        SHORT_HASH_WIDTH,
     },
     widget::{
         commit_list::{format_date, ELLIPSIS},
@@ -45,9 +46,6 @@ enum BlameFocus {
     Text,
 }
 
-// Who last changed each line of a file, over everything: the commit it is shown as of at the top,
-// stepped through the commits changing the file, and below the commit of each line beside its
-// text, see `UserEvent::Blame`.
 // The author and the date of a commit, as the blame shows them beside its lines.
 #[derive(Debug)]
 struct BlameLabel {
@@ -55,6 +53,9 @@ struct BlameLabel {
     date: String,
 }
 
+// Who last changed each line of a file, over everything: the commit it is shown as of at the top,
+// stepped through the commits changing the file, and below the commit of each line beside its
+// text, see `UserEvent::Blame`.
 #[derive(Debug)]
 pub struct BlameView {
     // the commits changing the file, the newest first
@@ -288,9 +289,12 @@ impl BlameView {
 
     // Before drawing: the blame loaded on another thread, once it is.
     pub fn poll_loading(&mut self) {
-        if let Some(blame) = self.loading.as_ref().and_then(|(_, job)| job.try_take()) {
-            let (shown, _) = self.loading.take().expect("loading");
-            self.show_loaded(shown, blame);
+        if let Some((shown, job)) = &self.loading {
+            if let Some(blame) = job.try_take() {
+                let shown = *shown;
+                self.loading = None;
+                self.show_loaded(shown, blame);
+            }
         }
     }
 
@@ -384,7 +388,7 @@ impl BlameView {
         self.tx.send(event);
     }
 
-    // The text or the diff is searched as text, the commits by name.
+    // The text is searched as text, the commits by name.
     fn query_kind(&self) -> SearchKind {
         match self.focus {
             BlameFocus::Text => SearchKind::Text,
@@ -392,8 +396,6 @@ impl BlameView {
         }
     }
 
-    // The keys working where the focus is, the most useful first: the status bar shows as many as
-    // fit, the keys popup all.
     // Alt and the arrow keys: up to the commit shown, down to the lines, left and right between
     // the commits and the text of the lines.
     pub fn move_focus(&mut self, direction: Direction) {
@@ -407,7 +409,8 @@ impl BlameView {
         };
     }
 
-    // The keys of the blame, see `Keys`.
+    // The keys of the blame working where the focus is, the most useful first: the status bar
+    // shows as many as fit, the keys popup all; see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use BlameFocus::{Commit, Revision, Text};
         use UserEvent::*;
@@ -499,19 +502,22 @@ impl BlameView {
             "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR",
         );
         k.quiet(
-            &[FocusPanel(1), FocusPanel(2)],
-            "Focus the commit shown (also up from the first line)/the lines",
-        );
+            &[FocusPanel(1)],
+            "Focus the commit shown (also up from the first line)",
+        )
+        .when(body);
+        k.quiet(&[FocusPanel(2)], "Focus the lines")
+            .when(on(Revision));
         k.add(
             &[Cancel],
             "back",
-            "Clear the search, back to the commit shown, then close",
+            "Clear the search, the selected lines, then back to the commit shown, then close",
         )
         .when(body);
         k.add(
             &[Cancel],
             "close",
-            "Clear the search, back to the commit shown, then close",
+            "Clear the search, the selected lines, then back to the commit shown, then close",
         )
         .when(on(Revision));
     }
@@ -565,9 +571,13 @@ impl BlameView {
             Paragraph::new(placeholder("Loading…", theme)).render(inner, buf);
             return;
         }
+        // no room for the commits' divider
+        if inner.is_empty() {
+            return;
+        }
         let author_width = self.author_width;
         // the commits with the line after them, resizable; both keep some room
-        let default = (7 + 1 + author_width + 1 + self.date_width + 1) as u16;
+        let default = (SHORT_HASH_WIDTH + 1 + author_width + 1 + self.date_width + 1) as u16;
         let width = ctx.layout.borrow().size(Panel::BlameCommits, default);
         let width = fit_size(width, inner.width, 8, 10);
         let [commits_area, text_area] =
@@ -623,7 +633,7 @@ impl BlameView {
             let text = |text: &str, shown: usize, fg| {
                 highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)
             };
-            let mut spans = text(commit.as_str(), 7, theme.list_hash_fg);
+            let mut spans = text(commit.as_str(), SHORT_HASH_WIDTH, theme.list_hash_fg);
             spans.push(Span::raw(" "));
             spans.extend(text(&author, author.len(), theme.list_name_fg));
             spans.push(Span::raw(" "));
@@ -737,9 +747,11 @@ mod tests {
         assert_eq!(view.focus, BlameFocus::Revision);
         view.move_focus(Direction::Down);
         assert_eq!(view.focus, BlameFocus::Commit);
-        // 1 and 2 too
+        // 1 and 2 too, each shown only away from its panel
+        assert!(!view.keys().takes(UserEvent::FocusPanel(2)));
         press(&mut view, UserEvent::FocusPanel(1));
         assert_eq!(view.focus, BlameFocus::Revision);
+        assert!(!view.keys().takes(UserEvent::FocusPanel(1)));
         press(&mut view, UserEvent::FocusPanel(2));
         assert_eq!(view.focus, BlameFocus::Commit);
 
@@ -828,6 +840,10 @@ mod tests {
             blame_arrows(&mut view, UserEvent::OlderCommit),
             (muted, lit)
         );
+        // too narrow for the lines, drawn without them
+        view.wait_loading();
+        let mut terminal = Terminal::new(TestBackend::new(2, 8)).unwrap();
+        terminal.draw(|f| view.render(f, f.area())).unwrap();
 
         // the first field of the popup, selected, its options going around
         let popup_arrows = |labels: &[&str]| {

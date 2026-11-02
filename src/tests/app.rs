@@ -1567,7 +1567,7 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
             "back",
         ]),
         keys("esc esc shift-t"),
-        popup_has(&["into the diff", "copy hash", "move", "focus panel"]),
+        popup_has(&["into the diff", "copy hash", "move"]),
         // typing a search, the popup gives way
         keys("/"),
         popup_has(&[]),

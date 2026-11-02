@@ -1798,17 +1798,18 @@ fn parse_blame(out: &str) -> Blame {
                 let n: i32 = value.parse().unwrap_or(0);
                 tz = n / 100 * 3600 + n % 100 * 60;
             }
-            // the details end with the file's name
+            // the details end with the file's name; a commit blamed under two paths comes again
+            // with the name alone, its details kept from the first time
             "filename" => {
                 let offset = FixedOffset::east_opt(tz).unwrap_or(FixedOffset::east_opt(0).unwrap());
                 let date = DateTime::from_timestamp(time, 0).unwrap_or_default();
-                blame.commits.insert(
-                    commit.clone(),
-                    BlameCommit {
+                blame
+                    .commits
+                    .entry(commit.clone())
+                    .or_insert_with(|| BlameCommit {
                         author: std::mem::take(&mut author),
                         date: date.with_timezone(&offset),
-                    },
-                );
+                    });
             }
             _ if key.len() >= 40 && key.bytes().all(|b| b.is_ascii_hexdigit()) => {
                 commit = CommitHash::from(key);
@@ -3315,7 +3316,8 @@ mod tests {
         let out = format!(
             "{a} 1 1 1\nauthor Ann\nauthor-time 0\nauthor-tz -0130\nfilename f\n\tone\n\
              {b} 2 2 1\nauthor Bo\nauthor-time 60\nauthor-tz +0100\nfilename f\n\t\ttwo\n\
-             {a} 3 3\n\tthree\n"
+             {a} 3 3\n\tthree\n\
+             {a} 1 4 1\nfilename g\n\tfour\n"
         );
         let blame = parse_blame(&out);
         let lines: Vec<(&str, &str)> = blame
@@ -3323,7 +3325,10 @@ mod tests {
             .iter()
             .map(|(commit, text)| (commit.as_str(), text.as_str()))
             .collect();
-        assert_eq!(lines, [(&*a, "one"), (&*b, "\ttwo"), (&*a, "three")]);
+        assert_eq!(
+            lines,
+            [(&*a, "one"), (&*b, "\ttwo"), (&*a, "three"), (&*a, "four")]
+        );
         let ann = &blame.commits[&CommitHash::from(a.as_str())];
         assert_eq!(ann.author, "Ann");
         assert_eq!(ann.date.to_rfc3339(), "1969-12-31T22:30:00-01:30");

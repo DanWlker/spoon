@@ -373,6 +373,9 @@ pub fn type_query(
     }
 }
 
+// The hash of a commit is cut to this many characters in the blame and the timeline.
+pub const SHORT_HASH_WIDTH: usize = 7;
+
 // A commit changing a file, as the blame and the timeline show it: its hash, date and subject,
 // with what `search` matches in them highlighted.
 pub fn revision_spans(
@@ -386,7 +389,11 @@ pub fn revision_spans(
         highlighted_text(text, shown, Style::default().fg(fg), search, options, theme)
     };
     let date = format_date(ctx, &revision.date);
-    let mut spans = text(revision.commit.as_str(), 7, theme.list_hash_fg);
+    let mut spans = text(
+        revision.commit.as_str(),
+        SHORT_HASH_WIDTH,
+        theme.list_hash_fg,
+    );
     spans.push(Span::raw(" "));
     spans.extend(text(&date, date.len(), theme.list_date_fg));
     spans.push(Span::raw(" "));

@@ -324,8 +324,6 @@ impl TimelineView {
         }
     }
 
-    // The keys working where the focus is, the most useful first: the status bar shows as many as
-    // fit, the keys popup all.
     // Alt and the arrow keys: right into the diff, left back to the commits.
     pub fn move_focus(&mut self, direction: Direction) {
         match direction {
@@ -337,11 +335,18 @@ impl TimelineView {
         }
     }
 
-    // The keys of the timeline, see `Keys`.
+    // The keys of the timeline working where the focus is, the most useful first: the status bar
+    // shows as many as fit, the keys popup all; see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
         let diff = |v: &Self| v.pane.is_focused();
         let commits = |v: &Self| !v.pane.is_focused();
+        // a diff without hunks, like a rename's, has nothing to go into; one loading shows the key,
+        // which waits for it, so it doesn't flicker off while moving through the commits
+        let enterable = move |v: &Self| {
+            commits(v)
+                && (v.pane.is_loading() || v.pane.diff().is_some_and(|d| !d.hunks.is_empty()))
+        };
         k.add(
             &[OlderCommit, NewerCommit],
             "older/newer commit",
@@ -371,12 +376,7 @@ impl TimelineView {
             "into the diff",
             "Into the diff/back out of it",
         )
-        // a diff without hunks, like a rename's, has nothing to go into; one loading shows the key,
-        // which waits for it, so it doesn't flicker off while moving through the commits
-        .when(move |v| {
-            commits(v)
-                && (v.pane.is_loading() || v.pane.diff().is_some_and(|d| !d.hunks.is_empty()))
-        });
+        .when(enterable);
         register_commit_keys(k, commits);
         register_moving_keys(k, |_| true);
         k.quiet(
@@ -399,11 +399,8 @@ impl TimelineView {
             "edit",
             "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR",
         );
-        k.add(
-            &[FocusPanel(1), FocusPanel(2)],
-            "focus panel",
-            "Focus the commits/the diff",
-        );
+        k.quiet(&[FocusPanel(1)], "Focus the commits").when(diff);
+        k.quiet(&[FocusPanel(2)], "Focus the diff").when(enterable);
         k.add(
             &[Cancel],
             "back",
@@ -432,10 +429,10 @@ impl TimelineView {
         let theme = &ctx.color_theme;
         let buf = f.buffer_mut();
         // the commits beside the diff, resizable; both keep some room
-        let width = ctx
-            .layout
-            .borrow()
-            .size(Panel::TimelineCommits, area.width * 35 / 100);
+        let width = ctx.layout.borrow().size(
+            Panel::TimelineCommits,
+            (u32::from(area.width) * 35 / 100) as u16,
+        );
         let width = fit_size(width, area.width, 20, 20);
         let [list_area, diff_area] =
             Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area);
@@ -532,8 +529,10 @@ mod tests {
         // the rename, from the path before it; with no hunk, back on the commits
         assert!(raw(&view).contains("rename from a"));
         assert!(!view.pane.is_focused());
-        // nothing to go into there
+        // nothing to go into there, and the commits already have the focus
         assert!(!view.keys().takes(UserEvent::NavigateRight));
+        assert!(!view.keys().takes(UserEvent::FocusPanel(2)));
+        assert!(!view.keys().takes(UserEvent::FocusPanel(1)));
         press(&mut view, UserEvent::NewerCommit);
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::OlderCommit);
@@ -543,6 +542,7 @@ mod tests {
         assert!(view.keys().takes(UserEvent::NavigateRight));
         view.pane.wait_loading(&repository);
         assert!(raw(&view).contains("+two"));
+        assert!(view.keys().takes(UserEvent::FocusPanel(2)));
 
         // j and k move between the commits
         press(&mut view, UserEvent::NavigateUp);
