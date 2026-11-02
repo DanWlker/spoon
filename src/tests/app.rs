@@ -732,7 +732,7 @@ fn test_compare_follows_the_reloads_until_closed() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         compare_feat(),
-        keys("shift-r"),
+        keys("ctrl-r"),
         check(|app| assert_eq!(compared(app), Some(vec!["f.txt".to_string()]))),
         // feat moved in another terminal, the comparison follows it
         outside(|path| {
@@ -950,7 +950,7 @@ fn test_repository_refuses_changes_while_the_app_runs_a_command() {
     };
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("shift-r"),
+        keys("ctrl-r"),
         check(move |app| {
             running(app, true);
             let refused = app.repository.stage_paths(&["f.txt"]);
@@ -1660,7 +1660,7 @@ fn test_diff_of_commits_stays_open_on_reload() {
         // c1, the first, diffed with HEAD
         keys("shift-g shift-d"),
         check(|app| assert_eq!(compared(app), Some(vec!["f.txt".to_string()]))),
-        keys("shift-r"),
+        keys("ctrl-r"),
         check(|app| assert_eq!(compared(app), Some(vec!["f.txt".to_string()]))),
         keys("esc"),
         check(|app| assert_eq!(compared(app), None)),
@@ -2118,6 +2118,37 @@ fn test_fold_merge_keeps_the_focus_of_the_commit_list_in_the_details() {
 }
 
 #[test]
+fn test_edit_opens_the_files_of_the_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let edits = |expected: bool| {
+        check(move |app| {
+            assert_eq!(
+                app.view.keys().takes(crate::event::UserEvent::Edit),
+                expected
+            )
+        })
+    };
+    // gone from the working tree, it can't be opened: the editor isn't run here
+    std::fs::remove_file(path.join("f.txt")).unwrap();
+    harness.run(vec![
+        // not on the commits
+        edits(false),
+        // the files of the changes tab, and the diff beside them
+        keys("4"),
+        edits(true),
+        keys("enter"),
+        edits(true),
+        keys("e"),
+        check(|app| assert_notice(app, "f.txt does not exist in the working tree")),
+        // the files tab
+        keys("esc 5"),
+        edits(true),
+    ]);
+}
+
+#[test]
 fn test_refresh_keeps_the_focus_of_the_panels_in_the_details() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -2134,17 +2165,17 @@ fn test_refresh_keeps_the_focus_of_the_panels_in_the_details() {
         // the diff beside the files of the changes tab, then refreshed
         keys("4 enter"),
         focused(DetailFocus::Pane),
-        keys("shift-r"),
+        keys("ctrl-r"),
         focused(DetailFocus::Pane),
         // and the preview beside the files of the files tab
         keys("esc 5 enter"),
         focused(DetailFocus::Pane),
-        keys("shift-r"),
+        keys("ctrl-r"),
         focused(DetailFocus::Pane),
         // the files, back from the preview
         keys("esc"),
         focused(DetailFocus::Files),
-        keys("shift-r"),
+        keys("ctrl-r"),
         focused(DetailFocus::Files),
     ]);
 }
@@ -2177,12 +2208,12 @@ fn test_refresh_keeps_the_focus_of_the_panels_on_the_local_changes_page() {
         // into the diff of the selected file, then refreshed
         keys("enter"),
         in_diff(true),
-        keys("shift-r"),
+        keys("ctrl-r"),
         in_diff(true),
         // and back to the files
         keys("esc"),
         in_diff(false),
-        keys("shift-r"),
+        keys("ctrl-r"),
         in_diff(false),
     ]);
 }

@@ -11,6 +11,7 @@ use crate::{
     app::AppContext,
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, Sender, UserEvent},
+    external::editor_command,
     git::{
         AfterTask, Commit, CommitHash, FileChange, GitCommand, GitTask, PatchDirection, Ref,
         Repository,
@@ -335,6 +336,12 @@ impl<'a> DetailView<'a> {
             "Show the commits changing the selected file",
         )
         .when(|v| v.action_file().is_some());
+        k.add(
+            &[Edit],
+            "edit",
+            "Open the file as it is in the working tree in $VISUAL or $EDITOR",
+        )
+        .when(|v| !v.edit_files().is_empty());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
             .when(|v| entry(v) || queried(v) || pane(v));
         k.quiet(
@@ -665,6 +672,29 @@ impl<'a> DetailView<'a> {
             });
             return;
         }
+        // e opens the picked files, or the selected one, as they are in the working tree, from the
+        // diff or preview too
+        if let (UserEvent::Edit, false) = (event, self.list_focused) {
+            let files = self.edit_files();
+            if files.is_empty() {
+                return;
+            }
+            let paths: Result<Vec<_>, String> = files
+                .into_iter()
+                .map(|file| {
+                    let path = self.repository.path().join(file);
+                    match path.exists() {
+                        true => Ok(path),
+                        false => Err(format!("{file} does not exist in the working tree")),
+                    }
+                })
+                .collect();
+            self.tx.send(match paths {
+                Ok(paths) => AppEvent::RunExternal(editor_command(&paths)),
+                Err(err) => AppEvent::NotifyError(err),
+            });
+            return;
+        }
         // the diff or preview beside the files gets only its own keys and those of the whole app
         // (see `Scope::DetailsPane`), which go on below
         if self.is_pane_focused() {
@@ -942,6 +972,24 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => self.changes_state.single_picked_file(),
             DetailTab::Files => self.files_state.single_picked_file(),
         }
+    }
+
+    // The picked files, or the selected one, to open in the editor; like the local changes, a
+    // submodule isn't a file to edit.
+    fn edit_files(&self) -> Vec<&str> {
+        let entries = match self.tab {
+            _ if self.list_focused => vec![],
+            DetailTab::Info => vec![],
+            DetailTab::Changes => self.changes_state.picked_entries(),
+            DetailTab::Files => self.files_state.picked_entries(),
+        };
+        entries
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::File(path) if !self.repository.is_submodule(path) => Some(path),
+                _ => None,
+            })
+            .collect()
     }
 
     // The path of the selected file, to blame, show the timeline of or reset.

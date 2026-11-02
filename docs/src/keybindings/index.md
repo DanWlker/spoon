@@ -82,7 +82,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Ctrl-t</kbd>                    | Toggle search target                               | `search_target_toggle`                       |
 | <kbd>Ctrl-g</kbd>                    | Toggle smart case or case-sensitive, for every search (see below)  | `smart_case_toggle`                         |
 | <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match, for every search but of text (see below) | `fuzzy_toggle`                               |
-| <kbd>R</kbd>                         | Refresh                                            | `refresh`                                    |
+| <kbd>Ctrl-r</kbd>                    | Refresh                                            | `refresh`                                    |
 
 #### Commands on the commit graph
 
@@ -129,7 +129,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
-| <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
+| <kbd>Ctrl-r</kbd>                    | Refresh                         | `refresh`                       |
 | <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one; another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
 | <kbd>y/Y</kbd>                       | Copy the picked commits' short/full hashes, or the current one; in the changes and files tabs, the relative/absolute paths of the selected files, one per line | `short_copy` `full_copy` |
 | <kbd>i</kbd>                         | Add the selected files and directories to `.gitignore`, in the changes and files tabs | `ignore` |
@@ -144,6 +144,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 | <kbd>B</kbd>                         | Blame the selected file (see below), from the selected line of its diff or preview; only with one file selected | `blame` |
 | <kbd>T</kbd>                         | Show the commits changing the selected file (see below); only with one file selected | `timeline` |
+| <kbd>e</kbd>                         | Open the selected files as they are in the working tree in `$VISUAL` or `$EDITOR`, in the changes and files tabs, from the diff or preview too | `edit` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
 
 The commit detail has three tabs:
@@ -194,7 +195,7 @@ The app is suspended while the editor or merge tool runs, and refreshed after.
 Like lazygit, the app picks up changes made elsewhere, in an editor or another terminal:
 
 - every 10 seconds, the local changes are reloaded: the local changes page keeps its selection, and elsewhere the count in the page bar follows.
-- every 2 seconds, it checks where the local branches and `HEAD` point, and whether a rebase, merge, cherry-pick or revert is in progress; when that changed (a commit, a checkout, or a merge stopped on conflicts in another terminal), everything is reloaded, like <kbd>R</kbd>.
+- every 2 seconds, it checks where the local branches and `HEAD` point, and whether a rebase, merge, cherry-pick or revert is in progress; when that changed (a commit, a checkout, or a merge stopped on conflicts in another terminal), everything is reloaded, like <kbd>Ctrl-r</kbd>.
 - when the terminal gets the focus back, both are checked right away.
 
 Nothing is reloaded while a git command runs, a popup is open, or something is being typed or confirmed; a check skipped meanwhile runs again as soon as that ends.
@@ -227,7 +228,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Ctrl-e/y</kbd>                                | Scroll down/up   | `scroll_down` `scroll_up`        |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
-| <kbd>R</kbd>                                       | Refresh          | `refresh`                        |
+| <kbd>Ctrl-r</kbd>                                  | Refresh          | `refresh`                        |
 | <kbd>y</kbd>                                       | Copy the selected refs' names, one per line | `short_copy` |
 | <kbd>o/O</kbd>                                     | Open the branch (or a new pull request from it, chosen in the popup), the remote branch, tag or remote on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>a</kbd>                                       | New remote (on a remote or the remotes header) | `create_ref` |
@@ -293,7 +294,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                                | `scroll_down` `scroll_up`       |
-| <kbd>R</kbd>                         | Refresh                                                      | `refresh`                       |
+| <kbd>Ctrl-r</kbd>                    | Refresh                                                      | `refresh`                       |
 
 While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end. From the files, every scroll key moves the files, like the other lists; the diff, the commit message or a submodule panel is scrolled with them only while it has the focus.
 

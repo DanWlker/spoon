@@ -30,7 +30,7 @@ filter = ["?"]
 search_target_toggle = ["ctrl-t"]
 smart_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
-refresh = ["shift-r"]
+refresh = ["ctrl-r"]
 # move the border beside or above the focused panel, resizing it (borders can be dragged too)
 resize_left = ["ctrl-left", "ctrl-h"]
 resize_right = ["ctrl-right", "ctrl-l"]
@@ -76,7 +76,7 @@ commit = ["c"]
 abort = ["shift-c"]
 # amend the last commit instead of making a new one
 toggle_amend = ["shift-a"]
-# open the selected file in $VISUAL or $EDITOR
+# open the selected files in $VISUAL or $EDITOR, in local changes and the changes and files tabs of the commit details
 edit = ["e"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]

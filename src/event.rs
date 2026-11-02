@@ -513,7 +513,6 @@ impl UserEvent {
             | UserEvent::PreviousFile
             | UserEvent::Abort
             | UserEvent::ToggleAmend
-            | UserEvent::Edit
             | UserEvent::Discard => Scope::LocalChanges,
             UserEvent::DialogToggle | UserEvent::DialogEdit | UserEvent::DialogActivate => {
                 Scope::Dialog
