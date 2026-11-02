@@ -167,7 +167,13 @@ impl BlameView {
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
-        self.wait_loading();
+        // stepping to another commit replaces the blame loading, the others may act on it
+        let steps = matches!(event, UserEvent::OlderCommit | UserEvent::NewerCommit)
+            || (self.focus == BlameFocus::Revision
+                && matches!(event, UserEvent::NavigateLeft | UserEvent::NavigateRight));
+        if self.query.is_editing() || !steps {
+            self.wait_loading();
+        }
         if self.query.is_editing() {
             let kind = self.query_kind();
             if type_query(&self.ctx, &mut self.query, key, kind) == Some(QueryKind::Search) {
@@ -275,13 +281,15 @@ impl BlameView {
     }
 
     // Shows the blame as of another commit changing the file, as the timeline selects one.
-    // The blame loads on another thread, said in place of the text meanwhile, see `poll_loading`.
+    // The blame loads on another thread, said in place of the text meanwhile, see `poll_loading`;
+    // one still loading is replaced, the blame shown before it staying when this one fails.
     fn select(&mut self, index: usize, repository: &Repository) {
         let index = index.min(self.history.len() - 1);
         if index == self.index {
             return;
         }
-        let shown = std::mem::replace(&mut self.index, index);
+        let shown = self.loading.take().map_or(self.index, |(shown, _)| shown);
+        self.index = index;
         let revision = &self.history[index];
         let work = repository.blame_work(&revision.commit, &revision.path);
         self.loading = Some((shown, Job::spawn(self.tx.clone(), work)));
@@ -724,11 +732,25 @@ mod tests {
         }
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
+        view.wait_loading();
         assert_eq!(
             shown(&view),
             (c1.clone(), "a".into(), vec![c1.clone(), c1.clone()])
         );
         press(&mut view, UserEvent::NewerCommit);
+        press(&mut view, UserEvent::NewerCommit);
+        press(&mut view, UserEvent::NewerCommit);
+        assert_eq!(shown(&view).0, c3);
+        view.wait_loading();
+        // stepping again while one loads replaces it, the blame shown before both staying on failure
+        press(&mut view, UserEvent::OlderCommit);
+        press(&mut view, UserEvent::OlderCommit);
+        assert_eq!(view.loading.as_ref().map(|(shown, _)| *shown), Some(0));
+        view.wait_loading();
+        assert_eq!(
+            shown(&view),
+            (c1.clone(), "a".into(), vec![c1.clone(), c1.clone()])
+        );
         press(&mut view, UserEvent::NewerCommit);
         press(&mut view, UserEvent::NewerCommit);
         assert_eq!(shown(&view).0, c3);
