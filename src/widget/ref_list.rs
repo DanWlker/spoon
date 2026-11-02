@@ -675,7 +675,7 @@ impl StatefulWidget for RefList {
                 .then(|| row.identifier.last().and_then(NodeId::name))
                 .flatten();
             // what runs on it, like lazygit's "Pushing |", in place of its counts
-            let task = self.ctx.running_task.borrow();
+            let task = self.ctx.running_task.lock();
             let running = task
                 .as_ref()
                 .and_then(|running| running.task.branch_status.as_ref())

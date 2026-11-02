@@ -14,7 +14,7 @@ use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    event::UserEvent,
+    event::{Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
     layout::{fit_size, Edge, Panel},
     search::{SearchOptions, SearchOutcome},
@@ -200,9 +200,17 @@ impl<'a> CommitChangesState<'a> {
         if self.gitlinks.is_some() {
             return;
         }
-        let mut gitlinks = self.repository.commit_gitlink_paths(&self.commit_hash);
+        // a submodule is among the changed files, under its name before a rename too
+        let paths: Vec<&str> = self
+            .files
+            .iter()
+            .flat_map(|f| std::iter::once(f.path.as_str()).chain(f.from.as_deref()))
+            .collect();
+        let mut gitlinks = self
+            .repository
+            .commit_gitlink_paths(&self.commit_hash, &paths);
         if let Some(base) = self.base_commit() {
-            gitlinks.extend(self.repository.commit_gitlink_paths(&base));
+            gitlinks.extend(self.repository.commit_gitlink_paths(&base, &paths));
         }
         self.gitlinks = Some(gitlinks);
     }
@@ -307,18 +315,45 @@ impl<'a> CommitChangesState<'a> {
         self.pane.restore(selection);
     }
 
+    // Loads the diff of the selected row, or waits for the one loading in the background: before a
+    // key acts on it.
     pub fn ensure_loaded(&mut self) {
+        if self.pane.is_loading() {
+            self.pane.wait_loading(self.repository);
+            return;
+        }
+        if let Some(work) = self.diff_work() {
+            let mut diff = parse_diff(&work());
+            diff.drop_converted(self.repository);
+            self.pane.set_diff(Some(diff));
+        }
+    }
+
+    // Before drawing: starts loading the diff of the selected row on another thread, the screen
+    // keeping up with the keys meanwhile, or shows it once loaded.
+    pub fn ensure_loaded_in_background(&mut self, tx: &Sender) {
+        if self.pane.poll_loading(self.repository) || self.pane.is_loading() {
+            return;
+        }
+        if let Some(work) = self.diff_work() {
+            self.pane.load_in_background(tx.clone(), work);
+        }
+    }
+
+    // The work loading the diff of the selected row, None when it is loaded or a submodule shows
+    // its commits instead.
+    fn diff_work(&mut self) -> Option<Box<dyn FnOnce() -> String + Send>> {
         self.ensure_gitlinks();
         if self.pane.diff().is_some() || self.submodule.is_some() {
-            return;
+            return None;
         }
         // a submodule shows its own commits instead of the gitlink diff
         if let Some(submodule) = self.load_submodule() {
             self.submodule = Some(submodule);
             self.pane.set_diff(None);
-            return;
+            return None;
         }
-        let diff = match self.tree.selected() {
+        let work = match self.tree.selected() {
             Some(row) => {
                 // a directory shows the diff of all its changed files, those passing the filter
                 let files: Vec<&ChangedFile> = self
@@ -334,7 +369,7 @@ impl<'a> CommitChangesState<'a> {
                 paths.extend(files.iter().filter_map(|f| f.from.as_deref()));
                 let context = self.ctx.diff_context.get();
                 match &self.base {
-                    Some(base) => self.repository.diff_between(
+                    Some(base) => self.repository.diff_between_work(
                         base.as_str(),
                         self.commit_hash.as_str(),
                         &paths,
@@ -342,14 +377,12 @@ impl<'a> CommitChangesState<'a> {
                     ),
                     None => self
                         .repository
-                        .commit_diff(&self.commit_hash, &paths, context),
+                        .commit_diff_work(&self.commit_hash, &paths, context),
                 }
             }
-            None => String::new(),
+            None => Box::new(String::new),
         };
-        let mut diff = parse_diff(&diff);
-        diff.drop_converted(self.repository);
-        self.pane.set_diff(Some(diff));
+        Some(work)
     }
 
     // The submodule of the selected file, between the gitlink of the base (or the parent) and the
@@ -360,6 +393,10 @@ impl<'a> CommitChangesState<'a> {
             return None;
         }
         let path = &row.path;
+        // a plain file runs no git to tell
+        if !self.is_gitlink(path) {
+            return None;
+        }
         let to = self
             .repository
             .submodule_gitlink_at(self.commit_hash.as_str(), path)?;
@@ -376,7 +413,8 @@ impl<'a> CommitChangesState<'a> {
         ))
     }
 
-    // Applies a tree operation, reloading the diff when the selection changed.
+    // Applies a tree operation; the diff of another row selected loads once used, see
+    // `ensure_loaded`.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
@@ -384,7 +422,6 @@ impl<'a> CommitChangesState<'a> {
         if self.tree.selected().map(|r| &r.path) != before.as_ref() {
             self.pane.set_diff(None);
             self.submodule = None;
-            self.ensure_loaded();
         }
         result
     }
@@ -509,11 +546,13 @@ impl<'a> CommitFilesState<'a> {
         (!self.is_gitlink(path)).then_some(path)
     }
 
+    // The gitlinks of the commit, listed with its paths, else stepped along with them in
+    // `set_commit`.
     fn ensure_gitlinks(&mut self) {
         if self.gitlinks_for.as_ref() == Some(&self.commit_hash) {
             return;
         }
-        self.gitlinks = self.repository.commit_gitlink_paths(&self.commit_hash);
+        self.gitlinks = self.repository.commit_tree(&self.commit_hash).1;
         self.gitlinks_for = Some(self.commit_hash.clone());
     }
 
@@ -579,6 +618,21 @@ impl<'a> CommitFilesState<'a> {
             (Some(mut paths), Some((changes, direction))) => {
                 let changed = apply_changes(&mut paths, changes, direction);
                 self.paths = Some(paths);
+                // only the changed paths can have become or stopped being gitlinks
+                if self.gitlinks_for.as_ref() == Some(&self.commit_hash) {
+                    let touched: Vec<&str> = changes
+                        .iter()
+                        .flat_map(|change| match change {
+                            FileChange::Move { from, to } => vec![from.as_str(), to.as_str()],
+                            change => vec![change.path()],
+                        })
+                        .collect();
+                    self.gitlinks
+                        .retain(|path| !touched.contains(&path.as_str()));
+                    let stepped = self.repository.commit_gitlink_paths(hash, &touched);
+                    self.gitlinks.extend(stepped);
+                    self.gitlinks_for = Some(hash.clone());
+                }
                 !changed
             }
             _ => false,
@@ -600,16 +654,15 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn ensure_loaded(&mut self) {
+        if self.paths.is_none() {
+            let (paths, gitlinks) = self.repository.commit_tree(&self.commit_hash);
+            self.paths = Some(paths.into_iter().collect());
+            self.gitlinks = gitlinks;
+            self.gitlinks_for = Some(self.commit_hash.clone());
+        }
         self.ensure_gitlinks();
         if self.tree.is_none() {
-            let repository = self.repository;
-            let commit_hash = &self.commit_hash;
-            let paths = self.paths.get_or_insert_with(|| {
-                repository
-                    .commit_tree_paths(commit_hash)
-                    .into_iter()
-                    .collect()
-            });
+            let paths = self.paths.get_or_insert_default();
             let tree = FileTree::new(paths.iter().map(String::as_str));
             self.tree = Some(match self.previous_tree.take() {
                 Some(previous) => previous.with_tree(tree),
@@ -1059,6 +1112,15 @@ mod tests {
             None,
             "a submodule is not a file for the one-file views"
         );
+        // stepped to the parent, the tree isn't listed again: the gitlink is found again among
+        // the paths the commit changed
+        let parent = commit.parent_commit_hashes[0].clone();
+        let (parent_commit, parent_changes) = repository.commit_detail(&parent);
+        state.set_commit(&parent_commit, &parent_changes);
+        state.ensure_loaded();
+        state.update_tree(|tree| tree.select_path("sub"));
+        assert!(matches!(state.preview, Some(FilePreview::Submodule)));
+        assert_eq!(state.gitlinks_for, Some(parent));
     }
 
     #[test]
@@ -1174,6 +1236,9 @@ mod tests {
         state.update_tree(|tree| {
             tree.navigate(UserEvent::GoToBottom);
         });
+        // loaded once used
+        assert!(state.pane.diff().is_none());
+        state.ensure_loaded();
         assert!(state
             .pane
             .diff()
@@ -1185,6 +1250,7 @@ mod tests {
         state.update_tree(|tree| {
             tree.navigate(UserEvent::GoToTop);
         });
+        state.ensure_loaded();
         let raw = &state.pane.diff().unwrap().raw;
         assert!(raw.contains("+changed") && raw.contains("rename from README"));
 
@@ -1218,6 +1284,7 @@ mod tests {
         state.update_tree(|tree| tree.select_path("src"));
         state.update_tree(FileTreeState::toggle);
         assert_eq!(visible(&state.tree), vec![ROOT_PATH, "src", "DOC.md"]);
+        state.ensure_loaded();
         let raw = &state.pane.diff().unwrap().raw;
         assert!(raw.contains("+changed") && !raw.contains("rename from README"));
 
@@ -1320,7 +1387,7 @@ mod tests {
             state.paths.as_ref().unwrap().iter().cloned().collect()
         };
         let listed = |hash: &CommitHash| -> Vec<String> {
-            let mut paths = repository.commit_tree_paths(hash);
+            let mut paths = repository.commit_tree(hash).0;
             paths.sort();
             paths
         };

@@ -11,7 +11,6 @@ use crate::{
     app::AppContext,
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, Sender, UserEvent},
-    external::editor_command,
     git::{
         AfterTask, Commit, CommitHash, FileChange, GitCommand, GitTask, PatchDirection, Ref,
         Repository,
@@ -22,7 +21,7 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
-        commit_event, copy_hashes, copy_path, copy_paths, copy_selection, file_link,
+        commit_event, copy_hashes, copy_path, copy_paths, copy_selection, edit_files, file_link,
         handle_search_event, query_status, register_commit_link_keys, register_commit_list_keys,
         register_diff_keys, search_status, type_commit_search, type_query, typing_keys, Compare,
         CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
@@ -87,8 +86,6 @@ pub struct DetailView<'a> {
     list_focused: bool,
     // the selection moved to another commit, whose details load once used, see `load_selected`
     stale: bool,
-    // the last key's event, the repeats of a key moving the selection loading nothing
-    last_event: Option<UserEvent>,
     repository: &'a Repository,
 
     ctx: Rc<AppContext>,
@@ -121,7 +118,6 @@ impl<'a> DetailView<'a> {
             compare: Comparing::No,
             list_focused: false,
             stale: false,
-            last_event: None,
             repository,
             ctx,
             tx,
@@ -341,7 +337,7 @@ impl<'a> DetailView<'a> {
             "edit",
             "Open the file as it is in the working tree in $VISUAL or $EDITOR",
         )
-        .when(|v| !v.edit_files().is_empty());
+        .when(|v| !v.editable_files().is_empty());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
             .when(|v| entry(v) || queried(v) || pane(v));
         k.quiet(
@@ -546,11 +542,14 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
-        // held, a key moving the selection loads the details once it is let go (or drawn)
-        if self.last_event != Some(event) {
+        // the keys moving the selection leave what it shows to load once drawn, see
+        // `update_layout`; the others may act on it, so it is loaded first
+        if !event.moves_selection() {
             self.load_selected();
+            if self.tab == DetailTab::Changes {
+                self.changes_state.ensure_loaded();
+            }
         }
-        self.last_event = Some(event);
         // typing a search or filter, keys arrive unmapped, see App::run
         if self.is_typing_query() {
             let (ctx, kind) = (self.ctx.clone(), self.query_kind());
@@ -675,24 +674,11 @@ impl<'a> DetailView<'a> {
         // e opens the picked files, or the selected one, as they are in the working tree, from the
         // diff or preview too
         if let (UserEvent::Edit, false) = (event, self.list_focused) {
-            let files = self.edit_files();
+            let files = self.editable_files();
             if files.is_empty() {
                 return;
             }
-            let paths: Result<Vec<_>, String> = files
-                .into_iter()
-                .map(|file| {
-                    let path = self.repository.path().join(file);
-                    match path.exists() {
-                        true => Ok(path),
-                        false => Err(format!("{file} does not exist in the working tree")),
-                    }
-                })
-                .collect();
-            self.tx.send(match paths {
-                Ok(paths) => AppEvent::RunExternal(editor_command(&paths)),
-                Err(err) => AppEvent::NotifyError(err),
-            });
+            self.tx.send(edit_files(self.repository, &files));
             return;
         }
         // the diff or preview beside the files gets only its own keys and those of the whole app
@@ -894,8 +880,16 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        self.changes_state.pane.is_loading()
+    }
+
     pub fn update_layout(&mut self, area: Rect) {
         self.load_selected();
+        if self.tab == DetailTab::Changes {
+            self.changes_state.ensure_loaded_in_background(&self.tx);
+        }
         let [list_area, panel_area] = self.split_areas(area);
         self.as_mut_list_state()
             .update_height(commit_list_inner_height(list_area.height));
@@ -976,7 +970,7 @@ impl<'a> DetailView<'a> {
 
     // The picked files, or the selected one, to open in the editor; like the local changes, a
     // submodule isn't a file to edit.
-    fn edit_files(&self) -> Vec<&str> {
+    fn editable_files(&self) -> Vec<&str> {
         let entries = match self.tab {
             _ if self.list_focused => vec![],
             DetailTab::Info => vec![],
@@ -1031,12 +1025,13 @@ impl<'a> DetailView<'a> {
                     UserEvent::Cancel => {
                         state.back();
                     }
+                    UserEvent::ToggleSelect => state.toggle_range(),
                     UserEvent::ApplyChange => self.apply_change(),
                     UserEvent::IncreaseDiffContext => self.adjust_diff_context(true),
                     UserEvent::DecreaseDiffContext => self.adjust_diff_context(false),
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
-                            self.tx.send(copy_selection(text, state.selected_part()));
+                            self.tx.send(copy_selection(text, state.selected_name()));
                         }
                     }
                     _ => {
@@ -1132,7 +1127,7 @@ impl<'a> DetailView<'a> {
         else {
             return;
         };
-        let what = self.changes_state.pane.selected_part().name();
+        let what = self.changes_state.pane.selected_name();
         let task = GitTask {
             commands: vec![GitCommand::Apply.args(["-"])],
             input: Some(patch),
@@ -1485,11 +1480,16 @@ impl<'a> DetailView<'a> {
         self.refs = refs;
 
         self.commit_detail_state.offset = 0;
-        self.load_tab();
+        // the diff of the changes tab loads in the background, see `update_layout`
+        if self.tab == DetailTab::Files {
+            self.files_state.ensure_loaded();
+        }
+        // the states of another commit start without the filter
+        self.apply_query_change(Some(QueryKind::Filter));
     }
 
     pub fn refresh(&self) {
-        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+        self.tx.send(AppEvent::Reload);
     }
 
     // What to show again once the repository is reloaded.

@@ -14,7 +14,7 @@ use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    event::UserEvent,
+    event::{Sender, UserEvent},
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
@@ -24,8 +24,8 @@ use crate::{
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::register_diff_keys,
     widget::{
-        conflict::ConflictView,
-        diff::{parse_diff, DiffPart, Step, CONVERTED_DIFF},
+        conflict::{side_names, ConflictView, RowKind},
+        diff::{parse_diff, Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
@@ -491,9 +491,9 @@ impl<'a> LocalChangesState<'a> {
         self.is_diff_focused() && self.pane.is_selecting_lines()
     }
 
-    // What `selected_diff_text` is of.
-    pub fn selected_diff_part(&self) -> DiffPart {
-        self.pane.selected_part()
+    // What `selected_diff_text` is of, see `DiffPane::selected_name`.
+    pub fn selected_diff_name(&self) -> &'static str {
+        self.pane.selected_name()
     }
 
     // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
@@ -732,7 +732,11 @@ impl<'a> LocalChangesState<'a> {
     // Starts or ends a visual selection, picking the rows from where it started to the selected
     // one.
     pub fn toggle_visual(&mut self) {
-        if self.is_diff_focused() || self.is_commit_focused() {
+        if self.is_diff_focused() {
+            self.pane.toggle_range();
+            return;
+        }
+        if self.is_commit_focused() {
             return;
         }
         let section = self.current_mut();
@@ -815,7 +819,7 @@ impl<'a> LocalChangesState<'a> {
             row.path.clone()
         };
         let target = if self.is_diff_focused() {
-            format!("this {} of", self.pane.selected_part().name())
+            format!("this {} of", self.pane.selected_name())
         } else {
             "all changes to".into()
         };
@@ -1018,7 +1022,7 @@ impl<'a> LocalChangesState<'a> {
                 || v.repository.operation_in_progress().is_some()
         };
         let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
-        let what = |v: &Self| v.pane.selected_part().name();
+        let what = |v: &Self| v.pane.selected_name();
         // committing, or amending, or continuing an operation
         let commit_word = |v: &Self| {
             if v.editing_commit() || v.draft.amend.is_some() {
@@ -1907,11 +1911,28 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Loads the diff of the selected row, when the cursor moved since it was.
+    // Loads the diff of the selected row, when the cursor moved since it was, or waits for the
+    // one loading in the background: before a key acts on it.
     pub fn load_stale_diff(&mut self) {
         if std::mem::take(&mut self.diff_stale) {
             self.load_diff();
         }
+        self.pane.wait_loading(self.repository);
+    }
+
+    #[cfg(test)]
+    pub fn is_diff_loading(&self) -> bool {
+        self.pane.is_loading()
+    }
+
+    // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
+    // the screen keeping up with the keys meanwhile, or shows it once loaded.
+    pub fn load_stale_diff_in_background(&mut self, tx: &Sender) {
+        if std::mem::take(&mut self.diff_stale) && self.prepare_diff() {
+            let work = self.diff_work();
+            self.pane.load_in_background(tx.clone(), work);
+        }
+        self.pane.poll_loading(self.repository);
     }
 
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
@@ -1920,8 +1941,11 @@ impl<'a> LocalChangesState<'a> {
 
     fn load_diff(&mut self) {
         self.diff_stale = false;
-        let diff = self.diff_text();
-        self.set_diff(&diff);
+        if self.prepare_diff() {
+            let mut diff = parse_diff(&self.diff_work()());
+            diff.drop_converted(self.repository);
+            self.pane.set_diff(Some(diff));
+        }
     }
 
     // Shows more or fewer lines around the changes of the selected file, loading its diff again.
@@ -1946,8 +1970,8 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // The diff of the picked files, else of the selected row.
-    fn diff_text(&self) -> String {
+    // The diff of the picked files, else of the selected row, as work to run.
+    fn diff_work(&self) -> Box<dyn FnOnce() -> String + Send> {
         let context = self.ctx.diff_context.get();
         let tracked_of = match self.section {
             LocalChangesSection::Staged => DiffOf::Staged {
@@ -1971,9 +1995,9 @@ impl<'a> LocalChangesState<'a> {
                 } else {
                     tracked_of
                 };
-                self.repository.local_change_diff(&paths, of, context)
+                self.repository.local_change_diff_work(&paths, of, context)
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|| Box::new(String::new))
     }
 
     // The two sides of the selected file, when it is conflicted.
@@ -1988,7 +2012,9 @@ impl<'a> LocalChangesState<'a> {
             })
     }
 
-    fn set_diff(&mut self, diff: &str) {
+    // Shows the conflict or the submodule of the selected row, then false; else empties the diff
+    // and returns true, for its diff to be loaded.
+    fn prepare_diff(&mut self) -> bool {
         self.conflict = self.load_conflict();
         // park the submodule panel shown before, to reuse it when it is selected again
         if let Some(panel) = self.submodule.take() {
@@ -2000,13 +2026,8 @@ impl<'a> LocalChangesState<'a> {
             self.chosen = Focus::Files;
         }
         // a submodule has no hunks to select, the panel beside the files shows it instead
-        if self.submodule.is_some() {
-            self.pane.set_diff(None);
-            return;
-        }
-        let mut diff = parse_diff(diff);
-        diff.drop_converted(self.repository);
-        self.pane.set_diff(Some(diff));
+        self.pane.set_diff(None);
+        self.submodule.is_none()
     }
 
     // The submodule of the selected file, shown in place of its gitlink diff. The last panel is
@@ -2283,64 +2304,101 @@ impl LocalChangesPanel<'_> {
             theme,
         );
 
-        // the sides to pick from, side by side over half the height, then the tools with a line
-        // between each, all centered vertically
-        let [sides_area, _, tools_area] = Layout::vertical([
+        // the sides to pick from, side by side over half the height (the common ancestor between
+        // them when the markers have it), then what Enter does, then the tools with a line between
+        // each, all centered vertically
+        let [sides_area, hint_area, tools_area] = Layout::vertical([
             Constraint::Percentage(50),
             Constraint::Length(1),
             Constraint::Length(3),
         ])
         .flex(Flex::Center)
         .areas(inner);
-        let [ours_area, theirs_area] =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .areas(sides_area);
         let selected_item = (self.focused && state.is_conflict_focused()).then_some(conflict.item);
         let conflict = &conflict.view;
         let focused = |item| selected_item == Some(item);
+        let (ours_name, theirs_name) = side_names(state.repository.operation_in_progress());
 
-        let sides = [
-            (
-                ours_area,
-                ConflictItem::Existing,
-                "Existing",
-                &conflict.ours_label,
-                &conflict.ours,
-            ),
-            (
-                theirs_area,
-                ConflictItem::Incoming,
-                "Incoming",
-                &conflict.theirs_label,
-                &conflict.theirs,
-            ),
-        ];
+        let mut sides = vec![(
+            Some(ConflictItem::Existing),
+            ours_name,
+            &conflict.ours_label,
+            &conflict.ours,
+        )];
+        let empty = String::new();
+        if let Some(base) = &conflict.base {
+            sides.push((None, "Base", &empty, base));
+        }
+        sides.push((
+            Some(ConflictItem::Incoming),
+            theirs_name,
+            &conflict.theirs_label,
+            &conflict.theirs,
+        ));
+        let side_areas =
+            Layout::horizontal(vec![Constraint::Fill(1); sides.len()]).split(sides_area);
+        let number_width = conflict.last_number().map_or(0, |n| n.to_string().len());
+        let longest = conflict.ours.len().max(conflict.theirs.len());
+        let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
         let mut height = 0;
-        for (side_area, item, name, label, lines) in sides {
+        for ((item, name, label, rows), side_area) in sides.into_iter().zip(side_areas.iter()) {
+            let is_focused = item.is_some_and(focused);
             // the name git put on the markers, like "HEAD"
             let note = (!label.is_empty()).then(|| label.clone());
-            let title = panel_title(name, note, focused(item), theme);
-            let content_area = render_panel(buf, side_area, title, focused(item), theme);
+            let title = panel_title(name, note, is_focused, theme);
+            let content_area = render_panel(buf, *side_area, title, is_focused, theme);
             height = content_area.height as usize;
-            let longest = conflict.ours.len().max(conflict.theirs.len());
-            let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
             let range = state.pane.scroll_state().fit(longest, height, scrolloff);
-            render_panel_scrollbar(buf, side_area, longest, range.start, focused(item), theme);
-            let lines: Vec<Line> = lines
+            render_panel_scrollbar(buf, *side_area, longest, range.start, is_focused, theme);
+            let lines: Vec<Line> = rows
                 .iter()
                 .skip(range.start)
                 .take(height)
-                .map(|line| {
-                    if line.starts_with("── conflict") {
-                        Line::raw(line.clone()).fg(theme.muted_fg)
-                    } else {
-                        Line::raw(line.clone()).fg(theme.fg)
-                    }
+                .map(|row| {
+                    let fg = match row.kind {
+                        RowKind::Header | RowKind::Context => theme.muted_fg,
+                        RowKind::Kept => theme.fg,
+                        RowKind::Changed => theme.detail_file_change_add_fg,
+                    };
+                    let number = match row.number {
+                        _ if number_width == 0 => String::new(),
+                        Some(n) => format!("{n:>number_width$} "),
+                        None => " ".repeat(number_width + 1),
+                    };
+                    Line::from(vec![
+                        Span::raw(number).fg(theme.muted_fg),
+                        Span::raw(row.text.clone()).fg(fg),
+                    ])
                 })
                 .collect();
             Paragraph::new(lines).render(content_area, buf);
         }
         state.pane.scroll_state().height = height;
+
+        // what Enter does on the item selected
+        let all = match conflict.conflicts {
+            0 => "the whole file".to_string(),
+            1 => "the conflict".to_string(),
+            n => format!("all {n} conflicts"),
+        };
+        let hint = match selected_item {
+            Some(ConflictItem::Existing) => {
+                format!("Enter keeps {ours_name} for {all} of the file, and stages it")
+            }
+            Some(ConflictItem::Incoming) => {
+                format!("Enter keeps {theirs_name} for {all} of the file, and stages it")
+            }
+            Some(ConflictItem::MergeTool) => {
+                "Enter resolves the conflicts in the merge tool".into()
+            }
+            Some(ConflictItem::Editor) => {
+                "Enter opens the file to edit the markers; stage it with Space after".into()
+            }
+            None => "Enter to keep a side for the whole file, or to resolve it in a tool".into(),
+        };
+        Paragraph::new(Line::raw(hint).fg(theme.muted_fg))
+            .centered()
+            .render(hint_area, buf);
 
         let tool = match &self.ctx.core_config.git.merge_tool {
             Some(tool) => format!("  Edit in merge tool ({tool})  "),
@@ -3144,6 +3202,44 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.enter()?;
         assert!(state.is_diff_focused() && !state.is_selecting_lines());
+        Ok(())
+    }
+
+    #[test]
+    fn test_toggle_stage_a_range_of_lines() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), numbered_lines(10))?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        // one hunk with three added lines
+        let modified = numbered_lines(10).replace("line 5\n", "line 5\nnew A\nnew B\nnew C\n");
+        fs::write(repo_path.join("a.txt"), modified)?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        state.enter()?;
+        state.enter()?;
+        // v and down select "new A" and "new B", which y copies and space stages
+        state.toggle_visual();
+        state.select_next();
+        assert_eq!(state.selected_diff_name(), "lines");
+        assert_eq!(state.selected_diff_text().as_deref(), Some("new A\nnew B"));
+        state.toggle_stage()?;
+        let staged = repository.local_change_diff(
+            &["a.txt"],
+            DiffOf::Staged { base: None },
+            crate::git::DEFAULT_DIFF_CONTEXT,
+        );
+        assert!(staged.contains("+new A") && staged.contains("+new B"));
+        assert!(!staged.contains("+new C"));
+        // on the line left, the range ended
+        assert!(state.is_selecting_lines());
+        assert_eq!(state.selected_diff_name(), "line");
+        assert_eq!(state.selected_diff_text().as_deref(), Some("new C"));
         Ok(())
     }
 
@@ -4614,6 +4710,34 @@ mod tests {
     }
 
     #[test]
+    fn test_conflict_panel_of_a_rebase_with_the_ancestor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["config", "merge.conflictStyle", "diff3"]);
+        git_stdout(repo_path, &["checkout", "--quiet", "feature"]);
+        git_stdout(repo_path, &["rebase", "master"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+            .render(area, &mut buf, &mut state);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        // the rebase's sides named for what they are, the ancestor between them
+        for title in ["╭ Rebasing onto", "╭ Base", "╭ Your commit"] {
+            assert!(rows.iter().any(|r| r.contains(title)), "{title}: {rows:#?}");
+        }
+        assert!(rows.iter().any(|r| r.contains(" base ")), "{rows:#?}");
+        Ok(())
+    }
+
+    #[test]
     fn test_conflict_panel() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -4630,8 +4754,14 @@ mod tests {
             (conflict.ours_label.as_str(), conflict.theirs_label.as_str()),
             ("HEAD", "feature")
         );
-        assert_eq!(conflict.ours, ["── conflict 1 ──", "master"]);
-        assert_eq!(conflict.theirs, ["── conflict 1 ──", "feature"]);
+        let texts = |rows: &[crate::widget::conflict::ConflictRow]| {
+            rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&conflict.ours), ["── conflict 1 of 1 ──", "master"]);
+        assert_eq!(
+            texts(&conflict.theirs),
+            ["── conflict 1 of 1 ──", "feature"]
+        );
         // drawn as panels, their text a column off the border
         let area = Rect::new(0, 0, 120, 30);
         let mut buf = Buffer::empty(area);
@@ -4641,10 +4771,21 @@ mod tests {
             .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
             .collect();
         assert!(
-            rows.iter().any(|r| r.contains("╭ Existing  HEAD ")),
+            rows.iter().any(|r| r.contains("╭ Current branch  HEAD ")),
             "{rows:#?}"
         );
-        assert!(rows.iter().any(|r| r.contains("│ master ")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|r| r.contains("╭ Merging in  feature ")),
+            "{rows:#?}"
+        );
+        // the line number of the file in the working tree, then the line
+        assert!(rows.iter().any(|r| r.contains("│ 2 master ")), "{rows:#?}");
+        // and what Enter does
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("Enter to keep a side for the whole file")),
+            "{rows:#?}"
+        );
 
         // the tools ask the view to run them
         state.enter()?;
@@ -4705,8 +4846,11 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "a.txt");
         let conflict = &state.conflict.as_ref().unwrap().view;
-        assert_eq!(conflict.ours, ["(deleted)"]);
-        assert_eq!(conflict.theirs, ["feature"]);
+        let texts = |rows: &[crate::widget::conflict::ConflictRow]| {
+            rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&conflict.ours), ["(deleted)"]);
+        assert_eq!(texts(&conflict.theirs), ["feature"]);
 
         // keeping the deleting side removes the file
         state.enter()?;

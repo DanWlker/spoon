@@ -45,6 +45,8 @@ pub enum AppEvent {
     RefsSnapshot(String),
     // the terminal got the focus back, what changed meanwhile is checked right away
     FocusGained,
+    // work for what is shown finished on another thread, drawn with the next frame, see `Job`
+    Loaded,
     // redraws the spinner of the git command running in the background
     SpinnerTick,
     // runs a git command in the background, see `App::start_task`
@@ -75,7 +77,16 @@ pub enum AppEvent {
         target: LinkTarget,
         action: LinkAction,
     },
+    // reloads the repository in the background, showing the view as it is once loaded, see
+    // `App::start_reload`
+    Reload,
+    // reloads it showing what a command asked for, like the commit it rewrote selected
     Refresh(RefreshViewContext),
+    // the repository loaded again, see `App::start_reload`
+    Reloaded {
+        generation: u64,
+        result: Result<Box<crate::git::Loaded>, String>,
+    },
     // the blame of the file at `path` as of the commit, on `line` (from 0) when one is selected
     OpenBlame {
         commit: CommitHash,
@@ -456,6 +467,26 @@ pub enum UserEvent {
 }
 
 impl UserEvent {
+    // Whether it only moves a selection, like the cursor of the files: what the selection shows
+    // may load in the background meanwhile, while the other keys may act on it, so wait for it.
+    pub fn moves_selection(self) -> bool {
+        matches!(
+            self,
+            UserEvent::NavigateDown
+                | UserEvent::NavigateUp
+                | UserEvent::SelectDown
+                | UserEvent::SelectUp
+                | UserEvent::GoToTop
+                | UserEvent::GoToBottom
+                | UserEvent::PageDown
+                | UserEvent::PageUp
+                | UserEvent::HalfPageDown
+                | UserEvent::HalfPageUp
+                | UserEvent::ScrollDown
+                | UserEvent::ScrollUp
+        )
+    }
+
     // Whether its command moves or rewrites HEAD, refused while an operation waits to be finished;
     // the commands themselves decide, see `GitTask::moves_head`.
     pub fn moves_head(self) -> bool {

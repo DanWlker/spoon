@@ -61,6 +61,16 @@ impl<'a> View<'a> {
         on_page!(self, view => view.update_layout(area), {})
     }
 
+    // Whether what the page shows loads in the background, see `Job`.
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        match self {
+            View::Detail(view) => view.is_loading(),
+            View::LocalChanges(view) => view.is_loading(),
+            View::Default | View::List(_) => false,
+        }
+    }
+
     pub fn prepare_graph_uploads(&mut self) {
         match self {
             View::Default => {}

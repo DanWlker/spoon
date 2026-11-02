@@ -16,7 +16,7 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
-        commit_event, copy_selection, file_link, query_status, register_commit_keys,
+        commit_event, copy_selection, edit_files, file_link, query_status, register_commit_keys,
         register_diff_keys, register_moving_keys, revision_matches, revision_spans, search_status,
         type_query, typing_keys,
     },
@@ -69,6 +69,12 @@ impl TimelineView {
 
     // The file's changes in the selected commit, from the path it had before when it moved.
     fn load(&mut self, repository: &Repository) {
+        let mut diff = parse_diff(&self.diff_work(repository)());
+        diff.drop_converted(repository);
+        self.pane.set_diff(Some(diff));
+    }
+
+    fn diff_work(&self, repository: &Repository) -> Box<dyn FnOnce() -> String + Send> {
         let revision = &self.history[self.cursor.selected()];
         let mut paths = vec![revision.path.as_str()];
         if let Some(older) = self.history.get(self.cursor.selected() + 1) {
@@ -77,9 +83,30 @@ impl TimelineView {
             }
         }
         let context = self.ctx.diff_context.get();
-        let mut diff = parse_diff(&repository.commit_diff(&revision.commit, &paths, context));
-        diff.drop_converted(repository);
-        self.pane.set_diff(Some(diff));
+        repository.commit_diff_work(&revision.commit, &paths, context)
+    }
+
+    // The diff of the commit selected now: from the diff, it stays in the diff of that one, loaded
+    // right away for that; from the commits, it loads on another thread, the screen keeping up with
+    // the keys meanwhile, see `poll_loading`.
+    fn show_selected(&mut self, repository: &Repository) {
+        if self.pane.is_focused() {
+            self.load(repository);
+            self.pane.enter();
+        } else {
+            let work = self.diff_work(repository);
+            self.pane.load_in_background(self.tx.clone(), work);
+        }
+    }
+
+    // Before drawing: the diff loaded in the background, once it is.
+    pub fn poll_loading(&mut self, repository: &Repository) {
+        self.pane.poll_loading(repository);
+    }
+
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        self.pane.is_loading()
     }
 
     // Selects another commit; in the diff, it stays there, on the first hunk.
@@ -88,12 +115,8 @@ impl TimelineView {
         if index == self.cursor.selected() {
             return;
         }
-        let in_diff = self.pane.is_focused();
         self.cursor.select(index, self.history.len());
-        self.load(repository);
-        if in_diff {
-            self.pane.enter();
-        }
+        self.show_selected(repository);
     }
 
     // The path of the file in the selected commit, for the page bar.
@@ -114,6 +137,10 @@ impl TimelineView {
             }
             self.update_query_status();
             return;
+        }
+        // the keys moving the selection leave its diff loading, the others may act on it
+        if !event.moves_selection() {
+            self.pane.wait_loading(repository);
         }
         let in_diff = self.pane.is_focused();
         match event {
@@ -147,6 +174,10 @@ impl TimelineView {
             }
             UserEvent::GoToNext => self.search(SearchDirection::Next, repository),
             UserEvent::GoToPrevious => self.search(SearchDirection::Previous, repository),
+            // the file under its newest name, as it is in the working tree
+            UserEvent::Edit => self
+                .tx
+                .send(edit_files(repository, &[&self.history[0].path])),
             _ if in_diff => self.handle_diff_event(event, repository),
             _ => self.handle_commits_event(event, repository),
         }
@@ -161,11 +192,7 @@ impl TimelineView {
             // the offset moves even when the selection stays, like ctrl-e/y; the diff only reloads
             // when another commit is selected
             if self.cursor.selected() != before {
-                let in_diff = self.pane.is_focused();
-                self.load(repository);
-                if in_diff {
-                    self.pane.enter();
-                }
+                self.show_selected(repository);
             }
             return;
         }
@@ -186,13 +213,14 @@ impl TimelineView {
             UserEvent::Confirm => {
                 self.pane.enter();
             }
+            UserEvent::ToggleSelect => self.pane.toggle_range(),
             UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                 self.adjust_diff_context(event == UserEvent::IncreaseDiffContext, repository)
             }
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
                     self.tx
-                        .send(copy_selection(text, self.pane.selected_part()));
+                        .send(copy_selection(text, self.pane.selected_name()));
                 }
             }
             // the file at the commit, at the selected lines
@@ -351,6 +379,11 @@ impl TimelineView {
             "Go to the next/previous match",
         );
         k.add(
+            &[Edit],
+            "edit",
+            "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR",
+        );
+        k.add(
             &[FocusPanel(1), FocusPanel(2)],
             "focus panel",
             "Focus the commits/the diff",
@@ -488,6 +521,9 @@ mod tests {
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
+        // from the commits, the diff loads in the background
+        assert!(view.pane.is_loading());
+        view.pane.wait_loading(&repository);
         assert!(raw(&view).contains("+two"));
 
         // j and k move between the commits

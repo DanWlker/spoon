@@ -1,4 +1,5 @@
 mod app;
+mod background;
 mod browse;
 mod check;
 mod color;
@@ -209,15 +210,18 @@ fn main() -> Result<()> {
         } else {
             app::StartPage::Graph
         },
+        selection: initial_selection,
         fetch: true,
     };
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
     let loader = Loader {
-        path: PathBuf::from("."),
-        order,
-        max_count,
-        mailmap,
+        options: git::LoadOptions {
+            path: PathBuf::from("."),
+            sort: order,
+            max_count,
+            mailmap,
+        },
         primary_branch,
         graph_width,
         graph_style,
@@ -225,7 +229,6 @@ fn main() -> Result<()> {
         graph_image_width_mode,
         graph_color_set: graph_color_set.clone(),
         image_protocol,
-        initial_selection,
         launch,
     };
 
@@ -252,20 +255,12 @@ fn main() -> Result<()> {
 
     let ec = event::EventController::init();
     let mut refresh = None;
-    // the repository last loaded, shown again when reloading it fails
-    let mut repository = None;
+    // loaded again in the background by the app, which hands it over, see `Ret::Reload`
+    let mut repository = loader.load(&ctx.running_task)?;
     let mut terminal_guard = None;
     let mut terminal = None;
 
-    // false to draw the graph again only, see `Ret::Regraph`
-    let mut load = true;
     let ret = loop {
-        let repository = if load {
-            loader.load(&mut refresh, &mut repository, &ctx.running_task)?
-        } else {
-            repository.as_ref().expect("loaded before")
-        };
-
         if terminal.is_none() {
             terminal = Some(ratatui::init());
             terminal_guard = Some(TerminalGuard);
@@ -287,18 +282,23 @@ fn main() -> Result<()> {
 
         let terminal = terminal.as_mut().unwrap();
         let size = ratatui::crossterm::terminal::size()?;
-        let ran = loader.with_app(repository, size, &ctx, &ec, refresh.take(), |mut app| {
+        let ran = loader.with_app(&repository, size, &ctx, &ec, refresh.take(), |mut app| {
             app.run(terminal).map(|ret| match ret {
                 Ret::Quit => None,
-                Ret::Refresh(context) => Some((app.into_shell(), context, true)),
-                Ret::Regraph(context) => Some((app.into_shell(), context, false)),
+                Ret::Reload {
+                    context,
+                    repository,
+                } => Some((app.into_shell(), context, Some(repository))),
+                Ret::Regraph(context) => Some((app.into_shell(), context, None)),
             })
         });
         match ran {
             Ok(Ok(None)) => break Ok(()),
-            Ok(Ok(Some((shell, context, reload)))) => {
+            Ok(Ok(Some((shell, context, reloaded)))) => {
                 refresh = Some((shell, context));
-                load = reload;
+                if let Some(reloaded) = reloaded {
+                    repository = *reloaded;
+                }
             }
             Ok(Err(e)) => break Err(e.into()),
             Err(e) => break Err(e),
@@ -315,10 +315,7 @@ type Refresh = Option<(app::AppShell, Box<view::RefreshViewContext>)>;
 // What the repository and its graph are loaded with, the same on each reload; the tests load
 // with it too, see `tests/app.rs`.
 struct Loader {
-    path: PathBuf,
-    order: git::SortCommit,
-    max_count: Option<usize>,
-    mailmap: bool,
+    options: git::LoadOptions,
     primary_branch: Option<String>,
     graph_width: Option<GraphWidthType>,
     graph_style: graph::GraphStyle,
@@ -326,52 +323,16 @@ struct Loader {
     graph_image_width_mode: graph::GraphImageWidthMode,
     graph_color_set: color::GraphColorSet,
     image_protocol: protocol::ImageProtocol,
-    initial_selection: app::InitialSelection,
     launch: app::Launch,
 }
 
 impl Loader {
-    // Loads the repository into `repository`, with the history the app shown before the reload
-    // (`refresh`) shows. Reloading failing, like on a broken ref, keeps the one loaded before,
-    // the app saying why.
-    // `running` is the app's git command running in the background, see `git::RunningTask`.
-    fn load<'r>(
-        &self,
-        refresh: &mut Refresh,
-        repository: &'r mut Option<git::Repository>,
-        running: &Rc<std::cell::RefCell<Option<git::RunningTask>>>,
-    ) -> Result<&'r git::Repository> {
-        let revisions = refresh
-            .as_ref()
-            .and_then(|(shell, _)| shell.graph_revisions());
-        let load = |revisions: Option<&[String]>| {
-            git::Repository::load_scoped(
-                &self.path,
-                self.order,
-                self.max_count,
-                self.mailmap,
-                revisions,
-                running.clone(),
-            )
-        };
-        let loaded = match load(revisions.as_deref()) {
-            // the refs shown may be gone, then all are shown again
-            Err(_) if revisions.is_some() => {
-                if let Some((shell, _)) = refresh.as_mut() {
-                    shell.reset_graph_filter();
-                }
-                load(None)
+    // Loads the repository the app starts with; it reloads it in the background after.
+    fn load(&self, running: &git::SharedTask) -> Result<git::Repository> {
+        match self.options.load(None, running.clone())? {
+            git::Loaded::Repository(repository) | git::Loaded::RefsGone(repository) => {
+                Ok(repository)
             }
-            loaded => loaded,
-        };
-        match (loaded, refresh.as_mut(), repository.take()) {
-            (Ok(loaded), _, _) => Ok(repository.insert(loaded)),
-            (Err(e), Some((shell, _)), Some(mut last)) => {
-                shell.notify_error(e.to_string());
-                last.take_refs_snapshot();
-                Ok(repository.insert(last))
-            }
-            (Err(e), _, _) => Err(e),
         }
     }
 
@@ -406,8 +367,8 @@ impl Loader {
         );
         let app = App::new(
             repository,
+            self.options.clone(),
             graph_image_manager,
-            self.initial_selection,
             self.launch,
             ctx.clone(),
             ec,

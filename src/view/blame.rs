@@ -19,8 +19,8 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
-        commit_event, file_link, query_status, register_commit_keys, register_moving_keys,
-        revision_spans, search_status, type_query, typing_keys,
+        commit_event, edit_files, file_link, query_status, register_commit_keys,
+        register_moving_keys, revision_spans, search_status, type_query, typing_keys,
     },
     widget::{
         commit_list::{format_date, ELLIPSIS},
@@ -197,6 +197,10 @@ impl BlameView {
             }
             UserEvent::GoToNext if body => self.search(SearchDirection::Next),
             UserEvent::GoToPrevious if body => self.search(SearchDirection::Previous),
+            // the file under its newest name, as it is in the working tree
+            UserEvent::Edit => self
+                .tx
+                .send(edit_files(repository, &[&self.history[0].path])),
             _ if body => self.handle_line_event(event),
             _ => {
                 let commit = &self.history[self.index].commit;
@@ -442,6 +446,11 @@ impl BlameView {
             "Go to the next/previous match",
         )
         .when(body);
+        k.add(
+            &[Edit],
+            "edit",
+            "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR",
+        );
         k.quiet(
             &[FocusPanel(1), FocusPanel(2)],
             "Focus the commit shown (also up from the first line)/the lines",
@@ -641,6 +650,15 @@ mod tests {
             (c2.clone(), "a".into(), vec![c1.clone(), c2.clone()])
         );
         assert_eq!(view.text.selected_line(), 1);
+        // e opens the file under its newest name, not the one before the rename
+        while ec.try_recv().is_some() {}
+        press(&mut view, UserEvent::Edit);
+        match ec.try_recv() {
+            Some(AppEvent::RunExternal(command)) => {
+                assert_eq!(command.last(), Some(&path.join("b").display().to_string()))
+            }
+            event => panic!("no editor run: {event:?}"),
+        }
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
         assert_eq!(

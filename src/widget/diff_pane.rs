@@ -1,18 +1,24 @@
 use std::ops::RangeInclusive;
 
-use ratatui::{buffer::Buffer, layout::Rect, text::Line};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    text::Line,
+    widgets::{Paragraph, Widget},
+};
 
 use crate::{
     app::AppContext,
-    event::UserEvent,
-    git::PatchDirection,
+    background::Job,
+    event::{Sender, UserEvent},
+    git::{PatchDirection, Repository},
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, render_diff_lines, row_matches, DiffCursor, DiffHunk, DiffPart, ParsedDiff,
-            Step, WrapMap,
+            diff_lines, parse_diff, render_diff_lines, row_matches, DiffCursor, DiffHunk, DiffPart,
+            ParsedDiff, Step, WrapMap,
         },
-        style::{render_panel, render_scrollbar, ScrollState},
+        style::{placeholder, render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
     },
 };
@@ -31,6 +37,8 @@ pub struct DiffSelection {
 pub struct DiffPane {
     // loaded lazily, None until then
     diff: Option<ParsedDiff>,
+    // the diff loading in the background, shown once loaded, see `load_in_background`
+    loading: Option<Job<String>>,
     // the hunks or the lines while the diff has the focus, None while what is beside it does (the
     // files of the changes tab, the commits of the timeline)
     focus: Option<DiffPart>,
@@ -40,6 +48,7 @@ pub struct DiffPane {
 impl DiffPane {
     // Shows another diff, from the top, the focus beside it.
     pub fn set_diff(&mut self, diff: Option<ParsedDiff>) {
+        self.loading = None;
         self.diff = diff;
         self.focus = None;
         self.cursor.reset();
@@ -47,6 +56,43 @@ impl DiffPane {
 
     pub fn diff(&self) -> Option<&ParsedDiff> {
         self.diff.as_ref()
+    }
+
+    // Loads another diff with `work`, the git command giving it, on another thread, the focus
+    // beside it; none is shown meanwhile, so no key acts on the one before. See `poll_loading`.
+    pub fn load_in_background(
+        &mut self,
+        tx: Sender,
+        work: impl FnOnce() -> String + Send + 'static,
+    ) {
+        self.set_diff(None);
+        self.loading = Some(Job::spawn(tx, work));
+    }
+
+    // Shows the diff loading in the background once it is loaded; returns whether it was.
+    pub fn poll_loading(&mut self, repository: &Repository) -> bool {
+        let Some(raw) = self.loading.as_ref().and_then(Job::try_take) else {
+            return false;
+        };
+        self.show_loaded(&raw, repository);
+        true
+    }
+
+    // Shows the diff loading in the background, waiting for it, before a key acts on it.
+    pub fn wait_loading(&mut self, repository: &Repository) {
+        if let Some(job) = self.loading.take() {
+            self.show_loaded(&job.wait(), repository);
+        }
+    }
+
+    fn show_loaded(&mut self, raw: &str, repository: &Repository) {
+        let mut diff = parse_diff(raw);
+        diff.drop_converted(repository);
+        self.set_diff(Some(diff));
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.loading.is_some()
     }
 
     // Whether the diff is of one file, which shows more or less context around its changes.
@@ -141,10 +187,12 @@ impl DiffPane {
         true
     }
 
-    // Goes one level back: lines -> hunks -> out of the diff. Returns false when already out.
+    // Goes one level back: the range of lines cleared -> hunks -> out of the diff. Returns false
+    // when already out.
     pub fn back(&mut self) -> bool {
         match self.focus {
             None => return false,
+            Some(DiffPart::Line) if self.cursor.cancel_range() => {}
             Some(DiffPart::Hunk) => self.focus = None,
             Some(DiffPart::Line) => {
                 self.focus = Some(DiffPart::Hunk);
@@ -154,6 +202,25 @@ impl DiffPane {
             }
         }
         true
+    }
+
+    // Starts a range of lines at the selected line, or clears it, while selecting lines.
+    pub fn toggle_range(&mut self) {
+        if self.is_selecting_lines() {
+            self.cursor.toggle_range();
+        }
+    }
+
+    pub fn has_range(&self) -> bool {
+        self.is_selecting_lines() && self.cursor.has_range()
+    }
+
+    // What is selected, for the keys and messages: "hunk", "line" or "lines".
+    pub fn selected_name(&self) -> &'static str {
+        match self.selected_part() {
+            _ if self.has_range() => "lines",
+            part => part.name(),
+        }
     }
 
     // Moves the selected hunk or line.
@@ -253,6 +320,9 @@ impl DiffPane {
         let wrap = ctx.wrap.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let Some(diff) = &self.diff else {
+            if self.loading.is_some() {
+                Paragraph::new(placeholder("Loading…", theme)).render(area, buf);
+            }
             return;
         };
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap

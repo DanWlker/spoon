@@ -9,6 +9,7 @@ use crate::{
     app::AppContext,
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, UserEvent},
+    external::editor_command,
     git::{CommitHash, FileRevision, Repository, Rev},
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
@@ -247,9 +248,22 @@ pub fn register_diff_keys<T: ?Sized>(
     k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
         .when(|v| pane(v).is_some())
         .short(|v| {
-            let part = pane(v).map_or(DiffPart::Hunk, DiffPane::selected_part);
-            format!("copy {}", part.name())
+            let name = pane(v).map_or(DiffPart::Hunk.name(), DiffPane::selected_name);
+            format!("copy {name}")
         });
+    k.add(
+        &[ToggleSelect],
+        "select range",
+        "Select the lines from the selected one to where it moves, in its hunk; again clears them",
+    )
+    .when(|v| pane(v).is_some_and(DiffPane::is_selecting_lines))
+    .short(|v| {
+        match pane(v).is_some_and(DiffPane::has_range) {
+            true => "clear range",
+            false => "select range",
+        }
+        .into()
+    });
     // a diff of several files has no one file to show more or less context of
     let single_file = |v: &T| pane(v).is_some_and(DiffPane::is_single_file);
     k.add(
@@ -314,6 +328,25 @@ pub fn file_link(
     AppEvent::Link {
         target,
         action: LinkAction::of(event),
+    }
+}
+
+// e on files of the repository: opens them as they are in the working tree in the editor, or says
+// which is gone from it.
+pub fn edit_files(repository: &Repository, files: &[&str]) -> AppEvent {
+    let paths: Result<Vec<_>, String> = files
+        .iter()
+        .map(|file| {
+            let path = repository.path().join(file);
+            match path.exists() {
+                true => Ok(path),
+                false => Err(format!("{file} does not exist in the working tree")),
+            }
+        })
+        .collect();
+    match paths {
+        Ok(paths) => AppEvent::RunExternal(editor_command(&paths)),
+        Err(err) => AppEvent::NotifyError(err),
     }
 }
 
@@ -404,12 +437,14 @@ pub fn search_status(
 }
 
 // Copies the selected part of a diff or a file.
-pub fn copy_selection(text: String, part: DiffPart) -> AppEvent {
-    let name = match part {
-        DiffPart::Line => "Line",
-        DiffPart::Hunk => "Hunk",
-    };
-    AppEvent::copy(name, text)
+// `name` is the pane's, see `DiffPane::selected_name`.
+pub fn copy_selection(text: String, name: &str) -> AppEvent {
+    let mut chars = name.chars();
+    let name: String = chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    AppEvent::copy(&name, text)
 }
 
 // The value `copy_path` and `copy_paths` copy: relative to the top of the repository, or absolute

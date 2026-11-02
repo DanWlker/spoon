@@ -29,8 +29,9 @@ use crate::{
     event::{AppEvent, EventController, KeyHint, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        read_head_commit, read_operation, run_task, AfterTask, Commit, CommitHash, FileChange,
-        FilesSnapshot, GitCommand, GitTask, Head, NamedRef, Ref, Repository, Rev, RunningTask,
+        read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, Commit, CommitHash,
+        FileChange, FilesSnapshot, GitCommand, GitTask, Head, LoadOptions, Loaded, NamedRef, Ref,
+        Repository, Rev, RunningTask, SharedTask,
     },
     graph::{CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphStyle},
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
@@ -80,10 +81,12 @@ pub enum InitialSelection {
     Head,
 }
 
-// How the app starts, from the command line: on the local changes page; and fetching the remotes, which the tests leave out, see `fetch_on_launch`.
+// How the app starts, from the command line: on the local changes page; on which commit; and
+// fetching the remotes, which the tests leave out, see `fetch_on_launch`.
 #[derive(Clone, Copy)]
 pub struct Launch {
     pub page: StartPage,
+    pub selection: InitialSelection,
     pub fetch: bool,
 }
 
@@ -104,8 +107,12 @@ const QUICK_RUN_DELAY: Duration = Duration::from_millis(200);
 
 pub enum Ret {
     Quit,
-    // reload the repository and show the view of the context again
-    Refresh(Box<RefreshViewContext>),
+    // the repository reloaded in the background, to show the view of the context again on, see
+    // `App::start_reload`
+    Reload {
+        context: Box<RefreshViewContext>,
+        repository: Box<Repository>,
+    },
     // draw the graph again, of the repository as loaded, see `AppShell::folded_merges`
     Regraph(Box<RefreshViewContext>),
 }
@@ -121,7 +128,7 @@ pub struct AppContext {
     // pages build beside it, see `graph_image_manager`
     pub graph: RefCell<GraphRender>,
     // the git command running in the background, kept across refreshes, shared with the repository
-    pub running_task: Rc<RefCell<Option<RunningTask>>>,
+    pub running_task: SharedTask,
     // the keys of the hints in the status bar, see `short_keys`
     pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
     // the sizes of the panels, set by the user, kept across refreshes
@@ -189,7 +196,7 @@ impl AppContext {
     // Why the repository can't be changed now: a git command is running in the background.
     pub fn busy_message(&self) -> Option<String> {
         self.running_task
-            .borrow()
+            .lock()
             .as_ref()
             .map(RunningTask::busy_message)
     }
@@ -257,6 +264,27 @@ pub struct AppShell {
     folded_merges: FxHashSet<CommitHash>,
     // a check of the refs or the files came while reloading was paused, see `handle_event`
     missed_check: bool,
+    reload: Option<PendingReload>,
+    // counts the reloads asked for, see `PendingReload`
+    reload_generation: u64,
+}
+
+// What the app shows again once the repository reloaded in the background lands.
+#[derive(Debug)]
+enum Restore {
+    // what it shows then, moving meanwhile kept; else what it showed when asked, when what it
+    // shows then can't be reloaded, like the help
+    Current(Box<RefreshViewContext>),
+    // what a command asked for, like the commit it rewrote selected
+    Given(Box<RefreshViewContext>),
+}
+
+// The reload of the repository running in the background, see `App::start_reload`.
+#[derive(Debug)]
+struct PendingReload {
+    // of the latest one asked for: a result of one asked for before is dropped
+    generation: u64,
+    restore: Restore,
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
@@ -331,6 +359,13 @@ impl FileWindow {
         match self {
             FileWindow::Blame(blame) => blame.render(f, area),
             FileWindow::Timeline(timeline) => timeline.render(f, area),
+        }
+    }
+
+    // Before drawing: the diff of the timeline once loaded in the background.
+    fn update(&mut self, repository: &Repository) {
+        if let FileWindow::Timeline(timeline) = self {
+            timeline.poll_loading(repository);
         }
     }
 }
@@ -425,6 +460,8 @@ impl AppShell {
 #[derive(Debug)]
 pub struct App<'a> {
     repository: &'a Repository,
+    // how to load it again
+    load_options: LoadOptions,
     view: View<'a>,
     shell: AppShell,
     ctx: Rc<AppContext>,
@@ -434,8 +471,8 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(
         repository: &'a Repository,
+        load_options: LoadOptions,
         graph_image_manager: GraphImageManager<'a>,
-        initial_selection: InitialSelection,
         launch: Launch,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
@@ -499,7 +536,7 @@ impl<'a> App<'a> {
                 .as_ref()
                 .and_then(|shell| shell.graph_filter_note(repository)),
         );
-        if let InitialSelection::Head = initial_selection {
+        if let InitialSelection::Head = launch.selection {
             match repository.head() {
                 Head::Branch { name, .. } => {
                     commit_list_state.select_ref(&NamedRef::Branch(name.clone()).full_name())
@@ -541,6 +578,8 @@ impl<'a> App<'a> {
                 notices: Vec::new(),
                 folded_merges: FxHashSet::default(),
                 missed_check: false,
+                reload: None,
+                reload_generation: 0,
             },
         };
         // gone, like after a rebase
@@ -553,6 +592,7 @@ impl<'a> App<'a> {
 
         let mut app = Self {
             repository,
+            load_options,
             view,
             shell,
             ctx,
@@ -771,7 +811,7 @@ impl App<'_> {
             AppEvent::Quit => {
                 // quitting would kill the git command half done (a stash never popped), so it
                 // waits; asking again quits right away
-                let mut running = self.ctx.running_task.borrow_mut();
+                let mut running = self.ctx.running_task.lock();
                 if let Some(running) = running.as_mut().filter(|running| !running.quit_after) {
                     running.quit_after = true;
                     self.ec.send(AppEvent::NotifyWarn(format!(
@@ -810,7 +850,7 @@ impl App<'_> {
             // checked again once reloading isn't paused, see `handle_event`
             AppEvent::FilesTick(_) | AppEvent::RefsSnapshot(_) => self.shell.missed_check = true,
             // only redraws
-            AppEvent::SpinnerTick | AppEvent::Resize => {}
+            AppEvent::SpinnerTick | AppEvent::Resize | AppEvent::Loaded => {}
             AppEvent::OpenHelp => {
                 let help = HelpView::new(self.ctx.clone(), self.ec.sender());
                 self.shell.overlay = Some(Overlay::Help(help));
@@ -856,10 +896,14 @@ impl App<'_> {
             AppEvent::Link { target, action } => self.open_link(&target, action),
             AppEvent::Links { targets, action } => self.handle_links(&targets, action),
             AppEvent::OpenUrl { url, action } => self.open_url(url, action),
-            AppEvent::Refresh(context) => {
-                // the graph is drawn again from scratch
-                self.shell.last_frame = None;
-                return Ok(Some(Ret::Refresh(Box::new(context))));
+            AppEvent::Reload => {
+                if let Some(context) = self.view.refresh_context() {
+                    self.start_reload(Restore::Current(Box::new(context)));
+                }
+            }
+            AppEvent::Refresh(context) => self.start_reload(Restore::Given(Box::new(context))),
+            AppEvent::Reloaded { generation, result } => {
+                return Ok(self.land_reload(generation, result));
             }
             AppEvent::FoldMerge { commit, fold } => {
                 match fold {
@@ -913,6 +957,19 @@ impl App<'_> {
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
+        if let Some(Overlay::File(window)) = &mut self.shell.overlay {
+            window.update(self.repository);
+        }
+    }
+
+    // Whether what is shown loads in the background, see `Job`.
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        let window = match &self.shell.overlay {
+            Some(Overlay::File(FileWindow::Timeline(timeline))) => timeline.is_loading(),
+            _ => false,
+        };
+        window || self.view.is_loading()
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
@@ -1213,7 +1270,7 @@ impl App<'_> {
                     left.push(Span::raw(format!("{prefix} ")).fg(theme.accent_fg).bold());
                 }
                 // what runs in the background, else where the repository is
-                match self.ctx.running_task.borrow().as_ref() {
+                match self.ctx.running_task.lock().as_ref() {
                     Some(running) => left.push(
                         Span::raw(format!("{} {}", running.task.running, spinner()))
                             .fg(theme.highlight_fg),
@@ -1269,7 +1326,7 @@ impl App<'_> {
 
         // with a message, what runs in the background goes to the right
         let message = !matches!(self.shell.app_status.status_line, StatusLine::None);
-        if let Some(running) = self.ctx.running_task.borrow().as_ref().filter(|_| message) {
+        if let Some(running) = self.ctx.running_task.lock().as_ref().filter(|_| message) {
             let text = format!("{} {} ", running.task.running, spinner());
             right.insert(0, Span::raw(text).fg(theme.highlight_fg));
         }
@@ -2094,7 +2151,7 @@ impl App<'_> {
         let head_before_commit = task
             .commits()
             .then(|| read_head_commit(self.repository.path()).unwrap_or_default());
-        *self.ctx.running_task.borrow_mut() = Some(RunningTask {
+        *self.ctx.running_task.lock() = Some(RunningTask {
             task: task.clone(),
             head_before_commit,
             quit_after: false,
@@ -2133,7 +2190,7 @@ impl App<'_> {
             task,
             head_before_commit,
             quit_after: quit,
-        }) = self.ctx.running_task.borrow_mut().take()
+        }) = self.ctx.running_task.lock().take()
         else {
             return false;
         };
@@ -2439,9 +2496,91 @@ impl App<'_> {
     // loaded, from outside the app, like lazygit.
     fn check_refs(&mut self, snapshot: String) {
         let previous = self.shell.refs_snapshot.replace(snapshot);
+        // the reload running sees what changed, or the check after it does, as it takes the
+        // refs as it loaded them
+        if self.shell.reload.is_some() {
+            return;
+        }
         if previous.is_some_and(|p| Some(&p) != self.shell.refs_snapshot.as_ref()) {
             self.view.refresh();
         }
+    }
+
+    // Loads the repository again on another thread, the app going on meanwhile; once it lands, the
+    // app is made again on it showing what `restore` says. Asked again meanwhile, it loads again,
+    // keeping where a command asked to go.
+    fn start_reload(&mut self, restore: Restore) {
+        let restore = match (self.shell.reload.take(), restore) {
+            (
+                Some(PendingReload {
+                    restore: given @ Restore::Given(_),
+                    ..
+                }),
+                Restore::Current(_),
+            ) => given,
+            (_, restore) => restore,
+        };
+        self.shell.reload_generation += 1;
+        let generation = self.shell.reload_generation;
+        self.shell.reload = Some(PendingReload {
+            generation,
+            restore,
+        });
+        let options = self.load_options.clone();
+        let revisions = self.shell.graph_revisions();
+        let running = self.ctx.running_task.clone();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            let result = options.load(revisions.as_deref(), running).map(Box::new);
+            // the app may have quit meanwhile
+            tx.try_send(AppEvent::Reloaded { generation, result });
+        });
+    }
+
+    // The app to make again on the repository reloaded, see `start_reload`; None for the result of
+    // a reload asked for before the latest, or one failing, which keeps the repository as it was.
+    fn land_reload(
+        &mut self,
+        generation: u64,
+        result: std::result::Result<Box<Loaded>, String>,
+    ) -> Option<Ret> {
+        let pending = self
+            .shell
+            .reload
+            .take_if(|pending| pending.generation == generation)?;
+        let repository = match result.map(|loaded| *loaded) {
+            Ok(Loaded::Repository(repository)) => repository,
+            // a ref the graph showed is gone, all of them are shown again
+            Ok(Loaded::RefsGone(repository)) => {
+                self.shell.reset_graph_filter();
+                repository
+            }
+            Err(err) => {
+                self.shell.notify_error(err);
+                // the refs as they are now, else the change that made it fail would reload again
+                // and again
+                let repository = self.repository;
+                self.shell.refs_snapshot =
+                    refs_snapshot(repository.path(), repository.git_dir()).ok();
+                return None;
+            }
+        };
+        let context = match pending.restore {
+            Restore::Current(asked) => self.view.refresh_context().unwrap_or(*asked),
+            Restore::Given(context) => *context,
+        };
+        // the graph is drawn again from scratch
+        self.shell.last_frame = None;
+        Some(Ret::Reload {
+            context: Box::new(context),
+            repository: Box::new(repository),
+        })
+    }
+
+    // Whether a reload runs in the background, see `start_reload`.
+    #[cfg(test)]
+    pub fn is_reloading(&self) -> bool {
+        self.shell.reload.is_some()
     }
 
     // Reloads the local changes, made outside the app too: the page showing them, else their

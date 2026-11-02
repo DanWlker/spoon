@@ -259,6 +259,50 @@ impl SubmoduleRepositories {
     }
 }
 
+// How the app loads the repository, the same on each reload.
+#[derive(Debug, Clone)]
+pub struct LoadOptions {
+    pub path: PathBuf,
+    pub sort: SortCommit,
+    pub max_count: Option<usize>,
+    pub mailmap: bool,
+}
+
+// A repository loaded, see `LoadOptions::load`.
+#[derive(Debug)]
+pub enum Loaded {
+    // with the history of the revisions asked for
+    Repository(Repository),
+    // with that of every ref, one of the revisions asked for being gone
+    RefsGone(Repository),
+}
+
+impl LoadOptions {
+    // Loads the history of `revisions`, see `Repository::load_scoped`, else that of every ref when
+    // one of them is gone; an error is a message, to send from the thread loading it.
+    pub fn load(
+        &self,
+        revisions: Option<&[String]>,
+        running: SharedTask,
+    ) -> std::result::Result<Loaded, String> {
+        let load = |revisions| {
+            Repository::load_scoped(
+                &self.path,
+                self.sort,
+                self.max_count,
+                self.mailmap,
+                revisions,
+                running.clone(),
+            )
+            .map_err(|e| e.to_string())
+        };
+        match load(revisions) {
+            Err(_) if revisions.is_some() => load(None).map(Loaded::RefsGone),
+            loaded => loaded.map(Loaded::Repository),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Repository {
     // the top directory of the working tree (the repository itself when bare), which git
@@ -269,9 +313,11 @@ pub struct Repository {
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
     loaded_local_changes: std::cell::RefCell<Option<LocalChanges>>,
+    // their count once the page took them, for the page bar not to run `git status` again
+    taken_count: std::cell::Cell<Option<usize>>,
     // the git command the app runs in the background, shared with it: the repository refuses to
     // be changed meanwhile, see `run`
-    running: std::rc::Rc<std::cell::RefCell<Option<RunningTask>>>,
+    running: SharedTask,
     // the fingerprint of the refs when loaded, see `refs_snapshot`
     refs_snapshot: Option<String>,
     // the operation stopped and waiting when loaded, see `operation_in_progress`
@@ -316,7 +362,7 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
         revisions: Option<&[String]>,
-        running: std::rc::Rc<std::cell::RefCell<Option<RunningTask>>>,
+        running: SharedTask,
     ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
@@ -417,6 +463,7 @@ impl Repository {
             path,
             git_dir,
             loaded_local_changes: Default::default(),
+            taken_count: Default::default(),
             running: Default::default(),
             refs_snapshot: None,
             operation: None,
@@ -558,7 +605,11 @@ impl Repository {
     // The number of local changes, as they were when the repository was loaded.
     pub fn loaded_local_change_count(&self) -> usize {
         let mut loaded = self.loaded_local_changes.borrow_mut();
-        loaded.get_or_insert_with(|| self.local_changes()).count()
+        match (loaded.as_ref(), self.taken_count.get()) {
+            (Some(changes), _) => changes.count(),
+            (None, Some(count)) => count,
+            (None, None) => loaded.insert(self.local_changes()).count(),
+        }
     }
 
     // The local changes as they were when the repository was loaded the first time it is called,
@@ -582,16 +633,30 @@ impl Repository {
     }
 
     pub fn take_loaded_local_changes(&self) -> LocalChanges {
-        self.loaded_local_changes
+        let changes = self
+            .loaded_local_changes
             .take()
-            .unwrap_or_else(|| self.local_changes())
+            .unwrap_or_else(|| self.local_changes());
+        self.taken_count.set(Some(changes.count()));
+        changes
     }
 
+    #[cfg(test)]
     pub fn local_change_diff(&self, paths: &[&str], of: DiffOf, context: usize) -> String {
+        self.local_change_diff_work(paths, of, context)()
+    }
+
+    // `local_change_diff` as work to run on another thread.
+    pub fn local_change_diff_work(
+        &self,
+        paths: &[&str],
+        of: DiffOf,
+        context: usize,
+    ) -> Box<dyn FnOnce() -> String + Send> {
         if paths.is_empty() {
-            return String::new();
+            return Box::new(String::new);
         }
-        load_local_change_diff(&self.path, paths, of, context)
+        Box::new(local_change_diff_work(&self.path, paths, of, context))
     }
 
     // The tree to compare the index to while amending: `HEAD^`, or the empty tree for a root
@@ -604,24 +669,44 @@ impl Repository {
     }
 
     // The diff of `paths` (all files when empty) made by a commit, against its first parent,
-    // showing `context` lines around each change.
-    pub fn commit_diff(&self, commit_hash: &CommitHash, paths: &[&str], context: usize) -> String {
-        self.commit_base(commit_hash)
-            .map(|base| self.diff_between(&base, commit_hash.as_str(), paths, context))
-            .unwrap_or_default()
+    // showing `context` lines around each change, as work to run on another thread.
+    pub fn commit_diff_work(
+        &self,
+        commit_hash: &CommitHash,
+        paths: &[&str],
+        context: usize,
+    ) -> Box<dyn FnOnce() -> String + Send> {
+        match self.commit_base(commit_hash) {
+            Some(base) => self.diff_between_work(&base, commit_hash.as_str(), paths, context),
+            None => Box::new(String::new),
+        }
     }
 
     // The diff of `paths` (all files when empty) from one commit to another, showing `context`
     // lines around each change.
+    #[cfg(test)]
     pub fn diff_between(&self, base: &str, target: &str, paths: &[&str], context: usize) -> String {
-        let mut args = PATCH_DIFF_ARGS.to_vec();
-        args.extend_from_slice(&["-M", base, target]);
-        let unified = format!("--unified={context}");
-        args.push(&unified);
-        args.push("--");
-        let paths = pathspecs(paths);
-        args.extend(paths.iter().map(String::as_str));
-        git_output(&self.path, &args).unwrap_or_default()
+        self.diff_between_work(base, target, paths, context)()
+    }
+
+    // `diff_between` as work to run on another thread.
+    pub fn diff_between_work(
+        &self,
+        base: &str,
+        target: &str,
+        paths: &[&str],
+        context: usize,
+    ) -> Box<dyn FnOnce() -> String + Send> {
+        let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
+        args.extend(["-M", base, target].map(String::from));
+        args.push(format!("--unified={context}"));
+        args.push("--".into());
+        args.extend(pathspecs(paths));
+        let path = self.path.clone();
+        Box::new(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            git_output(&path, &args).unwrap_or_default()
+        })
     }
 
     // The files changed from one commit to another.
@@ -819,24 +904,41 @@ impl Repository {
         git_output_bytes(&self.path, &["cat-file", "blob", &object])
     }
 
-    // All file paths in the tree of a commit.
-    pub fn commit_tree_paths(&self, commit_hash: &CommitHash) -> Vec<String> {
-        let args = ["ls-tree", "-r", "-z", "--name-only", commit_hash.as_str()];
-        git_output(&self.path, &args)
-            .map(|out| {
-                out.split('\0')
-                    .filter(|p| !p.is_empty())
-                    .map(String::from)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    // The paths that are gitlinks (submodules) in the tree of a commit, from its modes: a
-    // submodule path is otherwise listed as a file by `commit_tree_paths`.
-    pub fn commit_gitlink_paths(&self, commit_hash: &CommitHash) -> FxHashSet<String> {
+    // All file paths in the tree of a commit, and those of them that are gitlinks (submodules),
+    // from their modes, in one listing.
+    pub fn commit_tree(&self, commit_hash: &CommitHash) -> (Vec<String>, FxHashSet<String>) {
         let out = git_output(&self.path, &["ls-tree", "-r", "-z", commit_hash.as_str()])
             .unwrap_or_default();
+        let mut paths = Vec::new();
+        let mut gitlinks = FxHashSet::default();
+        for (meta, path) in out.split('\0').filter_map(|entry| entry.split_once('\t')) {
+            if meta.starts_with("160000 ") {
+                gitlinks.insert(path.to_string());
+            }
+            paths.push(path.to_string());
+        }
+        (paths, gitlinks)
+    }
+
+    // The paths among `paths` that are gitlinks (submodules) in the tree of a commit, from their
+    // modes: a submodule path is otherwise listed as a file. Only those
+    // paths are listed, not the whole tree, which is big in a big repository.
+    pub fn commit_gitlink_paths(
+        &self,
+        commit_hash: &CommitHash,
+        paths: &[&str],
+    ) -> FxHashSet<String> {
+        if paths.is_empty() {
+            return FxHashSet::default();
+        }
+        let mut args = vec!["ls-tree", "-r", "-z", commit_hash.as_str()];
+        // past this many, the whole tree is listed, the command line staying short enough
+        let pathspecs = pathspecs(paths);
+        if paths.len() <= 1000 {
+            args.push("--");
+            args.extend(pathspecs.iter().map(String::as_str));
+        }
+        let out = git_output(&self.path, &args).unwrap_or_default();
         out.split('\0')
             .filter_map(|entry| {
                 let (meta, path) = entry.split_once('\t')?;
@@ -1132,12 +1234,6 @@ impl Repository {
         self.refs_snapshot.as_deref()
     }
 
-    // Takes the refs as they are now as loaded, after reloading failed: else the change that made
-    // it fail would reload again and again.
-    pub fn take_refs_snapshot(&mut self) {
-        self.refs_snapshot = refs_snapshot(&self.path, &self.git_dir).ok();
-    }
-
     // The remotes, local branches and their upstreams, to fetch, pull and push with.
     pub fn remote_info(&self) -> RemoteInfo {
         // the remotes and the settings of pulling, in one call
@@ -1249,7 +1345,7 @@ impl Repository {
     // An error while a git command runs in the background, which a change could fail on (its
     // locked index) or end up in the middle of (its stash and pop), like lazygit.
     fn check_idle(&self) -> std::result::Result<(), String> {
-        match self.running.borrow().as_ref() {
+        match self.running.lock().as_ref() {
             Some(running) => Err(running.busy_message()),
             None => Ok(()),
         }
@@ -2149,7 +2245,13 @@ pub enum DiffOf<'a> {
     Staged { base: Option<&'a str> },
 }
 
-fn load_local_change_diff(path: &Path, targets: &[&str], of: DiffOf, context: usize) -> String {
+// The diff of the local changes of `targets`, see `Repository::local_change_diff_work`.
+fn local_change_diff_work(
+    path: &Path,
+    targets: &[&str],
+    of: DiffOf,
+    context: usize,
+) -> impl FnOnce() -> String + Send + 'static {
     let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
     args.push(format!("--unified={context}"));
     match of {
@@ -2168,8 +2270,9 @@ fn load_local_change_diff(path: &Path, targets: &[&str], of: DiffOf, context: us
             args.extend(pathspecs(targets));
         }
     }
+    let path = path.to_path_buf();
     // `--no-index` exits with 1 when the files differ
-    git_output_with_status(path, &args).map_or_else(String::new, |(_, out)| out)
+    move || git_output_with_status(&path, &args).map_or_else(String::new, |(_, out)| out)
 }
 
 // `git diff --name-status -z` output: a status, then one path or two for renames and copies.
@@ -2466,6 +2569,21 @@ impl GitArgs {
 impl std::fmt::Display for GitArgs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.argv().join(" "))
+    }
+}
+
+// The app's git command running in the background, shared with the repositories it loads, which
+// load on other threads, see `RunningTask`.
+#[derive(Debug, Default, Clone)]
+pub struct SharedTask(std::sync::Arc<std::sync::Mutex<Option<RunningTask>>>);
+
+impl SharedTask {
+    // Held only while read or set, never across another lock of it: it isn't reentrant.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunningTask>> {
+        // a panic while holding it left a value that is still whole
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -3145,6 +3263,12 @@ mod tests {
         // the status, remotes and refs are loaded in the background while the commits are
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         assert_eq!(repository.loaded_local_change_count(), 1);
+        // taken by the page, the count stays as loaded, without running git status again
+        std::fs::write(path.join("b"), "b\n").unwrap();
+        assert_eq!(repository.take_loaded_local_changes().count(), 1);
+        assert_eq!(repository.loaded_local_change_count(), 1);
+        // taken again, they are as they are now
+        assert_eq!(repository.take_loaded_local_changes().count(), 2);
         assert_eq!(repository.remotes(), ["origin"]);
         assert_eq!(
             repository.refs_snapshot(),
@@ -3241,12 +3365,12 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
         // while a git command runs in the background
-        *repository.running.borrow_mut() = Some(running("Pushing main"));
+        *repository.running.lock() = Some(running("Pushing main"));
         assert_eq!(
             repository.stage_paths(&["a"]),
             Err("Pushing main, wait for it to finish".into())
         );
-        *repository.running.borrow_mut() = None;
+        *repository.running.lock() = None;
         repository.stage_paths(&["a"]).unwrap();
     }
 
@@ -3682,12 +3806,12 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         // refused while a git command runs, the conflict markers kept
         let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
-        *repository.running.borrow_mut() = Some(running("Pushing master"));
+        *repository.running.lock() = Some(running("Pushing master"));
         assert!(repository
             .resolve_conflict("f", ConflictSide::Ours)
             .is_err());
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
-        *repository.running.borrow_mut() = None;
+        *repository.running.lock() = None;
         repository
             .resolve_conflict("f", ConflictSide::Ours)
             .unwrap();
@@ -4040,9 +4164,11 @@ mod tests {
             repository.submodule_gitlink_at("HEAD", "sub"),
             Some(info.index.clone())
         );
-        assert!(repository
-            .commit_gitlink_paths(&repository.head_commit().unwrap())
-            .contains("sub"));
+        let gitlinks = |paths: &[&str]| {
+            repository.commit_gitlink_paths(&repository.head_commit().unwrap(), paths)
+        };
+        assert!(gitlinks(&["a.txt", "sub"]).contains("sub"));
+        assert!(gitlinks(&["a.txt"]).is_empty());
         // the commits the recorded gitlink doesn't have
         let sub_repository = repository
             .submodule_repository("sub", &info.index, &head)

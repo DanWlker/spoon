@@ -56,7 +56,7 @@ focus_panel_5 = ["5"]
 # stage/unstage the selected file, directory, hunk or line in local changes
 toggle_stage = ["space"]
 # select a range of items: commits in the commit list, files in local changes, lines of a file
-# preview; moving extends it, and again ends it
+# preview; moving extends it, and again ends it; in a diff's lines, a range inside the hunk, again clears it
 toggle_select = ["v"]
 # show more or fewer lines around the changes of a diff of one file
 increase_diff_context = ["+"]
@@ -76,7 +76,7 @@ commit = ["c"]
 abort = ["shift-c"]
 # amend the last commit instead of making a new one
 toggle_amend = ["shift-a"]
-# open the selected files in $VISUAL or $EDITOR, in local changes and the changes and files tabs of the commit details
+# open the selected files in $VISUAL or $EDITOR: in local changes, the changes and files tabs of the commit details, the blame and the timeline
 edit = ["e"]
 # discard the selected unstaged changes in local changes, after confirming
 discard = ["d"]

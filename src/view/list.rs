@@ -163,7 +163,7 @@ impl<'a> ListView<'a> {
     }
 
     pub fn refresh(&self) {
-        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+        self.tx.send(AppEvent::Reload);
     }
 
     // What to show again once the repository is reloaded.

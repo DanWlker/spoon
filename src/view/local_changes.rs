@@ -29,8 +29,6 @@ use crate::{
 pub struct LocalChangesView<'a> {
     commit_list_state: CommitListState<'a>,
     local_changes_state: LocalChangesState<'a>,
-    // the last key's event, the repeats of a key moving the cursor loading no diff
-    last_event: Option<UserEvent>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -46,24 +44,28 @@ impl<'a> LocalChangesView<'a> {
         LocalChangesView {
             commit_list_state,
             local_changes_state,
-            last_event: None,
             ctx,
             tx,
         }
     }
 
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        self.local_changes_state.is_diff_loading()
+    }
+
     // Before drawing: the diff of the row the cursor moved to.
     pub fn update_layout(&mut self, area: Rect) {
-        self.local_changes_state.load_stale_diff();
+        self.local_changes_state
+            .load_stale_diff_in_background(&self.tx);
         self.local_changes_state.update_submodule_height(area);
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
-        // held, a key moving the cursor loads the diff once it is let go (or drawn)
-        if self.last_event != Some(event) {
+        // the keys moving the cursor leave its diff to load in the background, see `update_layout`
+        if !event.moves_selection() {
             self.local_changes_state.load_stale_diff();
         }
-        self.last_event = Some(event);
         self.handle_event_inner(event, key);
         self.send_request();
     }
@@ -103,8 +105,8 @@ impl<'a> LocalChangesView<'a> {
         // `Scope::LocalChangesDiff`
         if self.local_changes_state.is_diff_focused() && event == UserEvent::ShortCopy {
             if let Some(text) = self.local_changes_state.selected_diff_text() {
-                let part = self.local_changes_state.selected_diff_part();
-                self.tx.send(copy_selection(text, part));
+                let name = self.local_changes_state.selected_diff_name();
+                self.tx.send(copy_selection(text, name));
             }
             return;
         }
@@ -417,7 +419,7 @@ impl<'a> LocalChangesView<'a> {
     }
 
     pub fn refresh(&self) {
-        self.tx.send(AppEvent::Refresh(self.refresh_context()));
+        self.tx.send(AppEvent::Reload);
     }
 
     // What to show again once the repository is reloaded.

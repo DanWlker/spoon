@@ -20,7 +20,7 @@ use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
     event::{EventController, KeyHint},
-    git::{refs_snapshot, FilesSnapshot, NamedRef, SortCommit},
+    git::{refs_snapshot, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
     graph::{GraphImageWidthMode, GraphStyle},
     keybind::parse_key_event,
     layout::Panel,
@@ -119,18 +119,20 @@ struct Harness {
     loader: Loader,
     ctx: Rc<AppContext>,
     ec: EventController,
-    // how many times the repository was loaded, the first time included
-    loads: usize,
+    // how many times the repository was loaded, the first time and those failing included
+    loads: std::cell::Cell<usize>,
     quit: bool,
 }
 
 impl Harness {
     fn new(path: &Path, launch: Launch) -> Self {
         let loader = Loader {
-            path: path.to_path_buf(),
-            order: SortCommit::Chronological,
-            max_count: None,
-            mailmap: false,
+            options: LoadOptions {
+                path: path.to_path_buf(),
+                sort: SortCommit::Chronological,
+                max_count: None,
+                mailmap: false,
+            },
             primary_branch: None,
             graph_width: None,
             graph_style: GraphStyle::Rounded,
@@ -138,7 +140,6 @@ impl Harness {
             graph_image_width_mode: GraphImageWidthMode::Compact,
             graph_color_set: GraphColorSet::new(&GraphColorConfig::default()),
             image_protocol: ImageProtocol::Kitty,
-            initial_selection: InitialSelection::Latest,
             launch,
         };
         Harness {
@@ -146,7 +147,7 @@ impl Harness {
             loader,
             ctx: test_ctx(),
             ec: EventController::without_terminal(),
-            loads: 0,
+            loads: Default::default(),
             quit: false,
         }
     }
@@ -157,30 +158,26 @@ impl Harness {
     fn run(&mut self, steps: Vec<Vec<Step>>) {
         let mut steps = steps.into_iter().flatten();
         let mut refresh: Refresh = None;
-        let mut repository = None;
-        let mut load = true;
         let (path, ctx, ec, quit) = (&self.path, &self.ctx, &self.ec, &mut self.quit);
+        let loads = &self.loads;
+        let mut repository = self.loader.load(&ctx.running_task).unwrap();
+        loads.set(loads.get() + 1);
         loop {
-            let loaded = if load {
-                self.loads += 1;
-                self.loader
-                    .load(&mut refresh, &mut repository, &ctx.running_task)
-                    .unwrap()
-            } else {
-                repository.as_ref().unwrap()
-            };
             // what the app was before reloading, None once done
             let next = self
                 .loader
-                .with_app(loaded, SIZE, ctx, ec, refresh.take(), |mut app| loop {
-                    if let Some(ret) = settle(&mut app, ec, ctx) {
+                .with_app(&repository, SIZE, ctx, ec, refresh.take(), |mut app| loop {
+                    if let Some(ret) = settle(&mut app, ec, ctx, loads) {
                         return match ret {
                             Ret::Quit => {
                                 *quit = true;
                                 None
                             }
-                            Ret::Refresh(context) => Some((app.into_shell(), context, true)),
-                            Ret::Regraph(context) => Some((app.into_shell(), context, false)),
+                            Ret::Reload {
+                                context,
+                                repository,
+                            } => Some((app.into_shell(), context, Some(repository))),
+                            Ret::Regraph(context) => Some((app.into_shell(), context, None)),
                         };
                     }
                     take_step(steps.next()?, &mut app, path, ec);
@@ -188,27 +185,38 @@ impl Harness {
                 .unwrap();
             match next {
                 None => return,
-                Some((shell, context, reload)) => {
+                Some((shell, context, reloaded)) => {
                     refresh = Some((shell, context));
-                    load = reload;
+                    if let Some(reloaded) = reloaded {
+                        repository = *reloaded;
+                    }
                 }
             }
         }
     }
 }
 
-// Handles the events sent meanwhile, waiting for the git command running in the background;
-// returns what ends or reloads the app.
-fn settle(app: &mut App, ec: &EventController, ctx: &AppContext) -> Option<Ret> {
+// Handles the events sent meanwhile, waiting for the git command and the reload running in the
+// background; returns what ends or reloads the app.
+fn settle(
+    app: &mut App,
+    ec: &EventController,
+    ctx: &AppContext,
+    loads: &std::cell::Cell<usize>,
+) -> Option<Ret> {
     loop {
         app.expire(Instant::now());
         app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
-        let event = if ctx.running_task.borrow().is_some() {
+        let busy = ctx.running_task.lock().is_some() || app.is_reloading() || app.is_loading();
+        let event = if busy {
             ec.recv_timeout(TIMEOUT)
-                .expect("the git command running to finish")
+                .expect("the git command, the reload or the diff loading to finish")
         } else {
             ec.try_recv()?
         };
+        if let AppEvent::Reloaded { .. } = event {
+            loads.set(loads.get() + 1);
+        }
         if let Some(ret) = app.handle_event(event).unwrap() {
             return Some(ret);
         }
@@ -260,6 +268,7 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
 fn launch() -> Launch {
     Launch {
         page: StartPage::Graph,
+        selection: InitialSelection::Latest,
         fetch: false,
     }
 }
@@ -387,6 +396,53 @@ fn test_launch_on_local_changes() {
     harness.run(vec![check(|app| {
         assert!(matches!(app.view, View::LocalChanges(_)));
     })]);
+}
+
+#[test]
+fn test_a_key_after_moving_acts_on_the_diff_moved_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    std::fs::write(path.join("f.txt"), "F\n").unwrap();
+    std::fs::write(path.join("g.txt"), "G\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        check(|app| assert_eq!(local_change_path(app), Some(":/".into()))),
+        // the diff of g.txt loads in the background after j: the keys after it wait for it
+        keys_at_once("j j enter enter space"),
+        check(|app| assert_eq!(local_change_path(app), Some("g.txt".into()))),
+    ]);
+    let staged = git(&path, &["diff", "--cached"]);
+    // the first changed line of g.txt, nothing of f.txt
+    assert!(
+        staged.contains("-g") && !staged.contains("f.txt"),
+        "{staged}"
+    );
+}
+
+#[test]
+fn test_a_key_after_moving_in_the_details_acts_on_the_diff_moved_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // from the root row to f.txt, whose diff loads in the background: enter waits for it
+        keys("4"),
+        keys_at_once("j enter"),
+        check(|app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            assert_eq!(view.focus(), DetailFocus::Pane);
+        }),
+        screen(|text| assert!(!text.contains("Loading…"), "{text}")),
+    ]);
 }
 
 #[test]
@@ -552,7 +608,7 @@ fn test_launch_fetch_shows_what_it_fetched() {
             assert!(notices(app).is_empty());
         }),
     ]);
-    assert_eq!(harness.loads, 2);
+    assert_eq!(harness.loads.get(), 2);
 }
 
 #[test]
@@ -568,7 +624,7 @@ fn test_launch_fetch_bringing_nothing_reloads_nothing() {
         },
     );
     harness.run(vec![wait_for(fetched), tick(), tick()]);
-    assert_eq!(harness.loads, 1);
+    assert_eq!(harness.loads.get(), 1);
 }
 
 #[test]
@@ -595,7 +651,7 @@ fn test_launch_fetch_holds_no_command_back() {
         keys("f"),
         check(|app| {
             assert!(app.shell.dialog.is_some(), "{:?}", notices(app));
-            assert!(app.ctx.running_task.borrow().is_none());
+            assert!(app.ctx.running_task.lock().is_none());
         }),
     ]);
 }
@@ -636,7 +692,25 @@ fn test_reload_waits_for_the_popup_to_close() {
         tick(),
         check(|app| assert!(app.repository.resolve("origin/elsewhere").is_some())),
     ]);
-    assert_eq!(harness.loads, 2);
+    assert_eq!(harness.loads.get(), 2);
+}
+
+#[test]
+fn test_moving_while_reloading_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // j comes while the first reload runs, which the second one makes stale
+        keys_at_once("ctrl-r j ctrl-r"),
+        check(|app| {
+            assert!(!app.is_reloading());
+            let state = app.view.as_list_state().unwrap();
+            assert_eq!(state.cursor().selected(), 1);
+        }),
+    ]);
+    // the first, and both reloads, the stale one dropped
+    assert_eq!(harness.loads.get(), 3);
 }
 
 #[test]
@@ -670,7 +744,7 @@ fn test_reload_failing_keeps_the_app_as_it_was() {
         check(|app| assert_eq!(draft(app), "keep me")),
     ]);
     // the first, the failing one, and once fixed
-    assert_eq!(harness.loads, 3);
+    assert_eq!(harness.loads.get(), 3);
 }
 
 // The keys of the whole app
@@ -939,7 +1013,7 @@ fn test_repository_refuses_changes_while_the_app_runs_a_command() {
     std::fs::write(path.join("f.txt"), "changed\n").unwrap();
     // the app's command running, as the repository sees it, also once reloaded
     let running = |app: &App, on: bool| {
-        *app.ctx.running_task.borrow_mut() = on.then(|| crate::git::RunningTask {
+        *app.ctx.running_task.lock() = on.then(|| crate::git::RunningTask {
             task: crate::git::GitTask {
                 running: "Pushing master".into(),
                 ..Default::default()
@@ -1230,7 +1304,7 @@ fn test_fold_merge() {
         shown(4, 0),
     ]);
     // the graph is drawn again, the repository isn't loaded again
-    assert_eq!(harness.loads, 1);
+    assert_eq!(harness.loads.get(), 1);
 }
 
 #[test]
@@ -1267,7 +1341,7 @@ fn test_fold_merge_with_branch_only() {
         check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
     ]);
     // the branch only view loads the repository again, folding draws the graph again only
-    assert_eq!(harness.loads, 3);
+    assert_eq!(harness.loads.get(), 3);
 }
 
 #[test]
@@ -2026,7 +2100,7 @@ fn test_command_in_the_terminal_reloads_after() {
             assert!(notices(app).is_empty());
         }),
     ]);
-    assert_eq!(harness.loads, 2);
+    assert_eq!(harness.loads.get(), 2);
 }
 
 #[test]
