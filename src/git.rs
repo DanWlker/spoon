@@ -2020,19 +2020,62 @@ fn blame_at(
 }
 
 // See `Repository::file_history_work`: its two walks of the history run side by side.
+// `--follow` only follows a name back in time, so a file renamed after `start` is walked under its
+// name at HEAD, to list the commits from the rename on too; when git doesn't see the rename, or
+// the last commit as of `start` isn't on that walk, it is walked under `path` alone.
 fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHistoryResult {
-    let format = "--format=%x01%H%x00%aI%x00%s";
-    let args = [
-        "log",
-        "--follow",
-        "--name-only",
-        "-z",
-        format,
-        "HEAD",
-        start.as_str(),
-        "--",
-        path,
-    ];
+    let walk = |name: &str| {
+        let format = "--format=%x01%H%x00%aI%x00%s";
+        let args = [
+            "log",
+            "--follow",
+            "--name-only",
+            "-z",
+            format,
+            "HEAD",
+            start.as_str(),
+            "--",
+            name,
+        ];
+        let history: Vec<FileRevision> = git_output(repository, &args)?
+            .split('\x01')
+            .filter_map(|record| {
+                let mut fields = record.split('\0');
+                let (commit, date) = (fields.next()?, fields.next()?);
+                let (subject, path) = (fields.next()?, fields.next()?);
+                Some(FileRevision {
+                    commit: CommitHash::from(commit),
+                    date: parse_iso_date(date),
+                    subject: subject.into(),
+                    path: path.trim_start_matches('\n').into(),
+                })
+            })
+            .collect();
+        Ok::<_, String>(history)
+    };
+    // the file's name at HEAD, when it isn't there under `path`
+    let renamed = || {
+        let head_file = format!("HEAD:{path}");
+        git_output(repository, &["cat-file", "-e", &head_file]).err()?;
+        let args = [
+            "diff",
+            "-M",
+            "--diff-filter=R",
+            "--name-status",
+            "-z",
+            start.as_str(),
+            "HEAD",
+        ];
+        let out = git_output(repository, &args).ok()?;
+        // "R<score>", the old path and the new one, of each rename
+        let fields: Vec<&str> = out.split('\0').collect();
+        fields
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .find(|[_, old, _]| *old == path)
+            .map(|[_, _, new]| new.to_string())
+    };
     // walked as the history is, which leaves out merges
     let last_args = [
         "log",
@@ -2043,33 +2086,29 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
         "--",
         path,
     ];
-    let (out, last) = std::thread::scope(|scope| {
+    let (renamed, history, last) = std::thread::scope(|scope| {
         let last = scope.spawn(|| git_output(repository, &last_args));
-        let out = git_output(repository, &args);
+        let renamed = renamed();
+        let history = walk(renamed.as_deref().unwrap_or(path));
         (
-            out,
+            renamed,
+            history,
             last.join().unwrap_or_else(|_| Err("git log failed".into())),
         )
     });
-    let history: Vec<FileRevision> = out?
-        .split('\x01')
-        .filter_map(|record| {
-            let mut fields = record.split('\0');
-            let (commit, date) = (fields.next()?, fields.next()?);
-            let (subject, path) = (fields.next()?, fields.next()?);
-            Some(FileRevision {
-                commit: CommitHash::from(commit),
-                date: parse_iso_date(date),
-                subject: subject.into(),
-                path: path.trim_start_matches('\n').into(),
-            })
-        })
-        .collect();
     let last = last?;
-    let index = history
-        .iter()
-        .position(|r| r.commit.as_str() == last.trim())
-        .ok_or_else(|| format!("{path} has no history"))?;
+    let position = |history: &[FileRevision]| {
+        history
+            .iter()
+            .position(|r| r.commit.as_str() == last.trim())
+    };
+    let mut history = history?;
+    let mut index = position(&history);
+    if index.is_none() && renamed.is_some() {
+        history = walk(path)?;
+        index = position(&history);
+    }
+    let index = index.ok_or_else(|| format!("{path} has no history"))?;
     Ok((history, index))
 }
 
@@ -3307,6 +3346,50 @@ mod tests {
         let (history, index) = repository.file_history(&head, "f").unwrap();
         assert!(!history.is_empty());
         assert!(index < history.len());
+    }
+
+    #[test]
+    fn test_file_history_from_before_a_rename() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        // a is renamed to b, x to y rewritten, which git can't tell from a new file
+        std::fs::write(path.join("a"), "one\ntwo\nthree\nfour\n").unwrap();
+        std::fs::write(path.join("x"), "x\n").unwrap();
+        repo.add(&["a", "x"]);
+        repo.commit("c1", "2024-01-01");
+        std::fs::write(path.join("a"), "one\ntwo\nthree\nFOUR\n").unwrap();
+        std::fs::write(path.join("x"), "X\n").unwrap();
+        repo.add(&["a", "x"]);
+        repo.commit("c2", "2024-01-02");
+        let c2 = CommitHash::from(repo.rev_parse_head().as_str());
+        git(path, &["mv", "a", "b"]);
+        git(path, &["mv", "x", "y"]);
+        std::fs::write(path.join("y"), "nothing\nalike\n").unwrap();
+        repo.add(&["y"]);
+        repo.commit("c3", "2024-01-03");
+        std::fs::write(path.join("b"), "ONE\ntwo\nthree\nFOUR\n").unwrap();
+        repo.add(&["b"]);
+        repo.commit("c4", "2024-01-04");
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let shown = |history: &[FileRevision]| -> Vec<String> {
+            history
+                .iter()
+                .map(|r| format!("{} {}", r.subject, r.path))
+                .collect()
+        };
+        // the commits after the rename too, each under the name it had then
+        let (history, index) = repository.file_history(&c2, "a").unwrap();
+        assert_eq!(shown(&history), ["c4 b", "c3 b", "c2 a", "c1 a"]);
+        assert_eq!(index, 2);
+        // the rename not seen: under the name as of c2 alone
+        let (history, index) = repository.file_history(&c2, "x").unwrap();
+        assert_eq!(shown(&history), ["c3 x", "c2 x", "c1 x"]);
+        assert_eq!(index, 1);
     }
 
     #[test]
