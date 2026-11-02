@@ -26,9 +26,10 @@ mod mailmap_tests;
 #[cfg(test)]
 mod test_support;
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
 use clap::{Parser, ValueEnum};
+use ratatui::style::Stylize;
 use serde::Deserialize;
 
 use crate::{
@@ -254,50 +255,55 @@ fn main() -> Result<()> {
     });
 
     let ec = event::EventController::init();
-    let mut refresh = None;
+    let mut terminal = ratatui::init();
+    // gives the terminal back however this ends, an error loading the repository included
+    let terminal_guard = TerminalGuard;
+    // the focus coming back reloads what changed meanwhile, like lazygit; the mouse drags the
+    // borders of the panels
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::EnableFocusChange,
+        ratatui::crossterm::event::EnableMouseCapture
+    );
+    let Some((repository, layout)) = loader.load_showing(&ctx, &ec, &mut terminal)? else {
+        return Ok(());
+    };
     // loaded again in the background by the app, which hands it over, see `Ret::Reload`
-    let mut repository = loader.load(&ctx.running_task)?;
-    let mut terminal_guard = None;
-    let mut terminal = None;
+    let mut repository = Arc::new(repository);
+    ec.set_refresher(refresher::spawn(
+        ec.sender(),
+        repository.path().to_path_buf(),
+        repository.git_dir().to_path_buf(),
+        REFS_INTERVAL,
+        FILES_INTERVAL,
+    ));
+    let mut restart = Restart {
+        before: None,
+        layout: Some(layout),
+    };
 
     let ret = loop {
-        if terminal.is_none() {
-            terminal = Some(ratatui::init());
-            terminal_guard = Some(TerminalGuard);
-            // the focus coming back reloads what changed meanwhile, like lazygit; the mouse drags
-            // the borders of the panels
-            let _ = ratatui::crossterm::execute!(
-                std::io::stdout(),
-                ratatui::crossterm::event::EnableFocusChange,
-                ratatui::crossterm::event::EnableMouseCapture
-            );
-            ec.set_refresher(refresher::spawn(
-                ec.sender(),
-                repository.path().to_path_buf(),
-                repository.git_dir().to_path_buf(),
-                REFS_INTERVAL,
-                FILES_INTERVAL,
-            ));
-        }
-
-        let terminal = terminal.as_mut().unwrap();
         let size = ratatui::crossterm::terminal::size()?;
-        let ran = loader.with_app(&repository, size, &ctx, &ec, refresh.take(), |mut app| {
-            app.run(terminal).map(|ret| match ret {
+        let ran = loader.with_app(&repository, size, &ctx, &ec, restart, |mut app| {
+            app.run(&mut terminal).map(|ret| match ret {
                 Ret::Quit => None,
                 Ret::Reload {
                     context,
                     repository,
-                } => Some((app.into_shell(), context, Some(repository))),
-                Ret::Regraph(context) => Some((app.into_shell(), context, None)),
+                    layout,
+                } => Some((app.into_shell(), context, layout, Some(repository))),
+                Ret::Regraph { context, layout } => Some((app.into_shell(), context, layout, None)),
             })
         });
         match ran {
             Ok(Ok(None)) => break Ok(()),
-            Ok(Ok(Some((shell, context, reloaded)))) => {
-                refresh = Some((shell, context));
+            Ok(Ok(Some((shell, context, layout, reloaded)))) => {
+                restart = Restart {
+                    before: Some((shell, context)),
+                    layout: Some(*layout),
+                };
                 if let Some(reloaded) = reloaded {
-                    repository = *reloaded;
+                    repository = Arc::new(*reloaded);
                 }
             }
             Ok(Err(e)) => break Err(e.into()),
@@ -309,8 +315,12 @@ fn main() -> Result<()> {
     ret
 }
 
-// The app as it was before the repository was reloaded: its shell, and what its view showed.
-type Refresh = Option<(app::AppShell, Box<view::RefreshViewContext>)>;
+// How the app is made again: as it was before, its shell and what its view showed (None when it
+// starts), with the graph laid out on the thread loading the repository or folding a merge.
+struct Restart {
+    before: Option<(app::AppShell, Box<view::RefreshViewContext>)>,
+    layout: Option<graph::GraphLayout>,
+}
 
 // What the repository and its graph are loaded with, the same on each reload; the tests load
 // with it too, see `tests/app.rs`.
@@ -326,34 +336,78 @@ struct Loader {
 }
 
 impl Loader {
-    // Loads the repository the app starts with; it reloads it in the background after.
-    fn load(&self, running: &git::SharedTask) -> Result<git::Repository> {
-        match self.options.load(None, running.clone())? {
-            git::Loaded::Repository(repository) | git::Loaded::RefsGone(repository) => {
-                Ok(repository)
+    // Loads the repository the app starts with, and lays its graph out, as work to run on
+    // another thread; the app reloads it in the background after.
+    fn load_work(
+        &self,
+        running: &git::SharedTask,
+    ) -> impl FnOnce() -> std::result::Result<(git::Repository, graph::GraphLayout), String> + Send
+    {
+        let (options, running) = (self.options.clone(), running.clone());
+        move || {
+            let (git::Loaded::Repository(repository) | git::Loaded::RefsGone(repository)) =
+                options.load(None, running)?;
+            let primary_branch = options.primary_branch.as_deref();
+            let layout = graph::GraphLayout::calc(&repository, primary_branch, &Default::default());
+            Ok((repository, layout))
+        }
+    }
+
+    // `load_work` on another thread, saying so on the screen meanwhile; None when quit before.
+    fn load_showing(
+        &self,
+        ctx: &app::AppContext,
+        ec: &event::EventController,
+        terminal: &mut ratatui::DefaultTerminal,
+    ) -> Result<Option<(git::Repository, graph::GraphLayout)>> {
+        let job = background::Job::spawn(ec.sender(), self.load_work(&ctx.running_task));
+        let path = std::fs::canonicalize(&self.options.path).unwrap_or(self.options.path.clone());
+        let message = format!("Loading {}…", path.display());
+        loop {
+            if let Some(loaded) = job.try_take() {
+                return Ok(Some(loaded?));
+            }
+            terminal.draw(|f| {
+                let line = ratatui::text::Line::raw(message.as_str()).fg(ctx.color_theme.muted_fg);
+                let area = f.area();
+                let row =
+                    ratatui::layout::Rect::new(area.x, area.y + area.height / 2, area.width, 1);
+                f.render_widget(ratatui::widgets::Paragraph::new(line).centered(), row);
+            })?;
+            if let event::AppEvent::Key(key) = ec.recv() {
+                let quits = matches!(
+                    ctx.keybind.event_in(keybind::Scope::Global, &key),
+                    Some(event::UserEvent::Quit | event::UserEvent::ForceQuit)
+                );
+                if quits {
+                    return Ok(None);
+                }
             }
         }
     }
 
     // Runs `run` on the app of `repository`, its graph laid out for a terminal of `size`
-    // (columns, rows), as it was before when reloaded (`refresh`).
+    // (columns, rows), as it was before when made again (`restart`).
     fn with_app<R>(
         &self,
-        repository: &git::Repository,
+        repository: &Arc<git::Repository>,
         size: (u16, u16),
         ctx: &Rc<app::AppContext>,
         ec: &event::EventController,
-        refresh: Refresh,
+        restart: Restart,
         run: impl FnOnce(App) -> R,
     ) -> Result<R> {
-        let mut refresh = refresh;
+        let Restart {
+            before: refresh,
+            layout,
+        } = restart;
         let folded = refresh
             .as_ref()
             .map(|(shell, _)| shell.folded_merges().clone())
             .unwrap_or_default();
         // laid out on the thread reloading it, unless a merge was folded or unfolded meanwhile
         let primary_branch = self.options.primary_branch.as_deref();
-        let graph = match refresh.as_mut().and_then(|(shell, _)| shell.take_layout()) {
+        let graph = match layout {
             Some(layout) if layout.folded == folded => graph::Graph::of(repository, layout),
             _ => graph::calc_graph(repository, primary_branch, &folded),
         };

@@ -11,13 +11,14 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
+    background::Job,
     browse::{LinkAction, PageLink},
     color::ColorTheme,
-    event::{AppEvent, UserEvent},
+    event::{AppEvent, Sender, UserEvent},
     git::{
         parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
-        Conflict, FileChange, GitArgs, GitCommand, GitTask, LocalChangeFile, NamedRef, Operation,
-        RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
+        Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask, LocalChangeFile,
+        NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
     widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
@@ -603,6 +604,28 @@ pub enum DialogOutcome {
     Error(String),
 }
 
+// The conflicts a command runs into, looked for once its popup opens, see `GitDialog::conflicting`.
+#[derive(Default)]
+enum Conflicts {
+    #[default]
+    None,
+    Unchecked(ConflictWork),
+    Checking(Job<Option<Conflict>>),
+    // the warning
+    Found(String),
+}
+
+impl std::fmt::Debug for Conflicts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Conflicts::None => write!(f, "None"),
+            Conflicts::Unchecked(_) => write!(f, "Unchecked"),
+            Conflicts::Checking(_) => write!(f, "Checking"),
+            Conflicts::Found(warning) => write!(f, "Found({warning:?})"),
+        }
+    }
+}
+
 // The popup confirming a git command, with its options: fetch, pull and push, and the commands
 // on the commit graph like merge or checkout.
 #[derive(Debug)]
@@ -619,8 +642,8 @@ pub struct GitDialog {
     selected: usize,
     // typing into the selected text field
     editing: bool,
-    // the conflicts git would stop at, shown in the warning color
-    conflicts: Option<String>,
+    // the conflicts git would stop at, shown in the warning color once found
+    conflicts: Conflicts,
     // the remote branch already having the commits it rewrites, see `GitDialog::pushed`
     pushed: Option<String>,
 }
@@ -642,7 +665,7 @@ impl GitDialog {
             selected: 0,
             editing: false,
             trigger: None,
-            conflicts: None,
+            conflicts: Conflicts::None,
             pushed: None,
         }
     }
@@ -756,28 +779,58 @@ impl GitDialog {
         self.trigger
     }
 
-    // Warns of the conflicts the command runs into, see `Repository::first_conflict`, with the
-    // commit it stops at for those applying several commits, all but merging.
-    pub fn conflicting(mut self, conflict: Option<Conflict>) -> Self {
-        let at = !matches!(self.kind, DialogKind::Merge { .. });
-        self.conflicts = conflict.map(|conflict| {
-            let (commit, files) = match conflict {
-                Conflict::At(commit, files) => (commit, files),
-                Conflict::Unchecked(n) => {
-                    return format!(
+    // Warns of the conflicts the command runs into, found by `work` once the popup opens, see
+    // `check_conflicts`.
+    pub fn conflicting(mut self, work: ConflictWork) -> Self {
+        self.conflicts = Conflicts::Unchecked(work);
+        self
+    }
+
+    // Starts looking for the conflicts on another thread, said in the popup meanwhile; `tx` wakes
+    // the app up to show them, see `poll_conflicts`.
+    pub fn check_conflicts(&mut self, tx: Sender) {
+        if let Conflicts::Unchecked(_) = self.conflicts {
+            let Conflicts::Unchecked(work) = std::mem::take(&mut self.conflicts) else {
+                unreachable!("checked above")
+            };
+            self.conflicts = Conflicts::Checking(Job::spawn(tx, work));
+        }
+    }
+
+    // Shows the conflicts once found.
+    pub fn poll_conflicts(&mut self) {
+        if let Conflicts::Checking(job) = &self.conflicts {
+            if let Some(conflict) = job.try_take() {
+                self.conflicts = match conflict {
+                    Some(conflict) => Conflicts::Found(self.conflict_warning(conflict)),
+                    None => Conflicts::None,
+                };
+            }
+        }
+    }
+
+    // The warning of `conflict`, with the commit it stops at for the commands applying several
+    // commits, all but merging.
+    fn conflict_warning(&self, conflict: Conflict) -> String {
+        let (commit, files) = match conflict {
+            Conflict::At(commit, files) => (commit, files),
+            Conflict::Unchecked(n) => {
+                return format!(
                     "No conflicts in the first {MAX_CONFLICT_STEPS} commits, {n} more not checked."
                 )
-                }
-            };
-            let names = capped(files, 3).join(", ");
-            let at = if at {
-                format!(" at {}", shorten_hash(&commit))
-            } else {
-                String::new()
-            };
-            format!("Conflicts{at} in {names}.")
-        });
-        self
+            }
+        };
+        let names = capped(files, 3).join(", ");
+        let at = if matches!(self.kind, DialogKind::Merge { .. }) {
+            String::new()
+        } else {
+            format!(" at {}", shorten_hash(&commit))
+        };
+        format!("Conflicts{at} in {names}.")
+    }
+
+    pub fn is_checking_conflicts(&self) -> bool {
+        matches!(self.conflicts, Conflicts::Checking(_))
     }
 
     pub fn remote(action: RemoteAction, info: RemoteInfo) -> Result<Self, String> {
@@ -2732,11 +2785,17 @@ impl Widget for GitDialogWidget<'_> {
         if !dialog.fields.is_empty() {
             lines.push(Line::raw(""));
         }
-        // a line for each
+        // a line for each, after the conflicts or that they are being looked for
+        if dialog.is_checking_conflicts() {
+            lines.push(Line::raw("Checking for conflicts…").fg(theme.muted_fg));
+        }
+        let conflicts = match &dialog.conflicts {
+            Conflicts::Found(warning) => Some(warning),
+            _ => None,
+        };
         let warning = dialog.warning();
-        for warning in dialog
-            .conflicts
-            .iter()
+        for warning in conflicts
+            .into_iter()
             .chain(&dialog.pushed)
             .chain(&warning)
             .flat_map(|w| w.lines())

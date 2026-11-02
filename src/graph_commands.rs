@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{
     event::UserEvent,
-    git::{CommitHash, Conflict, NamedRef, Ref, RemoteBranch, Repository, Rev},
+    git::{CommitHash, ConflictWork, NamedRef, Ref, RemoteBranch, Repository, Rev},
     view::Compare,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
@@ -93,7 +93,7 @@ pub fn graph_command(
                 .iter()
                 .map(|h| (Some(format!("{}^", h.as_str())), h.as_str().to_string()))
                 .collect();
-            let conflict = repository.first_conflict("HEAD", &steps);
+            let conflict = repository.first_conflict_work("HEAD", steps);
             let commits = commits
                 .iter()
                 .map(|h| dialog_commit(repository, h))
@@ -108,7 +108,7 @@ pub fn graph_command(
                 .iter()
                 .map(|h| (Some(h.as_str().to_string()), format!("{}^", h.as_str())))
                 .collect();
-            let conflict = repository.first_conflict("HEAD", &steps);
+            let conflict = repository.first_conflict_work("HEAD", steps);
             let commits = commits
                 .iter()
                 .map(|h| dialog_commit(repository, h))
@@ -285,15 +285,15 @@ fn sort_newest_first(repository: &Repository, mut hashes: Vec<CommitHash>) -> Ve
 
 // The conflicts rebasing the current branch onto `onto` stops at: the commits on it and not on
 // `onto`, without those already there, like git rebase.
-fn rebase_conflict(repository: &Repository, onto: &str) -> Option<Conflict> {
+fn rebase_conflict(repository: &Repository, onto: &str) -> ConflictWork {
     // with HEAD, which git takes when the end is left out
     let range = format!("{onto}...");
-    repository.replay_conflict(onto, &["--right-only", "--cherry-pick", &range], &[])
+    repository.replay_conflict_work(onto, &["--right-only", "--cherry-pick", &range], &[])
 }
 
 // The conflicts merging `source` into HEAD runs into.
-fn merge_conflict(repository: &Repository, source: &str) -> Option<Conflict> {
-    repository.first_conflict("HEAD", &[(None, source.to_string())])
+fn merge_conflict(repository: &Repository, source: &str) -> ConflictWork {
+    repository.first_conflict_work("HEAD", vec![(None, source.to_string())])
 }
 
 // The branches at the commit to check out, and the commit itself.
@@ -435,14 +435,17 @@ fn drop_commits(
         .collect();
     let base = base.map(|h| h.as_str().to_string());
     // the commits after them are replayed without them; not checked from the root
-    let conflict = base.as_ref().and_then(|base| {
+    let conflict = base.as_ref().map(|base| {
         let range = format!("{base}..");
-        repository.replay_conflict(base, &[&range], &dropped)
+        repository.replay_conflict_work(base, &[&range], &dropped)
     });
     let pushed = repository.upstream_containing(oldest.as_str());
     let auto_stash = repository.remote_info().rebase_auto_stash;
-    let dialog = GitDialog::drop(branch, commits, base, auto_stash, behind_head);
-    Ok(dialog.conflicting(conflict).pushed(pushed))
+    let dialog = GitDialog::drop(branch, commits, base, auto_stash, behind_head).pushed(pushed);
+    Ok(match conflict {
+        Some(conflict) => dialog.conflicting(conflict),
+        None => dialog,
+    })
 }
 
 // Amends a commit on the local changes page, with its changes and message there: the last one
@@ -510,7 +513,7 @@ fn compare(
 mod tests {
     use super::*;
     use crate::{
-        git::{AfterTask, GitCommand, GitTask, SortCommit},
+        git::{AfterTask, Conflict, GitCommand, GitTask, SortCommit},
         test_support::git::GitRepository,
     };
 
@@ -561,33 +564,32 @@ mod tests {
 
         // on master: merging feature, or rebasing onto it, conflicts in f, at f1 when rebasing
         assert_eq!(
-            merge_conflict(&repository, "feature"),
+            merge_conflict(&repository, "feature")(),
             Some(Conflict::At("feature".into(), vec!["f".into()]))
         );
         assert_eq!(
-            rebase_conflict(&repository, "feature"),
+            rebase_conflict(&repository, "feature")(),
             Some(Conflict::At(rev("master~1"), vec!["f".into()]))
         );
         // reverting m1 or m2 is clean, no later commit changed their files
-        let revert =
-            |c: &str| repository.first_conflict("HEAD", &[(Some(rev(c)), rev(&format!("{c}^")))]);
+        let first_conflict =
+            |steps: Vec<(Option<String>, String)>| repository.first_conflict_work("HEAD", steps)();
+        let revert = |c: &str| first_conflict(vec![(Some(rev(c)), rev(&format!("{c}^")))]);
         assert!(revert("master~1").is_none());
         assert!(revert("master").is_none());
         // dropping m1 replays m2 on base, which is clean; cherry-picking f1 is not
         let m1 = CommitHash::from(rev("master~1").as_str());
-        assert!(repository
-            .replay_conflict(&rev("master~2"), &["master~2..HEAD"], &[m1])
-            .is_none());
+        assert!(
+            repository.replay_conflict_work(&rev("master~2"), &["master~2..HEAD"], &[m1])()
+                .is_none()
+        );
         let f1 = rev("feature~1");
-        let pick = repository.first_conflict("HEAD", &[(Some(format!("{f1}^")), f1.clone())]);
+        let pick = first_conflict(vec![(Some(format!("{f1}^")), f1.clone())]);
         assert_eq!(pick, Some(Conflict::At(f1, vec!["f".into()])));
         // past the steps checked, it says how many were not
         let clean = (Some(rev("master~1")), rev("master"));
         let steps = vec![clean; crate::git::MAX_CONFLICT_STEPS + 1];
-        assert_eq!(
-            repository.first_conflict("HEAD", &steps),
-            Some(Conflict::Unchecked(1))
-        );
+        assert_eq!(first_conflict(steps), Some(Conflict::Unchecked(1)));
     }
 
     #[test]

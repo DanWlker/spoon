@@ -241,7 +241,7 @@ type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 // out by `submodule_repository` stay valid while more are loaded. The map boxes its values, so
 // their addresses don't change.
 #[derive(Default)]
-struct SubmoduleRepositories(elsa::FrozenMap<String, Box<Repository>>);
+struct SubmoduleRepositories(elsa::sync::FrozenMap<String, Box<Repository>>);
 
 impl std::fmt::Debug for SubmoduleRepositories {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -314,9 +314,9 @@ pub struct Repository {
     git_dir: PathBuf,
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
-    loaded_local_changes: std::cell::RefCell<Option<LocalChanges>>,
+    loaded_local_changes: Mutex<Option<LocalChanges>>,
     // their count once the page took them, for the page bar not to run `git status` again
-    taken_count: std::cell::Cell<Option<usize>>,
+    taken_count: Mutex<Option<usize>>,
     // the git command the app runs in the background, shared with it: the repository refuses to
     // be changed meanwhile, see `run`
     running: SharedTask,
@@ -382,7 +382,7 @@ impl Repository {
             repository.running = running;
             repository.remotes = remotes.join().unwrap_or_default();
             repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
-            repository.loaded_local_changes = local_changes.join().ok().into();
+            repository.loaded_local_changes = Mutex::new(local_changes.join().ok());
             repository.refs_snapshot = refs_snapshot.join().unwrap_or_default();
             repository.operation = operation.join().unwrap_or_default();
             repository.tracking = tracking.join().unwrap_or_default();
@@ -585,11 +585,20 @@ impl Repository {
 
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
-        let changes = self
-            .commit_base(commit_hash)
-            .map(|base| diff_summary(&self.path, &base, commit_hash.as_str()))
-            .unwrap_or_default();
-        (commit, changes)
+        (commit, self.commit_changes_work(commit_hash)())
+    }
+
+    // The files a commit changed, see `commit_detail`, as work to run on another thread.
+    pub fn commit_changes_work(
+        &self,
+        commit_hash: &CommitHash,
+    ) -> impl FnOnce() -> Vec<FileChange> + Send + 'static {
+        let base = self.commit_base(commit_hash);
+        let (path, target) = (self.path.clone(), commit_hash.as_str().to_string());
+        move || {
+            base.map(|base| diff_summary(&path, &base, &target))
+                .unwrap_or_default()
+        }
     }
 
     // What a commit changed is compared to: its first parent, or the empty tree for a root commit.
@@ -612,8 +621,9 @@ impl Repository {
 
     // The number of local changes, as they were when the repository was loaded.
     pub fn loaded_local_change_count(&self) -> usize {
-        let mut loaded = self.loaded_local_changes.borrow_mut();
-        match (loaded.as_ref(), self.taken_count.get()) {
+        let mut loaded = lock(&self.loaded_local_changes);
+        let taken = *lock(&self.taken_count);
+        match (loaded.as_ref(), taken) {
             (Some(changes), _) => changes.count(),
             (None, Some(count)) => count,
             (None, None) => loaded.insert(self.local_changes()).count(),
@@ -626,7 +636,7 @@ impl Repository {
     // show them; returns how many there are.
     pub fn set_local_changes(&self, changes: LocalChanges) -> usize {
         let count = changes.count();
-        *self.loaded_local_changes.borrow_mut() = Some(changes);
+        *lock(&self.loaded_local_changes) = Some(changes);
         count
     }
 
@@ -641,11 +651,9 @@ impl Repository {
     }
 
     pub fn take_loaded_local_changes(&self) -> LocalChanges {
-        let changes = self
-            .loaded_local_changes
-            .take()
-            .unwrap_or_else(|| self.local_changes());
-        self.taken_count.set(Some(changes.count()));
+        let loaded = lock(&self.loaded_local_changes).take();
+        let changes = loaded.unwrap_or_else(|| self.local_changes());
+        *lock(&self.taken_count) = Some(changes.count());
         changes
     }
 
@@ -853,79 +861,64 @@ impl Repository {
     // The first of `steps` that conflicts, applied one after another on `start` in memory with
     // `git merge-tree`, like a rebase or a cherry-pick does: each is (base, commit), the changes
     // from base to commit, or a merge of commit when base is None. None when all apply, or git
-    // can't tell (git before 2.38).
-    pub fn first_conflict(
+    // can't tell (git before 2.38). As work to run on another thread, the popup warning of it
+    // opening meanwhile.
+    pub fn first_conflict_work(
         &self,
         start: &str,
-        steps: &[(Option<String>, String)],
-    ) -> Option<Conflict> {
-        let mut tree = start.to_string();
-        // shortcut: checks the first 100 steps only, so a popup opens quickly; move it to a
-        // background thread if long rebases are common
-        for (base, commit) in steps.iter().take(MAX_CONFLICT_STEPS) {
-            let base = base.as_ref().map(|b| format!("--merge-base={b}"));
-            let mut args = vec!["merge-tree", "--write-tree", "--name-only", "--no-messages"];
-            args.extend(base.as_deref());
-            args.extend([tree.as_str(), commit.as_str()]);
-            let (status, out) = git_output_with_status(&self.path, &args)?;
-            let mut lines = out.lines();
-            let result = lines.next()?.to_string();
-            match status {
-                Some(0) => tree = result,
-                Some(1) => {
-                    let files = lines.take_while(|l| !l.is_empty()).map(String::from);
-                    return Some(Conflict::At(commit.clone(), files.collect()));
-                }
-                _ => return None,
-            }
-        }
-        let unchecked = steps.len().saturating_sub(MAX_CONFLICT_STEPS);
-        (unchecked > 0).then_some(Conflict::Unchecked(unchecked))
+        steps: Vec<(Option<String>, String)>,
+    ) -> ConflictWork {
+        let (path, start) = (self.path.clone(), start.to_string());
+        Box::new(move || first_conflict_at(&path, &start, &steps))
     }
 
     // The first conflict replaying the commits of `range` (rev-list arguments) on `onto`, like a
-    // rebase, without the merges and the commits in `skip`, see `first_conflict`.
-    pub fn replay_conflict(
+    // rebase, without the merges and the commits in `skip`, see `first_conflict_work`.
+    pub fn replay_conflict_work(
         &self,
         onto: &str,
         range: &[&str],
         skip: &[CommitHash],
-    ) -> Option<Conflict> {
-        let mut args = vec!["rev-list", "--reverse", "--no-merges"];
-        args.extend(range);
-        let out = git_output(&self.path, &args).ok()?;
-        let steps: Vec<_> = out
-            .lines()
-            .filter(|c| !skip.iter().any(|s| s.as_str() == *c))
-            .map(|c| (Some(format!("{c}^")), c.to_string()))
-            .collect();
-        self.first_conflict(onto, &steps)
+    ) -> ConflictWork {
+        let (path, onto) = (self.path.clone(), onto.to_string());
+        let range: Vec<String> = range.iter().map(|r| r.to_string()).collect();
+        let skip = skip.to_vec();
+        Box::new(move || {
+            let mut args = vec!["rev-list", "--reverse", "--no-merges"];
+            args.extend(range.iter().map(String::as_str));
+            let out = git_output(&path, &args).ok()?;
+            let steps: Vec<_> = out
+                .lines()
+                .filter(|c| !skip.iter().any(|s| s.as_str() == *c))
+                .map(|c| (Some(format!("{c}^")), c.to_string()))
+                .collect();
+            first_conflict_at(&path, &onto, &steps)
+        })
     }
 
-    // The contents of a file at a commit.
-    pub fn commit_file_content(
+    // The contents of a file at a commit, as work to run on another thread.
+    pub fn commit_file_content_work(
         &self,
         commit_hash: &CommitHash,
         path: &str,
-    ) -> std::result::Result<Vec<u8>, String> {
+    ) -> impl FnOnce() -> std::result::Result<Vec<u8>, String> + Send + 'static {
         let object = format!("{}:{path}", commit_hash.as_str());
-        git_output_bytes(&self.path, &["cat-file", "blob", &object])
+        let repository = self.path.clone();
+        move || git_output_bytes(&repository, &["cat-file", "blob", &object])
+    }
+
+    pub fn commit_tree(&self, commit_hash: &CommitHash) -> CommitTree {
+        self.commit_tree_work(commit_hash)()
     }
 
     // All file paths in the tree of a commit, and those of them that are gitlinks (submodules),
-    // from their modes, in one listing.
-    pub fn commit_tree(&self, commit_hash: &CommitHash) -> (Vec<String>, FxHashSet<String>) {
-        let out = git_output(&self.path, &["ls-tree", "-r", "-z", commit_hash.as_str()])
-            .unwrap_or_default();
-        let mut paths = Vec::new();
-        let mut gitlinks = FxHashSet::default();
-        for (meta, path) in out.split('\0').filter_map(|entry| entry.split_once('\t')) {
-            if meta.starts_with("160000 ") {
-                gitlinks.insert(path.to_string());
-            }
-            paths.push(path.to_string());
-        }
-        (paths, gitlinks)
+    // from their modes, in one listing; as work to run on another thread.
+    pub fn commit_tree_work(
+        &self,
+        commit_hash: &CommitHash,
+    ) -> impl FnOnce() -> CommitTree + Send + 'static {
+        let (repository, commit) = (self.path.clone(), commit_hash.as_str().to_string());
+        move || commit_tree_at(&repository, &commit)
     }
 
     // The paths among `paths` that are gitlinks (submodules) in the tree of a commit, from their
@@ -955,13 +948,15 @@ impl Repository {
             .collect()
     }
 
-    // Who last changed each line of the file at `path` as of the commit, see `Blame`.
-    pub fn blame(
+    // Who last changed each line of the file at `path` as of the commit, see `Blame`, as work to
+    // run on another thread.
+    pub fn blame_work(
         &self,
         commit_hash: &CommitHash,
         path: &str,
-    ) -> std::result::Result<Blame, String> {
-        blame_at(&self.path, commit_hash, path)
+    ) -> impl FnOnce() -> std::result::Result<Blame, String> + Send + 'static {
+        let (repository, commit, path) = (self.path.clone(), commit_hash.clone(), path.to_string());
+        move || blame_at(&repository, &commit, &path)
     }
 
     #[cfg(test)]
@@ -1047,21 +1042,55 @@ impl Repository {
     // pair of recorded commits (`from..to`), then kept: the parent owns it for the rest of this
     // repository's life, so the reference a page holds stays valid, and it all goes on reload.
     // None when `from..to` has no commits (equal, or `to` behind `from`).
+    #[cfg(test)]
     pub fn submodule_repository(
         &self,
         path: &str,
         from: &str,
         to: &str,
     ) -> std::result::Result<Option<&Repository>, String> {
-        let key = format!("{path}\0{from}..{to}");
-        if let Some(repository) = self.submodule_repositories.get(&key) {
+        if let Some(repository) = self.loaded_submodule_repository(path, from, to) {
             return Ok(Some(repository));
         }
+        let loaded = self.submodule_repository_work(path, from, to)()?;
+        Ok(loaded.map(|repository| self.keep_submodule_repository(path, from, to, repository)))
+    }
+
+    // The submodule's repository of `from..to` when loaded already, see `submodule_repository`.
+    pub fn loaded_submodule_repository(
+        &self,
+        path: &str,
+        from: &str,
+        to: &str,
+    ) -> Option<&Repository> {
+        self.submodule_repositories
+            .get(&format!("{path}\0{from}..{to}"))
+    }
+
+    // Loads the submodule's repository of `from..to` on another thread, to keep with
+    // `keep_submodule_repository`; None when it has no commits.
+    pub fn submodule_repository_work(
+        &self,
+        path: &str,
+        from: &str,
+        to: &str,
+    ) -> impl FnOnce() -> std::result::Result<Option<Repository>, String> + Send + 'static {
         let submodule = self.path.join(path);
         let range = format!("{from}..{to}");
-        let repository =
-            Repository::load_graph(&submodule, &[range]).map_err(|err| err.to_string())?;
-        Ok(repository.map(|repository| self.submodule_repositories.insert(key, repository)))
+        move || Repository::load_graph(&submodule, &[range]).map_err(|err| err.to_string())
+    }
+
+    // Keeps the submodule's repository of `from..to` loaded on another thread, see
+    // `submodule_repository`.
+    pub fn keep_submodule_repository(
+        &self,
+        path: &str,
+        from: &str,
+        to: &str,
+        repository: Repository,
+    ) -> &Repository {
+        let key = format!("{path}\0{from}..{to}");
+        self.submodule_repositories.insert(key, repository)
     }
 
     // The gitlink (commit) the index records for the submodule at `path`.
@@ -1957,6 +1986,23 @@ fn load_remotes(path: &Path) -> Vec<String> {
 }
 
 // The commit checked out now, see `Repository::head_commit` for the one loaded.
+// All file paths in the tree of a commit, and those of them that are gitlinks.
+pub type CommitTree = (Vec<String>, FxHashSet<String>);
+
+// See `Repository::commit_tree_work`.
+fn commit_tree_at(repository: &Path, commit: &str) -> CommitTree {
+    let out = git_output(repository, &["ls-tree", "-r", "-z", commit]).unwrap_or_default();
+    let mut paths = Vec::new();
+    let mut gitlinks = FxHashSet::default();
+    for (meta, path) in out.split('\0').filter_map(|entry| entry.split_once('\t')) {
+        if meta.starts_with("160000 ") {
+            gitlinks.insert(path.to_string());
+        }
+        paths.push(path.to_string());
+    }
+    (paths, gitlinks)
+}
+
 // The commits changing a file and the one last changing it, see `Repository::file_history_work`.
 pub type FileHistoryResult = std::result::Result<(Vec<FileRevision>, usize), String>;
 
@@ -2654,6 +2700,13 @@ impl std::fmt::Display for GitArgs {
     }
 }
 
+// A lock held only while read or set; a panic while holding it left a value that is still whole.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // The app's git command running in the background, shared with the repositories it loads, which
 // load on other threads, see `RunningTask`.
 #[derive(Debug, Default, Clone)]
@@ -2662,10 +2715,7 @@ pub struct SharedTask(std::sync::Arc<std::sync::Mutex<Option<RunningTask>>>);
 impl SharedTask {
     // Held only while read or set, never across another lock of it: it isn't reentrant.
     pub fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunningTask>> {
-        // a panic while holding it left a value that is still whole
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.0)
     }
 }
 
@@ -3014,7 +3064,38 @@ pub fn stash_args(paths: &[String], message: &str) -> GitArgs {
 
 pub const MAX_CONFLICT_STEPS: usize = 100;
 
-// What `Repository::first_conflict` found.
+// The work finding the first conflict of a command, see `Repository::first_conflict_work`.
+pub type ConflictWork = Box<dyn FnOnce() -> Option<Conflict> + Send>;
+
+fn first_conflict_at(
+    path: &Path,
+    start: &str,
+    steps: &[(Option<String>, String)],
+) -> Option<Conflict> {
+    let mut tree = start.to_string();
+    // the first steps only, which bounds the work of a long rebase
+    for (base, commit) in steps.iter().take(MAX_CONFLICT_STEPS) {
+        let base = base.as_ref().map(|b| format!("--merge-base={b}"));
+        let mut args = vec!["merge-tree", "--write-tree", "--name-only", "--no-messages"];
+        args.extend(base.as_deref());
+        args.extend([tree.as_str(), commit.as_str()]);
+        let (status, out) = git_output_with_status(path, &args)?;
+        let mut lines = out.lines();
+        let result = lines.next()?.to_string();
+        match status {
+            Some(0) => tree = result,
+            Some(1) => {
+                let files = lines.take_while(|l| !l.is_empty()).map(String::from);
+                return Some(Conflict::At(commit.clone(), files.collect()));
+            }
+            _ => return None,
+        }
+    }
+    let unchecked = steps.len().saturating_sub(MAX_CONFLICT_STEPS);
+    (unchecked > 0).then_some(Conflict::Unchecked(unchecked))
+}
+
+// What `Repository::first_conflict_work` found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Conflict {
     // the commit stopped at, and the files conflicting

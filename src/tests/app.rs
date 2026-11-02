@@ -5,6 +5,7 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -20,7 +21,7 @@ use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
     event::{EventController, KeyHint},
-    git::{refs_snapshot, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
+    git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
     graph::{GraphImageWidthMode, GraphStyle},
     keybind::parse_key_event,
     layout::Panel,
@@ -29,7 +30,7 @@ use crate::{
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
     widget::ref_list::RefSelection,
-    Loader, Refresh,
+    Loader, Restart,
 };
 
 // The terminal the app is laid out in, (columns, rows).
@@ -57,6 +58,8 @@ enum Step {
     // a frame drawn, placing the borders that ctrl and the arrow keys move, then its text checked
     Draw(Box<dyn FnOnce(&str)>),
     Check(Box<dyn FnOnce(&App)>),
+    // acts on the app right away, before what it starts in the background is done
+    Act(Box<dyn FnOnce(&mut App)>),
 }
 
 // The keys of `keys`, separated by spaces.
@@ -157,16 +160,20 @@ impl Harness {
     // before the next key.
     fn run(&mut self, steps: Vec<Vec<Step>>) {
         let mut steps = steps.into_iter().flatten();
-        let mut refresh: Refresh = None;
         let (path, ctx, ec, quit) = (&self.path, &self.ctx, &self.ec, &mut self.quit);
         let loads = &self.loads;
-        let mut repository = self.loader.load(&ctx.running_task).unwrap();
+        let (repository, layout) = self.loader.load_work(&ctx.running_task)().unwrap();
+        let mut repository = Arc::new(repository);
         loads.set(loads.get() + 1);
+        let mut restart = Restart {
+            before: None,
+            layout: Some(layout),
+        };
         loop {
             // what the app was before reloading, None once done
             let next = self
                 .loader
-                .with_app(&repository, SIZE, ctx, ec, refresh.take(), |mut app| loop {
+                .with_app(&repository, SIZE, ctx, ec, restart, |mut app| loop {
                     if let Some(ret) = settle(&mut app, ec, ctx, loads) {
                         return match ret {
                             Ret::Quit => {
@@ -176,8 +183,11 @@ impl Harness {
                             Ret::Reload {
                                 context,
                                 repository,
-                            } => Some((app.into_shell(), context, Some(repository))),
-                            Ret::Regraph(context) => Some((app.into_shell(), context, None)),
+                                layout,
+                            } => Some((app.into_shell(), context, layout, Some(repository))),
+                            Ret::Regraph { context, layout } => {
+                                Some((app.into_shell(), context, layout, None))
+                            }
                         };
                     }
                     take_step(steps.next()?, &mut app, path, ec);
@@ -185,10 +195,13 @@ impl Harness {
                 .unwrap();
             match next {
                 None => return,
-                Some((shell, context, reloaded)) => {
-                    refresh = Some((shell, context));
+                Some((shell, context, layout, reloaded)) => {
+                    restart = Restart {
+                        before: Some((shell, context)),
+                        layout: Some(*layout),
+                    };
                     if let Some(reloaded) = reloaded {
-                        repository = *reloaded;
+                        repository = Arc::new(*reloaded);
                     }
                 }
             }
@@ -262,6 +275,7 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
             f(&text.join("\n"));
         }
         Step::Check(f) => f(app),
+        Step::Act(f) => f(app),
     }
 }
 
@@ -466,6 +480,41 @@ fn test_a_key_after_staging_acts_on_the_files_reloaded() {
     ]);
     let staged = git(&path, &["diff", "--cached", "--name-only"]);
     assert_eq!(staged, "f.txt\ng.txt\n");
+}
+
+#[test]
+fn test_a_key_after_moving_to_another_commit_acts_on_its_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    // the newest, the first row
+    let commit = crate::git::git_command()
+        .args(["commit", "-q", "-m", "g"])
+        .env("GIT_COMMITTER_DATE", "@4000000000 +0000")
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // the changes of g, the newest commit, then the next one, which changed f.txt: its files
+        // load in the background after J, j to its file waits for them, enter for its diff
+        keys("4 j"),
+        check(|app| assert_eq!(detail_path(app), Some("g.txt".into()))),
+        keys_at_once("shift-j j enter"),
+        check(|app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            assert_eq!(view.focus(), DetailFocus::Pane);
+            assert_eq!(detail_path(app), Some("f.txt".into()));
+        }),
+    ]);
 }
 
 #[test]
@@ -1331,6 +1380,37 @@ fn test_fold_merge() {
 }
 
 #[test]
+fn test_fold_merge_while_reloading_or_laying_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let shown = |count: usize, folded: usize| {
+        check(move |app| {
+            assert!(!app.is_reloading() && !app.is_loading());
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().position(), (1, count));
+            assert_eq!(app.shell.folded_merges().len(), folded);
+        })
+    };
+    harness.run(vec![
+        // the reload lays the graph out with the merge unfolded, as it was asked before the
+        // fold: that layout isn't used, the merge stays folded
+        keys_at_once("ctrl-r h"),
+        shown(3, 1),
+        // unfolded while the folded layout runs: that one is dropped
+        keys_at_once("l h l"),
+        shown(4, 0),
+    ]);
+}
+
+#[test]
 fn test_fold_merge_with_branch_only() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -1365,6 +1445,66 @@ fn test_fold_merge_with_branch_only() {
     ]);
     // the branch only view loads the repository again, folding draws the graph again only
     assert_eq!(harness.loads.get(), 3);
+}
+
+#[test]
+fn test_blame_and_timeline_say_they_are_loading_until_they_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let head = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let mut harness = Harness::new(&path, launch());
+    let open = |event: AppEvent, loading: &'static str| {
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            app.handle_event(event).unwrap();
+            // the history loads on another thread: said in the status line, no window yet
+            assert!(app.shell.overlay.is_none());
+            let StatusLine::Transient(message) = &app.shell.app_status.status_line else {
+                panic!("no message")
+            };
+            assert_eq!(message, loading);
+        }))]
+    };
+    let opened = |name: &'static str| {
+        let cleared = check(|app| {
+            assert!(matches!(app.shell.app_status.status_line, StatusLine::None));
+        });
+        [overlay(name), cleared]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+    };
+    let commit = CommitHash::from(head.as_str());
+    harness.run(vec![
+        open(
+            AppEvent::OpenBlame {
+                commit: commit.clone(),
+                path: "f.txt".into(),
+                line: None,
+            },
+            "Loading the blame of f.txt…",
+        ),
+        opened("blame"),
+        keys("esc esc"),
+        open(
+            AppEvent::OpenTimeline {
+                commit,
+                path: "f.txt".into(),
+            },
+            "Loading the timeline of f.txt…",
+        ),
+        opened("timeline"),
+        keys("esc"),
+        // a file with no history says so once loaded, opening nothing
+        open(
+            AppEvent::OpenTimeline {
+                commit: CommitHash::from(head.as_str()),
+                path: "nothing.txt".into(),
+            },
+            "Loading the timeline of nothing.txt…",
+        ),
+        overlay("none"),
+        check(|app| assert_notice(app, "nothing.txt has no history")),
+    ]);
 }
 
 #[test]
@@ -1915,6 +2055,35 @@ fn test_checkout_refused_over_local_changes() {
             assert_notice(app, "would be overwritten by checkout");
             assert!(app.repository.current_branch().as_deref() == Some("master"));
         }),
+    ]);
+}
+
+#[test]
+fn test_popup_checks_for_conflicts_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![Step::Act(Box::new(|app: &mut App| {
+            // cherry-picking feat1, the first row, onto master, which changed its line of f.txt
+            // too: the popup opens before the conflict is found, saying it looks for them
+            let key = parse_key_event("shift-c").unwrap();
+            app.handle_event(AppEvent::Key(key)).unwrap();
+            let dialog = app.visible_dialog().expect("the popup");
+            assert!(dialog.is_checking_conflicts());
+            let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let keys = app.keys_popup_keys();
+            let frame = terminal.draw(|f| app.render(f, &keys)).unwrap();
+            let text: String = frame.buffer.content.iter().map(|c| c.symbol()).collect();
+            assert!(text.contains("Checking for conflicts…"));
+        }))],
+        // then the warning
+        screen(|text| {
+            assert!(!text.contains("Checking for conflicts…"), "{text}");
+            assert!(text.contains("Conflicts at"), "{text}");
+        }),
+        keys("esc"),
     ]);
 }
 

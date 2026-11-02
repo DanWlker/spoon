@@ -56,8 +56,6 @@ pub enum AppEvent {
     OpenHelp,
     // closes the help or another window over everything
     CloseOverlay,
-    SelectNewerCommit,
-    SelectOlderCommit,
     CopyToClipboard {
         name: String,
         value: String,
@@ -103,6 +101,9 @@ pub enum AppEvent {
     // selects the commit on the graph
     ShowCommit(CommitHash),
     // folds or unfolds the merge commit, the graph drawn again
+    // the graph laid out again on another thread after a merge was folded or unfolded, see
+    // `App::start_regraph`
+    Regraphed(Box<crate::graph::GraphLayout>),
     FoldMerge {
         commit: CommitHash,
         fold: Fold,

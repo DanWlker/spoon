@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     ops::Range,
     rc::Rc,
     time::{Duration, Instant},
@@ -21,7 +22,7 @@ use crate::{
     git::{PatchDirection, Repository},
     search::SearchOptions,
     widget::{
-        style::{divider, mark_selected_bar, placeholder, scroll_to, ScrollState},
+        style::{divider, mark_selected_bar, placeholder, scroll_to, ScrollState, VisualSelection},
         tree_query::{find_around, match_range, patch_range, SearchDirection},
     },
 };
@@ -405,8 +406,11 @@ pub struct DiffCursor {
     // the row of `ParsedDiff::rows` the keys are on: a change of the hunk, or the row a search
     // matched in it, which the next search goes on from
     pub line: usize,
-    // where a range of lines started, the row the range runs from to `line`, in the same hunk
-    anchor: Option<usize>,
+    // where a visual selection of lines started, the selected line moving from there, like the
+    // lines of a file preview
+    visual: VisualSelection,
+    // the rows picked, kept once the visual selection ends until cleared, all in the selected hunk
+    picked: BTreeSet<usize>,
     pub scroll: ScrollState,
     // the screen rows the diff's rows wrap to, for the scroll to count
     wrap: WrapMap,
@@ -436,7 +440,7 @@ impl DiffCursor {
             return false;
         };
         self.hunk = index.min(last);
-        self.anchor = None;
+        self.cancel_range();
         let rows = &diff.hunks[self.hunk].rows;
         // the row a search goes on from: the first change of the hunk
         self.line = rows
@@ -448,9 +452,12 @@ impl DiffCursor {
         true
     }
 
-    // Selects a row, in the hunk containing it.
+    // Selects a row, in the hunk containing it, extending the visual selection to it.
     pub fn select_line(&mut self, diff: &ParsedDiff, row: usize) {
         self.line = row;
+        if let Some(rows) = self.visual.range(row, usize::MAX) {
+            self.picked.extend(rows);
+        }
         if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
             self.hunk = index;
         }
@@ -486,7 +493,7 @@ impl DiffCursor {
         })?;
         // the row the next search goes on from, in the hunk it is in
         self.line = row;
-        self.anchor = None;
+        self.cancel_range();
         if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
             self.hunk = index;
         }
@@ -616,40 +623,49 @@ impl DiffCursor {
         true
     }
 
-    // The changed rows the selected line can move to: those of the selected hunk while a range of
-    // lines runs from it, which can't leave the hunk, else all.
+    // The changed rows the selected line can move to: those of the selected hunk while lines are
+    // picked, which stay in one hunk, else all.
     fn selectable_rows<'d>(
         &self,
         diff: &'d ParsedDiff,
     ) -> impl DoubleEndedIterator<Item = usize> + 'd {
         let hunk = self
-            .anchor
-            .and_then(|_| diff.hunks.get(self.hunk))
+            .has_range()
+            .then(|| diff.hunks.get(self.hunk))
+            .flatten()
             .map(|hunk| hunk.rows.clone());
         changed_rows(diff).filter(move |row| hunk.as_ref().is_none_or(|rows| rows.contains(row)))
     }
 
-    // Starts a range of lines at the selected line, or clears it.
+    // Starts a visual selection of lines at the selected line, or ends it, keeping the lines
+    // picked; another one adds to them, like the lines of a file preview.
     pub fn toggle_range(&mut self) {
-        self.anchor = match self.anchor {
-            Some(_) => None,
-            None => Some(self.line),
-        };
+        if self.visual.toggle(self.line) {
+            self.picked.insert(self.line);
+        }
     }
 
-    // Clears the range of lines; false when there is none.
+    // Clears the lines picked; false when there were none.
     pub fn cancel_range(&mut self) -> bool {
-        self.anchor.take().is_some()
+        self.visual.cancel();
+        !std::mem::take(&mut self.picked).is_empty()
     }
 
+    // Whether lines are picked, while the visual selection or after it ended.
     pub fn has_range(&self) -> bool {
-        self.anchor.is_some()
+        !self.picked.is_empty()
     }
 
-    // The rows of the selected line, or of the range of lines from where it started to it.
-    fn line_rows(&self) -> Range<usize> {
-        let anchor = self.anchor.unwrap_or(self.line);
-        anchor.min(self.line)..anchor.max(self.line) + 1
+    pub fn is_visual(&self) -> bool {
+        self.visual.is_visual()
+    }
+
+    // The rows of the lines picked, else of the selected line.
+    fn line_rows(&self) -> Vec<usize> {
+        match self.picked.is_empty() {
+            true => vec![self.line],
+            false => self.picked.iter().copied().collect(),
+        }
     }
 
     // Scrolls to the edge of the diff the page was going to, the selection kept where it is.
@@ -664,7 +680,7 @@ impl DiffCursor {
     // Selects the changed line at or after `row`, else the last one; for a diff reloaded after
     // the line was staged.
     pub fn select_line_near(&mut self, diff: &ParsedDiff, row: usize) -> bool {
-        self.anchor = None;
+        self.cancel_range();
         let row = changed_rows(diff)
             .find(|&r| r >= row)
             .or_else(|| changed_rows(diff).last());
@@ -687,10 +703,14 @@ impl DiffCursor {
         self.scroll.offset = scroll_to(offset, rows, height, usize::MAX, scrolloff);
     }
 
-    // The rows highlighted: the selected line or range of lines, or the selected hunk.
+    // The rows highlighted: from the first line picked to the last, else the selected line, or
+    // the selected hunk.
     pub fn highlighted(&self, diff: &ParsedDiff, part: DiffPart) -> Range<usize> {
         match part {
-            DiffPart::Line => self.line_rows(),
+            DiffPart::Line => {
+                let rows = self.line_rows();
+                rows[0]..rows[rows.len() - 1] + 1
+            }
             DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone()),
         }
     }
@@ -700,7 +720,7 @@ impl DiffCursor {
     pub fn is_highlighted(&self, diff: &ParsedDiff, part: DiffPart, row: usize) -> bool {
         match part {
             DiffPart::Line => {
-                row == self.line || (self.line_rows().contains(&row) && diff.rows[row].is_change())
+                row == self.line || (self.picked.contains(&row) && diff.rows[row].is_change())
             }
             DiffPart::Hunk => diff
                 .hunks
@@ -718,21 +738,25 @@ impl DiffCursor {
         let hunk = self.selected_hunk(diff)?;
         // the hunk header occupies the first row, its lines follow
         let first = hunk.rows.start + 1;
-        let rows = self.line_rows();
-        let lines: Vec<usize> = (rows.start.checked_sub(first)?..rows.end - first).collect();
-        Some(hunk.partial_patch(&lines, direction))
+        let lines: Option<Vec<usize>> = self
+            .line_rows()
+            .iter()
+            .map(|row| row.checked_sub(first))
+            .collect();
+        Some(hunk.partial_patch(&lines?, direction))
     }
 
-    // The text of the selected line or range of lines as in the file, without their +/- and line
-    // endings, one per line.
+    // The text of the lines picked, else of the selected line, as in the file, without their +/-
+    // and line endings, one per line.
     pub fn line_text(&self, diff: &ParsedDiff) -> Option<String> {
         let hunk = self.selected_hunk(diff)?;
+        let first = hunk.rows.start + 1;
         let rows = self.line_rows();
-        let first = rows.start.checked_sub(hunk.rows.start + 1)?;
         let lines: Vec<&str> = hunk
             .lines()
-            .skip(first)
-            .take(rows.len())
+            .enumerate()
+            .filter(|(i, _)| rows.contains(&(first + i)))
+            .map(|(_, line)| line)
             // "\ No newline at end of file" isn't a line of the file
             .filter(|line| !line.starts_with('\\'))
             .filter_map(|line| Some(line.get(1..)?.trim_end_matches(['\n', '\r'])))
@@ -1363,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_range_of_lines_stays_in_its_hunk() {
+    fn test_lines_picked_like_a_file_preview_stay_in_their_hunk() {
         let file_header = "diff --git a/f b/f\nindex 1..2 100644\n--- a/f\n+++ b/f\n";
         let diff = parse_diff(&format!(
             "{file_header}@@ -1,3 +1,3 @@\n a\n-b\n-c\n+B\n+C\n@@ -10,2 +10,2 @@\n x\n-y\n+Y\n"
@@ -1371,26 +1395,31 @@ mod tests {
         let mut cursor = DiffCursor::default();
         assert!(cursor.select_hunk(&diff, 0));
         assert!(cursor.enter_lines(&diff));
-        cursor.toggle_range();
-        // from "-b", moving down stops at the last change of the hunk
-        for _ in 0..10 {
-            cursor.move_line(&diff, Step::Next);
-        }
-        assert_eq!(cursor.hunk, 0);
-        assert_eq!(cursor.line_text(&diff).as_deref(), Some("b\nc\nB\nC"));
         let highlighted = |cursor: &DiffCursor| {
             (0..diff.rows.len())
                 .filter(|&row| cursor.is_highlighted(&diff, DiffPart::Line, row))
                 .count()
         };
-        assert_eq!(highlighted(&cursor), 4);
-        // back up to "-c": staging the range leaves the added lines out
-        cursor.move_line(&diff, Step::Prev);
-        cursor.move_line(&diff, Step::Prev);
+        // from "-b" to "-c", then v again ends it, keeping them picked
+        cursor.toggle_range();
+        cursor.move_line(&diff, Step::Next);
+        cursor.toggle_range();
+        assert!(!cursor.is_visual() && cursor.has_range());
         assert_eq!(cursor.line_text(&diff).as_deref(), Some("b\nc"));
+        // moving keeps them and stops at the last change of their hunk
+        for _ in 0..10 {
+            cursor.move_line(&diff, Step::Next);
+        }
+        assert_eq!(cursor.hunk, 0);
+        assert_eq!(cursor.line_text(&diff).as_deref(), Some("b\nc"));
+        // another selection adds "+C": staging them leaves "+B" out
+        cursor.toggle_range();
+        cursor.toggle_range();
+        assert_eq!(cursor.line_text(&diff).as_deref(), Some("b\nc\nC"));
+        assert_eq!(highlighted(&cursor), 3);
         assert_eq!(
             cursor.line_patch(&diff, PatchDirection::Forward),
-            Some(format!("{file_header}@@ -1,3 +1,1 @@\n a\n-b\n-c\n"))
+            Some(format!("{file_header}@@ -1,3 +1,2 @@\n a\n-b\n-c\n+C\n"))
         );
         // cleared, the line moves on to the next hunk again
         assert!(cursor.cancel_range());
@@ -1400,7 +1429,7 @@ mod tests {
         }
         assert_eq!(cursor.hunk, 1);
         assert_eq!(highlighted(&cursor), 1);
-        // a search ends the range
+        // a search ends the selection
         cursor.toggle_range();
         cursor.search(
             &diff,

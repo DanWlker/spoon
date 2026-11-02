@@ -251,16 +251,17 @@ pub fn register_diff_keys<T: ?Sized>(
             let name = pane(v).map_or(DiffPart::Hunk.name(), DiffPane::selected_name);
             format!("copy {name}")
         });
+    // like the lines of a file preview
     k.add(
         &[ToggleSelect],
-        "select range",
-        "Select the lines from the selected one to where it moves, in its hunk; again clears them",
+        "select lines",
+        "Select the lines from the selected one to where it moves, in its hunk; another selection adds to them, Esc clears them",
     )
     .when(|v| pane(v).is_some_and(DiffPane::is_selecting_lines))
     .short(|v| {
-        match pane(v).is_some_and(DiffPane::has_range) {
-            true => "clear range",
-            false => "select range",
+        match pane(v).is_some_and(DiffPane::is_visual) {
+            true => "end select",
+            false => "select lines",
         }
         .into()
     });

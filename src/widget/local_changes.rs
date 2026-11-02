@@ -1941,11 +1941,18 @@ impl<'a> LocalChangesState<'a> {
             self.load_diff();
         }
         self.pane.wait_loading(self.repository);
+        if let Some(submodule) = &mut self.submodule {
+            submodule.wait(&self.ctx);
+        }
     }
 
     #[cfg(test)]
     pub fn is_diff_loading(&self) -> bool {
-        self.pane.is_loading() || self.files_loading.is_some()
+        let submodule = self
+            .submodule
+            .as_ref()
+            .is_some_and(SubmodulePanel::is_loading);
+        self.pane.is_loading() || self.files_loading.is_some() || submodule
     }
 
     // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
@@ -1960,6 +1967,9 @@ impl<'a> LocalChangesState<'a> {
             self.pane.load_in_background(tx.clone(), work);
         }
         self.pane.poll_loading(self.repository);
+        if let Some(submodule) = &mut self.submodule {
+            submodule.poll(&self.ctx);
+        }
     }
 
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
@@ -2092,6 +2102,7 @@ impl<'a> LocalChangesState<'a> {
             &from,
             to.as_deref(),
             info.uncommitted,
+            self.background.as_ref(),
         ))
     }
 }

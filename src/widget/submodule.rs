@@ -10,7 +10,8 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    event::UserEvent,
+    background::Job,
+    event::{Sender, UserEvent},
     git::Repository,
     graph,
     widget::{
@@ -36,11 +37,26 @@ pub struct SubmodulePanel<'a> {
     list: Option<CommitListState<'a>>,
     // why there is nothing to list
     message: Option<String>,
+    // its commits loading on another thread, see `poll`
+    loading: Option<Loading<'a>>,
+}
+
+// The commits of a submodule between two gitlinks loading on another thread: the range that has
+// them (from..to, else to..from) with its repository and graph, None when neither has commits.
+type Loaded = Result<Option<((String, String), Repository, graph::GraphLayout)>, String>;
+
+#[derive(Debug)]
+struct Loading<'a> {
+    // the parent, which keeps the submodule's repository once loaded
+    repository: &'a Repository,
+    path: String,
+    job: Job<Loaded>,
 }
 
 impl<'a> SubmodulePanel<'a> {
     // The same, between the two gitlinks a page compares, like the index and the submodule's HEAD
-    // on the local changes page, or two commits of its history.
+    // on the local changes page, or two commits of its history. Its commits load on another thread
+    // with the app's `tx`, see `poll`; without it, as in the tests, right away.
     pub fn between(
         repository: &'a Repository,
         ctx: &AppContext,
@@ -48,9 +64,118 @@ impl<'a> SubmodulePanel<'a> {
         from: &str,
         to: Option<&str>,
         uncommitted: Option<usize>,
+        tx: Option<&Sender>,
     ) -> Self {
         let key = submodule_key(path, from, to);
-        Self::load(repository, ctx, path, from, to, uncommitted, key)
+        let mut panel = Self {
+            key,
+            uncommitted,
+            list: None,
+            message: None,
+            loading: None,
+        };
+        let Some(to) = to else {
+            panel.message = Some("submodule not checked out".into());
+            return panel;
+        };
+        // nothing to load when the gitlink is unchanged: only the uncommitted files are new
+        if from == to {
+            panel.message = Some("no commits ahead of the recorded one".into());
+            return panel;
+        }
+        // the commits between the two gitlinks, in the direction they differ: the checked-out
+        // commit may be behind the recorded one, then its missing commits are listed
+        let loaded = [(from, to), (to, from)]
+            .into_iter()
+            .find_map(|(from, to)| repository.loaded_submodule_repository(path, from, to));
+        if let Some(submodule) = loaded {
+            let graph = graph::calc_graph(submodule, None, &Default::default());
+            panel.show(ctx, submodule, graph);
+            return panel;
+        }
+        let ranges = [(from, to), (to, from)].map(|(from, to)| {
+            let work = repository.submodule_repository_work(path, from, to);
+            ((from.to_string(), to.to_string()), work)
+        });
+        let work = move || -> Loaded {
+            for (range, work) in ranges {
+                if let Some(submodule) = work()? {
+                    let layout = graph::GraphLayout::calc(&submodule, None, &Default::default());
+                    return Ok(Some((range, submodule, layout)));
+                }
+            }
+            Ok(None)
+        };
+        let path = path.to_string();
+        match tx {
+            Some(tx) => {
+                panel.message = Some("Loading…".into());
+                let job = Job::spawn(tx.clone(), work);
+                panel.loading = Some(Loading {
+                    repository,
+                    path,
+                    job,
+                });
+            }
+            None => panel.show_loaded(ctx, repository, &path, work()),
+        }
+        panel
+    }
+
+    // Before drawing: the commits loaded on another thread, once they are.
+    pub fn poll(&mut self, ctx: &AppContext) {
+        let Some(loaded) = self.loading.as_ref().and_then(|l| l.job.try_take()) else {
+            return;
+        };
+        let Loading {
+            repository, path, ..
+        } = self.loading.take().expect("loading");
+        self.show_loaded(ctx, repository, &path, loaded);
+    }
+
+    // The commits loading on another thread, waiting for them, before a key acts on them.
+    pub fn wait(&mut self, ctx: &AppContext) {
+        if let Some(Loading {
+            repository,
+            path,
+            job,
+        }) = self.loading.take()
+        {
+            self.show_loaded(ctx, repository, &path, job.wait());
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        self.loading.is_some()
+    }
+
+    fn show_loaded(
+        &mut self,
+        ctx: &AppContext,
+        repository: &'a Repository,
+        path: &str,
+        loaded: Loaded,
+    ) {
+        self.message = None;
+        match loaded {
+            Ok(Some(((from, to), submodule, layout))) => {
+                let submodule = repository.keep_submodule_repository(path, &from, &to, submodule);
+                self.show(ctx, submodule, graph::Graph::of(submodule, layout));
+            }
+            Ok(None) => self.message = Some("no commits ahead of the recorded one".into()),
+            Err(err) => self.message = Some(err),
+        }
+    }
+
+    fn show(&mut self, ctx: &AppContext, submodule: &'a Repository, graph: graph::Graph<'a>) {
+        let manager = ctx.graph_image_manager(graph);
+        self.list = Some(submodule_commit_list(
+            submodule,
+            manager,
+            ctx.search_options.clone(),
+            ctx.ui_config.common.scrolloff as usize,
+        ));
     }
 
     // What the panel shows, to reuse it for the same submodule.
@@ -61,80 +186,6 @@ impl<'a> SubmodulePanel<'a> {
     // The files uncommitted inside the submodule, re-read when the panel is reused.
     pub fn set_uncommitted(&mut self, uncommitted: Option<usize>) {
         self.uncommitted = uncommitted;
-    }
-
-    fn load(
-        repository: &'a Repository,
-        ctx: &AppContext,
-        path: &str,
-        from: &str,
-        to: Option<&str>,
-        uncommitted: Option<usize>,
-        key: String,
-    ) -> Self {
-        let Some(to) = to else {
-            return Self {
-                key,
-                uncommitted,
-                list: None,
-                message: Some("submodule not checked out".into()),
-            };
-        };
-        // nothing to load when the gitlink is unchanged: only the uncommitted files are new
-        if from == to {
-            return Self {
-                key,
-                uncommitted,
-                list: None,
-                message: Some("no commits ahead of the recorded one".into()),
-            };
-        }
-        // the commits between the two gitlinks, in the direction they differ: the checked-out
-        // commit may be behind the recorded one, then its missing commits are listed
-        let submodule = match repository.submodule_repository(path, from, to) {
-            Ok(Some(submodule)) => submodule,
-            Ok(None) => match repository.submodule_repository(path, to, from) {
-                Ok(Some(submodule)) => submodule,
-                Ok(None) => {
-                    return Self {
-                        key,
-                        uncommitted,
-                        list: None,
-                        message: Some("no commits ahead of the recorded one".into()),
-                    };
-                }
-                Err(err) => {
-                    return Self {
-                        key,
-                        uncommitted,
-                        list: None,
-                        message: Some(err),
-                    };
-                }
-            },
-            Err(err) => {
-                return Self {
-                    key,
-                    uncommitted,
-                    list: None,
-                    message: Some(err),
-                };
-            }
-        };
-        let graph = graph::calc_graph(submodule, None, &Default::default());
-        let manager = ctx.graph_image_manager(graph);
-        let list = submodule_commit_list(
-            submodule,
-            manager,
-            ctx.search_options.clone(),
-            ctx.ui_config.common.scrolloff as usize,
-        );
-        Self {
-            key,
-            uncommitted,
-            list: Some(list),
-            message: None,
-        }
     }
 
     // Moves by every key scrolling the commits: the movement keys, ctrl-d and ctrl-u, and the

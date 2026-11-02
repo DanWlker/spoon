@@ -3,12 +3,14 @@ use std::rc::Rc;
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
+    widgets::Paragraph,
     Frame,
 };
 
 use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
+    background::Job,
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, Sender, UserEvent},
     git::{
@@ -36,7 +38,7 @@ use crate::{
         diff::{Step, CONVERTED_DIFF},
         file_tree::{path_contains, Entry, FileTreeRow, FileTreeState},
         git_dialog::GitDialog,
-        style::{panel_block, ScrollState},
+        style::{panel_block, placeholder, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -86,6 +88,9 @@ pub struct DetailView<'a> {
     list_focused: bool,
     // the selection moved to another commit, whose details load once used, see `load_selected`
     stale: bool,
+    // the files the commit selected changed, loading on another thread, the details saying so
+    // meanwhile, see `load_selected_in_background`
+    loading: Option<Job<Vec<FileChange>>>,
     repository: &'a Repository,
 
     ctx: Rc<AppContext>,
@@ -118,6 +123,7 @@ impl<'a> DetailView<'a> {
             compare: Comparing::No,
             list_focused: false,
             stale: false,
+            loading: None,
             repository,
             ctx,
             tx,
@@ -543,11 +549,19 @@ impl<'a> DetailView<'a> {
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         // the keys moving the selection leave what it shows to load once drawn, see
-        // `update_layout`; the others may act on it, so it is loaded first
-        if !event.moves_selection() {
+        // `update_layout`; the others may act on it, so it is loaded first: the details of the
+        // commit for all but those moving to another commit, the diff for all but those moving
+        // in the files
+        let moves_commit = matches!(event, UserEvent::SelectDown | UserEvent::SelectUp)
+            || (self.list_focused && event.moves_selection());
+        if !moves_commit {
             self.load_selected();
-            if self.tab == DetailTab::Changes {
-                self.changes_state.ensure_loaded();
+        }
+        if !event.moves_selection() {
+            match self.tab {
+                DetailTab::Info => {}
+                DetailTab::Changes => self.changes_state.ensure_loaded(),
+                DetailTab::Files => self.files_state.ensure_loaded(),
             }
         }
         // typing a search or filter, keys arrive unmapped, see App::run
@@ -783,12 +797,9 @@ impl<'a> DetailView<'a> {
         }
 
         match event {
-            UserEvent::SelectDown => {
-                self.tx.send(AppEvent::SelectOlderCommit);
-            }
-            UserEvent::SelectUp => {
-                self.tx.send(AppEvent::SelectNewerCommit);
-            }
+            // right away, so the keys after it act on the commit it moves to
+            UserEvent::SelectDown => self.select_older_commit(),
+            UserEvent::SelectUp => self.select_newer_commit(),
             UserEvent::ShortCopy
             | UserEvent::FullCopy
             | UserEvent::OpenInBrowser
@@ -826,6 +837,10 @@ impl<'a> DetailView<'a> {
             .place(Panel::Details, panel_area, Edge::Top);
 
         match self.tab {
+            _ if self.loading.is_some() => {
+                let loading = placeholder("Loading…", &self.ctx.color_theme);
+                f.render_widget(Paragraph::new(loading), detail_area);
+            }
             DetailTab::Info => {
                 let commit_detail = CommitDetail::new(
                     &self.commit,
@@ -882,13 +897,16 @@ impl<'a> DetailView<'a> {
 
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {
-        self.changes_state.pane.is_loading()
+        self.loading.is_some() || self.changes_state.is_loading() || self.files_state.is_loading()
     }
 
     pub fn update_layout(&mut self, area: Rect) {
-        self.load_selected();
-        if self.tab == DetailTab::Changes {
-            self.changes_state.ensure_loaded_in_background(&self.tx);
+        self.load_selected_in_background();
+        match self.tab {
+            _ if self.loading.is_some() => {}
+            DetailTab::Info => {}
+            DetailTab::Changes => self.changes_state.ensure_loaded_in_background(&self.tx),
+            DetailTab::Files => self.files_state.ensure_loaded_in_background(&self.tx),
         }
         let [list_area, panel_area] = self.split_areas(area);
         self.as_mut_list_state()
@@ -1442,11 +1460,11 @@ impl<'a> DetailView<'a> {
         Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area)
     }
 
-    pub fn select_older_commit(&mut self) {
+    fn select_older_commit(&mut self) {
         self.update_selected_commit(|state| state.select_next());
     }
 
-    pub fn select_newer_commit(&mut self) {
+    fn select_newer_commit(&mut self) {
         self.update_selected_commit(|state| state.select_prev());
     }
 
@@ -1464,13 +1482,37 @@ impl<'a> DetailView<'a> {
     }
 
     // Loads the details of the selected commit, when the selection moved since they were.
+    // Before a key acts on them, waiting for those loading in the background.
     pub fn load_selected(&mut self) {
-        if !std::mem::take(&mut self.stale) {
-            return;
+        if std::mem::take(&mut self.stale) {
+            self.loading = None;
+            let selected = self.as_list_state().selected_commit_hash().clone();
+            let changes = self.repository.commit_changes_work(&selected)();
+            self.show_selected(changes);
+        } else if let Some(job) = self.loading.take() {
+            self.show_selected(job.wait());
         }
+    }
+
+    // Before drawing: starts loading the details of the commit selected now on another thread,
+    // the screen keeping up with the keys meanwhile, or shows them once loaded.
+    fn load_selected_in_background(&mut self) {
+        if std::mem::take(&mut self.stale) {
+            let selected = self.as_list_state().selected_commit_hash().clone();
+            let work = self.repository.commit_changes_work(&selected);
+            self.loading = Some(Job::spawn(self.tx.clone(), work));
+        }
+        if let Some(changes) = self.loading.as_ref().and_then(Job::try_take) {
+            self.loading = None;
+            self.show_selected(changes);
+        }
+    }
+
+    // The details of the commit selected, which changed `changes`.
+    fn show_selected(&mut self, changes: Vec<FileChange>) {
         let repository = self.repository;
         let selected = self.as_list_state().selected_commit_hash().clone();
-        let (commit, changes) = repository.commit_detail(&selected);
+        let commit = repository.commit(&selected).unwrap().clone();
         let refs = repository.refs(&selected).into_iter().cloned().collect();
         self.changes_state =
             CommitChangesState::new(repository, self.ctx.clone(), selected.clone(), &changes);
@@ -1480,10 +1522,7 @@ impl<'a> DetailView<'a> {
         self.refs = refs;
 
         self.commit_detail_state.offset = 0;
-        // the diff of the changes tab loads in the background, see `update_layout`
-        if self.tab == DetailTab::Files {
-            self.files_state.ensure_loaded();
-        }
+        // the diff of the changes tab and the files load in the background, see `update_layout`
         // the states of another commit start without the filter
         self.apply_query_change(Some(QueryKind::Filter));
     }

@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::Widget,
+    widgets::{Paragraph, Widget},
     Frame,
 };
 use rustc_hash::FxHashMap;
@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::AppContext,
+    background::Job,
     event::{AppEvent, Sender, UserEvent},
     git::{Blame, CommitHash, FileRevision, Repository},
     keys::{KeyList, Keys},
@@ -26,7 +27,7 @@ use crate::{
         commit_list::{format_date, ELLIPSIS},
         diff::Step,
         file_text::{FileText, LineCursor},
-        style::{choice_arrows, mark_selected_bar, panel_block, panel_title},
+        style::{choice_arrows, mark_selected_bar, panel_block, panel_title, placeholder},
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
         },
@@ -69,6 +70,9 @@ pub struct BlameView {
     text: FileText,
     focus: BlameFocus,
     query: TreeQuery,
+    // the blame of another commit loading on another thread, with the commit shown before, which
+    // stays when it fails
+    loading: Option<(usize, Job<Result<Blame, String>>)>,
     ctx: Rc<AppContext>,
     tx: Sender,
 }
@@ -108,6 +112,7 @@ impl BlameView {
             text: FileText::default(),
             focus: BlameFocus::Commit,
             query: TreeQuery::default(),
+            loading: None,
             ctx,
             tx,
         };
@@ -117,14 +122,6 @@ impl BlameView {
             view.focus = BlameFocus::Text;
         }
         view
-    }
-
-    // Blames the file as of the commit shown, keeping the selected line.
-    fn load(&mut self, repository: &Repository) -> Result<(), String> {
-        let revision = &self.history[self.index];
-        let blame = repository.blame(&revision.commit, &revision.path)?;
-        self.show(blame);
-        Ok(())
     }
 
     fn show(&mut self, blame: Blame) {
@@ -169,6 +166,7 @@ impl BlameView {
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
+        self.wait_loading();
         if self.query.is_editing() {
             let kind = self.query_kind();
             if type_query(&self.ctx, &mut self.query, key, kind) == Some(QueryKind::Search) {
@@ -276,16 +274,47 @@ impl BlameView {
     }
 
     // Shows the blame as of another commit changing the file, as the timeline selects one.
+    // The blame loads on another thread, said in place of the text meanwhile, see `poll_loading`.
     fn select(&mut self, index: usize, repository: &Repository) {
         let index = index.min(self.history.len() - 1);
         if index == self.index {
             return;
         }
         let shown = std::mem::replace(&mut self.index, index);
-        if let Err(err) = self.load(repository) {
-            self.index = shown;
-            self.tx.send(AppEvent::NotifyError(err));
+        let revision = &self.history[index];
+        let work = repository.blame_work(&revision.commit, &revision.path);
+        self.loading = Some((shown, Job::spawn(self.tx.clone(), work)));
+    }
+
+    // Before drawing: the blame loaded on another thread, once it is.
+    pub fn poll_loading(&mut self) {
+        if let Some(blame) = self.loading.as_ref().and_then(|(_, job)| job.try_take()) {
+            let (shown, _) = self.loading.take().expect("loading");
+            self.show_loaded(shown, blame);
         }
+    }
+
+    // The blame loading, waiting for it, before a key acts on it.
+    fn wait_loading(&mut self) {
+        if let Some((shown, job)) = self.loading.take() {
+            self.show_loaded(shown, job.wait());
+        }
+    }
+
+    // Failing, the commit shown before stays.
+    fn show_loaded(&mut self, shown: usize, blame: Result<Blame, String>) {
+        match blame {
+            Ok(blame) => self.show(blame),
+            Err(err) => {
+                self.index = shown;
+                self.tx.send(AppEvent::NotifyError(err));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        self.loading.is_some()
     }
 
     // Searches what has the focus: the commits of the lines, by hash, author or date, from one run
@@ -532,6 +561,10 @@ impl BlameView {
             panel_block(focused, theme).title(panel_title("[2] Blame", notes, focused, theme));
         let inner = block.inner(body);
         block.render(body, buf);
+        if self.loading.is_some() {
+            Paragraph::new(placeholder("Loading…", theme)).render(inner, buf);
+            return;
+        }
         let author_width = self.author_width;
         // the commits with the line after them, resizable; both keep some room
         let default = (7 + 1 + author_width + 1 + self.date_width + 1) as u16;
@@ -661,8 +694,10 @@ mod tests {
             (c3.clone(), "b".into(), vec![c1.clone(), c2.clone()])
         );
         assert_eq!(view.focus, BlameFocus::Text);
-        // older, before the rename, on the same line
+        // older, before the rename, on the same line, loaded on another thread
         press(&mut view, UserEvent::OlderCommit);
+        assert!(view.is_loading());
+        view.wait_loading();
         assert_eq!(
             shown(&view),
             (c2.clone(), "a".into(), vec![c1.clone(), c2.clone()])

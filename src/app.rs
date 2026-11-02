@@ -2,7 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     io::{self, Write},
     rc::Rc,
-    sync::mpsc::RecvTimeoutError,
+    sync::{mpsc::RecvTimeoutError, Arc},
     time::{Duration, Instant},
 };
 
@@ -115,9 +115,14 @@ pub enum Ret {
     Reload {
         context: Box<RefreshViewContext>,
         repository: Box<Repository>,
+        // its graph, laid out on that thread too
+        layout: Box<GraphLayout>,
     },
-    // draw the graph again, of the repository as loaded, see `AppShell::folded_merges`
-    Regraph(Box<RefreshViewContext>),
+    // draw the graph again as laid out after folding a merge, see `App::start_regraph`
+    Regraph {
+        context: Box<RefreshViewContext>,
+        layout: Box<GraphLayout>,
+    },
 }
 
 #[derive(Debug)]
@@ -270,10 +275,10 @@ pub struct AppShell {
     reload: Option<PendingReload>,
     // counts the reloads asked for, see `PendingReload`
     reload_generation: u64,
-    // the graph of the repository reloaded, laid out with it, until the app is made again on it
-    layout: Option<GraphLayout>,
     // the blame or timeline opening, see `App::open_window`
     opening: Option<Opening>,
+    // how many layouts of the graph run after folding merges, see `App::start_regraph`
+    regraphs: usize,
 }
 
 // What the app shows again once the repository reloaded in the background lands.
@@ -386,10 +391,12 @@ impl FileWindow {
         }
     }
 
-    // Before drawing: the diff of the timeline once loaded in the background.
+    // Before drawing: what loads in the background, once loaded: the blame of another commit,
+    // the diff of the timeline.
     fn update(&mut self, repository: &Repository) {
-        if let FileWindow::Timeline(timeline) = self {
-            timeline.poll_loading(repository);
+        match self {
+            FileWindow::Blame(blame) => blame.poll_loading(),
+            FileWindow::Timeline(timeline) => timeline.poll_loading(repository),
         }
     }
 }
@@ -476,11 +483,6 @@ impl AppShell {
         self.graph_filter = GraphFilter::All;
     }
 
-    // The graph laid out on the thread reloading the repository, see `Reloaded`.
-    pub fn take_layout(&mut self) -> Option<GraphLayout> {
-        self.layout.take()
-    }
-
     pub fn notify_error(&mut self, message: String) {
         push_notice(&mut self.notices, Notice::error(message));
     }
@@ -488,7 +490,8 @@ impl AppShell {
 
 #[derive(Debug)]
 pub struct App<'a> {
-    repository: &'a Repository,
+    // shared with the threads laying its graph out again, see `AppEvent::FoldMerge`
+    repository: &'a Arc<Repository>,
     // how to load it again
     load_options: LoadOptions,
     view: View<'a>,
@@ -499,7 +502,7 @@ pub struct App<'a> {
 
 impl<'a> App<'a> {
     pub fn new(
-        repository: &'a Repository,
+        repository: &'a Arc<Repository>,
         load_options: LoadOptions,
         graph_image_manager: GraphImageManager<'a>,
         launch: Launch,
@@ -609,8 +612,8 @@ impl<'a> App<'a> {
                 missed_check: false,
                 reload: None,
                 reload_generation: 0,
-                layout: None,
                 opening: None,
+                regraphs: 0,
             },
         };
         // gone, like after a rebase
@@ -896,25 +899,19 @@ impl App<'_> {
                 let job = Job::spawn(self.ec.sender(), work);
                 self.shell.opening = Some(Opening::Blame { job, line });
                 let message = format!("Loading the blame of {path}…");
-                self.ec.send(AppEvent::UpdateStatusTransient(message));
+                self.shell.app_status.status_line = StatusLine::Transient(message);
             }
             AppEvent::OpenTimeline { commit, path } => {
                 let work = self.repository.file_history_work(&commit, &path);
                 self.shell.opening = Some(Opening::Timeline(Job::spawn(self.ec.sender(), work)));
                 let message = format!("Loading the timeline of {path}…");
-                self.ec.send(AppEvent::UpdateStatusTransient(message));
+                self.shell.app_status.status_line = StatusLine::Transient(message);
             }
             AppEvent::Checkout(commit) => {
                 let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
                 self.run_graph_command(UserEvent::Checkout, command);
             }
             AppEvent::ShowCommit(commit) => self.show_commit(&commit),
-            AppEvent::SelectOlderCommit => {
-                self.select_older_commit();
-            }
-            AppEvent::SelectNewerCommit => {
-                self.select_newer_commit();
-            }
             AppEvent::OpenDialog(dialog) => self.open_dialog(Ok(*dialog)),
             AppEvent::CopyToClipboard { name, value } => {
                 self.copy_to_clipboard(name, value);
@@ -936,9 +933,17 @@ impl App<'_> {
                     Fold::Folded => self.shell.folded_merges.insert(commit),
                     Fold::Unfolded => self.shell.folded_merges.remove(&commit),
                 };
-                if let Some(context) = self.view.refresh_context() {
+                self.start_regraph();
+            }
+            AppEvent::Regraphed(layout) => {
+                self.shell.regraphs = self.shell.regraphs.saturating_sub(1);
+                // one of merges folded since is laid out after it
+                let context = self.view.refresh_context();
+                if let Some(context) = context.filter(|_| layout.folded == self.shell.folded_merges)
+                {
                     self.shell.last_frame = None;
-                    return Ok(Some(Ret::Regraph(Box::new(context))));
+                    let context = Box::new(context);
+                    return Ok(Some(Ret::Regraph { context, layout }));
                 }
             }
             AppEvent::ClearStatusLine => {
@@ -984,6 +989,9 @@ impl App<'_> {
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
         self.open_window();
+        if let Some(popup) = &mut self.shell.dialog {
+            popup.dialog.poll_conflicts();
+        }
         if let Some(Overlay::File(window)) = &mut self.shell.overlay {
             window.update(self.repository);
         }
@@ -1028,9 +1036,19 @@ impl App<'_> {
     pub fn is_loading(&self) -> bool {
         let window = match &self.shell.overlay {
             Some(Overlay::File(FileWindow::Timeline(timeline))) => timeline.is_loading(),
+            Some(Overlay::File(FileWindow::Blame(blame))) => blame.is_loading(),
             _ => false,
         };
-        window || self.shell.opening.is_some() || self.view.is_loading()
+        let shell = &self.shell;
+        let checking = shell
+            .dialog
+            .as_ref()
+            .is_some_and(|p| p.dialog.is_checking_conflicts());
+        window
+            || checking
+            || shell.opening.is_some()
+            || shell.regraphs > 0
+            || self.view.is_loading()
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
@@ -1316,7 +1334,9 @@ impl App<'_> {
     fn background_activity(&self) -> Option<String> {
         match self.ctx.running_task.lock().as_ref() {
             Some(running) => Some(running.task.running.clone()),
-            None => self.shell.reload.as_ref().map(|_| "Reloading".to_string()),
+            None if self.shell.reload.is_some() => Some("Reloading".into()),
+            None if self.shell.regraphs > 0 => Some("Drawing the graph".into()),
+            None => None,
         }
     }
 
@@ -2113,7 +2133,8 @@ impl App<'_> {
                 if dialog.command().is_some_and(|task| {
                     task.is_ok_and(|task| self.blocked_by_operation(&task))
                 }) => {}
-            Ok(dialog) => {
+            Ok(mut dialog) => {
+                dialog.check_conflicts(self.ec.sender());
                 self.shell.dialog = Some(Popup {
                     dialog,
                     reveal: None,
@@ -2568,6 +2589,23 @@ impl App<'_> {
         }
     }
 
+    // Lays the graph out again on another thread with the merges folded now, the app going on
+    // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`.
+    fn start_regraph(&mut self) {
+        self.shell.regraphs += 1;
+        let repository = Arc::clone(self.repository);
+        let primary_branch = self.load_options.primary_branch.clone();
+        let folded = self.shell.folded_merges.clone();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            let spinning = spin(tx.clone());
+            let layout = GraphLayout::calc(&repository, primary_branch.as_deref(), &folded);
+            drop(spinning);
+            // the app may have quit meanwhile
+            tx.try_send(AppEvent::Regraphed(Box::new(layout)));
+        });
+    }
+
     // Loads the repository again on another thread, the app going on meanwhile; once it lands, the
     // app is made again on it showing what `restore` says. Asked again meanwhile, it loads again,
     // keeping where a command asked to go.
@@ -2640,7 +2678,6 @@ impl App<'_> {
                 repository
             }
         };
-        self.shell.layout = Some(layout);
         let context = match pending.restore {
             Restore::Current(asked) => self.view.refresh_context().unwrap_or(*asked),
             Restore::Given(context) => *context,
@@ -2650,6 +2687,7 @@ impl App<'_> {
         Some(Ret::Reload {
             context: Box::new(context),
             repository: Box::new(repository),
+            layout: Box::new(layout),
         })
     }
 
@@ -2726,18 +2764,6 @@ impl App<'_> {
             view.start_compare(base, target, compare);
         }
         self.replace_view(view);
-    }
-
-    fn select_older_commit(&mut self) {
-        if let View::Detail(ref mut view) = self.view {
-            view.select_older_commit();
-        }
-    }
-
-    fn select_newer_commit(&mut self) {
-        if let View::Detail(ref mut view) = self.view {
-            view.select_newer_commit();
-        }
     }
 
     fn init_with_context(&mut self, context: RefreshViewContext) {

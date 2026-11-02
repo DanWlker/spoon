@@ -56,7 +56,7 @@ focus_panel_5 = ["5"]
 # stage/unstage the selected file, directory, hunk or line in local changes
 toggle_stage = ["space"]
 # select a range of items: commits in the commit list, files in local changes, lines of a file
-# preview; moving extends it, and again ends it; in a diff's lines, a range inside the hunk, again clears it
+# preview or of a diff (inside one hunk); moving extends it, and again ends it, keeping them selected
 toggle_select = ["v"]
 # show more or fewer lines around the changes of a diff of one file
 increase_diff_context = ["+"]

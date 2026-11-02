@@ -187,7 +187,7 @@ impl DiffPane {
         true
     }
 
-    // Goes one level back: the range of lines cleared -> hunks -> out of the diff. Returns false
+    // Goes one level back: the lines picked cleared -> hunks -> out of the diff. Returns false
     // when already out.
     pub fn back(&mut self) -> bool {
         match self.focus {
@@ -204,7 +204,8 @@ impl DiffPane {
         true
     }
 
-    // Starts a range of lines at the selected line, or clears it, while selecting lines.
+    // Starts picking lines from the selected one, or ends it keeping them picked, while selecting
+    // lines, see `DiffCursor::toggle_range`.
     pub fn toggle_range(&mut self) {
         if self.is_selecting_lines() {
             self.cursor.toggle_range();
@@ -213,6 +214,11 @@ impl DiffPane {
 
     pub fn has_range(&self) -> bool {
         self.is_selecting_lines() && self.cursor.has_range()
+    }
+
+    // Whether the lines picked are extended by moving, see `toggle_range`.
+    pub fn is_visual(&self) -> bool {
+        self.is_selecting_lines() && self.cursor.is_visual()
     }
 
     // What is selected, for the keys and messages: "hunk", "line" or "lines".

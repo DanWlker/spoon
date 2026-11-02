@@ -13,6 +13,7 @@ use ratatui::{
 use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
+    background::Job,
     color::ColorTheme,
     event::{Sender, UserEvent},
     git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
@@ -318,37 +319,53 @@ impl<'a> CommitChangesState<'a> {
     // Loads the diff of the selected row, or waits for the one loading in the background: before a
     // key acts on it.
     pub fn ensure_loaded(&mut self) {
+        if let Some(submodule) = &mut self.submodule {
+            submodule.wait(&self.ctx);
+        }
         if self.pane.is_loading() {
             self.pane.wait_loading(self.repository);
             return;
         }
-        if let Some(work) = self.diff_work() {
+        if let Some(work) = self.diff_work(None) {
             let mut diff = parse_diff(&work());
             diff.drop_converted(self.repository);
             self.pane.set_diff(Some(diff));
         }
     }
 
+    // Whether its diff or submodule loads in the background.
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        let submodule = self
+            .submodule
+            .as_ref()
+            .is_some_and(SubmodulePanel::is_loading);
+        self.pane.is_loading() || submodule
+    }
+
     // Before drawing: starts loading the diff of the selected row on another thread, the screen
     // keeping up with the keys meanwhile, or shows it once loaded.
     pub fn ensure_loaded_in_background(&mut self, tx: &Sender) {
+        if let Some(submodule) = &mut self.submodule {
+            submodule.poll(&self.ctx);
+        }
         if self.pane.poll_loading(self.repository) || self.pane.is_loading() {
             return;
         }
-        if let Some(work) = self.diff_work() {
+        if let Some(work) = self.diff_work(Some(tx)) {
             self.pane.load_in_background(tx.clone(), work);
         }
     }
 
     // The work loading the diff of the selected row, None when it is loaded or a submodule shows
-    // its commits instead.
-    fn diff_work(&mut self) -> Option<Box<dyn FnOnce() -> String + Send>> {
+    // its commits instead, loading them with `tx` on another thread, see `SubmodulePanel::between`.
+    fn diff_work(&mut self, tx: Option<&Sender>) -> Option<Box<dyn FnOnce() -> String + Send>> {
         self.ensure_gitlinks();
         if self.pane.diff().is_some() || self.submodule.is_some() {
             return None;
         }
         // a submodule shows its own commits instead of the gitlink diff
-        if let Some(submodule) = self.load_submodule() {
+        if let Some(submodule) = self.load_submodule(tx) {
             self.submodule = Some(submodule);
             self.pane.set_diff(None);
             return None;
@@ -387,7 +404,7 @@ impl<'a> CommitChangesState<'a> {
 
     // The submodule of the selected file, between the gitlink of the base (or the parent) and the
     // commit's, when both have one. None for a directory or a plain file.
-    fn load_submodule(&self) -> Option<SubmodulePanel<'a>> {
+    fn load_submodule(&self, tx: Option<&Sender>) -> Option<SubmodulePanel<'a>> {
         let row = self.tree.selected()?;
         if row.is_dir() {
             return None;
@@ -410,6 +427,7 @@ impl<'a> CommitChangesState<'a> {
             &from,
             Some(&to),
             None,
+            tx,
         ))
     }
 
@@ -466,6 +484,8 @@ enum FilePreview {
     // a gitlink, whose commits are shown on the Changes tab
     Submodule,
     Error(String),
+    // the file's contents loading on another thread, see `ensure_loaded_in_background`
+    Loading(Job<Result<Vec<u8>, String>>),
 }
 
 #[derive(Debug)]
@@ -481,6 +501,8 @@ pub struct CommitFilesState<'a> {
     // the gitlinks of the commit, which are not files to preview or act on
     gitlinks: FxHashSet<String>,
     gitlinks_for: Option<CommitHash>,
+    // the files of the commit loading on another thread, see `ensure_loaded_in_background`
+    tree_loading: Option<Job<crate::git::CommitTree>>,
     // loaded lazily, only once the tab is shown
     tree: Option<FileTreeState>,
     // the rows selected with v, which moving extends and esc clears
@@ -593,6 +615,7 @@ impl<'a> CommitFilesState<'a> {
             paths: None,
             gitlinks: FxHashSet::default(),
             gitlinks_for: None,
+            tree_loading: None,
             tree: None,
             picked: TreeSelection::default(),
             previous_tree: None,
@@ -653,13 +676,73 @@ impl<'a> CommitFilesState<'a> {
         self.preview = None;
     }
 
+    // Loads the files and the preview of the selected one, or waits for those loading in the
+    // background: before a key acts on them.
     pub fn ensure_loaded(&mut self) {
+        let tree = match self.tree_loading.take() {
+            Some(job) => job.wait(),
+            None if self.paths.is_none() => self.repository.commit_tree(&self.commit_hash),
+            None => Default::default(),
+        };
         if self.paths.is_none() {
-            let (paths, gitlinks) = self.repository.commit_tree(&self.commit_hash);
-            self.paths = Some(paths.into_iter().collect());
-            self.gitlinks = gitlinks;
-            self.gitlinks_for = Some(self.commit_hash.clone());
+            self.set_tree(tree);
         }
+        self.show_tree();
+        match self.preview.take() {
+            Some(FilePreview::Loading(job)) => self.show_content(job.wait()),
+            None => {
+                if let Some(work) = self.preview_work() {
+                    self.show_content(work());
+                }
+            }
+            preview => self.preview = preview,
+        }
+    }
+
+    // Before drawing: starts loading the files, then the preview of the selected one, on another
+    // thread, the screen keeping up with the keys meanwhile, or shows them once loaded.
+    pub fn ensure_loaded_in_background(&mut self, tx: &Sender) {
+        if self.paths.is_none() {
+            let job = self.tree_loading.get_or_insert_with(|| {
+                Job::spawn(
+                    tx.clone(),
+                    self.repository.commit_tree_work(&self.commit_hash),
+                )
+            });
+            let Some(tree) = job.try_take() else {
+                return;
+            };
+            self.tree_loading = None;
+            self.set_tree(tree);
+        }
+        self.show_tree();
+        match self.preview.take() {
+            Some(FilePreview::Loading(job)) => match job.try_take() {
+                Some(content) => self.show_content(content),
+                None => self.preview = Some(FilePreview::Loading(job)),
+            },
+            None => {
+                if let Some(work) = self.preview_work() {
+                    self.preview = Some(FilePreview::Loading(Job::spawn(tx.clone(), work)));
+                }
+            }
+            preview => self.preview = preview,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_loading(&self) -> bool {
+        self.tree_loading.is_some() || matches!(self.preview, Some(FilePreview::Loading(_)))
+    }
+
+    fn set_tree(&mut self, (paths, gitlinks): crate::git::CommitTree) {
+        self.paths = Some(paths.into_iter().collect());
+        self.gitlinks = gitlinks;
+        self.gitlinks_for = Some(self.commit_hash.clone());
+    }
+
+    // The tree of the files loaded, keeping the directories expanded before.
+    fn show_tree(&mut self) {
         self.ensure_gitlinks();
         if self.tree.is_none() {
             let paths = self.paths.get_or_insert_default();
@@ -671,13 +754,9 @@ impl<'a> CommitFilesState<'a> {
             });
             self.preview = None;
         }
-        if self.preview.is_none() {
-            self.load_preview();
-        }
     }
 
-    // Applies a tree operation, reloading the preview when the selection changed; None before the
-    // tree is loaded.
+    // Applies a tree operation; None before the tree is loaded.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> Option<R> {
         let (result, selected_changed) = {
             let tree = self.tree.as_mut()?;
@@ -689,8 +768,10 @@ impl<'a> CommitFilesState<'a> {
         if let Some(tree) = self.tree.as_ref() {
             self.picked.sync_visual(tree);
         }
+        // the preview of another row loads once used, see `ensure_loaded`
         if selected_changed {
-            self.load_preview();
+            self.text.set_lines(Vec::new());
+            self.preview = None;
         }
         Some(result)
     }
@@ -789,25 +870,33 @@ impl<'a> CommitFilesState<'a> {
         true
     }
 
-    fn load_preview(&mut self) {
+    // The preview of the selected row, a directory and a submodule right away, else the work
+    // loading the file's contents.
+    fn preview_work(
+        &mut self,
+    ) -> Option<impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static> {
         self.text.set_lines(Vec::new());
         self.ensure_gitlinks();
         let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
-            return;
+            return None;
         };
         if row.is_dir() {
             self.preview = Some(FilePreview::Directory);
-            return;
+            return None;
         }
         if self.is_gitlink(&row.path) {
             self.preview = Some(FilePreview::Submodule);
-            return;
+            return None;
         }
-        let preview = match self
-            .repository
-            .commit_file_content(&self.commit_hash, &row.path)
-        {
+        Some(
+            self.repository
+                .commit_file_content_work(&self.commit_hash, &row.path),
+        )
+    }
+
+    fn show_content(&mut self, content: Result<Vec<u8>, String>) {
+        let preview = match content {
             // the same heuristic as git: a NUL byte near the start means binary
             Ok(bytes) if bytes.iter().take(8000).any(|b| *b == 0) => FilePreview::Binary,
             // as in the file, to copy; tabs are expanded when shown
@@ -968,6 +1057,7 @@ impl CommitTab {
                 dim("Submodule, its commits are on the Changes tab".into())
             }
             Some(FilePreview::Error(err)) => dim(err.clone()),
+            Some(FilePreview::Loading(_)) => dim("Loading…".into()),
             Some(FilePreview::Directory) | None => Vec::new(),
         };
         Paragraph::new(lines).render(preview_area, buf);
@@ -1097,6 +1187,28 @@ mod tests {
     }
 
     #[test]
+    fn test_submodule_panel_loads_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repository, _superproject, first, second) =
+            repository_with_a_bumped_submodule(dir.path());
+        let ec = crate::event::EventController::without_terminal();
+        let tx = ec.sender();
+        let ctx = test_ctx();
+        let panel =
+            |tx| SubmodulePanel::between(&repository, &ctx, "sub", &first, Some(&second), None, tx);
+        // its commits load on another thread, said meanwhile
+        let mut loading = panel(Some(&tx));
+        assert!(loading.is_loading());
+        assert!(loading.subjects().is_empty());
+        loading.wait(&ctx);
+        assert_eq!(loading.subjects(), ["second"]);
+        // kept by the parent: shown right away the next time
+        let again = panel(Some(&tx));
+        assert!(!again.is_loading());
+        assert_eq!(again.subjects(), ["second"]);
+    }
+
+    #[test]
     fn test_files_tab_shows_a_submodule_without_a_file_preview() {
         let dir = tempfile::tempdir().unwrap();
         let (repository, _superproject, _first, _second) =
@@ -1106,6 +1218,7 @@ mod tests {
         let mut state = CommitFilesState::new(&repository, &commit, &changes);
         state.ensure_loaded();
         state.update_tree(|tree| tree.select_path("sub"));
+        state.ensure_loaded();
         assert!(matches!(state.preview, Some(FilePreview::Submodule)));
         assert_eq!(
             state.single_picked_file(),
@@ -1119,6 +1232,7 @@ mod tests {
         state.set_commit(&parent_commit, &parent_changes);
         state.ensure_loaded();
         state.update_tree(|tree| tree.select_path("sub"));
+        state.ensure_loaded();
         assert!(matches!(state.preview, Some(FilePreview::Submodule)));
         assert_eq!(state.gitlinks_for, Some(parent));
     }
@@ -1306,6 +1420,13 @@ mod tests {
             tree.navigate(UserEvent::NavigateDown);
         });
         assert_eq!(selected(state.tree.as_ref().unwrap()), "src/a.rs");
+        // loaded once used: before drawing on another thread, said meanwhile, and waited for
+        // before a key acts on it
+        assert!(state.preview.is_none());
+        let ec = crate::event::EventController::without_terminal();
+        state.ensure_loaded_in_background(&ec.sender());
+        assert!(matches!(state.preview, Some(FilePreview::Loading(_))));
+        state.ensure_loaded();
         assert!(
             matches!(
                 &state.preview,
@@ -1325,6 +1446,7 @@ mod tests {
         state.update_tree(|tree| {
             tree.navigate(UserEvent::GoToBottom);
         });
+        state.ensure_loaded();
         assert!(matches!(state.preview, Some(FilePreview::Binary)));
 
         // another commit keeps the expanded directories and the selection

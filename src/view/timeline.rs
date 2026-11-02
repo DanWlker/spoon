@@ -371,8 +371,12 @@ impl TimelineView {
             "into the diff",
             "Into the diff/back out of it",
         )
-        // a diff without hunks, like a rename's, has nothing to go into
-        .when(move |v| commits(v) && v.pane.diff().is_some_and(|d| !d.hunks.is_empty()));
+        // a diff without hunks, like a rename's, has nothing to go into; one loading shows the key,
+        // which waits for it, so it doesn't flicker off while moving through the commits
+        .when(move |v| {
+            commits(v)
+                && (v.pane.is_loading() || v.pane.diff().is_some_and(|d| !d.hunks.is_empty()))
+        });
         register_commit_keys(k, commits);
         register_moving_keys(k, |_| true);
         k.quiet(
@@ -534,8 +538,9 @@ mod tests {
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
-        // from the commits, the diff loads in the background
+        // from the commits, the diff loads in the background, the key into it shown meanwhile
         assert!(view.pane.is_loading());
+        assert!(view.keys().takes(UserEvent::NavigateRight));
         view.pane.wait_loading(&repository);
         assert!(raw(&view).contains("+two"));
 
