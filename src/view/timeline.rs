@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
-    git::{CommitHash, FileRevision, Repository},
+    git::{FileRevision, Repository},
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
@@ -45,26 +45,38 @@ pub struct TimelineView {
 
 impl TimelineView {
     // The commits changing the file, on the last one changing it up to `commit`.
+    #[cfg(test)]
     pub fn new(
         repository: &Repository,
-        commit: &CommitHash,
+        commit: &crate::git::CommitHash,
         path: &str,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Result<Self, String> {
         let (history, selected) = repository.file_history(commit, path)?;
+        let mut view = Self::of(history, selected, ctx, tx);
+        view.load(repository);
+        Ok(view)
+    }
+
+    // The view of the file's `history` on the revision at `selected`, loaded on another thread,
+    // see `Repository::file_history_work`; its diff loads with `show_selected`.
+    pub fn of(
+        history: Vec<FileRevision>,
+        selected: usize,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> Self {
         let mut cursor = ListCursor::default();
         cursor.select(selected, history.len());
-        let mut view = TimelineView {
+        TimelineView {
             history,
             cursor,
             pane: DiffPane::default(),
             query: TreeQuery::default(),
             ctx,
             tx,
-        };
-        view.load(repository);
-        Ok(view)
+        }
     }
 
     // The file's changes in the selected commit, from the path it had before when it moved.
@@ -89,7 +101,7 @@ impl TimelineView {
     // The diff of the commit selected now: from the diff, it stays in the diff of that one, loaded
     // right away for that; from the commits, it loads on another thread, the screen keeping up with
     // the keys meanwhile, see `poll_loading`.
-    fn show_selected(&mut self, repository: &Repository) {
+    pub fn show_selected(&mut self, repository: &Repository) {
         if self.pane.is_focused() {
             self.load(repository);
             self.pane.enter();
@@ -471,6 +483,7 @@ mod tests {
     use super::*;
     use crate::{
         event::EventController,
+        git::CommitHash,
         git::SortCommit,
         test_support::{
             git::{git, GitRepository},

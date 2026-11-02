@@ -334,17 +334,7 @@ pub fn file_link(
 // e on files of the repository: opens them as they are in the working tree in the editor, or says
 // which is gone from it.
 pub fn edit_files(repository: &Repository, files: &[&str]) -> AppEvent {
-    let paths: Result<Vec<_>, String> = files
-        .iter()
-        .map(|file| {
-            let path = repository.path().join(file);
-            match path.exists() {
-                true => Ok(path),
-                false => Err(format!("{file} does not exist in the working tree")),
-            }
-        })
-        .collect();
-    match paths {
+    match repository.working_tree_paths(files) {
         Ok(paths) => AppEvent::RunExternal(editor_command(&paths)),
         Err(err) => AppEvent::NotifyError(err),
     }

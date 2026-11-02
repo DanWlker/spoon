@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent},
-    git::{CommitHash, FileRevision, Repository},
+    git::{Blame, CommitHash, FileRevision, Repository},
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions, SearchOutcome},
@@ -75,6 +75,7 @@ pub struct BlameView {
 
 impl BlameView {
     // The blame of the file as of the last commit changing it up to `commit`, on `line` (from 0).
+    #[cfg(test)]
     pub fn new(
         repository: &Repository,
         commit: &CommitHash,
@@ -83,7 +84,20 @@ impl BlameView {
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Result<Self, String> {
-        let (history, index) = repository.file_history(commit, path)?;
+        let (history, index, blame) = repository.file_blame_work(commit, path)()?;
+        Ok(Self::of(history, index, blame, line, ctx, tx))
+    }
+
+    // The view of the file's `history` with the `blame` of the revision at `index`, loaded on
+    // another thread, see `Repository::file_blame_work`.
+    pub fn of(
+        history: Vec<FileRevision>,
+        index: usize,
+        blame: Blame,
+        line: Option<usize>,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> Self {
         let mut view = BlameView {
             history,
             index,
@@ -97,18 +111,23 @@ impl BlameView {
             ctx,
             tx,
         };
-        view.load(repository)?;
+        view.show(blame);
         if let Some(line) = line {
             view.text.select_line(line);
             view.focus = BlameFocus::Text;
         }
-        Ok(view)
+        view
     }
 
     // Blames the file as of the commit shown, keeping the selected line.
     fn load(&mut self, repository: &Repository) -> Result<(), String> {
         let revision = &self.history[self.index];
         let blame = repository.blame(&revision.commit, &revision.path)?;
+        self.show(blame);
+        Ok(())
+    }
+
+    fn show(&mut self, blame: Blame) {
         let line = self.text.selected_line();
         let (commits, lines) = blame.lines.into_iter().unzip();
         self.commits = commits;
@@ -137,7 +156,6 @@ impl BlameView {
         self.date_width = widest(|l| &l.date);
         self.text.set_lines(lines);
         self.text.select_line(line);
-        Ok(())
     }
 
     // The path of the file as of the commit shown, for the page bar.

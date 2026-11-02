@@ -1,4 +1,4 @@
-use std::{path::PathBuf, rc::Rc};
+use std::{path::PathBuf, rc::Rc, time::Instant};
 
 use ratatui::{
     buffer::Buffer,
@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use crate::widget::tree_query::Toward;
 use crate::{
     app::AppContext,
+    background::Job,
     color::ColorTheme,
     event::{Sender, UserEvent},
     git::{
@@ -277,6 +278,13 @@ pub struct LocalChangesState<'a> {
     diff_stale: bool,
     // the fingerprint of the files as loaded, see `reload_if_changed`
     files_stamp: u64,
+    // the app's, set by the view, to load the files on another thread after a change, the screen
+    // keeping up meanwhile; without it, as in the tests, they load right away. See `reload`.
+    background: Option<Sender>,
+    // the files loading after a change, shown once loaded
+    files_loading: Option<Job<LocalChanges>>,
+    // when the files last started loading after a change, see `reload_if_changed`
+    reloaded: Instant,
     // the conflicted file under the cursor, shown instead of its diff
     conflict: Option<ConflictPanel>,
     // the submodule under the cursor, shown instead of its gitlink diff
@@ -319,6 +327,9 @@ impl<'a> LocalChangesState<'a> {
             request: None,
             diff_stale: false,
             files_stamp,
+            background: None,
+            files_loading: None,
+            reloaded: Instant::now(),
             conflict: None,
             submodule: None,
             submodule_cache: None,
@@ -988,14 +999,8 @@ impl<'a> LocalChangesState<'a> {
         if files.is_empty() {
             return Err("Select a file to edit".into());
         }
-        let mut paths = Vec::new();
-        for file in files {
-            let path = self.repository.path().join(&file.path);
-            if !path.exists() {
-                return Err(format!("{} does not exist in the working tree", file.path));
-            }
-            paths.push(path);
-        }
+        let files: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        let paths = self.repository.working_tree_paths(&files)?;
         self.request = Some(Request::External(ExternalRequest::Editor(paths)));
         Ok(())
     }
@@ -1612,16 +1617,31 @@ impl<'a> LocalChangesState<'a> {
 
     // Reloads with `files`, loaded in the background, for changes made outside the app, leaving the
     // page as it is (scroll, focus) when nothing it shows changed.
+    // Those from before its own last change are dropped, and wait for one loading after a change.
     pub fn reload_if_changed(&mut self, files: FilesSnapshot) {
-        if files.stamp != self.files_stamp {
+        let stale = files.started < self.reloaded || self.files_loading.is_some();
+        if !stale && files.stamp != self.files_stamp {
             self.reload_with(files.changes);
         }
     }
 
+    // Loads the files on another thread with the app's `tx`, after a change, see `reload`.
+    pub fn load_in_background(&mut self, tx: Sender) {
+        self.background = Some(tx);
+    }
+
     // Reloads the changes, keeping each section's selection on the same path if it still exists,
-    // otherwise on the same position, like lazygit does after staging.
+    // otherwise on the same position, like lazygit does after staging: on another thread when the
+    // view set it up, see `poll_files` and `load_stale_diff`.
     pub fn reload(&mut self) {
-        self.reload_with(self.repository.local_changes());
+        self.reloaded = Instant::now();
+        match &self.background {
+            Some(tx) => {
+                let work = self.repository.local_changes_work();
+                self.files_loading = Some(Job::spawn(tx.clone(), work));
+            }
+            None => self.reload_with(self.repository.local_changes()),
+        }
     }
 
     fn reload_with(&mut self, changes: LocalChanges) {
@@ -1914,6 +1934,9 @@ impl<'a> LocalChangesState<'a> {
     // Loads the diff of the selected row, when the cursor moved since it was, or waits for the
     // one loading in the background: before a key acts on it.
     pub fn load_stale_diff(&mut self) {
+        if let Some(job) = self.files_loading.take() {
+            self.reload_with(job.wait());
+        }
         if std::mem::take(&mut self.diff_stale) {
             self.load_diff();
         }
@@ -1922,12 +1945,16 @@ impl<'a> LocalChangesState<'a> {
 
     #[cfg(test)]
     pub fn is_diff_loading(&self) -> bool {
-        self.pane.is_loading()
+        self.pane.is_loading() || self.files_loading.is_some()
     }
 
     // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
     // the screen keeping up with the keys meanwhile, or shows it once loaded.
     pub fn load_stale_diff_in_background(&mut self, tx: &Sender) {
+        if let Some(changes) = self.files_loading.as_ref().and_then(Job::try_take) {
+            self.files_loading = None;
+            self.reload_with(changes);
+        }
         if std::mem::take(&mut self.diff_stale) && self.prepare_diff() {
             let work = self.diff_work();
             self.pane.load_in_background(tx.clone(), work);
@@ -4524,6 +4551,13 @@ mod tests {
         state.reload_if_changed(files());
         assert_eq!(state.pane.scroll_state().offset, 0);
         assert!(diff(&state).raw.contains("+three"));
+
+        // loaded before the page staged the file, it would show it unstaged again: dropped
+        let before = files();
+        state.toggle_stage()?;
+        assert!(state.changes.unstaged.is_empty());
+        state.reload_if_changed(before);
+        assert!(state.changes.unstaged.is_empty());
         Ok(())
     }
 

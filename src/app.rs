@@ -23,17 +23,20 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::widget::tree_query::Toward;
 use crate::{
+    background::Job,
     browse::{self, LinkAction, LinkTarget},
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, GraphColorConfig, UiConfig},
-    event::{AppEvent, EventController, KeyHint, UserEvent},
+    event::{AppEvent, EventController, KeyHint, Sender, UserEvent},
     external::{copy_to_clipboard, exec_interactive},
     git::{
         read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, Commit, CommitHash,
-        FileChange, FilesSnapshot, GitCommand, GitTask, Head, LoadOptions, Loaded, NamedRef, Ref,
-        Repository, Rev, RunningTask, SharedTask,
+        FileBlameResult, FileChange, FileHistoryResult, FilesSnapshot, GitCommand, GitTask, Head,
+        LoadOptions, Loaded, NamedRef, Ref, Repository, Rev, RunningTask, SharedTask,
     },
-    graph::{CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphStyle},
+    graph::{
+        CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphLayout, GraphStyle,
+    },
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
     keys::{Availability, KeyList, Keys},
@@ -267,6 +270,10 @@ pub struct AppShell {
     reload: Option<PendingReload>,
     // counts the reloads asked for, see `PendingReload`
     reload_generation: u64,
+    // the graph of the repository reloaded, laid out with it, until the app is made again on it
+    layout: Option<GraphLayout>,
+    // the blame or timeline opening, see `App::open_window`
+    opening: Option<Opening>,
 }
 
 // What the app shows again once the repository reloaded in the background lands.
@@ -277,6 +284,23 @@ enum Restore {
     Current(Box<RefreshViewContext>),
     // what a command asked for, like the commit it rewrote selected
     Given(Box<RefreshViewContext>),
+}
+
+// The repository loaded again in the background, with its graph laid out there too.
+#[derive(Debug)]
+pub struct Reloaded {
+    loaded: Loaded,
+    layout: GraphLayout,
+}
+
+// A window over everything whose file history loads on another thread, see `App::open_window`.
+#[derive(Debug)]
+enum Opening {
+    Blame {
+        job: Job<FileBlameResult>,
+        line: Option<usize>,
+    },
+    Timeline(Job<FileHistoryResult>),
 }
 
 // The reload of the repository running in the background, see `App::start_reload`.
@@ -452,6 +476,11 @@ impl AppShell {
         self.graph_filter = GraphFilter::All;
     }
 
+    // The graph laid out on the thread reloading the repository, see `Reloaded`.
+    pub fn take_layout(&mut self) -> Option<GraphLayout> {
+        self.layout.take()
+    }
+
     pub fn notify_error(&mut self, message: String) {
         push_notice(&mut self.notices, Notice::error(message));
     }
@@ -580,6 +609,8 @@ impl<'a> App<'a> {
                 missed_check: false,
                 reload: None,
                 reload_generation: 0,
+                layout: None,
+                opening: None,
             },
         };
         // gone, like after a rebase
@@ -858,25 +889,20 @@ impl App<'_> {
             AppEvent::CloseOverlay => {
                 self.shell.overlay = None;
             }
+            // walking the file's history takes long in a big repository: the window opens once it
+            // is loaded on another thread, see `open_window`
             AppEvent::OpenBlame { commit, path, line } => {
-                let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
-                match BlameView::new(self.repository, &commit, &path, line, ctx, tx) {
-                    Ok(blame) => {
-                        let window = FileWindow::Blame(Box::new(blame));
-                        self.shell.overlay = Some(Overlay::File(window));
-                    }
-                    Err(err) => self.ec.send(AppEvent::NotifyError(err)),
-                }
+                let work = self.repository.file_blame_work(&commit, &path);
+                let job = Job::spawn(self.ec.sender(), work);
+                self.shell.opening = Some(Opening::Blame { job, line });
+                let message = format!("Loading the blame of {path}…");
+                self.ec.send(AppEvent::UpdateStatusTransient(message));
             }
             AppEvent::OpenTimeline { commit, path } => {
-                let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
-                match TimelineView::new(self.repository, &commit, &path, ctx, tx) {
-                    Ok(view) => {
-                        let window = FileWindow::Timeline(Box::new(view));
-                        self.shell.overlay = Some(Overlay::File(window));
-                    }
-                    Err(err) => self.ec.send(AppEvent::NotifyError(err)),
-                }
+                let work = self.repository.file_history_work(&commit, &path);
+                self.shell.opening = Some(Opening::Timeline(Job::spawn(self.ec.sender(), work)));
+                let message = format!("Loading the timeline of {path}…");
+                self.ec.send(AppEvent::UpdateStatusTransient(message));
             }
             AppEvent::Checkout(commit) => {
                 let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
@@ -957,8 +983,43 @@ impl App<'_> {
         self.update_state(view_area);
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
+        self.open_window();
         if let Some(Overlay::File(window)) = &mut self.shell.overlay {
             window.update(self.repository);
+        }
+    }
+
+    // Opens the blame or timeline once its file history is loaded, see `AppEvent::OpenBlame`.
+    fn open_window(&mut self) {
+        let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
+        let window = match self.shell.opening.take() {
+            None => return,
+            Some(Opening::Blame { job, line }) => match job.try_take() {
+                None => {
+                    self.shell.opening = Some(Opening::Blame { job, line });
+                    return;
+                }
+                Some(loaded) => loaded.map(|(history, index, blame)| {
+                    let view = BlameView::of(history, index, blame, line, ctx, tx);
+                    FileWindow::Blame(Box::new(view))
+                }),
+            },
+            Some(Opening::Timeline(job)) => match job.try_take() {
+                None => {
+                    self.shell.opening = Some(Opening::Timeline(job));
+                    return;
+                }
+                Some(loaded) => loaded.map(|(history, selected)| {
+                    let mut view = TimelineView::of(history, selected, ctx, tx);
+                    view.show_selected(self.repository);
+                    FileWindow::Timeline(Box::new(view))
+                }),
+            },
+        };
+        self.clear_status_line();
+        match window {
+            Ok(window) => self.shell.overlay = Some(Overlay::File(window)),
+            Err(err) => self.ec.send(AppEvent::NotifyError(err)),
         }
     }
 
@@ -969,7 +1030,7 @@ impl App<'_> {
             Some(Overlay::File(FileWindow::Timeline(timeline))) => timeline.is_loading(),
             _ => false,
         };
-        window || self.view.is_loading()
+        window || self.shell.opening.is_some() || self.view.is_loading()
     }
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
@@ -1250,6 +1311,15 @@ impl App<'_> {
         f.render_widget(Line::from(spans), area);
     }
 
+    // What runs in the background, with a spinner in the status bar: the git command, else the
+    // reload of the repository.
+    fn background_activity(&self) -> Option<String> {
+        match self.ctx.running_task.lock().as_ref() {
+            Some(running) => Some(running.task.running.clone()),
+            None => self.shell.reload.as_ref().map(|_| "Reloading".to_string()),
+        }
+    }
+
     // A bar after a neovim statusline: the message, or what runs in the background, or the
     // repository; on the right the keys of what has the focus and the position in the commit list.
     // The page is in the page bar.
@@ -1270,10 +1340,9 @@ impl App<'_> {
                     left.push(Span::raw(format!("{prefix} ")).fg(theme.accent_fg).bold());
                 }
                 // what runs in the background, else where the repository is
-                match self.ctx.running_task.lock().as_ref() {
-                    Some(running) => left.push(
-                        Span::raw(format!("{} {}", running.task.running, spinner()))
-                            .fg(theme.highlight_fg),
+                match self.background_activity() {
+                    Some(activity) => left.push(
+                        Span::raw(format!("{activity} {}", spinner())).fg(theme.highlight_fg),
                     ),
                     None => {
                         // shortened like neovim's pathshorten when it would crowd the keys
@@ -1326,8 +1395,8 @@ impl App<'_> {
 
         // with a message, what runs in the background goes to the right
         let message = !matches!(self.shell.app_status.status_line, StatusLine::None);
-        if let Some(running) = self.ctx.running_task.lock().as_ref().filter(|_| message) {
-            let text = format!("{} {} ", running.task.running, spinner());
+        if let Some(activity) = self.background_activity().filter(|_| message) {
+            let text = format!("{activity} {} ", spinner());
             right.insert(0, Span::raw(text).fg(theme.highlight_fg));
         }
         // the selected commit and how many there are, like the line and column
@@ -2169,16 +2238,9 @@ impl App<'_> {
         }
         let tx = self.ec.sender();
         std::thread::spawn(move || {
-            // the app redraws the spinner on each tick, until `done` is dropped
-            let (done, ticking) = std::sync::mpsc::channel::<()>();
-            let ticker = tx.clone();
-            std::thread::spawn(move || {
-                while ticking.recv_timeout(SPINNER_RATE) == Err(RecvTimeoutError::Timeout) {
-                    ticker.send(AppEvent::SpinnerTick);
-                }
-            });
+            let spinning = spin(tx.clone());
             let result = run_task(&path, &task);
-            drop(done);
+            drop(spinning);
             tx.send(AppEvent::TaskFinished(result));
         });
     }
@@ -2529,9 +2591,19 @@ impl App<'_> {
         let options = self.load_options.clone();
         let revisions = self.shell.graph_revisions();
         let running = self.ctx.running_task.clone();
+        let folded = self.shell.folded_merges.clone();
         let tx = self.ec.sender();
         std::thread::spawn(move || {
-            let result = options.load(revisions.as_deref(), running).map(Box::new);
+            let spinning = spin(tx.clone());
+            let result = options.load(revisions.as_deref(), running).map(|loaded| {
+                let repository = match &loaded {
+                    Loaded::Repository(repository) | Loaded::RefsGone(repository) => repository,
+                };
+                let primary_branch = options.primary_branch.as_deref();
+                let layout = GraphLayout::calc(repository, primary_branch, &folded);
+                Box::new(Reloaded { loaded, layout })
+            });
+            drop(spinning);
             // the app may have quit meanwhile
             tx.try_send(AppEvent::Reloaded { generation, result });
         });
@@ -2542,19 +2614,14 @@ impl App<'_> {
     fn land_reload(
         &mut self,
         generation: u64,
-        result: std::result::Result<Box<Loaded>, String>,
+        result: std::result::Result<Box<Reloaded>, String>,
     ) -> Option<Ret> {
         let pending = self
             .shell
             .reload
             .take_if(|pending| pending.generation == generation)?;
-        let repository = match result.map(|loaded| *loaded) {
-            Ok(Loaded::Repository(repository)) => repository,
-            // a ref the graph showed is gone, all of them are shown again
-            Ok(Loaded::RefsGone(repository)) => {
-                self.shell.reset_graph_filter();
-                repository
-            }
+        let Reloaded { loaded, layout } = match result {
+            Ok(reloaded) => *reloaded,
             Err(err) => {
                 self.shell.notify_error(err);
                 // the refs as they are now, else the change that made it fail would reload again
@@ -2565,6 +2632,15 @@ impl App<'_> {
                 return None;
             }
         };
+        let repository = match loaded {
+            Loaded::Repository(repository) => repository,
+            // a ref the graph showed is gone, all of them are shown again
+            Loaded::RefsGone(repository) => {
+                self.shell.reset_graph_filter();
+                repository
+            }
+        };
+        self.shell.layout = Some(layout);
         let context = match pending.restore {
             Restore::Current(asked) => self.view.refresh_context().unwrap_or(*asked),
             Restore::Given(context) => *context,
@@ -2835,6 +2911,20 @@ fn fetch_all_task() -> GitTask {
         "Fetching all remotes".into(),
         "Fetched all remotes".into(),
     )
+}
+
+// Redraws the spinner in the status bar on each tick, until the sender returned is dropped.
+fn spin(tx: Sender) -> std::sync::mpsc::Sender<()> {
+    let (spinning, ticking) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        while ticking.recv_timeout(SPINNER_RATE) == Err(RecvTimeoutError::Timeout) {
+            // the app may have quit meanwhile
+            if !tx.try_send(AppEvent::SpinnerTick) {
+                break;
+            }
+        }
+    });
+    spinning
 }
 
 fn selected_commit_details(

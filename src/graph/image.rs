@@ -267,7 +267,7 @@ pub fn build_single_graph_row_image(
     commit_hash: &CommitHash,
 ) -> GraphRowImage {
     let (pos_x, pos_y) = graph.commit_pos_map[&commit_hash];
-    let edges = &graph.edges[pos_y];
+    let edges = &graph.edges.at(pos_y);
 
     let max_pos_x = match image_width_mode {
         GraphImageWidthMode::Compact => edges.iter().map(|e| e.pos_x).fold(pos_x, usize::max),

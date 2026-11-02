@@ -266,6 +266,8 @@ pub struct LoadOptions {
     pub sort: SortCommit,
     pub max_count: Option<usize>,
     pub mailmap: bool,
+    // the branch the graph keeps in the first column, laid out with it, see `graph::calc_graph`
+    pub primary_branch: Option<String>,
 }
 
 // A repository loaded, see `LoadOptions::load`.
@@ -599,7 +601,13 @@ impl Repository {
     }
 
     pub fn local_changes(&self) -> LocalChanges {
-        load_local_changes(&self.path)
+        self.local_changes_work()()
+    }
+
+    // `local_changes` as work to run on another thread.
+    pub fn local_changes_work(&self) -> impl FnOnce() -> LocalChanges + Send + 'static {
+        let path = self.path.clone();
+        move || load_local_changes(&path)
     }
 
     // The number of local changes, as they were when the repository was loaded.
@@ -953,58 +961,40 @@ impl Repository {
         commit_hash: &CommitHash,
         path: &str,
     ) -> std::result::Result<Blame, String> {
-        let args = ["blame", "--porcelain", commit_hash.as_str(), "--", path];
-        git_output(&self.path, &args).map(|out| parse_blame(&out))
+        blame_at(&self.path, commit_hash, path)
+    }
+
+    #[cfg(test)]
+    pub fn file_history(&self, start: &CommitHash, path: &str) -> FileHistoryResult {
+        self.file_history_work(start, path)()
     }
 
     // The commits changing the file at `path` in the history of HEAD and of `start`, renames
-    // followed, the newest first; with the index of the last one changing it as of `start`.
-    pub fn file_history(
+    // followed, the newest first; with the index of the last one changing it as of `start`. As
+    // work to run on another thread.
+    pub fn file_history_work(
         &self,
         start: &CommitHash,
         path: &str,
-    ) -> std::result::Result<(Vec<FileRevision>, usize), String> {
-        let format = "--format=%x01%H%x00%aI%x00%s";
-        let args = [
-            "log",
-            "--follow",
-            "--name-only",
-            "-z",
-            format,
-            "HEAD",
-            start.as_str(),
-        ];
-        let out = git_output(&self.path, &[&args[..], &["--", path]].concat())?;
-        let history: Vec<FileRevision> = out
-            .split('\x01')
-            .filter_map(|record| {
-                let mut fields = record.split('\0');
-                let (commit, date) = (fields.next()?, fields.next()?);
-                let (subject, path) = (fields.next()?, fields.next()?);
-                Some(FileRevision {
-                    commit: CommitHash::from(commit),
-                    date: parse_iso_date(date),
-                    subject: subject.into(),
-                    path: path.trim_start_matches('\n').into(),
-                })
-            })
-            .collect();
-        // walked as the history is, which leaves out merges
-        let args = [
-            "log",
-            "-1",
-            "--follow",
-            "--format=%H",
-            start.as_str(),
-            "--",
-            path,
-        ];
-        let last = git_output(&self.path, &args)?;
-        let index = history
-            .iter()
-            .position(|r| r.commit.as_str() == last.trim())
-            .ok_or_else(|| format!("{path} has no history"))?;
-        Ok((history, index))
+    ) -> impl FnOnce() -> FileHistoryResult + Send + 'static {
+        let (repository, start, path) = (self.path.clone(), start.clone(), path.to_string());
+        move || file_history_at(&repository, &start, &path)
+    }
+
+    // The file's history with its blame as of the last commit changing it up to `start`, as work
+    // to run on another thread, see `file_history_work`.
+    pub fn file_blame_work(
+        &self,
+        start: &CommitHash,
+        path: &str,
+    ) -> impl FnOnce() -> FileBlameResult + Send + 'static {
+        let (repository, start, path) = (self.path.clone(), start.clone(), path.to_string());
+        move || {
+            let (history, index) = file_history_at(&repository, &start, &path)?;
+            let revision = &history[index];
+            let blame = blame_at(&repository, &revision.commit, &revision.path)?;
+            Ok((history, index, blame))
+        }
     }
 
     // Changes between `base` and the index, i.e. what would be committed when amending.
@@ -1354,6 +1344,21 @@ impl Repository {
     // The top directory of the working tree, which file paths of local changes are relative to.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    // The paths of `files` in the working tree, to open in the editor; an error names one gone
+    // from it.
+    pub fn working_tree_paths(&self, files: &[&str]) -> std::result::Result<Vec<PathBuf>, String> {
+        files
+            .iter()
+            .map(|file| {
+                let path = self.path.join(file);
+                match path.exists() {
+                    true => Ok(path),
+                    false => Err(format!("{file} does not exist in the working tree")),
+                }
+            })
+            .collect()
     }
 
     // The content of a conflicted file on one side, None when that side deleted it.
@@ -1952,6 +1957,75 @@ fn load_remotes(path: &Path) -> Vec<String> {
 }
 
 // The commit checked out now, see `Repository::head_commit` for the one loaded.
+// The commits changing a file and the one last changing it, see `Repository::file_history_work`.
+pub type FileHistoryResult = std::result::Result<(Vec<FileRevision>, usize), String>;
+
+// The commits changing a file with the blame of the last one, see `Repository::file_blame_work`.
+pub type FileBlameResult = std::result::Result<(Vec<FileRevision>, usize, Blame), String>;
+
+fn blame_at(
+    repository: &Path,
+    commit_hash: &CommitHash,
+    path: &str,
+) -> std::result::Result<Blame, String> {
+    let args = ["blame", "--porcelain", commit_hash.as_str(), "--", path];
+    git_output(repository, &args).map(|out| parse_blame(&out))
+}
+
+// See `Repository::file_history_work`: its two walks of the history run side by side.
+fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHistoryResult {
+    let format = "--format=%x01%H%x00%aI%x00%s";
+    let args = [
+        "log",
+        "--follow",
+        "--name-only",
+        "-z",
+        format,
+        "HEAD",
+        start.as_str(),
+        "--",
+        path,
+    ];
+    // walked as the history is, which leaves out merges
+    let last_args = [
+        "log",
+        "-1",
+        "--follow",
+        "--format=%H",
+        start.as_str(),
+        "--",
+        path,
+    ];
+    let (out, last) = std::thread::scope(|scope| {
+        let last = scope.spawn(|| git_output(repository, &last_args));
+        let out = git_output(repository, &args);
+        (
+            out,
+            last.join().unwrap_or_else(|_| Err("git log failed".into())),
+        )
+    });
+    let history: Vec<FileRevision> = out?
+        .split('\x01')
+        .filter_map(|record| {
+            let mut fields = record.split('\0');
+            let (commit, date) = (fields.next()?, fields.next()?);
+            let (subject, path) = (fields.next()?, fields.next()?);
+            Some(FileRevision {
+                commit: CommitHash::from(commit),
+                date: parse_iso_date(date),
+                subject: subject.into(),
+                path: path.trim_start_matches('\n').into(),
+            })
+        })
+        .collect();
+    let last = last?;
+    let index = history
+        .iter()
+        .position(|r| r.commit.as_str() == last.trim())
+        .ok_or_else(|| format!("{path} has no history"))?;
+    Ok((history, index))
+}
+
 pub fn read_head_commit(path: &Path) -> Option<CommitHash> {
     git_output(path, &["rev-parse", "--verify", "--quiet", "HEAD"])
         .ok()
@@ -2346,13 +2420,21 @@ impl RemoteInfo {
 pub struct FilesSnapshot {
     pub changes: LocalChanges,
     pub stamp: u64,
+    // when it started loading: one started before the page reloaded after a change of its own
+    // shows the files as they were before that change
+    pub started: Instant,
 }
 
 impl FilesSnapshot {
     pub fn load(work_tree: &Path, git_dir: &Path) -> Self {
+        let started = Instant::now();
         let changes = load_local_changes(work_tree);
         let stamp = files_stamp(work_tree, git_dir, &changes);
-        FilesSnapshot { changes, stamp }
+        FilesSnapshot {
+            changes,
+            stamp,
+            started,
+        }
     }
 }
 
@@ -3343,7 +3425,7 @@ mod tests {
         let load = || FilesSnapshot::load(path, &git_dir);
 
         let before = load();
-        assert_eq!(load(), before);
+        assert_eq!(load().stamp, before.stamp);
         // edited again, still modified: the status is the same, the fingerprint isn't
         std::fs::write(path.join("a"), "bc\n").unwrap();
         let edited = load();

@@ -1413,7 +1413,7 @@ fn orphan_003() -> TestResult {
     // Every row has the same empty edge list, but its commit is in a different column.
     let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
     let graph = graph::calc_graph(&repository, None, &Default::default());
-    assert!(graph.edges.iter().all(Vec::is_empty));
+    assert!((0..graph.edges.len()).all(|row| graph.edges.at(row).is_empty()));
     assert_eq!(
         graph
             .commits
@@ -1645,8 +1645,8 @@ fn complex_002() -> TestResult {
     let graph = graph::calc_graph(&repository, None, &Default::default());
     let mut connections: FxHashMap<(graph::EdgeType, usize), FxHashSet<(usize, usize)>> =
         FxHashMap::default();
-    for edges in &graph.edges {
-        for corner in edges {
+    for edges in (0..graph.edges.len()).map(|row| graph.edges.at(row)) {
+        for corner in &edges {
             let side_type = match corner.edge_type {
                 graph::EdgeType::RightTop | graph::EdgeType::RightBottom => graph::EdgeType::Right,
                 graph::EdgeType::LeftTop | graph::EdgeType::LeftBottom => graph::EdgeType::Left,

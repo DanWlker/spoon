@@ -132,8 +132,8 @@ impl Harness {
                 sort: SortCommit::Chronological,
                 max_count: None,
                 mailmap: false,
+                primary_branch: None,
             },
-            primary_branch: None,
             graph_width: None,
             graph_style: GraphStyle::Rounded,
             graph_antialias: false,
@@ -443,6 +443,29 @@ fn test_a_key_after_moving_in_the_details_acts_on_the_diff_moved_to() {
         }),
         screen(|text| assert!(!text.contains("Loading…"), "{text}")),
     ]);
+}
+
+#[test]
+fn test_a_key_after_staging_acts_on_the_files_reloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    std::fs::write(path.join("f.txt"), "F\n").unwrap();
+    std::fs::write(path.join("g.txt"), "G\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        // f.txt staged, the files reload in the background: the second space waits for them,
+        // then stages g.txt, on the row f.txt left
+        keys_at_once("j space space"),
+    ]);
+    let staged = git(&path, &["diff", "--cached", "--name-only"]);
+    assert_eq!(staged, "f.txt\ng.txt\n");
 }
 
 #[test]

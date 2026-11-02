@@ -221,8 +221,8 @@ fn main() -> Result<()> {
             sort: order,
             max_count,
             mailmap,
+            primary_branch,
         },
-        primary_branch,
         graph_width,
         graph_style,
         graph_antialias,
@@ -316,7 +316,6 @@ type Refresh = Option<(app::AppShell, Box<view::RefreshViewContext>)>;
 // with it too, see `tests/app.rs`.
 struct Loader {
     options: git::LoadOptions,
-    primary_branch: Option<String>,
     graph_width: Option<GraphWidthType>,
     graph_style: graph::GraphStyle,
     graph_antialias: bool,
@@ -347,11 +346,17 @@ impl Loader {
         refresh: Refresh,
         run: impl FnOnce(App) -> R,
     ) -> Result<R> {
+        let mut refresh = refresh;
         let folded = refresh
             .as_ref()
             .map(|(shell, _)| shell.folded_merges().clone())
             .unwrap_or_default();
-        let graph = graph::calc_graph(repository, self.primary_branch.as_deref(), &folded);
+        // laid out on the thread reloading it, unless a merge was folded or unfolded meanwhile
+        let primary_branch = self.options.primary_branch.as_deref();
+        let graph = match refresh.as_mut().and_then(|(shell, _)| shell.take_layout()) {
+            Some(layout) if layout.folded == folded => graph::Graph::of(repository, layout),
+            _ => graph::calc_graph(repository, primary_branch, &folded),
+        };
         let cell_width_type = check::decide_cell_width_type(&graph, size, self.graph_width)?;
         ctx.graph.borrow_mut().cell_width_type = cell_width_type;
         let image_params =

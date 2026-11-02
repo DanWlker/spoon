@@ -37,10 +37,11 @@ pub struct LocalChangesView<'a> {
 impl<'a> LocalChangesView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
-        local_changes_state: LocalChangesState<'a>,
+        mut local_changes_state: LocalChangesState<'a>,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> LocalChangesView<'a> {
+        local_changes_state.load_in_background(tx.clone());
         LocalChangesView {
             commit_list_state,
             local_changes_state,
