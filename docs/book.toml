@@ -9,3 +9,5 @@ description = "Spoon Documentation"
 git-repository-url = "https://github.com/DanWlker/spoon"
 site-url = "/spoon/"
 default-theme = "rust"
+sidebar-header-nav = false
+smart-punctuation = false

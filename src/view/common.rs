@@ -402,9 +402,9 @@ pub fn revision_spans(
 // options on the right; cleared when nothing is typed.
 pub fn query_status(ctx: &AppContext, query: &TreeQuery, kind: SearchKind) -> AppEvent {
     match query.status_input() {
-        Some((message, cursor_position)) => AppEvent::UpdateStatusInput {
+        Some((message, cursor_byte_index)) => AppEvent::UpdateStatusInput {
             message,
-            cursor_position,
+            cursor_byte_index,
             metadata: ctx.search_options.get().status_string(kind),
         },
         None => AppEvent::ClearStatusLine,

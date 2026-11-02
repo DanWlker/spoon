@@ -110,12 +110,16 @@ impl TreeQuery {
         self.filter.as_deref()
     }
 
-    // The query being typed, as shown in the status line: (text, cursor position).
-    pub fn status_input(&self) -> Option<(String, u16)> {
+    // The query being typed, as shown in the status line: (text, cursor byte index).
+    pub fn status_input(&self) -> Option<(String, usize)> {
         let (kind, input) = self.editing.as_ref()?;
         let prefix = prefix(*kind);
-        let cursor = (prefix.chars().count() + input.visual_cursor()) as u16;
-        Some((format!("{prefix}{}", input.value()), cursor))
+        let value = input.value();
+        let cursor = value
+            .char_indices()
+            .nth(input.cursor())
+            .map_or(value.len(), |(index, _)| index);
+        Some((format!("{prefix}{value}"), prefix.len() + cursor))
     }
 
     // A short description of the active search and filter, for titles.

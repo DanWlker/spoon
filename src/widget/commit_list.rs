@@ -1870,6 +1870,22 @@ mod tests {
     }
 
     #[test]
+    fn test_search_query_cursor_byte_index_tracks_unicode_input() {
+        let query = "a界e\u{301}👩‍💻";
+        with_commit_list_state(&[query], |state| {
+            input_search_query(state, query);
+            type_key(state, KeyEvent::from(KeyCode::Home));
+
+            for before in ["", "a", "a界", "a界e\u{301}", query] {
+                let (message, index) = state.query().status_input().unwrap();
+                assert_eq!(&message[..index], format!("/{before}"));
+                assert_eq!(message, format!("/{query}"));
+                type_key(state, KeyEvent::from(KeyCode::Right));
+            }
+        });
+    }
+
+    #[test]
     fn test_resume_search_moves_cursor_to_end_of_long_unicode_query() {
         let query = "検索".repeat(40);
         with_commit_list_state(&[query.as_str()], |state| {
@@ -1879,7 +1895,7 @@ mod tests {
 
             state.start_search();
             assert_eq!(typed(state), Some(format!("/{query}")));
-            assert_eq!(state.query().status_input().unwrap().1, 161);
+            assert_eq!(state.query().status_input().unwrap().1, query.len() + 1);
             type_key(state, KeyEvent::from(KeyCode::Char('追')));
             assert_eq!(typed(state), Some(format!("/{query}追")));
         });

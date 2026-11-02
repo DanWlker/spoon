@@ -15,7 +15,7 @@ rust-version = "1.99.1"
 exclude = ["/.github", "/img"]
 
 [dependencies]
-arboard = { version = "3.6.1", features = ["wayland-data-control"] }
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
@@ -37,12 +37,12 @@ smart-default = "0.7.1"
 textwrap = { version = "0.16.4", default-features = false, features = ["unicode-width"] }
 toml = "1.1.8"
 tui-input = "0.15.5"
-umbra = "0.5.0"
+umbra = "0.6.0"
 unicode-width = "0.2.2"
 
 [dev-dependencies]
 font8x8 = "0.3.1"
-rstest = "0.27.0"
+rstest = "0.28.0"
 tempfile = "3.27.0"
 
 [profile.release]

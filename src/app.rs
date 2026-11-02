@@ -67,7 +67,7 @@ enum StatusLine {
     None,
     Input {
         message: String,
-        cursor_position: u16,
+        cursor_byte_index: usize,
         metadata: String,
     },
     Transient(String),
@@ -951,12 +951,12 @@ impl App<'_> {
             }
             AppEvent::UpdateStatusInput {
                 message,
-                cursor_position,
+                cursor_byte_index,
                 metadata,
             } => {
                 self.shell.app_status.status_line = StatusLine::Input {
                     message,
-                    cursor_position,
+                    cursor_byte_index,
                     metadata,
                 };
             }
@@ -1388,9 +1388,18 @@ impl App<'_> {
                 }
             }
             StatusLine::Input {
-                message, metadata, ..
+                message,
+                cursor_byte_index,
+                metadata,
             } => {
-                left.push(Span::raw(message.clone()).fg(theme.status_bar_fg));
+                let input = status_input_line(
+                    message,
+                    *cursor_byte_index,
+                    &self.ctx.ui_config.common.cursor_type,
+                    Style::default().fg(theme.status_bar_fg),
+                    Style::default().fg(theme.virtual_cursor_fg),
+                );
+                left.extend(input.spans);
                 right.push(Span::raw(format!("{metadata} ")).fg(theme.muted_fg));
             }
             StatusLine::Transient(msg) => {
@@ -1442,20 +1451,20 @@ impl App<'_> {
         let line = status_bar_line(left, right, area.width);
         f.render_widget(Paragraph::new(line).style(bar), area);
 
-        if let StatusLine::Input {
-            cursor_position, ..
-        } = &self.shell.app_status.status_line
-        {
-            let (x, y) = (area.x + left_width as u16 + cursor_position, area.y);
-            match &self.ctx.ui_config.common.cursor_type {
-                CursorType::Native => {
-                    f.set_cursor_position((x, y));
-                }
-                CursorType::Virtual(cursor) => {
-                    let style = Style::default().fg(theme.virtual_cursor_fg);
-                    f.buffer_mut().set_string(x, y, cursor, style);
-                }
-            }
+        if let (
+            StatusLine::Input {
+                message,
+                cursor_byte_index,
+                ..
+            },
+            CursorType::Native,
+        ) = (
+            &self.shell.app_status.status_line,
+            &self.ctx.ui_config.common.cursor_type,
+        ) {
+            let cursor_position = message[..*cursor_byte_index].width();
+            let x = area.x + (left_width + cursor_position) as u16;
+            f.set_cursor_position((x, area.y));
         }
     }
 }
@@ -2914,12 +2923,30 @@ fn shorten_path(path: &str) -> String {
         .join("/")
 }
 
+// The typed `message`, with a virtual cursor inserted at `cursor_byte_index` rather than drawn over
+// a character.
+fn status_input_line<'a>(
+    message: &'a str,
+    cursor_byte_index: usize,
+    cursor_type: &'a CursorType,
+    input_style: Style,
+    cursor_style: Style,
+) -> Line<'a> {
+    match cursor_type {
+        CursorType::Native => Line::from(Span::styled(message, input_style)),
+        CursorType::Virtual(cursor) => {
+            let (before, after) = message.split_at(cursor_byte_index);
+            Line::from(vec![
+                Span::styled(before, input_style),
+                Span::styled(cursor.as_str(), cursor_style),
+                Span::styled(after, input_style),
+            ])
+        }
+    }
+}
+
 // The spans on the left, then those on the right, aligned to the right edge when they fit.
-fn status_bar_line(
-    mut left: Vec<Span<'static>>,
-    right: Vec<Span<'static>>,
-    width: u16,
-) -> Line<'static> {
+fn status_bar_line<'a>(mut left: Vec<Span<'a>>, right: Vec<Span<'a>>, width: u16) -> Line<'a> {
     let left_width: usize = left.iter().map(Span::width).sum();
     let right_width: usize = right.iter().map(Span::width).sum();
     let width = width as usize;
@@ -3001,6 +3028,44 @@ mod tests {
         assert_eq!(shorten_path("~/projects/spoon"), "~/p/spoon");
         assert_eq!(shorten_path("/tmp/.cache/dr"), "/t/.c/dr");
         assert_eq!(shorten_path("~"), "~");
+    }
+
+    #[rstest]
+    #[case("/", 1, "|", "/|")]
+    #[case("/abc", 1, "|", "/|abc")]
+    #[case("/abc", 2, "|", "/a|bc")]
+    #[case("/abc", 4, "|", "/abc|")]
+    #[case("/a界b", 2, "|", "/a|界b")]
+    #[case("/a界b", 5, "|", "/a界|b")]
+    #[case("/ae\u{301}b", 5, "|", "/ae\u{301}|b")]
+    #[case("/a👩‍💻b", 13, "|", "/a👩‍💻|b")]
+    #[case("/abc", 2, "||", "/a||bc")]
+    #[case("/abc", 2, "界", "/a界bc")]
+    #[case("/abc", 2, "", "/abc")]
+    fn test_status_input_line_inserts_virtual_cursor_without_hiding_text(
+        #[case] message: &str,
+        #[case] cursor_byte_index: usize,
+        #[case] cursor: &str,
+        #[case] expected: &str,
+    ) {
+        let cursor_type = CursorType::Virtual(cursor.into());
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                let line = status_input_line(
+                    message,
+                    cursor_byte_index,
+                    &cursor_type,
+                    Style::default(),
+                    Style::default(),
+                );
+                frame.render_widget(Paragraph::new(line), frame.area());
+            })
+            .unwrap();
+
+        let mut expected_buffer = Buffer::with_lines([expected]);
+        expected_buffer.resize(Rect::new(0, 0, 20, 1));
+        assert_eq!(terminal.backend().buffer(), &expected_buffer);
     }
 
     #[test]
