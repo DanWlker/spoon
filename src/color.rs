@@ -5,7 +5,7 @@ use umbra::optional;
 
 use crate::config::GraphColorConfig;
 
-#[optional(derives = [Deserialize], visibility = pub)]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)], visibility = pub)]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct ColorTheme {
     #[default(TEXT)]

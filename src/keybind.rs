@@ -285,10 +285,7 @@ impl<'de> Deserialize<'de> for KeyBind {
                 }
             };
             for (scope, user_event, keys) in bindings {
-                // events that no longer exist are skipped
-                if user_event != UserEvent::Unknown {
-                    keybind.bind(scope, user_event, &keys).map_err(error)?;
-                }
+                keybind.bind(scope, user_event, &keys).map_err(error)?;
             }
         }
 
@@ -423,6 +420,49 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty())
+    }
+
+    #[test]
+    fn test_schema_lists_the_events_and_scopes() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let names = |table: &serde_json::Value| -> Vec<String> {
+            table["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let keybind = &schema["properties"]["keybind"];
+        let scopes: Vec<&str> = Scope::ALL.iter().map(|scope| scope.name()).collect();
+        let (mut tables, events): (Vec<String>, Vec<String>) = names(keybind)
+            .into_iter()
+            .partition(|name| keybind["properties"][name]["$ref"] == "#/definitions/keybindScope");
+        tables.sort();
+        let mut expected: Vec<String> = scopes.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(tables, expected);
+        let in_scope = names(&schema["definitions"]["keybindScope"]);
+        assert_eq!(events, in_scope);
+        // each one an event, each event there: every event has a default key
+        for name in &events {
+            assert!(parse_user_event(name).is_ok(), "{name} is no event");
+        }
+        for event in KeyBind::new(None).bound_events() {
+            let name = format!("{event:?}");
+            let name = name.chars().fold(String::new(), |mut name, c| {
+                if c.is_uppercase() && !name.is_empty() {
+                    name.push('_');
+                }
+                name.push(c.to_ascii_lowercase());
+                name
+            });
+            assert!(
+                name.starts_with("focus_panel") || events.contains(&name),
+                "{name} is not in the schema"
+            );
+        }
     }
 
     #[test]

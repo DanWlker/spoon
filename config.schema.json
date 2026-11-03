@@ -130,13 +130,29 @@
                     "type": "object",
                     "description": "Link patterns: {base} is https://host/owner/repo; {hash}, {branch}, {tag} and {path} what is linked to.",
                     "properties": {
-                      "commit": { "type": "string" },
-                      "branch": { "type": "string" },
-                      "pull_request": { "type": "string" },
-                      "tag": { "type": "string" },
-                      "file": { "type": "string" },
-                      "line": { "type": "string", "description": "Added to the file's link for a selected line: {start}." },
-                      "lines": { "type": "string", "description": "Added to the file's link for selected lines: {start} to {end}." }
+                      "commit": {
+                        "type": "string"
+                      },
+                      "branch": {
+                        "type": "string"
+                      },
+                      "pull_request": {
+                        "type": "string"
+                      },
+                      "tag": {
+                        "type": "string"
+                      },
+                      "file": {
+                        "type": "string"
+                      },
+                      "line": {
+                        "type": "string",
+                        "description": "Added to the file's link for a selected line: {start}."
+                      },
+                      "lines": {
+                        "type": "string",
+                        "description": "Added to the file's link for selected lines: {start} to {end}."
+                      }
                     },
                     "additionalProperties": false
                   }
@@ -654,9 +670,6 @@
         "cancel": {
           "$ref": "#/definitions/keybindArray"
         },
-        "close": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "navigate_up": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -681,10 +694,10 @@
         "go_to_bottom": {
           "$ref": "#/definitions/keybindArray"
         },
-        "scroll_down": {
+        "scroll_up": {
           "$ref": "#/definitions/keybindArray"
         },
-        "scroll_up": {
+        "scroll_down": {
           "$ref": "#/definitions/keybindArray"
         },
         "page_up": {
@@ -714,16 +727,7 @@
         "search": {
           "$ref": "#/definitions/keybindArray"
         },
-        "search_target_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "smart_case_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "fuzzy_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "refresh": {
+        "filter": {
           "$ref": "#/definitions/keybindArray"
         },
         "resize_left": {
@@ -751,27 +755,6 @@
           "$ref": "#/definitions/keybindArray"
         },
         "keys_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "short_copy": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "full_copy": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "ignore": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "command_log": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "dismiss_notifications": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "toggle_wrap": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "filter": {
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_stage": {
@@ -807,10 +790,10 @@
         "abort": {
           "$ref": "#/definitions/keybindArray"
         },
-        "toggle_amend": {
+        "edit": {
           "$ref": "#/definitions/keybindArray"
         },
-        "edit": {
+        "toggle_amend": {
           "$ref": "#/definitions/keybindArray"
         },
         "discard": {
@@ -867,19 +850,13 @@
         "drop_commit": {
           "$ref": "#/definitions/keybindArray"
         },
-        "create_branch": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "create_tag": {
           "$ref": "#/definitions/keybindArray"
         },
+        "create_branch": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "branch_only": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "open_in_browser": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "copy_link": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {
@@ -894,6 +871,18 @@
         "apply_stash": {
           "$ref": "#/definitions/keybindArray"
         },
+        "dismiss_notifications": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_wrap": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "open_in_browser": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "copy_link": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "next_section": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -901,6 +890,45 @@
           "$ref": "#/definitions/keybindArray"
         },
         "apply_change": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "reset_file": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "search_target_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "smart_case_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fuzzy_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "refresh": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "short_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "full_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "ignore": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "command_log": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "blame": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "timeline": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "older_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "newer_commit": {
           "$ref": "#/definitions/keybindArray"
         },
         "global": {
@@ -925,6 +953,9 @@
           "$ref": "#/definitions/keybindScope"
         },
         "local_changes_diff": {
+          "$ref": "#/definitions/keybindScope"
+        },
+        "file_history": {
           "$ref": "#/definitions/keybindScope"
         },
         "dialog": {
@@ -976,9 +1007,6 @@
         "cancel": {
           "$ref": "#/definitions/keybindArray"
         },
-        "close": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "navigate_up": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1003,10 +1031,10 @@
         "go_to_bottom": {
           "$ref": "#/definitions/keybindArray"
         },
-        "scroll_down": {
+        "scroll_up": {
           "$ref": "#/definitions/keybindArray"
         },
-        "scroll_up": {
+        "scroll_down": {
           "$ref": "#/definitions/keybindArray"
         },
         "page_up": {
@@ -1036,16 +1064,7 @@
         "search": {
           "$ref": "#/definitions/keybindArray"
         },
-        "search_target_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "smart_case_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "fuzzy_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "refresh": {
+        "filter": {
           "$ref": "#/definitions/keybindArray"
         },
         "resize_left": {
@@ -1073,27 +1092,6 @@
           "$ref": "#/definitions/keybindArray"
         },
         "keys_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "short_copy": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "full_copy": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "ignore": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "command_log": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "dismiss_notifications": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "toggle_wrap": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "filter": {
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_stage": {
@@ -1129,10 +1127,10 @@
         "abort": {
           "$ref": "#/definitions/keybindArray"
         },
-        "toggle_amend": {
+        "edit": {
           "$ref": "#/definitions/keybindArray"
         },
-        "edit": {
+        "toggle_amend": {
           "$ref": "#/definitions/keybindArray"
         },
         "discard": {
@@ -1189,19 +1187,13 @@
         "drop_commit": {
           "$ref": "#/definitions/keybindArray"
         },
-        "create_branch": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "create_tag": {
           "$ref": "#/definitions/keybindArray"
         },
+        "create_branch": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "branch_only": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "open_in_browser": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "copy_link": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {
@@ -1216,6 +1208,18 @@
         "apply_stash": {
           "$ref": "#/definitions/keybindArray"
         },
+        "dismiss_notifications": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_wrap": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "open_in_browser": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "copy_link": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "next_section": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1223,6 +1227,45 @@
           "$ref": "#/definitions/keybindArray"
         },
         "apply_change": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "reset_file": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "search_target_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "smart_case_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fuzzy_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "refresh": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "short_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "full_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "ignore": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "command_log": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "blame": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "timeline": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "older_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "newer_commit": {
           "$ref": "#/definitions/keybindArray"
         }
       },

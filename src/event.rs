@@ -476,6 +476,7 @@ pub enum UserEvent {
     Timeline,
     OlderCommit,
     NewerCommit,
+    // a key bound to no event, handed on with it for the part to type it, like a search
     #[serde(skip)]
     Unknown,
 }

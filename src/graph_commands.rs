@@ -913,6 +913,7 @@ mod tests {
 
     #[test]
     fn test_checkout_remote_branch_of_a_local_one_elsewhere() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
         let (dir, git) = rewrite_repo();
         git(&["branch", "feat", "HEAD~2"]);
         git(&["remote", "add", "origin", "https://example.com/repo.git"]);
@@ -922,7 +923,22 @@ mod tests {
         let checkout =
             ref_graph_command(&repository, UserEvent::Checkout, &remote, hashes[1].clone());
         // the local branch first, to pull it after, then the remote branch's commit detached
-        assert_eq!(args(checkout.unwrap()), "checkout feat");
+        let Some(Ok(GraphCommand::Dialog(mut dialog))) = checkout else {
+            panic!("no popup");
+        };
+        let shown = |dialog: &GitDialog| dialog.command().unwrap().unwrap().commands[0].to_string();
+        assert_eq!(shown(&dialog), "checkout feat");
+        dialog.handle_key(
+            Some(UserEvent::NavigateRight),
+            KeyEvent::from(KeyCode::Null),
+        );
+        assert_eq!(shown(&dialog), "checkout --detach refs/remotes/origin/feat");
+        // and no other: the choices come round to the first
+        dialog.handle_key(
+            Some(UserEvent::NavigateRight),
+            KeyEvent::from(KeyCode::Null),
+        );
+        assert_eq!(shown(&dialog), "checkout feat");
     }
 
     #[test]

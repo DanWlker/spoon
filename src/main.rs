@@ -177,7 +177,18 @@ const REFS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 // slow in big repositories; focusing the terminal checks right away, see `refresh_now`.
 const FILES_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn main() -> Result<()> {
+// The error in words, like toml's naming the line of the config, not as Rust's `Debug` shows it.
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let args = Args::parse();
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);

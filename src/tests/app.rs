@@ -1738,7 +1738,7 @@ fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
         selected("c1"),
         // checking out the commit shown, c1 again, closes the blame once confirmed
         keys("k 5 shift-b ["),
-        keys("1 space"),
+        keys("1 c"),
         overlay("blame"),
         keys("enter"),
         overlay("none"),

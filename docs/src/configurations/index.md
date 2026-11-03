@@ -11,6 +11,7 @@ Config files are loaded in the following order of priority:
 
 If the config file does not exist, the default values will be used for all items.
 If the config file exists but some items are not set, the default values will be used for those unset items.
+An item the app doesn't know, like a misspelled key or one removed since, is an error naming it, so it can't be silently ignored.
 
 ----
 

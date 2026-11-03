@@ -84,7 +84,7 @@ fn read_config_from_path(path: &Path) -> Result<Config> {
     Ok(config.into())
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 struct Config {
     #[garde(dive)]
@@ -104,7 +104,7 @@ struct Config {
     keybind: Option<KeyBind>,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct CoreConfig {
     #[garde(skip)]
@@ -125,14 +125,14 @@ pub struct CoreConfig {
 }
 
 // Opening the pages of commits, branches, tags and files on the web host of a remote.
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreBrowserConfig {
     // the kind of host of a domain the name doesn't tell: "git.company.com" = "gitlab"
     pub services: FxHashMap<String, Forge>,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreOptionConfig {
     pub protocol: Option<ImageProtocolType>,
@@ -143,7 +143,7 @@ pub struct CoreOptionConfig {
     pub initial_selection: Option<InitialSelection>,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreGitConfig {
     #[default = false]
@@ -152,7 +152,7 @@ pub struct CoreGitConfig {
     pub merge_tool: Option<String>,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreSearchConfig {
     #[default(SearchTarget::All)]
@@ -163,7 +163,7 @@ pub struct CoreSearchConfig {
     pub fuzzy: bool,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct UiConfig {
     #[garde(skip)]
@@ -180,7 +180,7 @@ pub struct UiConfig {
     pub refs: UiRefsConfig,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct UiCommonConfig {
     #[default(CursorType::Native)]
@@ -198,7 +198,7 @@ pub enum CursorType {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Validate)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum ClipboardConfig {
     #[default]
     Auto,
@@ -208,7 +208,7 @@ pub enum ClipboardConfig {
     },
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct CoreExternalConfig {
     #[garde(dive)]
@@ -216,7 +216,7 @@ pub struct CoreExternalConfig {
     pub clipboard: ClipboardConfig,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiListConfig {
     #[garde(length(min = 1))]
@@ -257,7 +257,7 @@ pub enum UserListColumnType {
     Date,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiDetailConfig {
     #[garde(range(min = 1))]
@@ -271,7 +271,7 @@ pub struct UiDetailConfig {
     pub date_local: bool,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiRefsConfig {
     #[garde(range(min = 1))]
@@ -283,7 +283,7 @@ pub struct UiRefsConfig {
     pub follow: bool,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct GraphConfig {
     #[garde(skip)]
@@ -294,7 +294,7 @@ pub struct GraphConfig {
     pub color: GraphColorConfig,
 }
 
-#[optional(derives = [Deserialize])]
+#[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct GraphColorConfig {
     #[garde(length(min = 1), inner(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")))]
@@ -646,5 +646,29 @@ mod tests {
                 commands: vec!["xclip".into(), "-selection".into(), "clipboard".into()]
             }
         );
+    }
+
+    #[test]
+    fn test_config_unknown_keys() {
+        // refused, naming the key
+        let unknown = |toml: &str, key: &str| {
+            let err = toml::from_str::<OptionalConfig>(toml)
+                .err()
+                .map(|e| e.to_string());
+            assert!(
+                err.as_deref().is_some_and(|e| e.contains(key)),
+                "{toml}: {err:?}"
+            );
+        };
+        // a misspelled key, table or color, and one of serie's removed since
+        unknown("[ui.list]\ncolums = [\"graph\"]\n", "colums");
+        unknown("[ui.lsit]\nheight = 3\n", "lsit");
+        unknown("[color]\nlist_head_fg = \"red\"\n", "list_head_fg");
+        unknown(
+            "[core.external.clipboard.custom]\ncomands = [\"pbcopy\"]\n",
+            "comands",
+        );
+        let services = "[core.browser.services.\"git.company.com\"]\ncomit = \"{base}/c/{hash}\"\n";
+        unknown(services, "git.company.com");
     }
 }

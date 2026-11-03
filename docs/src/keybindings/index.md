@@ -65,7 +65,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
-| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the selected branch or commit            | `checkout`                                   |
+| <kbd>c</kbd>                         | Check out the selected branch or commit            | `checkout`                                   |
 | <kbd>C</kbd>                         | Cherry-pick the picked commits, or the selected one | `cherry_pick`                               |
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
@@ -246,7 +246,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
-| <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `apply_stash` |
+| <kbd>Space</kbd>                                   | Apply the stash                                    | `apply_stash` |
 | <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 | <kbd>L</kbd>                                       | Show only the commits of the selected local branch (else the current one), or all | `branch_only` |

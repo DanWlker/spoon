@@ -62,6 +62,7 @@ pub enum Forge {
 // {tag} and {path} what is linked to; `line` and `lines` are added to the file's link for a line,
 // {start}, or the lines from {start} to {end}.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Links {
     pub commit: Option<String>,
     pub branch: Option<String>,

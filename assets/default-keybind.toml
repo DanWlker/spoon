@@ -92,7 +92,7 @@ rebase = ["r"]
 # merge the selected branch into the current branch, after confirming
 merge = ["m"]
 # check out the selected branch or commit, after confirming
-checkout = ["c", "space"]
+checkout = ["c"]
 # cherry-pick the picked commits, or the selected one, after confirming
 cherry_pick = ["shift-c"]
 # squash the picked commits, or the selected one, into their parents, after confirming
