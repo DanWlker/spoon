@@ -296,6 +296,8 @@ fn launch() -> Launch {
 }
 
 // A repository at `dir/work`: f.txt changed on master after the branch feat, which changes it too.
+// The commits a minute apart, so the graph shows them in the same order however fast they are made:
+// c2, feat1, c1.
 fn repository(dir: &Path) -> PathBuf {
     let path = dir.join("work");
     std::fs::create_dir(&path).unwrap();
@@ -306,16 +308,24 @@ fn repository(dir: &Path) -> PathBuf {
     run(&["config", "user.name", "t"]);
     run(&["config", "user.email", "t@t"]);
     run(&["config", "commit.gpgsign", "false"]);
-    let commit = |file: &str, content: &str, message: &str| {
+    let commit = |file: &str, content: &str, message: &str, minute: u64| {
         std::fs::write(path.join(file), content).unwrap();
         git(&path, &["add", file]);
-        git(&path, &["commit", "-q", "-m", message]);
+        let date = format!("@{} +0000", 1_700_000_000 + minute * 60);
+        let output = crate::git::git_command()
+            .args(["commit", "-q", "-m", message])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
     };
-    commit("f.txt", "a\nb\nc\n", "c1");
+    commit("f.txt", "a\nb\nc\n", "c1", 0);
     run(&["checkout", "-q", "-b", "feat"]);
-    commit("f.txt", "a\nFEAT\nc\n", "feat1");
+    commit("f.txt", "a\nFEAT\nc\n", "feat1", 1);
     run(&["checkout", "-q", "master"]);
-    commit("f.txt", "a\nMASTER\nc\n", "c2");
+    commit("f.txt", "a\nMASTER\nc\n", "c2", 2);
     path
 }
 
@@ -871,7 +881,9 @@ fn test_sidebar_branch_shows_its_commit_not_its_tags() {
     git(&path, &["tag", "feat", "master"]);
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("1 j"),
+        // from c2, the first row; enter shows the branch on the graph, which doesn't follow the
+        // sidebar by default
+        keys("1 j enter"),
         check(move |app| {
             let state = app.view.as_list_state().unwrap();
             assert_eq!(state.selected_commit_hash().as_str(), feat);
@@ -1920,9 +1932,10 @@ fn test_found_match_counted_alike_on_every_page() {
         ("", StartPage::Graph, "feat1", 1),
         ("4", StartPage::Graph, "f.txt", 1),
         ("5", StartPage::Graph, "f.txt", 1),
-        // the graph selects either of the two newest commits first, whose file has an "a" line
+        // the graph selects c2 first, whose file has an "a" line
         ("5 shift-b l", StartPage::Graph, "a", 2),
-        ("5 shift-t", StartPage::Graph, "feat1", 1),
+        // from feat1, whose file's history has it
+        ("j 5 shift-t", StartPage::Graph, "feat1", 1),
         ("", StartPage::LocalChanges, "f.txt", 1),
     ];
     for (to_search, page, query, total) in pages {
@@ -2222,8 +2235,9 @@ fn test_popup_checks_for_conflicts_in_the_background() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
+        keys("j"),
         vec![Step::Act(Box::new(|app: &mut App| {
-            // cherry-picking feat1, the first row, onto master, which changed its line of f.txt
+            // cherry-picking feat1, the second row, onto master, which changed its line of f.txt
             // too: the popup opens before the conflict is found, saying it looks for them
             let key = parse_key_event("shift-c").unwrap();
             app.handle_event(AppEvent::Key(key)).unwrap();
