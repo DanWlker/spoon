@@ -37,6 +37,8 @@ _Possible values:_ `auto`, `double`, `single`
 
 If not specified or `auto` is specified, `double` will be used automatically if there is enough width to display it, `single` otherwise.
 
+The width is picked when the app starts and kept until it quits: a graph grown wider by a reload, or a terminal made narrower, cuts the graph off on the right.
+
 <img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-double.png" width=300>
 
 <img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-single.png" width=300>

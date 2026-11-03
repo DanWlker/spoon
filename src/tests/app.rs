@@ -23,7 +23,7 @@ use crate::{
     config::GraphColorConfig,
     event::{EventController, KeyHint},
     git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
-    graph::{GraphImageWidthMode, GraphStyle},
+    graph::{CellWidthType, GraphImageWidthMode, GraphStyle},
     keybind::parse_key_event,
     layout::Panel,
     protocol::ImageProtocol,
@@ -918,6 +918,42 @@ fn test_compare_follows_the_reloads_until_closed() {
             assert_eq!(compared(app), None);
             assert_eq!(graph_note(app), None);
         }),
+    ]);
+}
+
+#[test]
+fn test_reload_keeps_the_graph_width_of_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        check(|app| assert_eq!(app.ctx.graph.borrow().cell_width_type, CellWidthType::Double)),
+        // branches made in another terminal, too many side by side for the terminal's width
+        outside(|path| {
+            use std::io::Write;
+            let master = git(path, &["rev-parse", "master"]);
+            let stream: String = (0..SIZE.0)
+                .map(|i| {
+                    let message = format!("fan{i}");
+                    format!(
+                        "commit refs/heads/fan{i}\ncommitter a <b> 0 +0000\ndata {}\n{message}\nfrom {}\n\n",
+                        message.len(),
+                        master.trim()
+                    )
+                })
+                .collect();
+            let mut import = crate::git::git_command()
+                .args(["fast-import", "--quiet"])
+                .current_dir(path)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            import.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+            assert!(import.wait().unwrap().success());
+        }),
+        // reloaded, the graph is cut like on a resize, instead of the app quitting
+        keys("ctrl-r"),
+        check(|app| assert_eq!(app.ctx.graph.borrow().cell_width_type, CellWidthType::Double)),
     ]);
 }
 

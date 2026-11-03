@@ -2,11 +2,104 @@
 // the screen keeps up with the keys meanwhile.
 
 use std::{
+    cell::RefCell,
+    panic::{AssertUnwindSafe, PanicHookInfo},
     sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
-use crate::event::{AppEvent, Sender};
+use crate::{
+    event::{AppEvent, Sender},
+    git::LocalChanges,
+};
+
+thread_local! {
+    // where the last panic on this thread happened, see `record_panic`
+    static PANICKED_AT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+// Keeps where a panic happened for `catching` on the same thread to tell it; the panic hook calls
+// it for the threads other than the main one, see `main`.
+pub fn record_panic(info: &PanicHookInfo) {
+    let at = info
+        .location()
+        .map(|l| format!("{}:{}", l.file(), l.line()));
+    PANICKED_AT.with_borrow_mut(|slot| *slot = at);
+}
+
+// Runs `work`, a panic in it coming back as an error saying what and where, so the app goes on:
+// work on another thread only hands a value over, which a panic leaves unhanded.
+pub fn catching<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(AssertUnwindSafe(work)).map_err(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("panic");
+        match PANICKED_AT.with_borrow_mut(Option::take) {
+            Some(at) => format!("internal error at {at}: {message}"),
+            None => format!("internal error: {message}"),
+        }
+    })
+}
+
+// The result of work run with `catching` on a scoped thread, see `std::thread::scope`.
+pub fn joined<T>(
+    handle: std::thread::ScopedJoinHandle<'_, Result<T, String>>,
+) -> Result<T, String> {
+    // caught already, so it doesn't panic
+    handle
+        .join()
+        .unwrap_or_else(|_| Err("internal error".into()))
+}
+
+// What work on another thread gives when it panics, see `catching`: the error for work that can
+// fail, which shows it as its own; nothing for the rest, the error then told by itself.
+pub trait PanicResult {
+    fn from_panic(message: String, tx: &Sender) -> Self;
+}
+
+impl<T> PanicResult for Result<T, String> {
+    fn from_panic(message: String, _: &Sender) -> Self {
+        Err(message)
+    }
+}
+
+// Nothing, the panic told as an error.
+fn told<T: Default>(message: String, tx: &Sender) -> T {
+    tx.try_send(AppEvent::NotifyError(message));
+    T::default()
+}
+
+impl<T> PanicResult for Vec<T> {
+    fn from_panic(message: String, tx: &Sender) -> Self {
+        told(message, tx)
+    }
+}
+
+impl<T> PanicResult for Option<T> {
+    fn from_panic(message: String, tx: &Sender) -> Self {
+        told(message, tx)
+    }
+}
+
+impl<A: Default, B: Default> PanicResult for (A, B) {
+    fn from_panic(message: String, tx: &Sender) -> Self {
+        told(message, tx)
+    }
+}
+
+impl PanicResult for String {
+    fn from_panic(message: String, tx: &Sender) -> Self {
+        told(message, tx)
+    }
+}
+
+impl PanicResult for LocalChanges {
+    fn from_panic(message: String, tx: &Sender) -> Self {
+        told(message, tx)
+    }
+}
 
 // How long work runs before the screen says it is loading, so quick work doesn't flash it.
 pub const LOADING_SHOWN_AFTER: Duration = Duration::from_secs(1);
@@ -24,7 +117,7 @@ pub struct Job<T> {
     started: Instant,
 }
 
-impl<T: Send + 'static> Job<T> {
+impl<T: PanicResult + Send + 'static> Job<T> {
     // Runs `work`, then wakes the app up through `tx` to draw its result; also once it has run
     // long enough to be shown loading, see `shows_loading`.
     // shortcut: a thread per job, the work of one replaced still runs to its end; queue them on
@@ -35,7 +128,7 @@ impl<T: Send + 'static> Job<T> {
         let waiting = Arc::downgrade(&result);
         let wake = tx.clone();
         std::thread::spawn(move || {
-            let value = work();
+            let value = catching(work).unwrap_or_else(|message| T::from_panic(message, &tx));
             let (slot, done) = &*shared;
             *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
             done.notify_all();
@@ -90,12 +183,12 @@ mod tests {
         let (start, started) = std::sync::mpsc::channel::<()>();
         let job = Job::spawn(ec.sender(), move || {
             started.recv().unwrap();
-            42
+            Ok::<_, String>(42)
         });
         // not done until let go
         assert_eq!(job.try_take(), None);
         start.send(()).unwrap();
-        assert_eq!(job.wait(), 42);
+        assert_eq!(job.wait(), Ok(42));
         // and the app is woken up to draw it
         assert!(matches!(ec.recv(), AppEvent::Loaded));
     }
@@ -104,12 +197,15 @@ mod tests {
     fn test_job_wakes_the_app_once_it_runs_long_enough_to_show() {
         let ec = EventController::without_terminal();
         let wait = Duration::from_secs(5);
-        let quick = Job::spawn(ec.sender(), || 1);
+        let quick = Job::spawn(ec.sender(), || Ok::<_, String>(1));
         let (finish, finished) = std::sync::mpsc::channel::<()>();
-        let slow = Job::spawn(ec.sender(), move || finished.recv().unwrap());
+        let slow = Job::spawn(ec.sender(), move || {
+            finished.recv().unwrap();
+            Ok::<_, String>(())
+        });
         // the quick one, done
         assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
-        assert_eq!(quick.try_take(), Some(1));
+        assert_eq!(quick.try_take(), Some(Ok(1)));
         assert!(!shows_loading(slow.started()));
         // the slow one, still running, wakes the app to say it is loading
         assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
@@ -118,7 +214,26 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert!(ec.try_recv().is_none());
         finish.send(()).unwrap();
-        slow.wait();
+        slow.wait().unwrap();
         assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
+    }
+
+    #[test]
+    fn test_job_that_panics_gives_its_error() {
+        let ec = EventController::without_terminal();
+        // work that can fail fails; where it panicked is told once `main`'s hook kept it
+        let job = Job::spawn(ec.sender(), || -> Result<(), String> { panic!("boom") });
+        assert_eq!(job.wait(), Err("internal error: boom".to_string()));
+        // other work gives nothing, the error told instead
+        let job = Job::spawn(ec.sender(), || -> Vec<u8> { panic!("{}", "bang") });
+        assert_eq!(job.wait(), Vec::<u8>::new());
+        let told =
+            std::iter::from_fn(|| ec.recv_timeout(Duration::from_secs(5))).find_map(|event| {
+                match event {
+                    AppEvent::NotifyError(message) => Some(message),
+                    _ => None,
+                }
+            });
+        assert_eq!(told.as_deref(), Some("internal error: bang"));
     }
 }

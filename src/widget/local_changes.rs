@@ -2418,17 +2418,12 @@ impl LocalChangesPanel<'_> {
         state.pane.scroll_state().height = height;
 
         // what Enter does on the item selected
-        let all = match conflict.conflicts {
-            0 => "the whole file".to_string(),
-            1 => "the conflict".to_string(),
-            n => format!("all {n} conflicts"),
-        };
         let hint = match selected_item {
             Some(ConflictItem::Existing) => {
-                format!("Enter keeps {ours_name} for {all} of the file, and stages it")
+                format!("Enter keeps {ours_name} for the whole file, and stages it")
             }
             Some(ConflictItem::Incoming) => {
-                format!("Enter keeps {theirs_name} for {all} of the file, and stages it")
+                format!("Enter keeps {theirs_name} for the whole file, and stages it")
             }
             Some(ConflictItem::MergeTool) => {
                 "Enter resolves the conflicts in the merge tool".into()

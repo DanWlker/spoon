@@ -12,7 +12,10 @@ use std::{
 use chrono::{DateTime, FixedOffset, Local};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::Result;
+use crate::{
+    background::{catching, joined},
+    Result,
+};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitHash(String);
@@ -368,25 +371,25 @@ impl Repository {
     ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
-        // what doesn't depend on the commits loads alongside them
+        // what doesn't depend on the commits loads alongside them; a panic in it fails the load
         std::thread::scope(|scope| {
-            let local_changes = scope.spawn(|| load_local_changes(path));
-            let remotes = scope.spawn(|| load_remotes(path));
-            let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
-            let refs_snapshot = scope.spawn(|| refs_snapshot(path, &git_dir).ok());
-            let operation = scope.spawn(|| read_operation(&git_dir));
-            let tracking = scope.spawn(|| load_branch_tracking(path));
-            let submodules = scope.spawn(|| load_submodules(path));
+            let local_changes = scope.spawn(|| catching(|| load_local_changes(path)));
+            let remotes = scope.spawn(|| catching(|| load_remotes(path)));
+            let textconv_drivers = scope.spawn(|| catching(|| load_textconv_drivers(path)));
+            let refs_snapshot = scope.spawn(|| catching(|| refs_snapshot(path, &git_dir).ok()));
+            let operation = scope.spawn(|| catching(|| read_operation(&git_dir)));
+            let tracking = scope.spawn(|| catching(|| load_branch_tracking(path)));
+            let submodules = scope.spawn(|| catching(|| load_submodules(path)));
             let mut repository =
                 Self::load_commits(path, git_dir.clone(), sort, max_count, mailmap, revisions)?;
             repository.running = running;
-            repository.remotes = remotes.join().unwrap_or_default();
-            repository.textconv_drivers = textconv_drivers.join().unwrap_or_default();
-            repository.loaded_local_changes = Mutex::new(local_changes.join().ok());
-            repository.refs_snapshot = refs_snapshot.join().unwrap_or_default();
-            repository.operation = operation.join().unwrap_or_default();
-            repository.tracking = tracking.join().unwrap_or_default();
-            repository.submodules = submodules.join().unwrap_or_default();
+            repository.remotes = joined(remotes)?;
+            repository.textconv_drivers = joined(textconv_drivers)?;
+            repository.loaded_local_changes = Mutex::new(Some(joined(local_changes)?));
+            repository.refs_snapshot = joined(refs_snapshot)?;
+            repository.operation = joined(operation)?;
+            repository.tracking = joined(tracking)?;
+            repository.submodules = joined(submodules)?;
             Ok(repository)
         })
     }
@@ -1402,9 +1405,8 @@ impl Repository {
         git_output_bytes(&self.path, &["cat-file", "blob", &object]).ok()
     }
 
-    // Resolves a conflicted file by taking one side where the two conflict, keeping the changes
-    // of the other side that merged cleanly, and removing the file when that side deleted it.
-    // A symlink or a submodule is taken whole, like a file the other side deleted.
+    // Resolves a conflicted file by taking one side whole, removing the file when that side
+    // deleted it; choosing conflict by conflict is left to the merge tool.
     pub fn resolve_conflict(
         &self,
         path: &str,
@@ -1428,13 +1430,8 @@ impl Repository {
         if stages.is_empty() {
             return Err(format!("{path} has no conflict to resolve"));
         }
-        let mode = |side: ConflictSide| {
-            let stage = side.stage().to_string();
-            stages.iter().find(|(_, _, s)| *s == stage)
-        };
-        let is_file =
-            |side| mode(side).is_some_and(|(mode, _, _)| matches!(*mode, "100644" | "100755"));
-        match mode(side) {
+        let stage = side.stage().to_string();
+        match stages.iter().find(|(_, _, s)| *s == stage) {
             // the side taken deleted it
             None => return self.run(&["rm", "--quiet", "--", spec], None),
             // `checkout --ours` leaves a submodule as it is, so it is checked out at the commit
@@ -1449,56 +1446,9 @@ impl Repository {
                     None,
                 )?;
             }
-            // merging by lines would write a link's target through it
-            Some(_) if !is_file(ConflictSide::Ours) || !is_file(ConflictSide::Theirs) => {
-                self.run(&["checkout", side.option(), "--", spec], None)?;
-            }
-            Some(_) => match self.merge_file_favoring(path, side)? {
-                Some(merged) => std::fs::write(self.path.join(path), merged)
-                    .map_err(|e| format!("failed to write {path}: {e}"))?,
-                // a binary file can't be merged by lines, so it is taken whole
-                None => self.run(&["checkout", side.option(), "--", spec], None)?,
-            },
+            Some(_) => self.run(&["checkout", side.option(), "--", spec], None)?,
         }
         self.run(&["add", "--", spec], None)
-    }
-
-    // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`;
-    // None for a binary file.
-    fn merge_file_favoring(
-        &self,
-        path: &str,
-        side: ConflictSide,
-    ) -> std::result::Result<Option<Vec<u8>>, String> {
-        let blob = |stage| self.stage_blob(path, stage).unwrap_or_default();
-        // both sides added the file when there is no base
-        let files =
-            [("ours", blob(2)), ("base", blob(1)), ("theirs", blob(3))].map(|(name, blob)| {
-                // named by the process, so two apps resolving at once don't write over each other
-                let name = format!("{MERGE_FILE_PREFIX}{}-{name}", std::process::id());
-                (self.git_dir.join(name), blob)
-            });
-        let written = files
-            .iter()
-            .try_for_each(|(file, blob)| std::fs::write(file, blob))
-            .map_err(|e| format!("failed to merge {path}: {e}"));
-        let paths = files
-            .each_ref()
-            .map(|(file, _)| file.to_string_lossy().into_owned());
-        let args = [
-            "merge-file",
-            "-p",
-            side.option(),
-            &paths[0],
-            &paths[1],
-            &paths[2],
-        ];
-        // fails (with a negative code) on binary files
-        let merged = written.map(|()| git_output_bytes(&self.path, &args).ok());
-        for (file, _) in &files {
-            let _ = std::fs::remove_file(file);
-        }
-        merged
     }
 
     // Whether a rebase stopped to edit a commit (rather than on conflicts), which is amended then.
@@ -1558,10 +1508,6 @@ impl Repository {
         self.run(args, Some(patch))
     }
 }
-
-// The start of the names of the files a conflicted file's sides are merged in, see
-// `Repository::merge_file_favoring`.
-const MERGE_FILE_PREFIX: &str = "spoon-merge-";
 
 // A message git prepared, without its comment lines; None when nothing is left.
 fn without_comments(content: &str) -> Option<String> {
@@ -2134,14 +2080,10 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
         path,
     ];
     let (renamed, history, last) = std::thread::scope(|scope| {
-        let last = scope.spawn(|| git_output(repository, &last_args));
+        let last = scope.spawn(|| catching(|| git_output(repository, &last_args)));
         let renamed = renamed();
         let history = walk(renamed.as_deref().unwrap_or(path));
-        (
-            renamed,
-            history,
-            last.join().unwrap_or_else(|_| Err("git log failed".into())),
-        )
+        (renamed, history, joined(last).and_then(|last| last))
     });
     let last = last?;
     let position = |history: &[FileRevision]| {
@@ -2238,7 +2180,7 @@ impl ConflictSide {
         }
     }
 
-    // The option of git checkout and git merge-file that takes the side.
+    // The option of git checkout that takes the side.
     fn option(self) -> &'static str {
         match self {
             ConflictSide::Ours => "--ours",
@@ -4079,7 +4021,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_conflict_keeps_clean_changes() {
+    fn test_resolve_conflict_takes_side_whole() {
         use crate::test_support::git::GitRepository;
 
         let dir = tempfile::tempdir().unwrap();
@@ -4112,9 +4054,9 @@ mod tests {
         repository
             .resolve_conflict("f", ConflictSide::Ours)
             .unwrap();
-        // the conflict goes our way, the clean change of the incoming side stays
+        // the file is ours, the change of the incoming side that merged cleanly left out too
         let content = std::fs::read_to_string(path.join("f")).unwrap();
-        assert_eq!(content, lines("ONE", "NINE-ours"));
+        assert_eq!(content, lines("1", "NINE-ours"));
         assert!(repository.local_changes().unstaged.is_empty());
         // once resolved and committed, taking a side again is refused instead of removing the file
         git_output(path, &["commit", "-q", "--no-edit"]).unwrap();
@@ -4595,49 +4537,6 @@ mod tests {
         );
         let staged = git(path, &["ls-files", "--stage", "sub"]);
         assert_eq!(staged, format!("160000 {} 0\tsub\n", hash("side")));
-    }
-
-    #[test]
-    fn test_resolve_conflict_fails_when_merging_fails() {
-        use crate::test_support::git::GitRepository;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let repo = GitRepository::new(path);
-        repo.init();
-        let lines = |first: &str, last: &str| format!("{first}\n2\n3\n4\n5\n6\n7\n8\n{last}\n");
-        std::fs::write(path.join("f"), lines("1", "9")).unwrap();
-        repo.add(&["f"]);
-        repo.commit("base", "2024-01-01");
-        repo.checkout_b("incoming");
-        std::fs::write(path.join("f"), lines("ONE", "NINE-theirs")).unwrap();
-        repo.add(&["f"]);
-        repo.commit("incoming", "2024-01-02");
-        repo.checkout("master");
-        std::fs::write(path.join("f"), lines("1", "NINE-ours")).unwrap();
-        repo.add(&["f"]);
-        repo.commit("existing", "2024-01-03");
-        assert!(git_output(path, &["merge", "incoming"]).is_err());
-        let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
-        // the file the base of the merge is written to can't be
-        let git_dir = path.join(".git");
-        std::fs::create_dir(
-            git_dir.join(format!("{MERGE_FILE_PREFIX}{}-base", std::process::id())),
-        )
-        .unwrap();
-
-        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        assert!(repository
-            .resolve_conflict("f", ConflictSide::Ours)
-            .is_err());
-        // the conflict is left as it was, the files written meanwhile removed
-        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
-        let left: Vec<String> = std::fs::read_dir(&git_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(MERGE_FILE_PREFIX) && !name.ends_with("base"))
-            .collect();
-        assert_eq!(left, Vec::<String>::new());
     }
 
     #[test]

@@ -23,7 +23,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{shows_loading, Job},
+    background::{catching, shows_loading, Job},
     browse::{self, LinkAction, LinkTarget},
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, GraphColorConfig, UiConfig},
@@ -955,16 +955,26 @@ impl App<'_> {
                 return Ok(self.land_reload(generation, result));
             }
             AppEvent::FoldMerge { commit, fold } => {
+                let before = self.shell.folded_merges.clone();
                 match fold {
                     Fold::Folded => self.shell.folded_merges.insert(commit),
                     Fold::Unfolded => self.shell.folded_merges.remove(&commit),
                 };
-                self.start_regraph();
+                self.start_regraph(before);
             }
             AppEvent::Regraphed(layout) => {
                 if !self.shell.regraphs.is_empty() {
                     self.shell.regraphs.remove(0);
                 }
+                // the fold undone, the graph shown staying as it was
+                let layout = match layout {
+                    Ok(layout) => layout,
+                    Err((err, before)) => {
+                        self.shell.folded_merges = before;
+                        self.shell.notify_error(err);
+                        return Ok(None);
+                    }
+                };
                 // one of merges folded since is laid out after it
                 let context = self.view.refresh_context();
                 if let Some(context) = context.filter(|_| layout.folded == self.shell.folded_merges)
@@ -2278,7 +2288,7 @@ impl App<'_> {
             timeout: Some(LAUNCH_FETCH_TIMEOUT),
             ..fetch_all_task()
         };
-        std::thread::spawn(move || run_task(&path, &task));
+        std::thread::spawn(move || catching(|| run_task(&path, &task)));
     }
 
     // Runs the git command in the background; the app is told when it finishes.
@@ -2318,7 +2328,12 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let result = run_task(&path, &task);
+            // a git error says where the local changes are itself, a panic doesn't
+            let result =
+                catching(|| run_task(&path, &task)).unwrap_or_else(|err| match task.stash {
+                    true => Err(format!("{err}; the local changes may be in the stash")),
+                    false => Err(err),
+                });
             drop(spinning);
             tx.send(AppEvent::TaskFinished(result));
         });
@@ -2648,8 +2663,9 @@ impl App<'_> {
     }
 
     // Lays the graph out again on another thread with the merges folded now, the app going on
-    // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`.
-    fn start_regraph(&mut self) {
+    // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`. `before`
+    // are the merges folded before, again once it fails.
+    fn start_regraph(&mut self, before: FxHashSet<CommitHash>) {
         self.shell.regraphs.push(Instant::now());
         let repository = Arc::clone(self.repository);
         let primary_branch = self.load_options.primary_branch.clone();
@@ -2657,10 +2673,13 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let layout = GraphLayout::calc(&repository, primary_branch.as_deref(), &folded);
+            let layout =
+                catching(|| GraphLayout::calc(&repository, primary_branch.as_deref(), &folded));
             drop(spinning);
             // the app may have quit meanwhile
-            tx.try_send(AppEvent::Regraphed(Box::new(layout)));
+            tx.try_send(AppEvent::Regraphed(
+                layout.map(Box::new).map_err(|err| (err, before)),
+            ));
         });
     }
 
@@ -2697,14 +2716,17 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let result = options.load(revisions.as_deref(), running).map(|loaded| {
-                let repository = match &loaded {
-                    Loaded::Repository(repository) | Loaded::RefsGone(repository) => repository,
-                };
-                let primary_branch = options.primary_branch.as_deref();
-                let layout = GraphLayout::calc(repository, primary_branch, &folded);
-                Box::new(Reloaded { loaded, layout })
-            });
+            let result = catching(|| {
+                options.load(revisions.as_deref(), running).map(|loaded| {
+                    let repository = match &loaded {
+                        Loaded::Repository(repository) | Loaded::RefsGone(repository) => repository,
+                    };
+                    let primary_branch = options.primary_branch.as_deref();
+                    let layout = GraphLayout::calc(repository, primary_branch, &folded);
+                    Box::new(Reloaded { loaded, layout })
+                })
+            })
+            .and_then(|result| result);
             drop(spinning);
             // the app may have quit meanwhile
             tx.try_send(AppEvent::Reloaded { generation, result });

@@ -8,6 +8,7 @@ use std::{
 };
 
 use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
 use crate::{
@@ -102,7 +103,8 @@ pub enum AppEvent {
     ShowCommit(CommitHash),
     // the graph laid out again on another thread after a merge was folded or unfolded, see
     // `App::start_regraph`
-    Regraphed(Box<crate::graph::GraphLayout>),
+    // `App::start_regraph`; failing, with the merges folded before
+    Regraphed(Result<Box<crate::graph::GraphLayout>, (String, FxHashSet<CommitHash>)>),
     // folds or unfolds the merge commit, the graph drawn again
     FoldMerge {
         commit: CommitHash,
@@ -240,47 +242,16 @@ impl EventController {
         self.stop.store(false, Ordering::Relaxed);
         let stop = self.stop.clone();
         let tx = self.tx.clone();
-        let handle = thread::spawn(move || loop {
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
-            match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
-                Ok(true) => match ratatui::crossterm::event::read() {
-                    Ok(e) => match e {
-                        ratatui::crossterm::event::Event::Key(key) => {
-                            tx.send(AppEvent::Key(key));
-                        }
-                        ratatui::crossterm::event::Event::Mouse(mouse) => match mouse.kind {
-                            MouseEventKind::ScrollDown
-                            | MouseEventKind::ScrollUp
-                            | MouseEventKind::Down(MouseButton::Left)
-                            | MouseEventKind::Drag(MouseButton::Left)
-                            | MouseEventKind::Up(MouseButton::Left) => {
-                                tx.send(AppEvent::Mouse(mouse));
-                            }
-                            _ => {}
-                        },
-                        ratatui::crossterm::event::Event::Resize(..) => tx.send(AppEvent::Resize),
-                        ratatui::crossterm::event::Event::FocusGained => {
-                            tx.send(AppEvent::FocusGained);
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        panic!("Failed to read event: {e}");
-                    }
-                },
-                Ok(false) => {
-                    continue;
-                }
-                Err(e) => {
-                    panic!("Failed to poll event: {e}");
-                }
+        let handle = thread::spawn(move || {
+            // without the keys the app can't go on: it quits, saying why
+            if let Err(err) = crate::background::catching(|| read_events(&stop, &tx)) {
+                ratatui::restore();
+                eprintln!("{err}");
+                std::process::exit(1);
             }
         });
         *self.handle.lock().unwrap() = Some(handle);
     }
-
     pub fn resume(&self) {
         if !self.terminal {
             return;
@@ -359,6 +330,48 @@ impl EventController {
     // The next event, or None once `timeout` passed without one.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> Option<AppEvent> {
         self.rx.recv_timeout(timeout)
+    }
+}
+
+// Sends the keys, mouse and terminal events read until `stop` is set.
+fn read_events(stop: &AtomicBool, tx: &Sender) {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
+            Ok(true) => match ratatui::crossterm::event::read() {
+                Ok(e) => match e {
+                    ratatui::crossterm::event::Event::Key(key) => {
+                        tx.send(AppEvent::Key(key));
+                    }
+                    ratatui::crossterm::event::Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollUp
+                        | MouseEventKind::Down(MouseButton::Left)
+                        | MouseEventKind::Drag(MouseButton::Left)
+                        | MouseEventKind::Up(MouseButton::Left) => {
+                            tx.send(AppEvent::Mouse(mouse));
+                        }
+                        _ => {}
+                    },
+                    ratatui::crossterm::event::Event::Resize(..) => tx.send(AppEvent::Resize),
+                    ratatui::crossterm::event::Event::FocusGained => {
+                        tx.send(AppEvent::FocusGained);
+                    }
+                    _ => {}
+                },
+                Err(e) => {
+                    panic!("Failed to read event: {e}");
+                }
+            },
+            Ok(false) => {
+                continue;
+            }
+            Err(e) => {
+                panic!("Failed to poll event: {e}");
+            }
+        }
     }
 }
 

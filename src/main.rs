@@ -246,6 +246,13 @@ fn main() -> Result<()> {
 
     let ec = event::EventController::init();
     let mut terminal = ratatui::init();
+    // a panic on the main thread gives the terminal back and is printed, by ratatui's hook; one on
+    // another thread is caught there and told as an error, the app going on, see `catching`
+    let crash = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| match std::thread::current().name() {
+        Some("main") => crash(info),
+        _ => background::record_panic(info),
+    }));
     // gives the terminal back however this ends, an error loading the repository included
     let terminal_guard = TerminalGuard;
     // the focus coming back reloads what changed meanwhile, like lazygit; the mouse drags the
@@ -389,8 +396,8 @@ impl Loader {
         }
     }
 
-    // Runs `run` on the app of `repository`, its graph laid out for a terminal of `size`
-    // (columns, rows), as it was before when made again (`restart`).
+    // Runs `run` on the app of `repository`, its graph's cells as wide as a terminal of `size`
+    // (columns, rows) fits when it starts, as it was before when made again (`restart`).
     fn with_app<R>(
         &self,
         repository: &Arc<git::Repository>,
@@ -415,7 +422,12 @@ impl Loader {
             Some(layout) if layout.folded == folded => graph::Graph::of(repository, layout),
             _ => graph::calc_graph(repository, primary_branch, &folded),
         };
-        let cell_width_type = check::decide_cell_width_type(&graph, size, self.graph_width)?;
+        // picked at the start and kept when made again: the graph then is cut like on a resize,
+        // instead of the app quitting on a reload in a narrow terminal
+        let cell_width_type = match &refresh {
+            None => check::decide_cell_width_type(&graph, size, self.graph_width)?,
+            Some(_) => ctx.graph.borrow().cell_width_type,
+        };
         ctx.graph.borrow_mut().cell_width_type = cell_width_type;
         let image_params =
             graph::ImageParams::new(&self.graph_color_set, cell_width_type, self.graph_antialias)
