@@ -100,7 +100,12 @@ pub fn register_graph_commands<T: ?Sized>(
     ];
     for (event, short, long) in commands {
         let single = single_commit_command(event).is_some();
-        k.add_where(&[event], short, long, move |view| {
+        // space checks out, the main action on a commit or ref
+        let events: &[UserEvent] = match event {
+            Checkout => &[Checkout, Select],
+            _ => &[event],
+        };
+        k.add_where(events, short, long, move |view| {
             let refused = (single && picked(view)) || (event.moves_head() && operation_waits(view));
             match availability(view, event) {
                 Availability::Works if refused => Availability::Warns,
@@ -288,7 +293,8 @@ pub fn register_commit_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
         "Select the commit on the graph, closing the window",
     )
     .when(applies);
-    k.add(&[Checkout], "checkout", "Check out the commit")
+    // space checks out, the main action on a commit
+    k.add(&[Checkout, Select], "checkout", "Check out the commit")
         .when(applies);
     register_commit_link_keys(k, applies);
 }

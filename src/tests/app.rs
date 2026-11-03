@@ -1271,6 +1271,33 @@ fn test_branch_only_of_the_sidebar_branch() {
 }
 
 #[test]
+fn test_space_in_the_sidebar_checks_out_and_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "stashed\n").unwrap();
+    git(&path, &["stash", "push", "-q", "-m", "wip"]);
+    let mut harness = Harness::new(&path, launch());
+    let command = |app: &App| {
+        let popup = app.shell.dialog.as_ref().expect("no popup");
+        popup.dialog.command().unwrap().unwrap().commands[0].to_string()
+    };
+    harness.run(vec![
+        // a branch is checked out, as on the graph
+        keys("1 j space"),
+        check(move |app| assert_eq!(command(app), "checkout feat")),
+        keys("esc"),
+        // a stash is applied
+        keys("] ] ] j space"),
+        check(move |app| assert_eq!(command(app), "stash apply stash@{0}")),
+        // in the popup, v no longer toggles the checkbox; space does
+        keys("v"),
+        check(move |app| assert_eq!(command(app), "stash apply stash@{0}")),
+        keys("space"),
+        check(move |app| assert_eq!(command(app), "stash apply --index stash@{0}")),
+    ]);
+}
+
+#[test]
 fn test_half_page_jump_in_the_sidebar() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -1738,7 +1765,7 @@ fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
         selected("c1"),
         // checking out the commit shown, c1 again, closes the blame once confirmed
         keys("k 5 shift-b ["),
-        keys("1 c"),
+        keys("1 space"),
         overlay("blame"),
         keys("enter"),
         overlay("none"),
@@ -2375,7 +2402,7 @@ fn test_delete_tag_also_on_an_unreachable_remote_keeps_it() {
             assert_eq!(selection, RefSelection::Ref(NamedRef::Tag("v1".into())));
         }),
         // also from origin
-        keys("d v enter"),
+        keys("d space enter"),
         check(|app| assert_notice(app, "git push failed")),
     ]);
     assert_eq!(git(&path, &["tag"]), "v1\n");

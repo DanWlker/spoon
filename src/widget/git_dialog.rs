@@ -2080,18 +2080,12 @@ impl GitDialog {
                 self.change(Toward::Previous);
                 DialogOutcome::None
             }
-            Some(UserEvent::DialogToggle) => {
-                if self.can_toggle() {
-                    self.change(Toward::Next);
-                }
-                DialogOutcome::None
-            }
             Some(UserEvent::DialogEdit) => {
                 self.editing = self.can_edit();
                 DialogOutcome::None
             }
             // toggles when the field can be, else types into it
-            Some(UserEvent::DialogActivate) => {
+            Some(UserEvent::Select) => {
                 if self.can_toggle() {
                     self.change(Toward::Next);
                 } else {
@@ -2152,19 +2146,15 @@ impl GitDialog {
             .when(typing);
         // space toggles the field when it can, else types into it
         k.add(
-            &[DialogActivate, DialogToggle],
+            &[Select],
             "toggle",
             "Toggle the checkbox, or go to the next option",
         )
         .when(|d| idle(d) && d.can_toggle());
         k.add(&[DialogEdit], "type", "Type into the text field")
             .when(|d| idle(d) && d.can_toggle() && d.can_edit());
-        k.add(
-            &[DialogActivate, DialogEdit],
-            "type",
-            "Type into the text field",
-        )
-        .when(|d| idle(d) && !d.can_toggle() && d.can_edit());
+        k.add(&[Select, DialogEdit], "type", "Type into the text field")
+            .when(|d| idle(d) && !d.can_toggle() && d.can_edit());
         k.add(&[Confirm], "run", RUN)
             .when(idle)
             .short(|d| d.verb.to_string());
@@ -3206,7 +3196,7 @@ mod tests {
             task.commands.iter().map(ToString::to_string).collect()
         };
         let mut dialog = GitDialog::delete_tags(vec!["v1".into()], Some("fork".into()));
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(
             commands(&dialog),
             ["push fork --delete refs/tags/v1", "tag -d v1"]
@@ -3216,7 +3206,7 @@ mod tests {
             branch: "a".into(),
         }];
         let mut dialog = GitDialog::delete_branches(vec!["a".into()], vec![], upstreams);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(
             commands(&dialog),
             ["push origin --delete refs/heads/a", "branch -D a"]
@@ -3354,16 +3344,16 @@ mod tests {
         // merging follows merge.autoStash, which is not set
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
 
         // once changed, the choice stays
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateUp);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --rebase --autostash origin main");
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --no-rebase --autostash origin main");
     }
 
@@ -3392,7 +3382,7 @@ mod tests {
         let mut dialog = GitDialog::open_link(links, LinkAction::Open);
         assert_eq!(dialog.fields.len(), 1);
         assert_eq!(dialog.summary(), "https://h/o/r/tree/b");
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(
             opened(press(&mut dialog, UserEvent::OpenInBrowser)),
             ("https://h/o/r/compare/b".into(), LinkAction::Open)
@@ -3405,9 +3395,9 @@ mod tests {
             link("up", "Pull request", "https://h/u/r/compare/b"),
         ];
         let mut dialog = GitDialog::open_link(links, LinkAction::Copy);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(
             opened(press(&mut dialog, UserEvent::Confirm)),
             ("https://h/u/r/compare/b".into(), LinkAction::Copy)
@@ -3451,21 +3441,21 @@ mod tests {
         // space toggles a field that can be: the next choice, the next option of a text field,
         // a checkbox; else it types, like e
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
-        press(&mut dialog, UserEvent::DialogActivate);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --rebase --no-autostash fork topic");
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogActivate);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --no-rebase --no-autostash fork topic");
         press(&mut dialog, UserEvent::NavigateUp);
         press(&mut dialog, UserEvent::NavigateUp);
         press(&mut dialog, UserEvent::NavigateLeft);
         press(&mut dialog, UserEvent::NavigateDown);
         // origin has two branches to go through
-        press(&mut dialog, UserEvent::DialogActivate);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin dev");
         assert!(!dialog.editing);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
         // a branch to pull is chosen, not typed
         press(&mut dialog, UserEvent::DialogEdit);
@@ -3497,9 +3487,9 @@ mod tests {
         assert_eq!(args(&dialog), "pull --rebase --no-autostash origin dev");
 
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "pull --no-rebase --autostash origin dev");
 
         let outcome = press(&mut dialog, UserEvent::Confirm);
@@ -3528,15 +3518,15 @@ mod tests {
         assert!(!dialog.editing);
 
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(
             args(&dialog),
             "push --force-with-lease --tags --set-upstream origin refs/heads/topic:topic2"
         );
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert!(args(&dialog).starts_with("push --force-with-lease --tags --no-verify "));
     }
 
@@ -3544,7 +3534,7 @@ mod tests {
     fn test_graph_commands() {
         let mut dialog = GitDialog::rebase("main", "feature".into(), "feature", true);
         assert_eq!(args(&dialog), "rebase --autostash feature");
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         assert_eq!(args(&dialog), "rebase --no-autostash feature");
 
         let mut dialog = GitDialog::merge("main", "feature".into(), "feature", None);
@@ -3571,9 +3561,9 @@ mod tests {
         assert!(dialog.warning().is_some());
 
         let mut dialog = GitDialog::cherry_pick("main", vec![commit('a'), commit('b')]);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateDown);
-        press(&mut dialog, UserEvent::DialogToggle);
+        press(&mut dialog, UserEvent::Select);
         let a = "a".repeat(40);
         let b = "b".repeat(40);
         assert_eq!(args(&dialog), format!("cherry-pick --no-commit -x {a} {b}"));

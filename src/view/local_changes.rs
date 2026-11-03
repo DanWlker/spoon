@@ -220,8 +220,8 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.local_changes_state.enter();
                 self.after_action(result);
             }
-            UserEvent::ToggleStage => {
-                let result = self.local_changes_state.toggle_stage();
+            UserEvent::Select => {
+                let result = self.local_changes_state.select();
                 self.after_action(result);
             }
             UserEvent::IncreaseDiffContext => self.local_changes_state.adjust_diff_context(true),

@@ -53,8 +53,10 @@ focus_panel_3 = ["3"]
 focus_panel_4 = ["4"]
 focus_panel_5 = ["5"]
 
-# stage/unstage the selected file, directory, hunk or line in local changes
-toggle_stage = ["space"]
+# the main action on what is selected, like lazygit's: stage/unstage the file, directory, hunk or
+# line in local changes, apply the hunk or line of a commit's diff to the working tree, check out
+# the commit or ref, apply the stash, keep a side of a conflict, toggle a field of a popup
+select = ["space"]
 # select a range of items: commits in the commit list, files in local changes, lines of a file
 # preview or of a diff (inside one hunk); moving extends it, and again ends it, keeping them selected
 toggle_select = ["v"]
@@ -64,8 +66,6 @@ decrease_diff_context = ["-"]
 # switch to the next/previous tab of the commit details (info, changes, files) while one has the focus
 next_tab = ["]"]
 previous_tab = ["["]
-# apply the selected hunk or line of a commit's diff to the working tree, in the changes tab
-apply_change = ["space"]
 # reset the selected file of the changes tab to how it was at the commit or before it, after confirming
 reset_file = ["u"]
 # stash local changes, or only the selected files
@@ -117,20 +117,17 @@ open_in_browser = ["o"]
 copy_link = ["shift-o"]
 
 # the refs sidebar: create a remote (on a remote or the remotes header), delete the selected branch
-# or tag or drop the selected stash, rename a branch or change its upstream, apply a stash
+# or tag or drop the selected stash, rename a branch or change its upstream
 create_ref = ["a"]
 delete_ref = ["d"]
 edit_ref = ["e"]
-apply_stash = ["space"]
 # go to the next/previous section of the refs sidebar (branches, remotes, tags, stashes), opening it
 next_section = ["]"]
 previous_section = ["["]
 
-# in the popups of the git commands: toggle the selected checkbox or go to the next option (dialog_toggle),
-# type into the selected text field (dialog_edit), or either, toggling when the field can be toggled (dialog_activate)
-dialog_toggle = ["v"]
+# in the popups of the git commands: type into the selected text field (select toggles the field
+# when it can be, else types too)
 dialog_edit = ["e"]
-dialog_activate = ["space"]
 
 # fetch from a remote, chosen in a popup
 fetch = ["f"]

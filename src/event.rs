@@ -418,7 +418,9 @@ pub enum UserEvent {
     FocusUp,
     FocusDown,
     KeysToggle,
-    ToggleStage,
+    // the main action on what is selected, like lazygit's: staging a file, checking a branch
+    // out, applying a stash, toggling a field; each part says which, see `KeyList::meaning`
+    Select,
     ToggleSelect,
     IncreaseDiffContext,
     DecreaseDiffContext,
@@ -432,9 +434,7 @@ pub enum UserEvent {
     Edit,
     ToggleAmend,
     Discard,
-    DialogToggle,
     DialogEdit,
-    DialogActivate,
     Fetch,
     FetchAll,
     Pull,
@@ -455,14 +455,12 @@ pub enum UserEvent {
     CreateRef,
     DeleteRef,
     EditRef,
-    ApplyStash,
     DismissNotifications,
     ToggleWrap,
     OpenInBrowser,
     CopyLink,
     NextSection,
     PreviousSection,
-    ApplyChange,
     ResetFile,
     SearchTargetToggle,
     SmartCaseToggle,
@@ -544,25 +542,18 @@ impl UserEvent {
             UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
-            | UserEvent::ApplyStash
             | UserEvent::NextSection
             | UserEvent::PreviousSection => Scope::Sidebar,
-            UserEvent::NextTab
-            | UserEvent::PreviousTab
-            | UserEvent::ApplyChange
-            | UserEvent::ResetFile => Scope::Details,
+            UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ResetFile => Scope::Details,
             UserEvent::OlderCommit | UserEvent::NewerCommit => Scope::FileHistory,
-            UserEvent::ToggleStage
-            | UserEvent::Stash
+            UserEvent::Stash
             | UserEvent::Commit
             | UserEvent::NextFile
             | UserEvent::PreviousFile
             | UserEvent::Abort
             | UserEvent::ToggleAmend
             | UserEvent::Discard => Scope::LocalChanges,
-            UserEvent::DialogToggle | UserEvent::DialogEdit | UserEvent::DialogActivate => {
-                Scope::Dialog
-            }
+            UserEvent::DialogEdit => Scope::Dialog,
             _ => Scope::Global,
         }
     }

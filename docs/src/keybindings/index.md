@@ -41,7 +41,7 @@ With the mouse captured, the terminal selects text while Shift is held.
 - Pull: the remote and the branch to pull, chosen among those fetched (only the remotes with fetched branches; with none, it asks to fetch first), whether to rebase instead of merging (`pull.rebase` checks it), and whether to stash and reapply local changes (`--autostash` or `--no-autostash`; checked by `rebase.autoStash` when rebasing, or by default when it is not set, and by `merge.autoStash` when merging, until you change it).
 - Push: the local branch, the remote and the branch to push it to, whether to push all tags too, whether to force push (`--force-with-lease`), and whether to skip the pre-push hook (`--no-verify`). A branch without an upstream starts tracking the branch it is pushed to.
 
-In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branch to push to cycles through the branches of the remote), <kbd>v</kbd> toggles a checkbox or goes to the next option of the field (`dialog_toggle`), <kbd>e</kbd> types into a text field, like a new branch to push to (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish), and <kbd>Space</kbd> does either, toggling when the field can be toggled (`dialog_activate`); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name, a URL, the branch to push to) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
+In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the selected one (the branch to push to cycles through the branches of the remote), <kbd>Space</kbd> toggles a checkbox or goes to the next option of the field, else types into a text field (`select`), <kbd>e</kbd> types into a text field that also has options, like a new branch to push to (`dialog_edit`) (<kbd>Enter</kbd> or <kbd>Esc</kbd> to finish); <kbd>Enter</kbd> runs it and <kbd>Esc</kbd> cancels. While a required field (a name, a URL, the branch to push to) is empty, <kbd>Enter</kbd> goes on to type into it instead, also while typing into another field.
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
@@ -65,7 +65,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
-| <kbd>c</kbd>                         | Check out the selected branch or commit            | `checkout`                                   |
+| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the selected branch or commit            | `checkout`, `select`                         |
 | <kbd>C</kbd>                         | Cherry-pick the picked commits, or the selected one | `cherry_pick`                               |
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
@@ -138,7 +138,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus | `next_tab` `previous_tab` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs); search the diff while it has the focus | `search` `filter` |
-| <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `apply_change` |
+| <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `select` |
 | <kbd>u</kbd>                         | Reset the selected files to how they were at the commit or before it, in the working tree and the index, after confirming (changes tab) | `reset_file` |
 | <kbd>o/O</kbd>                       | Open the commit, or the selected files at it, on the web host (with several files, each on its default remote); from the diff or the file, at the selected hunk or line; copy their links | `open_in_browser` `copy_link` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
@@ -191,8 +191,8 @@ Conflicted files are marked `U`. With the cursor on one, the diff is replaced by
 | cherry-pick | Current        | Picking        |
 | revert      | Current        | Reverting      |
 
-With the `diff3` or `zdiff3` conflict style (`git config merge.conflictStyle zdiff3`), the common ancestor is shown between them as **Base**, and the lines of each side the ancestor doesn't have, what that side changed, are highlighted. A line under the sides says what <kbd>Enter</kbd> does on the selected side or tool.
-<kbd>Enter</kbd> moves into it, <kbd>Left/Right</kbd> choose a side and <kbd>Up/Down</kbd> a tool, then <kbd>Enter</kbd>:
+With the `diff3` or `zdiff3` conflict style (`git config merge.conflictStyle zdiff3`), the common ancestor is shown between them as **Base**, and the lines of each side the ancestor doesn't have, what that side changed, are highlighted. A line under the sides says what <kbd>Space</kbd> does on the selected side or tool.
+<kbd>Enter</kbd> moves into it, <kbd>Left/Right</kbd> choose a side and <kbd>Up/Down</kbd> a tool, then <kbd>Space</kbd> (`select`):
 
 - on a side, resolves the file by keeping that side entirely (removing the file if that side deleted it, and checking a submodule out at that side's commit), and stages it.
 - on `Edit in merge tool`, runs `git mergetool` for the file, with the tool of [`core.git.merge_tool`](../configurations/config-file-format.md) or else git's `merge.tool` config.
@@ -246,7 +246,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>t</kbd>                                       | New tag at the selected branch, remote branch or tag | `create_tag` |
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
-| <kbd>Space</kbd>                                   | Apply the stash                                    | `apply_stash` |
+| <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `select` |
 | <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 | <kbd>L</kbd>                                       | Show only the commits of the selected local branch (else the current one), or all | `branch_only` |
@@ -284,7 +284,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>e</kbd>                         | Open the selected files in `$VISUAL` or `$EDITOR`<br>Type the message, in the commit section | `edit`  |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
-| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk, line or selected lines (or the picked files)<br>Type the message, in the commit section | `toggle_stage` |
+| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk, line or selected lines (or the picked files)<br>Type the message, in the commit section | `select` |
 | <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it, <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>]f</kbd> <kbd>[f</kbd>          | Go to next/previous file, staying in the diff                | `next_file` `previous_file`     |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
@@ -333,7 +333,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit of the line on the graph, closing the blame | `confirm`                      |
-| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the blame    | `checkout`                      |
+| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the blame    | `checkout`, `select`            |
 | <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the line, or the selected lines (<kbd>y</kbd>), on its text | `short_copy` `full_copy` |
 | <kbd>v</kbd>                         | Select the lines from the first to the selected one, on the text; another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>o/O</kbd>                       | Open the commit, or the file at the line, on the web host; copy its link | `open_in_browser` `copy_link` |
@@ -355,7 +355,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
 | <kbd>v</kbd>                         | While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
-| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the timeline | `checkout`                      |
+| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the timeline | `checkout`, `select`            |
 | <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the hunk or line (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes | `increase_diff_context` `decrease_diff_context` |
 | <kbd>o/O</kbd>                       | Open the commit, or from the diff the file at the selected lines, on the web host; copy its link | `open_in_browser` `copy_link` |

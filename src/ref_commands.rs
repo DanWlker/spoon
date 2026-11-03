@@ -45,7 +45,7 @@ pub fn ref_command_applies(
             !(graph
                 || matches!(
                     event,
-                    UserEvent::CreateRef | UserEvent::EditRef | UserEvent::ApplyStash
+                    UserEvent::CreateRef | UserEvent::EditRef | UserEvent::Select
                 ))
         }
         UserEvent::CreateRef => adds_remote(repository, selection),
@@ -54,7 +54,8 @@ pub fn ref_command_applies(
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
             _ => false,
         },
-        UserEvent::ApplyStash => matches!(selection, RefSelection::Stash(_)),
+        // applying a stash; checking the others out is the graph's, see `register_graph_commands`
+        UserEvent::Select => matches!(selection, RefSelection::Stash(_)),
         UserEvent::OpenInBrowser | UserEvent::CopyLink => match selection {
             RefSelection::Ref(_) => true,
             RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
@@ -127,7 +128,7 @@ pub fn ref_command(
             let url = repository.remote_url(name).unwrap_or_default();
             Ok(GitDialog::edit_remote(name, &url))
         }
-        (UserEvent::ApplyStash, RefSelection::Stash(name)) => Ok(GitDialog::apply_stash(
+        (UserEvent::Select, RefSelection::Stash(name)) => Ok(GitDialog::apply_stash(
             name,
             &stash_message(repository, name),
         )),
@@ -476,7 +477,7 @@ mod tests {
         keys.extend([
             Err(UserEvent::Confirm),
             Err(UserEvent::NavigateDown),
-            Err(UserEvent::DialogToggle),
+            Err(UserEvent::Select),
         ]);
         run(path, UserEvent::EditRef, selection.clone(), &keys);
         assert_eq!(branches(), "main \ntopic2 origin/main\n");
@@ -528,12 +529,7 @@ mod tests {
         git(path, &["branch", "-q", "up"]);
         git(path, &["push", "-q", "-u", "origin", "up"]);
         let up = RefSelection::Ref(NamedRef::Branch("up".into()));
-        run(
-            path,
-            UserEvent::DeleteRef,
-            up,
-            &[Err(UserEvent::DialogToggle)],
-        );
+        run(path, UserEvent::DeleteRef, up, &[Err(UserEvent::Select)]);
         assert_eq!(branches(), "main \n");
         assert_eq!(
             git(remote_dir.path(), &["branch", "--format=%(refname:short)"]),
@@ -572,7 +568,7 @@ mod tests {
         // a tag pushed, then deleted here and on the remote
         git(path, &["tag", "v1"]);
         git(path, &["push", "-q", "origin", "v1"]);
-        let keys = [Err(UserEvent::DialogToggle)];
+        let keys = [Err(UserEvent::Select)];
         run(
             path,
             UserEvent::DeleteRef,
@@ -629,7 +625,7 @@ mod tests {
             RefSelection::Folder(Remotes, "other".into()),
             &none
         ));
-        assert!(!applies(UserEvent::ApplyStash, main(), &none));
+        assert!(!applies(UserEvent::Select, main(), &none));
         // the detached HEAD is a commit to work on, no ref to copy, delete or diff
         let head = || RefSelection::DetachedHead;
         assert!(applies(UserEvent::Checkout, head(), &none));
@@ -656,9 +652,9 @@ mod tests {
         let stash = RefSelection::Stash("stash@{0}".into());
         run(
             path,
-            UserEvent::ApplyStash,
+            UserEvent::Select,
             stash.clone(),
-            &[Err(UserEvent::DialogToggle)],
+            &[Err(UserEvent::Select)],
         );
         assert_eq!(git(path, &["status", "--porcelain"]), "M  f\n");
         run(path, UserEvent::DeleteRef, stash, &[]);
@@ -666,10 +662,10 @@ mod tests {
 
         // popped: applied (unstaged, without --index), then dropped
         git(path, &["stash", "-q"]);
-        let keys = [Err(UserEvent::NavigateDown), Err(UserEvent::DialogToggle)];
+        let keys = [Err(UserEvent::NavigateDown), Err(UserEvent::Select)];
         run(
             path,
-            UserEvent::ApplyStash,
+            UserEvent::Select,
             RefSelection::Stash("stash@{0}".into()),
             &keys,
         );
@@ -681,7 +677,7 @@ mod tests {
         let section = RefSelection::Section(Branches);
         assert!(ref_command(
             &repository,
-            UserEvent::ApplyStash,
+            UserEvent::Select,
             &section,
             &RefPicks::default()
         )

@@ -1638,6 +1638,7 @@ impl App<'_> {
         }
         if let Some(keys) = self.overlay_keys() {
             if keys.takes(event) {
+                let event = keys.meaning(event);
                 match self.shell.overlay.as_mut() {
                     Some(Overlay::File(window)) => window.handle_event(event, key, self.repository),
                     Some(Overlay::Help(help)) => help.handle_event(event),
@@ -1649,11 +1650,15 @@ impl App<'_> {
         }
         if self.shell.sidebar_focused() {
             self.handle_sidebar_event(event, key);
-        } else if !self.view.keys().takes(event) {
-        } else if event.home_scope() == Scope::Graph {
-            self.handle_graph_event(event);
-        } else {
-            self.view.handle_event(event, key);
+            return;
+        }
+        let keys = self.view.keys();
+        if !keys.takes(event) {
+            return;
+        }
+        match keys.meaning(event) {
+            event if event.home_scope() == Scope::Graph => self.handle_graph_event(event),
+            event => self.view.handle_event(event, key),
         }
     }
 
@@ -1801,15 +1806,12 @@ impl App<'_> {
     }
 
     fn handle_sidebar_event(&mut self, event: UserEvent, key: KeyEvent) {
-        // space applies a stash, and checks out the other refs, as it does on the graph
-        let stash = matches!(self.shell.sidebar.selection(), RefSelection::Stash(_));
-        let event = match event {
-            UserEvent::ApplyStash if !stash => UserEvent::Checkout,
-            event => event,
-        };
-        if !self.sidebar_keys().takes(event) {
+        let keys = self.sidebar_keys();
+        if !keys.takes(event) {
             return;
         }
+        // space applies a stash, and checks out the other refs, as it does on the graph
+        let event = keys.meaning(event);
         match event {
             _ if self.shell.sidebar.handle_move(event) => {
                 if let Some(message) = self.shell.sidebar.visual_outside_section() {
@@ -1871,7 +1873,7 @@ impl App<'_> {
             event @ (UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
-            | UserEvent::ApplyStash) => {
+            | UserEvent::Select) => {
                 let selection = self.shell.sidebar.selection();
                 let picked = self.shell.sidebar.picked();
                 if let Some(dialog) = ref_command(self.repository, event, &selection, picked) {
@@ -1944,12 +1946,8 @@ impl App<'_> {
         )
         .when(applies(DeleteRef))
         .short(|app| if on_stash(app) { "drop" } else { "delete" }.into());
-        k.add(
-            &[ApplyStash],
-            "apply",
-            "Apply the stash; on a branch, remote branch or tag, check it out",
-        )
-        .when(|app| on_stash(app) && app.sidebar_command_applies(ApplyStash));
+        k.add(&[Select], "apply", "Apply the stash")
+            .when(|app| on_stash(app) && app.sidebar_command_applies(Select));
         // the picked refs aren't commits, see `ref_command_applies`
         register_graph_commands(
             k,

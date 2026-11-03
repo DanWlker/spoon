@@ -79,12 +79,14 @@ The key then works only where its command does: the status bar, the keys popup (
 
 An event written in `[keybind]` is bound in its own scope:
 the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) in `graph`;
-those of the refs (`create_ref`, `delete_ref`, `edit_ref`, `apply_stash`) in `sidebar`;
-those of the local changes page (`toggle_stage`, `stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) in `local_changes`;
-`next_tab`, `previous_tab`, `apply_change` and `reset_file` in `details`;
-`dialog_toggle`, `dialog_edit` and `dialog_activate` in `dialog`;
+those of the refs (`create_ref`, `delete_ref`, `edit_ref`) in `sidebar`;
+those of the local changes page (`stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) in `local_changes`;
+`next_tab`, `previous_tab` and `reset_file` in `details`;
+`dialog_edit` in `dialog`;
 and the others in `global`, working everywhere.
 So <kbd>d</kbd> is `drop_commit` on the commit list, `delete_ref` on the sidebar (which overrides the graph's key) and `discard` on the local changes page.
+
+`select` (<kbd>Space</kbd>) is the main action on what is selected, like lazygit's: it stages a file, hunk or line on the local changes page, applies a hunk or line of a commit's diff to the working tree, checks out a commit, branch or tag (like `checkout`), applies a stash, keeps a side of a conflict, and toggles a field of a popup. Rebinding it changes all of them; a table of a scope rebinds it there only.
 
 A table of a scope binds keys in that scope only, overriding those around it:
 

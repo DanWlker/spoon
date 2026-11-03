@@ -757,7 +757,7 @@
         "keys_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
-        "toggle_stage": {
+        "select": {
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_select": {
@@ -799,13 +799,7 @@
         "discard": {
           "$ref": "#/definitions/keybindArray"
         },
-        "dialog_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "dialog_edit": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "dialog_activate": {
           "$ref": "#/definitions/keybindArray"
         },
         "fetch": {
@@ -868,9 +862,6 @@
         "edit_ref": {
           "$ref": "#/definitions/keybindArray"
         },
-        "apply_stash": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "dismiss_notifications": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -887,9 +878,6 @@
           "$ref": "#/definitions/keybindArray"
         },
         "previous_section": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "apply_change": {
           "$ref": "#/definitions/keybindArray"
         },
         "reset_file": {
@@ -1094,7 +1082,7 @@
         "keys_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
-        "toggle_stage": {
+        "select": {
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_select": {
@@ -1136,13 +1124,7 @@
         "discard": {
           "$ref": "#/definitions/keybindArray"
         },
-        "dialog_toggle": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "dialog_edit": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "dialog_activate": {
           "$ref": "#/definitions/keybindArray"
         },
         "fetch": {
@@ -1205,9 +1187,6 @@
         "edit_ref": {
           "$ref": "#/definitions/keybindArray"
         },
-        "apply_stash": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "dismiss_notifications": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1224,9 +1203,6 @@
           "$ref": "#/definitions/keybindArray"
         },
         "previous_section": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "apply_change": {
           "$ref": "#/definitions/keybindArray"
         },
         "reset_file": {

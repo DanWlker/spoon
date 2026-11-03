@@ -209,7 +209,7 @@ impl<'a> DetailView<'a> {
         );
         k.quiet(&[Confirm], "Close the details").when(on(Info));
         k.add(
-            &[ApplyChange],
+            &[Select],
             "apply to working tree",
             "Apply the selected hunk or line to the working tree",
         )
@@ -1056,7 +1056,7 @@ impl<'a> DetailView<'a> {
                         state.back();
                     }
                     UserEvent::ToggleSelect => state.toggle_range(),
-                    UserEvent::ApplyChange => self.apply_change(),
+                    UserEvent::Select => self.apply_change(),
                     UserEvent::IncreaseDiffContext => self.adjust_diff_context(true),
                     UserEvent::DecreaseDiffContext => self.adjust_diff_context(false),
                     UserEvent::ShortCopy => {
@@ -1136,7 +1136,7 @@ impl<'a> DetailView<'a> {
             self.tx.send(AppEvent::NotifyWarn(CONVERTED_DIFF.into()));
             return true;
         }
-        if event == UserEvent::ApplyChange {
+        if event == UserEvent::Select {
             return true;
         }
         // the diff gets the scroll keys while it has the focus; from the files they move the

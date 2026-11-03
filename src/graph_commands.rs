@@ -1038,7 +1038,7 @@ mod tests {
         };
         // the messages: combined, or the parent's
         dialog.handle_key(
-            Some(UserEvent::DialogToggle),
+            Some(UserEvent::Select),
             KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
         );
         crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();

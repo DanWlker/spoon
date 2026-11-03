@@ -150,6 +150,18 @@ impl KeyList {
         help
     }
 
+    // What `event` does here: `Select` stands for the first event of the key taking it, like
+    // checking out on the graph; other events for themselves.
+    pub fn meaning(&self, event: UserEvent) -> UserEvent {
+        if event != UserEvent::Select {
+            return event;
+        }
+        self.0
+            .iter()
+            .find(|key| key.active && key.events.contains(&event))
+            .map_or(event, |key| key.events[0])
+    }
+
     pub fn extend(&mut self, other: KeyList) {
         self.0.extend(other.0);
     }

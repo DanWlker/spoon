@@ -1051,14 +1051,14 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(|v| files(v) && picks(v));
         k.add(
-            &[ToggleStage],
+            &[Select],
             "stage",
             "Stage/unstage the file, directory, hunk or line, or the picked files",
         )
         .when(row)
         .short(|v| stage(v).into());
         k.add(
-            &[ToggleStage],
+            &[Select],
             "stage",
             "Stage/unstage the file, directory, hunk or line, or the picked files",
         )
@@ -1086,7 +1086,7 @@ impl<'a> LocalChangesState<'a> {
             |v| v.ctx.diff_context.get(),
         );
         k.add(
-            &[Confirm],
+            &[Select],
             "choose",
             "Choose the side or the tool of the conflict",
         )
@@ -1155,7 +1155,7 @@ impl<'a> LocalChangesState<'a> {
             .into()
         });
         k.add(
-            &[ToggleStage, Edit],
+            &[Select, Edit],
             "type",
             "Type the message, in the commit section",
         )
@@ -1361,16 +1361,14 @@ impl<'a> LocalChangesState<'a> {
 
     // Goes one level deeper: files -> hunks -> lines of the selected hunk.
     // Does nothing when the diff has no hunk to select.
-    // In the commit section, starts editing the message; in the conflict panel, runs the choice.
+    // In the commit section, starts editing the message; on a conflicted file, goes into its
+    // conflict panel, whose choice space runs, see `select`.
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus() {
             Focus::Commit(_) | Focus::Typing(_) => self.commit_or_continue()?,
-            Focus::Side => match &self.conflict {
-                Some(conflict) => self.activate_conflict_item(conflict.item)?,
-                None => {
-                    self.pane.enter();
-                }
-            },
+            Focus::Side => {
+                self.pane.enter();
+            }
             Focus::Submodule => {}
             // the submodule panel is read on its own, like the diff
             Focus::Files if self.submodule.is_some() => self.chosen = Focus::Submodule,
@@ -1560,14 +1558,17 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Stages the selected line, hunk, file or directory, or unstages it in the staged section.
-    pub fn toggle_stage(&mut self) -> Result<(), String> {
+    // Space: stages the selected line, hunk, file or directory, or unstages it in the staged
+    // section; runs the choice of the conflict panel; types in the commit section.
+    pub fn select(&mut self) -> Result<(), String> {
         let result = match self.focus() {
             Focus::Commit(_) | Focus::Typing(_) => {
                 self.edit_message();
                 return Ok(());
             }
-            Focus::Side if self.conflict.is_some() => return Ok(()),
+            Focus::Side if let Some(conflict) = &self.conflict => {
+                return self.activate_conflict_item(conflict.item);
+            }
             // the submodule panel is read-only
             Focus::Submodule => Ok(()),
             Focus::Side => {
@@ -2417,19 +2418,27 @@ impl LocalChangesPanel<'_> {
         }
         state.pane.scroll_state().height = height;
 
-        // what Enter does on the item selected
+        // what the select key, space, does on the item selected, named as it is bound
+        let select = self.ctx.keybind.short_keys(&[UserEvent::Select]);
+        let mut chars = select.chars();
+        let select: String = chars
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .into_iter()
+            .chain(chars)
+            .collect();
         let hint = match selected_item {
             Some(ConflictItem::Existing) => {
-                format!("Enter keeps {ours_name} for the whole file, and stages it")
+                format!("{select} keeps {ours_name} for the whole file, and stages it")
             }
             Some(ConflictItem::Incoming) => {
-                format!("Enter keeps {theirs_name} for the whole file, and stages it")
+                format!("{select} keeps {theirs_name} for the whole file, and stages it")
             }
             Some(ConflictItem::MergeTool) => {
-                "Enter resolves the conflicts in the merge tool".into()
+                format!("{select} resolves the conflicts in the merge tool")
             }
             Some(ConflictItem::Editor) => {
-                "Enter opens the file to edit the markers; stage it with Space after".into()
+                format!("{select} opens the file to edit the markers; stage it with {select} after")
             }
             None => "Enter to keep a side for the whole file, or to resolve it in a tool".into(),
         };
@@ -2773,7 +2782,7 @@ mod tests {
         );
 
         // the new gitlink is staged; the staged section compares HEAD to the index
-        state.toggle_stage()?;
+        state.select()?;
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, "sub");
         assert_eq!(
@@ -3100,7 +3109,7 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.enter()?;
         assert_eq!(diff(&state).hunks.len(), 2);
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt"]);
         assert_eq!(
             paths(&state.changes.unstaged),
@@ -3110,7 +3119,7 @@ mod tests {
         assert_eq!(diff(&state).hunks.len(), 1);
 
         // staging the last hunk returns to the files
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(
             paths(&state.changes.unstaged),
             vec!["dir/x.txt", "dir/y.txt"]
@@ -3119,7 +3128,7 @@ mod tests {
 
         // stage a whole directory of untracked files
         select_row(&mut state, "dir");
-        state.toggle_stage()?;
+        state.select()?;
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(
             paths(&state.changes.staged),
@@ -3131,7 +3140,7 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.enter()?;
         state.select_next();
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(paths(&state.changes.unstaged), vec!["a.txt"]);
         let staged_diff = repository.local_change_diff(
             &["a.txt"],
@@ -3144,14 +3153,14 @@ mod tests {
         // unstage a single file from the staged directory
         state.back();
         select_row(&mut state, "dir/x.txt");
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt", "dir/y.txt"]);
 
         // stage the hunk of an untracked file
         state.focus_section(LocalChangesSection::Unstaged);
         select_row(&mut state, "dir/x.txt");
         state.enter()?;
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(
             paths(&state.changes.staged),
             vec!["a.txt", "dir/x.txt", "dir/y.txt"]
@@ -3265,7 +3274,7 @@ mod tests {
         state.select_next();
         assert_eq!(state.selected_diff_name(), "lines");
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A\nnew B"));
-        state.toggle_stage()?;
+        state.select()?;
         let staged = repository.local_change_diff(
             &["a.txt"],
             DiffOf::Staged { base: None },
@@ -3323,7 +3332,7 @@ mod tests {
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
 
         // stage a single line, staying in line mode on the next changed line
-        state.toggle_stage()?;
+        state.select()?;
         assert!(staged_diff("a.txt").contains("+new A"));
         assert!(!staged_diff("a.txt").contains("+new B"));
         assert!(unstaged_diff("a.txt").contains("+new B"));
@@ -3331,7 +3340,7 @@ mod tests {
         assert_eq!(state.selected_diff_text().as_deref(), Some("new B"));
 
         // staging the last line returns to the files
-        state.toggle_stage()?;
+        state.select()?;
         assert!(staged_diff("a.txt").contains("+new B"));
         assert!(!state.is_diff_focused());
         assert!(!state.is_selecting_lines());
@@ -3341,7 +3350,7 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.enter()?;
         state.enter()?;
-        state.toggle_stage()?;
+        state.select()?;
         assert!(!staged_diff("a.txt").contains("+new A"));
         assert!(staged_diff("a.txt").contains("+new B"));
 
@@ -3357,7 +3366,7 @@ mod tests {
         select_row(&mut state, "u.txt");
         state.enter()?;
         state.enter()?;
-        state.toggle_stage()?;
+        state.select()?;
         let staged = staged_diff("u.txt");
         assert!(staged.contains("new file mode") && staged.contains("+u1"));
         assert!(!staged.contains("+u2"));
@@ -3365,13 +3374,13 @@ mod tests {
         // stage the rest of it, then unstage only its last line
         state.back();
         state.back();
-        state.toggle_stage()?;
+        state.select()?;
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, "u.txt");
         state.enter()?;
         state.enter()?;
         state.select_last();
-        state.toggle_stage()?;
+        state.select()?;
         let staged = staged_diff("u.txt");
         assert!(staged.contains("+u1") && staged.contains("+u2"));
         assert!(!staged.contains("+u3"));
@@ -3459,7 +3468,7 @@ mod tests {
 
         // unstaging while amending removes the file from the amended commit
         select_row(&mut state, "b.txt");
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt", "c.txt"]);
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt"]);
 
@@ -3645,7 +3654,7 @@ mod tests {
         state.focus_section(LocalChangesSection::Unstaged);
         let keys = state.keys();
         for event in [
-            UserEvent::ToggleStage,
+            UserEvent::Select,
             UserEvent::ToggleSelect,
             UserEvent::Edit,
             UserEvent::Filter,
@@ -3658,7 +3667,7 @@ mod tests {
 
         // on the staged root, staging works but not editing or ignoring; on the file, all
         state.focus_section(LocalChangesSection::Staged);
-        assert!(state.keys().takes(UserEvent::ToggleStage));
+        assert!(state.keys().takes(UserEvent::Select));
         assert!(!state.keys().takes(UserEvent::Edit));
         assert!(!state.keys().takes(UserEvent::Ignore));
         select_row(&mut state, "a.txt");
@@ -3710,7 +3719,7 @@ mod tests {
 
         // in the commit section, space and e type the message, enter asks to commit
         state.focus_commit();
-        state.toggle_stage()?;
+        state.select()?;
         assert!(state.is_editing());
         state.back();
         state.request_edit()?;
@@ -3881,7 +3890,7 @@ mod tests {
         assert!(diff(&state).raw.contains("+b"));
 
         // stage all, including untracked files
-        state.toggle_stage()?;
+        state.select()?;
         assert!(state.changes.unstaged.is_empty());
         assert_eq!(
             paths(&state.changes.staged),
@@ -3891,7 +3900,7 @@ mod tests {
         // unstage all
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, ROOT_PATH);
-        state.toggle_stage()?;
+        state.select()?;
         assert!(state.changes.staged.is_empty());
 
         // discard all
@@ -3955,7 +3964,7 @@ mod tests {
 
         // a collapsed directory stays collapsed after staging, and stages everything inside
         state.collapse();
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(paths(&state.changes.staged), vec!["src/sub/a.rs"]);
         state.focus_section(LocalChangesSection::Staged);
         assert_eq!(
@@ -4083,7 +4092,7 @@ mod tests {
             ]
         );
         select_row(&mut state, ROOT_PATH);
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(
             paths(&state.changes.staged),
             vec!["docs/list.md", "src/view/list.rs"]
@@ -4239,7 +4248,7 @@ mod tests {
         state.toggle_visual();
         select_row(&mut state, "dir");
         state.toggle_visual();
-        state.toggle_stage()?;
+        state.select()?;
         assert_eq!(paths(&state.changes.staged), vec!["a.txt", "dir/u.txt"]);
         assert_eq!(paths(&state.changes.unstaged), vec!["b.txt", "c.txt"]);
         assert!(state.picked().is_empty());
@@ -4297,7 +4306,7 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.toggle_visual();
         state.toggle_visual();
-        state.toggle_stage()?;
+        state.select()?;
         assert!(!paths(&state.changes.staged).contains(&"a.txt"));
 
         // esc: back from the diff, then the picked files, then the search and filter
@@ -4425,7 +4434,7 @@ mod tests {
         fs::write(repo_path.join("a.txt"), "resolved\n")?;
         state.reload();
         select_row(&mut state, "a.txt");
-        state.toggle_stage()?;
+        state.select()?;
         state.commit_or_continue()?;
         state.run_task()?;
         assert_eq!(state.repository.operation_in_progress(), None);
@@ -4525,7 +4534,7 @@ mod tests {
         fs::write(repo_path.join("a.txt"), "resolved\n").unwrap();
         state.reload();
         select_row(state, "a.txt");
-        state.toggle_stage().unwrap();
+        state.select().unwrap();
     }
 
     #[test]
@@ -4564,7 +4573,7 @@ mod tests {
 
         // loaded before the page staged the file, it would show it unstaged again: dropped
         let before = files();
-        state.toggle_stage()?;
+        state.select()?;
         assert!(state.changes.unstaged.is_empty());
         state.reload_if_changed(before);
         assert!(state.changes.unstaged.is_empty());
@@ -4831,17 +4840,19 @@ mod tests {
             "{rows:#?}"
         );
 
-        // the tools ask the view to run them
+        // the tools ask the view to run them, with space; enter only went into the panel
         state.enter()?;
         assert!(state.is_conflict_focused());
+        assert!(state.keys().takes(UserEvent::Select));
+        assert!(!state.keys().takes(UserEvent::Confirm));
         state.move_conflict_item(Direction::Down);
-        state.enter()?;
+        state.select()?;
         assert_eq!(
             state.take_external_request(),
             Some(ExternalRequest::MergeTool("a.txt".into()))
         );
         state.move_conflict_item(Direction::Down);
-        state.enter()?;
+        state.select()?;
         let toplevel = state.toplevel().to_path_buf();
         assert_eq!(
             state.take_external_request(),
@@ -4865,7 +4876,7 @@ mod tests {
         // picking a side resolves the file with it
         state.enter()?;
         state.move_conflict_item(Direction::Right);
-        state.enter()?;
+        state.select()?;
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "feature\n");
         assert!(state.changes.unstaged.is_empty());
         assert!(state.conflict.is_none());
@@ -4898,7 +4909,7 @@ mod tests {
 
         // keeping the deleting side removes the file
         state.enter()?;
-        state.enter()?;
+        state.select()?;
         assert!(!repo_path.join("a.txt").exists());
         assert!(state.changes.unstaged.is_empty());
         Ok(())

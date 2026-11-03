@@ -553,7 +553,7 @@ mod tests {
             quit = ["q"]
             toggle_select = ["v"]
             short_copy = ["y"]
-            apply_change = ["space"]
+            select = ["space"]
             previous_tab = ["["]
             go_to_previous = ["[ p"]
         "#,
@@ -575,7 +575,7 @@ mod tests {
         let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty());
         assert_eq!(
             keybind.event_in(Scope::DetailsPane, &space),
-            Some(UserEvent::ApplyChange)
+            Some(UserEvent::Select)
         );
         assert_eq!(on(Scope::LocalChangesDiff, 'd'), Some(UserEvent::Discard));
 
