@@ -15,7 +15,8 @@ use ratatui::{
 };
 
 use super::{
-    App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, Ret, StartPage, StatusLine,
+    App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, PendingClear, Ret, StartPage,
+    StatusLine,
 };
 use crate::{
     color::GraphColorSet,
@@ -168,6 +169,7 @@ impl Harness {
         let mut restart = Restart {
             before: None,
             layout: Some(layout),
+            images: None,
         };
         loop {
             // what the app was before reloading, None once done
@@ -184,10 +186,15 @@ impl Harness {
                                 context,
                                 repository,
                                 layout,
-                            } => Some((app.into_shell(), context, layout, Some(repository))),
-                            Ret::Regraph { context, layout } => {
-                                Some((app.into_shell(), context, layout, None))
+                                images,
+                            } => {
+                                Some((app.into_shell(), context, layout, Some(repository), images))
                             }
+                            Ret::Regraph {
+                                context,
+                                layout,
+                                images,
+                            } => Some((app.into_shell(), context, layout, None, images)),
                         };
                     }
                     take_step(steps.next()?, &mut app, path, ec);
@@ -195,10 +202,11 @@ impl Harness {
                 .unwrap();
             match next {
                 None => return,
-                Some((shell, context, layout, reloaded)) => {
+                Some((shell, context, layout, reloaded, images)) => {
                     restart = Restart {
                         before: Some((shell, context)),
                         layout: Some(*layout),
+                        images,
                     };
                     if let Some(reloaded) = reloaded {
                         repository = Arc::new(*reloaded);
@@ -1377,6 +1385,54 @@ fn test_fold_merge() {
     ]);
     // the graph is drawn again, the repository isn't loaded again
     assert_eq!(harness.loads.get(), 1);
+}
+
+#[test]
+fn test_fold_merge_draws_over_the_last_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    // what the next frame clears before it is drawn
+    let clears = |clear: PendingClear| {
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            assert_eq!(app.frame_clear(), clear);
+        }))]
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // a frame drawn, from scratch
+        clears(PendingClear::Screen),
+        clears(PendingClear::None),
+        keys("h"),
+        // the rows that changed are drawn again over it, not the whole screen
+        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        clears(PendingClear::None),
+    ]);
+}
+
+#[test]
+fn test_reload_draws_over_the_last_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let clears = |clear: PendingClear| {
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            assert_eq!(app.frame_clear(), clear);
+        }))]
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        clears(PendingClear::Screen),
+        clears(PendingClear::None),
+        // a commit made outside, the repository loaded again
+        outside_git(&["commit", "-q", "--allow-empty", "-m", "c3"]),
+        tick(),
+        clears(PendingClear::None),
+    ]);
+    assert_eq!(harness.loads.get(), 2);
 }
 
 #[test]

@@ -139,9 +139,25 @@ impl ImageProtocol {
     }
 
     pub fn delete_images(&self, image_ids: &[u32]) -> Result<(), std::io::Error> {
+        let data: String = image_ids
+            .iter()
+            .filter_map(|&id| self.delete_image(id))
+            .collect();
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(data.as_bytes())?;
+        stdout.flush()
+    }
+
+    // What deletes the image of `image_id` from the terminal; None where images aren't kept by id.
+    pub fn delete_image(&self, image_id: u32) -> Option<String> {
         match self {
-            ImageProtocol::Iterm2 | ImageProtocol::Kitty => Ok(()),
-            ImageProtocol::KittyUnicode { tmux } => kitty_unicode_delete_images(image_ids, *tmux),
+            ImageProtocol::Iterm2 | ImageProtocol::Kitty => None,
+            ImageProtocol::KittyUnicode { tmux } => {
+                Some(kitty_unicode_delete_image_encode(image_id, *tmux))
+            }
         }
     }
 }
@@ -673,22 +689,6 @@ fn kitty_clear_line(y: u16) {
 
 fn kitty_clear() {
     print!("\x1b_Ga=d,d=A;\x1b\\");
-}
-
-fn kitty_unicode_delete_images(image_ids: &[u32], tmux: bool) -> Result<(), io::Error> {
-    if image_ids.is_empty() {
-        return Ok(());
-    }
-
-    let mut stdout = io::stdout().lock();
-    for image_id in image_ids {
-        write!(
-            stdout,
-            "{}",
-            kitty_unicode_delete_image_encode(*image_id, tmux)
-        )?;
-    }
-    stdout.flush()
 }
 
 fn kitty_unicode_delete_image_encode(image_id: u32, tmux: bool) -> String {

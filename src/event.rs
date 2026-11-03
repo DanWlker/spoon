@@ -100,10 +100,10 @@ pub enum AppEvent {
     Checkout(CommitHash),
     // selects the commit on the graph
     ShowCommit(CommitHash),
-    // folds or unfolds the merge commit, the graph drawn again
     // the graph laid out again on another thread after a merge was folded or unfolded, see
     // `App::start_regraph`
     Regraphed(Box<crate::graph::GraphLayout>),
+    // folds or unfolds the merge commit, the graph drawn again
     FoldMerge {
         commit: CommitHash,
         fold: Fold,

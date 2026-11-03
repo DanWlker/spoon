@@ -35,7 +35,8 @@ use crate::{
         LoadOptions, Loaded, NamedRef, Ref, Repository, Rev, RunningTask, SharedTask,
     },
     graph::{
-        CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphLayout, GraphStyle,
+        CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphImages,
+        GraphLayout, GraphStyle,
     },
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
@@ -117,11 +118,15 @@ pub enum Ret {
         repository: Box<Repository>,
         // its graph, laid out on that thread too
         layout: Box<GraphLayout>,
+        // see `Ret::Regraph`
+        images: Option<GraphImages>,
     },
     // draw the graph again as laid out after folding a merge, see `App::start_regraph`
     Regraph {
         context: Box<RefreshViewContext>,
         layout: Box<GraphLayout>,
+        // those of the rows drawn the same are kept, see `GraphImageManager::with_images`
+        images: Option<GraphImages>,
     },
 }
 
@@ -941,9 +946,16 @@ impl App<'_> {
                 let context = self.view.refresh_context();
                 if let Some(context) = context.filter(|_| layout.folded == self.shell.folded_merges)
                 {
-                    self.shell.last_frame = None;
+                    // drawn over the last frame: only the rows that changed are drawn again
+                    let images = self
+                        .take_list_state()
+                        .map(CommitListState::into_graph_images);
                     let context = Box::new(context);
-                    return Ok(Some(Ret::Regraph { context, layout }));
+                    return Ok(Some(Ret::Regraph {
+                        context,
+                        layout,
+                        images,
+                    }));
                 }
             }
             AppEvent::ClearStatusLine => {
@@ -2691,12 +2703,15 @@ impl App<'_> {
             Restore::Current(asked) => self.view.refresh_context().unwrap_or(*asked),
             Restore::Given(context) => *context,
         };
-        // the graph is drawn again from scratch
-        self.shell.last_frame = None;
+        // drawn over the last frame, like after folding a merge
+        let images = self
+            .take_list_state()
+            .map(CommitListState::into_graph_images);
         Some(Ret::Reload {
             context: Box::new(context),
             repository: Box::new(repository),
             layout: Box::new(layout),
+            images,
         })
     }
 

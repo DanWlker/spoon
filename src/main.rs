@@ -280,6 +280,7 @@ fn main() -> Result<()> {
     let mut restart = Restart {
         before: None,
         layout: Some(layout),
+        images: None,
     };
 
     let ret = loop {
@@ -291,16 +292,22 @@ fn main() -> Result<()> {
                     context,
                     repository,
                     layout,
-                } => Some((app.into_shell(), context, layout, Some(repository))),
-                Ret::Regraph { context, layout } => Some((app.into_shell(), context, layout, None)),
+                    images,
+                } => Some((app.into_shell(), context, layout, Some(repository), images)),
+                Ret::Regraph {
+                    context,
+                    layout,
+                    images,
+                } => Some((app.into_shell(), context, layout, None, images)),
             })
         });
         match ran {
             Ok(Ok(None)) => break Ok(()),
-            Ok(Ok(Some((shell, context, layout, reloaded)))) => {
+            Ok(Ok(Some((shell, context, layout, reloaded, images)))) => {
                 restart = Restart {
                     before: Some((shell, context)),
                     layout: Some(*layout),
+                    images,
                 };
                 if let Some(reloaded) = reloaded {
                     repository = Arc::new(*reloaded);
@@ -320,6 +327,8 @@ fn main() -> Result<()> {
 struct Restart {
     before: Option<(app::AppShell, Box<view::RefreshViewContext>)>,
     layout: Option<graph::GraphLayout>,
+    // the graph images of the app before, see `Ret::Regraph`
+    images: Option<graph::GraphImages>,
 }
 
 // What the repository and its graph are loaded with, the same on each reload; the tests load
@@ -400,6 +409,7 @@ impl Loader {
         let Restart {
             before: refresh,
             layout,
+            images,
         } = restart;
         let folded = refresh
             .as_ref()
@@ -424,6 +434,10 @@ impl Loader {
             self.graph_image_width_mode,
             self.image_protocol,
         );
+        let graph_image_manager = match images {
+            Some(images) => graph_image_manager.with_images(images),
+            None => graph_image_manager,
+        };
         let app = App::new(
             repository,
             self.options.clone(),

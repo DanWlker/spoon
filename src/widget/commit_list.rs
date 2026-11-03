@@ -18,7 +18,7 @@ use crate::{
     config::UserListColumnType,
     event::{AppEvent, UserEvent},
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
-    graph::{Fold, GraphImageManager},
+    graph::{Fold, GraphImageManager, GraphImages},
     protocol::PreparedImage,
     search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{
@@ -261,6 +261,11 @@ impl<'a> CommitListState<'a> {
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
         self.graph_image_manager.drain_pending_uploads()
+    }
+
+    // The graph images it left in the terminal, see `GraphImageManager::into_images`.
+    pub fn into_graph_images(self) -> GraphImages {
+        self.graph_image_manager.into_images()
     }
 
     pub fn select_next(&mut self) {

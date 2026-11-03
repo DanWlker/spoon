@@ -37,7 +37,10 @@ pub enum GraphImageWidthMode {
 
 #[derive(Debug)]
 pub struct GraphImageManager<'a> {
-    prepared_image_map: FxHashMap<CommitHash, PreparedImage>,
+    // each with the row image it was prepared from
+    prepared_image_map: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
+    // those of the manager before it, not checked against this graph yet, see `with_images`
+    previous: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
     image_ids: FxHashSet<u32>,
     pending_uploads: Vec<String>,
 
@@ -64,6 +67,7 @@ impl<'a> GraphImageManager<'a> {
 
         GraphImageManager {
             prepared_image_map: FxHashMap::default(),
+            previous: FxHashMap::default(),
             image_ids: FxHashSet::default(),
             pending_uploads: Vec::default(),
             graph,
@@ -77,8 +81,47 @@ impl<'a> GraphImageManager<'a> {
         }
     }
 
+    // Takes over the images of the manager before it, on a graph laid out or loaded again: the
+    // rows drawn the same keep their images, already in the terminal, so they aren't drawn again.
+    // Those of the commits no longer shown, folded or gone like after a rebase, are deleted with
+    // the first frame, else they'd pile up in the terminal.
+    pub fn with_images(mut self, images: GraphImages) -> Self {
+        let GraphImages {
+            mut images,
+            mut image_ids,
+            mut pending_uploads,
+            session_nonce,
+        } = images;
+        images.retain(|commit_hash, _| {
+            let shown = self.graph.commit_pos_map.contains_key(commit_hash);
+            if !shown {
+                let image_id = graph_image_id(session_nonce, commit_hash);
+                image_ids.remove(&image_id);
+                pending_uploads.extend(self.image_protocol.delete_image(image_id));
+            }
+            shown
+        });
+        self.previous = images;
+        self.image_ids = image_ids;
+        self.pending_uploads = pending_uploads;
+        self.session_nonce = session_nonce;
+        self
+    }
+
+    // Its images, left in the terminal for the next manager, see `with_images`.
+    pub fn into_images(mut self) -> GraphImages {
+        let mut images = std::mem::take(&mut self.previous);
+        images.extend(self.prepared_image_map.drain());
+        GraphImages {
+            images,
+            image_ids: std::mem::take(&mut self.image_ids),
+            pending_uploads: std::mem::take(&mut self.pending_uploads),
+            session_nonce: self.session_nonce,
+        }
+    }
+
     pub fn prepared_image(&self, commit_hash: &CommitHash) -> &PreparedImage {
-        self.prepared_image_map.get(commit_hash).unwrap()
+        &self.prepared_image_map[commit_hash].1
     }
 
     pub fn graph(&self) -> &Graph<'a> {
@@ -101,7 +144,6 @@ impl<'a> GraphImageManager<'a> {
         if self.prepared_image_map.contains_key(commit_hash) {
             return;
         }
-        let image_id = graph_image_id(self.session_nonce, commit_hash);
         let graph_row_image = build_single_graph_row_image(
             &self.graph,
             &self.image_params,
@@ -110,14 +152,33 @@ impl<'a> GraphImageManager<'a> {
             self.image_width_mode,
             commit_hash,
         );
-        let mut image =
-            graph_row_image.prepare(self.cell_width_type, self.image_protocol, image_id);
-        if let Some(upload_data) = image.take_upload_data() {
-            self.pending_uploads.push(upload_data);
-        }
-        self.prepared_image_map.insert(commit_hash.clone(), image);
-        self.image_ids.insert(image_id);
+        let image = match self.previous.remove(commit_hash) {
+            Some((previous, image)) if previous.bytes == graph_row_image.bytes => image,
+            // the same id, so a changed image replaces the one in the terminal
+            _ => {
+                let image_id = graph_image_id(self.session_nonce, commit_hash);
+                let mut image =
+                    graph_row_image.prepare(self.cell_width_type, self.image_protocol, image_id);
+                if let Some(upload_data) = image.take_upload_data() {
+                    self.pending_uploads.push(upload_data);
+                }
+                self.image_ids.insert(image_id);
+                image
+            }
+        };
+        self.prepared_image_map
+            .insert(commit_hash.clone(), (graph_row_image, image));
     }
+}
+
+// The images a graph image manager left in the terminal, for the one drawing the graph laid out
+// or loaded again, see `GraphImageManager::with_images`.
+#[derive(Debug)]
+pub struct GraphImages {
+    images: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
+    image_ids: FxHashSet<u32>,
+    pending_uploads: Vec<String>,
+    session_nonce: u32,
 }
 
 // The manager owns the images it uploaded: deleting them when it is dropped keeps a page switch or

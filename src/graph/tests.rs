@@ -2052,3 +2052,90 @@ fn fold_merge_hides_only_what_it_alone_reaches() -> TestResult {
         .all(|c| graph.commit_pos_map[&c.commit_hash].0 == merge_x));
     Ok(())
 }
+
+#[test]
+fn graph_laid_out_again_keeps_the_images_of_the_rows_drawn_the_same() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+    git.commit("base1", "2024-01-01");
+    git.commit("base2", "2024-01-02");
+    git.checkout_b("feat");
+    git.commit("f1", "2024-01-03");
+    git.checkout("master");
+    git.commit("m1", "2024-01-04");
+    git.merge(&["feat"], "2024-01-05");
+    git.branch_d("feat");
+
+    let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
+    let manager = |folded: &FxHashSet<git::CommitHash>| {
+        let params = graph::ImageParams::new(
+            &crate::color::GraphColorSet::new(&crate::config::GraphColorConfig::default()),
+            graph::CellWidthType::Double,
+            false,
+        );
+        graph::GraphImageManager::new(
+            graph::calc_graph(&repository, None, folded),
+            params,
+            graph::CellWidthType::Double,
+            graph::GraphStyle::Rounded,
+            graph::GraphImageWidthMode::Compact,
+            crate::protocol::ImageProtocol::KittyUnicode { tmux: false },
+        )
+    };
+    let hash = |subject: &str| {
+        let commits = repository.all_commits();
+        let commit = commits.iter().find(|c| c.subject == subject).unwrap();
+        commit.commit_hash.clone()
+    };
+    // the placeholder cells, their colour naming the image
+    let cells = |manager: &graph::GraphImageManager, subject: &str| -> Vec<_> {
+        let image = manager.prepared_image(&hash(subject));
+        let cells = image.cells().iter();
+        cells.map(|c| (c.symbol().to_string(), c.style())).collect()
+    };
+    let upload_all = |manager: &mut graph::GraphImageManager| {
+        let commits: Vec<_> = manager
+            .graph()
+            .commits
+            .iter()
+            .map(|c| c.commit_hash.clone())
+            .collect();
+        commits.iter().for_each(|c| manager.ensure_uploaded(c));
+        manager.drain_pending_uploads().len()
+    };
+
+    let mut unfolded = manager(&Default::default());
+    assert_eq!(upload_all(&mut unfolded), 5);
+    let (base1, merge) = (
+        cells(&unfolded, "base1"),
+        cells(&unfolded, "Merge branch 'feat'"),
+    );
+
+    // f1 goes: base1 is drawn the same, the merge and the rows the line to f1 crossed are not
+    let folded = [hash("Merge branch 'feat'")].into_iter().collect();
+    let mut folded = manager(&folded).with_images(unfolded.into_images());
+    // f1's image is deleted from the terminal with the first frame
+    let deletes = folded.drain_pending_uploads();
+    assert!(
+        matches!(&deletes[..], [delete] if delete.contains("a=d,d=I")),
+        "{deletes:?}"
+    );
+    let uploads = upload_all(&mut folded);
+    assert!((1..4).contains(&uploads), "{uploads} of 4 uploaded again");
+    assert_eq!(cells(&folded, "base1"), base1);
+    // narrower, drawn again under the same id, replacing the image in the terminal
+    let merge_folded = cells(&folded, "Merge branch 'feat'");
+    assert_ne!(merge_folded, merge);
+    assert_eq!(merge_folded[0].1, merge[0].1);
+
+    // back as it was, f1 uploaded again with the rows that change back
+    let mut unfolded = manager(&Default::default()).with_images(folded.into_images());
+    let uploads = upload_all(&mut unfolded);
+    assert!((2..5).contains(&uploads), "{uploads} of 5 uploaded again");
+    assert_eq!(cells(&unfolded, "base1"), base1);
+
+    Ok(())
+}
