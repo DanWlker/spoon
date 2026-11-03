@@ -20,6 +20,22 @@ pub enum GraphCommand {
     Compare(Compare),
 }
 
+// The name of the command of `event` when it works on the selected commit alone, which picked
+// commits refuse, and the hints leave out then, see `register_graph_commands`.
+pub fn single_commit_command(event: UserEvent) -> Option<&'static str> {
+    use UserEvent::*;
+    Some(match event {
+        Rebase => "Rebase",
+        Merge => "Merge",
+        Checkout => "Checkout",
+        AmendCommit => "Amend",
+        Reset => "Reset",
+        CreateTag => "Tag",
+        CreateBranch => "Branch",
+        _ => return None,
+    })
+}
+
 // The command of `event` on the `selected` commit, or the `picked` ones; None for other events.
 pub fn graph_command(
     repository: &Repository,
@@ -29,15 +45,11 @@ pub fn graph_command(
 ) -> Option<Result<GraphCommand, String>> {
     let branch = repository.current_branch();
     let branch_label = branch.clone().unwrap_or_else(|| "HEAD".into());
-    let single = |name: &str| -> Result<(), String> {
-        if picked.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "{name} works on the selected commit, clear the picked ones first"
-            ))
-        }
-    };
+    if let Some(name) = single_commit_command(event).filter(|_| !picked.is_empty()) {
+        return Some(Err(format!(
+            "{name} works on the selected commit, clear the picked ones first"
+        )));
+    }
     // the picked commits, else the selected one
     let targets = if picked.is_empty() {
         vec![selected.clone()]
@@ -60,32 +72,27 @@ pub fn graph_command(
     }
     let dialog = match event {
         UserEvent::Diff => return Some(compare(repository, selected, picked)),
-        UserEvent::Rebase => single("Rebase").and_then(|_| {
-            let branch = branch.ok_or("Check out a branch to rebase it")?;
-            not_head(repository, &selected, "rebase onto")?;
-            let Onto { arg, label } = onto_target(repository, Rev::Commit(selected.clone()));
-            let conflict = rebase_conflict(repository, &arg);
-            Ok(GitDialog::rebase(
-                &branch,
-                arg,
-                &label,
-                repository.remote_info().rebase_auto_stash,
-            )
-            .conflicting(conflict))
-        }),
-        UserEvent::Merge => single("Merge").and_then(|_| {
-            not_head(repository, &selected, "merge")?;
+        UserEvent::Rebase => branch
+            .ok_or_else(|| "Check out a branch to rebase it".to_string())
+            .and_then(|branch| {
+                not_head(repository, &selected, "rebase onto")?;
+                let Onto { arg, label } = onto_target(repository, Rev::Commit(selected.clone()));
+                let conflict = rebase_conflict(repository, &arg);
+                Ok(GitDialog::rebase(
+                    &branch,
+                    arg,
+                    &label,
+                    repository.remote_info().rebase_auto_stash,
+                )
+                .conflicting(conflict))
+            }),
+        UserEvent::Merge => not_head(repository, &selected, "merge").map(|_| {
             let merge_ff = repository.config("merge.ff");
             let Onto { arg, label } = onto_target(repository, Rev::Commit(selected.clone()));
             let conflict = merge_conflict(repository, &arg);
-            Ok(
-                GitDialog::merge(&branch_label, arg, &label, merge_ff.as_deref())
-                    .conflicting(conflict),
-            )
+            GitDialog::merge(&branch_label, arg, &label, merge_ff.as_deref()).conflicting(conflict)
         }),
-        UserEvent::Checkout => {
-            single("Checkout").map(|_| GitDialog::checkout(checkout_targets(repository, &selected)))
-        }
+        UserEvent::Checkout => Ok(GitDialog::checkout(checkout_targets(repository, &selected))),
         UserEvent::CherryPick => {
             let mut commits = sort_newest_first(repository, targets);
             commits.reverse();
@@ -115,18 +122,14 @@ pub fn graph_command(
                 .collect();
             Ok(GitDialog::revert(&branch_label, commits).conflicting(conflict))
         }
-        UserEvent::AmendCommit => {
-            return Some(single("Amend").and_then(|_| amend(repository, &branch_label, &selected)))
-        }
-        UserEvent::Reset => single("Reset")
-            .map(|_| GitDialog::reset(&branch_label, dialog_commit(repository, &selected))),
+        UserEvent::AmendCommit => return Some(amend(repository, &branch_label, &selected)),
+        UserEvent::Reset => Ok(GitDialog::reset(
+            &branch_label,
+            dialog_commit(repository, &selected),
+        )),
         UserEvent::DropCommit => drop_commits(repository, &branch_label, targets),
-        UserEvent::CreateTag => {
-            single("Tag").map(|_| GitDialog::create_tag(StartPoint::Commit(selected.clone())))
-        }
-        UserEvent::CreateBranch => {
-            single("Branch").map(|_| GitDialog::create_branch_at(selected.clone()))
-        }
+        UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Commit(selected.clone()))),
+        UserEvent::CreateBranch => Ok(GitDialog::create_branch_at(selected.clone())),
         _ => return None,
     };
     Some(dialog.map(|dialog| GraphCommand::Dialog(Box::new(dialog))))
@@ -176,14 +179,28 @@ pub fn ref_graph_command(
                     let ours = targets.remove(i);
                     targets.insert(0, ours);
                 }
-                // a tag, checked out detached in place of its commit
+                // a tag, or a remote branch whose local branch is at another commit, checked out
+                // detached in place of its commit; by its full name, as git takes a branch of the
+                // same name for the name alone, even with --detach
                 None => {
                     targets.retain(|t| !matches!(t, CheckoutTarget::Detach { .. }));
-                    let tag = CheckoutTarget::Detach {
-                        revision: name.to_string(),
+                    let detach = CheckoutTarget::Detach {
+                        revision: selected.full_name(),
                         label: name.to_string(),
                     };
-                    targets.insert(0, tag);
+                    targets.insert(0, detach);
+                    // that local branch first, to pull it after, unless it is checked out
+                    let local = match selected {
+                        NamedRef::RemoteBranch(_) => {
+                            RemoteBranch::parse(repository.remotes(), name)
+                                .map(|remote| remote.branch)
+                                .filter(|local| {
+                                    branch.as_ref() != Some(local) && is_branch(repository, local)
+                                })
+                        }
+                        _ => None,
+                    };
+                    targets.splice(0..0, local.map(CheckoutTarget::Branch));
                 }
             }
             GitDialog::checkout(targets)
@@ -194,6 +211,14 @@ pub fn ref_graph_command(
         _ => return graph_command(repository, event, target, vec![]),
     };
     Some(dialog.map(|dialog| GraphCommand::Dialog(Box::new(dialog))))
+}
+
+// Whether `name` is a local branch.
+fn is_branch(repository: &Repository, name: &str) -> bool {
+    repository
+        .all_refs()
+        .iter()
+        .any(|r| matches!(r, Ref::Branch { .. }) && r.name() == name)
 }
 
 // A new branch from `from`, or another local branch chosen instead.
@@ -299,12 +324,6 @@ fn merge_conflict(repository: &Repository, source: &str) -> ConflictWork {
 // The branches at the commit to check out, and the commit itself.
 fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutTarget> {
     let current = repository.current_branch();
-    let all_refs = repository.all_refs();
-    let local_exists = |name: &str| {
-        all_refs
-            .iter()
-            .any(|r| matches!(r, Ref::Branch { .. }) && r.name() == name)
-    };
     let mut targets = vec![];
     for r in repository.refs(hash) {
         match r {
@@ -318,7 +337,7 @@ fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutT
                 else {
                     continue;
                 };
-                if local != "HEAD" && !local_exists(&local) {
+                if local != "HEAD" && !is_branch(repository, &local) {
                     targets.push(CheckoutTarget::Track {
                         local,
                         remote_branch: name.clone(),
@@ -879,6 +898,34 @@ mod tests {
     }
 
     #[test]
+    fn test_checkout_tag_named_like_a_branch() {
+        let (dir, git) = rewrite_repo();
+        let path = dir.path();
+        git(&["tag", "release", "HEAD~2"]);
+        git(&["branch", "release", "HEAD~1"]);
+        let (repository, hashes) = load(path);
+        let tag = NamedRef::Tag("release".into());
+        let checkout = ref_graph_command(&repository, UserEvent::Checkout, &tag, hashes[2].clone());
+        // the tag's commit, though git takes the branch for the name alone
+        run(path, checkout.unwrap(), "");
+        assert_eq!(git(&["rev-parse", "HEAD"]).trim(), hashes[2].as_str());
+    }
+
+    #[test]
+    fn test_checkout_remote_branch_of_a_local_one_elsewhere() {
+        let (dir, git) = rewrite_repo();
+        git(&["branch", "feat", "HEAD~2"]);
+        git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        git(&["update-ref", "refs/remotes/origin/feat", "HEAD~1"]);
+        let (repository, hashes) = load(dir.path());
+        let remote = NamedRef::RemoteBranch("origin/feat".into());
+        let checkout =
+            ref_graph_command(&repository, UserEvent::Checkout, &remote, hashes[1].clone());
+        // the local branch first, to pull it after, then the remote branch's commit detached
+        assert_eq!(args(checkout.unwrap()), "checkout feat");
+    }
+
+    #[test]
     fn test_ref_graph_command() {
         let (dir, git) = rewrite_repo();
         let path = dir.path();
@@ -922,7 +969,10 @@ mod tests {
             name: "v1".into(),
             target: hashes[2].clone(),
         };
-        assert_eq!(on(UserEvent::Checkout, &v1), "checkout --detach v1");
+        assert_eq!(
+            on(UserEvent::Checkout, &v1),
+            "checkout --detach refs/tags/v1"
+        );
         // a tag at a commit of the graph, and at a ref of the sidebar
         let tag = command(&repository, UserEvent::CreateTag, &hashes[1], &[]);
         run(path, tag, "t1");

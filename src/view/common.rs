@@ -11,6 +11,7 @@ use crate::{
     event::{AppEvent, UserEvent},
     external::editor_command,
     git::{CommitHash, FileRevision, Repository, Rev},
+    graph_commands::single_commit_command,
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
     search::{SearchKind, SearchOptions, SearchOutcome},
@@ -98,10 +99,7 @@ pub fn register_graph_commands<T: ?Sized>(
         ),
     ];
     for (event, short, long) in commands {
-        let single = matches!(
-            event,
-            Rebase | Merge | Checkout | AmendCommit | Reset | CreateBranch | CreateTag
-        );
+        let single = single_commit_command(event).is_some();
         k.add_where(&[event], short, long, move |view| {
             let refused = (single && picked(view)) || (event.moves_head() && operation_waits(view));
             match availability(view, event) {
