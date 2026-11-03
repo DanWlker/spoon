@@ -91,7 +91,8 @@ impl DiffPane {
         }
     }
 
-    fn show_loaded(&mut self, raw: &str, repository: &Repository) {
+    // Shows the diff `raw`, the output of the git command giving it.
+    pub fn show_loaded(&mut self, raw: &str, repository: &Repository) {
         let mut diff = parse_diff(raw);
         diff.drop_converted(repository);
         self.set_diff(Some(diff));

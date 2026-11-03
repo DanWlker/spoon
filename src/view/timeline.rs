@@ -21,7 +21,7 @@ use crate::{
         type_query, typing_keys,
     },
     widget::{
-        diff::{parse_diff, Step},
+        diff::Step,
         diff_pane::DiffPane,
         style::{
             loading_note, mark_selected_row, panel_block, panel_title, render_panel_scrollbar,
@@ -84,9 +84,8 @@ impl TimelineView {
 
     // The file's changes in the selected commit, from the path it had before when it moved.
     fn load(&mut self, repository: &Repository) {
-        let mut diff = parse_diff(&self.diff_work(repository)());
-        diff.drop_converted(repository);
-        self.pane.set_diff(Some(diff));
+        let raw = self.diff_work(repository)();
+        self.pane.show_loaded(&raw, repository);
     }
 
     fn diff_work(&self, repository: &Repository) -> Box<dyn FnOnce() -> String + Send> {

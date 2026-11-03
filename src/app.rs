@@ -60,6 +60,7 @@ use crate::{
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
         style::{badge, key_hints, spinner, KeyLabel, SPINNER_RATE},
     },
+    InitialSelection,
 };
 
 #[derive(Debug, Default)]
@@ -77,12 +78,6 @@ enum StatusLine {
         options: String,
     },
     NotificationSuccess(String),
-}
-
-#[derive(Clone, Copy)]
-pub enum InitialSelection {
-    Latest,
-    Head,
 }
 
 // How the app starts, from the command line: on the local changes page; on which commit; and

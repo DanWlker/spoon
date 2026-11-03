@@ -21,7 +21,7 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
-        diff::{parse_diff, Step},
+        diff::Step,
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
         file_tree::{
@@ -328,9 +328,7 @@ impl<'a> CommitChangesState<'a> {
             return;
         }
         if let Some(work) = self.diff_work(None) {
-            let mut diff = parse_diff(&work());
-            diff.drop_converted(self.repository);
-            self.pane.set_diff(Some(diff));
+            self.pane.show_loaded(&work(), self.repository);
         }
     }
 

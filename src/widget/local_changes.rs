@@ -26,7 +26,7 @@ use crate::{
     view::register_diff_keys,
     widget::{
         conflict::{side_names, ConflictView, RowKind},
-        diff::{parse_diff, Step, CONVERTED_DIFF},
+        diff::{Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
@@ -1980,9 +1980,8 @@ impl<'a> LocalChangesState<'a> {
     fn load_diff(&mut self) {
         self.diff_stale = false;
         if self.prepare_diff() {
-            let mut diff = parse_diff(&self.diff_work()());
-            diff.drop_converted(self.repository);
-            self.pane.set_diff(Some(diff));
+            let raw = self.diff_work()();
+            self.pane.show_loaded(&raw, self.repository);
         }
     }
 

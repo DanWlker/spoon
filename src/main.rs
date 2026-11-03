@@ -168,16 +168,6 @@ enum InitialSelection {
     Head,
 }
 
-impl From<Option<InitialSelection>> for app::InitialSelection {
-    fn from(selection: Option<InitialSelection>) -> Self {
-        match selection {
-            Some(InitialSelection::Latest) => app::InitialSelection::Latest,
-            Some(InitialSelection::Head) => app::InitialSelection::Head,
-            None => app::InitialSelection::Latest,
-        }
-    }
-}
-
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // How often the branches, HEAD and the operation in progress are checked for changes made outside
@@ -202,7 +192,7 @@ fn main() -> Result<()> {
     let initial_selection = args
         .initial_selection
         .or(core_config.option.initial_selection)
-        .into();
+        .unwrap_or(InitialSelection::Latest);
     let mailmap = core_config.git.mailmap;
     let primary_branch = args.primary_branch.filter(|s| !s.is_empty());
     let launch = app::Launch {
