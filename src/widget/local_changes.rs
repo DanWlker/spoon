@@ -1951,8 +1951,9 @@ impl<'a> LocalChangesState<'a> {
         let submodule = self
             .submodule
             .as_ref()
-            .is_some_and(SubmodulePanel::is_loading);
-        self.pane.is_loading() || self.files_loading.is_some() || submodule
+            .and_then(SubmodulePanel::loading_since)
+            .is_some();
+        self.pane.loading_since().is_some() || self.files_loading.is_some() || submodule
     }
 
     // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
@@ -2277,7 +2278,7 @@ impl LocalChangesPanel<'_> {
         };
         let diff_focused = self.focused && state.is_diff_focused();
         let notes = state.diff_query.indicator().into_iter();
-        let notes = notes.chain(loading_note(state.pane.is_loading()));
+        let notes = notes.chain(loading_note(state.pane.loading_since()));
         let title = panel_title(&title, notes, diff_focused, &self.ctx.color_theme);
         let search = state.diff_query.search();
         let inner = state

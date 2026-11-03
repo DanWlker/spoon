@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, rc::Rc};
+use std::{collections::BTreeSet, rc::Rc, time::Instant};
 
 use rustc_hash::FxHashSet;
 
@@ -323,7 +323,7 @@ impl<'a> CommitChangesState<'a> {
         if let Some(submodule) = &mut self.submodule {
             submodule.wait(&self.ctx);
         }
-        if self.pane.is_loading() {
+        if self.pane.loading_since().is_some() {
             self.pane.wait_loading(self.repository);
             return;
         }
@@ -334,13 +334,13 @@ impl<'a> CommitChangesState<'a> {
         }
     }
 
-    // Whether its diff or submodule loads in the background.
-    pub fn is_loading(&self) -> bool {
+    // When its diff or submodule started loading in the background, None when neither does.
+    pub fn loading_since(&self) -> Option<Instant> {
         let submodule = self
             .submodule
             .as_ref()
-            .is_some_and(SubmodulePanel::is_loading);
-        self.pane.is_loading() || submodule
+            .and_then(SubmodulePanel::loading_since);
+        self.pane.loading_since().into_iter().chain(submodule).min()
     }
 
     // Before drawing: starts loading the diff of the selected row on another thread, the screen
@@ -349,7 +349,7 @@ impl<'a> CommitChangesState<'a> {
         if let Some(submodule) = &mut self.submodule {
             submodule.poll(&self.ctx);
         }
-        if self.pane.poll_loading(self.repository) || self.pane.is_loading() {
+        if self.pane.poll_loading(self.repository) || self.pane.loading_since().is_some() {
             return;
         }
         if let Some(work) = self.diff_work(Some(tx)) {
@@ -734,8 +734,18 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    pub fn is_loading(&self) -> bool {
-        self.tree_loading.is_some() || matches!(self.preview, Some(FilePreview::Loading(_)))
+    // When its tree or file preview started loading in the background, None when neither does.
+    pub fn loading_since(&self) -> Option<Instant> {
+        let preview = match &self.preview {
+            Some(FilePreview::Loading(job)) => Some(job.started()),
+            _ => None,
+        };
+        self.tree_loading
+            .as_ref()
+            .map(Job::started)
+            .into_iter()
+            .chain(preview)
+            .min()
     }
 
     // Another row or commit: its preview loads once used, see `ensure_loaded`; the one shown
@@ -1212,13 +1222,13 @@ mod tests {
             |tx| SubmodulePanel::between(&repository, &ctx, "sub", &first, Some(&second), None, tx);
         // its commits load on another thread, said meanwhile
         let mut loading = panel(Some(&tx));
-        assert!(loading.is_loading());
+        assert!(loading.loading_since().is_some());
         assert!(loading.subjects().is_empty());
         loading.wait(&ctx);
         assert_eq!(loading.subjects(), ["second"]);
         // kept by the parent: shown right away the next time
         let again = panel(Some(&tx));
-        assert!(!again.is_loading());
+        assert!(again.loading_since().is_none());
         assert_eq!(again.subjects(), ["second"]);
     }
 
@@ -1368,7 +1378,7 @@ mod tests {
         assert!(state.pane.diff().is_none());
         let ec = crate::event::EventController::without_terminal();
         state.ensure_loaded_in_background(&ec.sender());
-        assert!(state.pane.is_loading());
+        assert!(state.pane.loading_since().is_some());
         let area = Rect::new(0, 0, 100, 12);
         let mut buf = Buffer::empty(area);
         CommitTab::new(test_ctx(), None, None, true).render_changes(area, &mut buf, &mut state);

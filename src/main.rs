@@ -362,7 +362,8 @@ impl Loader {
         }
     }
 
-    // `load_work` on another thread, saying so on the screen meanwhile; None when quit before.
+    // `load_work` on another thread, saying so on the screen once it takes long (see
+    // `shows_loading`), blank before; None when quit before.
     fn load_showing(
         &self,
         ctx: &app::AppContext,
@@ -377,6 +378,9 @@ impl Loader {
                 return Ok(Some(loaded?));
             }
             terminal.draw(|f| {
+                if !background::shows_loading(job.started()) {
+                    return;
+                }
                 let line = ratatui::text::Line::raw(message.as_str()).fg(ctx.color_theme.muted_fg);
                 let area = f.area();
                 let row =

@@ -1504,20 +1504,19 @@ fn test_fold_merge_with_branch_only() {
 }
 
 #[test]
-fn test_blame_and_timeline_say_they_are_loading_until_they_open() {
+fn test_blame_and_timeline_open_once_loaded() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let head = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
     let mut harness = Harness::new(&path, launch());
-    let open = |event: AppEvent, loading: &'static str| {
+    let open = |event: AppEvent| {
         vec![Step::Act(Box::new(move |app: &mut App| {
             app.handle_event(event).unwrap();
-            // the history loads on another thread: said in the status line, no window yet
+            // the history loads on another thread: no window yet, and nothing said in the status
+            // line while it is quick, see `shows_loading`
             assert!(app.shell.overlay.is_none());
-            let StatusLine::Transient(message) = &app.shell.app_status.status_line else {
-                panic!("no message")
-            };
-            assert_eq!(message, loading);
+            assert!(matches!(app.shell.app_status.status_line, StatusLine::None));
+            assert_eq!(app.background_activity(), None);
         }))]
     };
     let opened = |name: &'static str| {
@@ -1531,40 +1530,31 @@ fn test_blame_and_timeline_say_they_are_loading_until_they_open() {
     };
     let commit = CommitHash::from(head.as_str());
     harness.run(vec![
-        open(
-            AppEvent::OpenBlame {
-                commit: commit.clone(),
-                path: "f.txt".into(),
-                line: None,
-            },
-            "Loading the blame of f.txt…",
-        ),
+        open(AppEvent::OpenBlame {
+            commit: commit.clone(),
+            path: "f.txt".into(),
+            line: None,
+        }),
         opened("blame"),
         keys("esc esc"),
-        open(
-            AppEvent::OpenTimeline {
-                commit,
-                path: "f.txt".into(),
-            },
-            "Loading the timeline of f.txt…",
-        ),
+        open(AppEvent::OpenTimeline {
+            commit,
+            path: "f.txt".into(),
+        }),
         opened("timeline"),
         keys("esc"),
         // a file with no history says so once loaded, opening nothing
-        open(
-            AppEvent::OpenTimeline {
-                commit: CommitHash::from(head.as_str()),
-                path: "nothing.txt".into(),
-            },
-            "Loading the timeline of nothing.txt…",
-        ),
+        open(AppEvent::OpenTimeline {
+            commit: CommitHash::from(head.as_str()),
+            path: "nothing.txt".into(),
+        }),
         overlay("none"),
         check(|app| assert_notice(app, "nothing.txt has no history")),
     ]);
 }
 
 // Moving in the commit list, the details of the commit before stay shown until those of the one
-// selected load, the title saying so.
+// selected load, the title saying so once that takes long.
 #[test]
 fn test_details_stay_while_the_next_load() {
     let dir = tempfile::tempdir().unwrap();
@@ -1605,7 +1595,8 @@ fn test_details_stay_while_the_next_load() {
             }
             let screen = draw_now(app);
             assert_eq!(shown(&tips, &screen), before);
-            assert!(screen.contains("loading…") && !screen.contains("Loading…"));
+            // no note while it is quick, see `shows_loading`
+            assert!(!screen.contains("loading…"), "{screen}");
         }))],
         // once loaded, the other tip's
         screen(move |screen| {
@@ -1616,7 +1607,7 @@ fn test_details_stay_while_the_next_load() {
 }
 
 // Moving to another file of the local changes, the diff before stays shown until the file's
-// loads, the title saying so.
+// loads, the title saying so once that takes long.
 #[test]
 fn test_local_changes_diff_stays_while_the_next_loads() {
     let dir = tempfile::tempdir().unwrap();
@@ -1658,8 +1649,9 @@ fn test_local_changes_diff_stays_while_the_next_loads() {
                 return;
             }
             let screen = draw_now(app);
+            // no note while it is quick, see `shows_loading`
             assert!(
-                screen.contains("GGGG") && screen.contains("loading…"),
+                screen.contains("GGGG") && !screen.contains("loading…"),
                 "{screen}"
             );
         }))],

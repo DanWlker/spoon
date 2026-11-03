@@ -571,7 +571,9 @@ impl BlameView {
         let notes = [revision.path.clone()]
             .into_iter()
             .chain(self.query.indicator())
-            .chain(loading_note(self.loading.is_some()));
+            .chain(loading_note(
+                self.loading.as_ref().map(|(_, job)| job.started()),
+            ));
         let block =
             panel_block(focused, theme).title(panel_title("[2] Blame", notes, focused, theme));
         let inner = block.inner(body);
@@ -906,9 +908,10 @@ mod tests {
         };
         let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
         view.handle_event(UserEvent::OlderCommit, key, &repository);
+        // the blame before stays, without a note while it is quick, see `shows_loading`
         let loading = screen(&mut view);
         assert!(
-            loading.contains("text1") && loading.contains("loading…"),
+            loading.contains("text1") && !loading.contains("loading…"),
             "{loading}"
         );
         view.wait_loading();

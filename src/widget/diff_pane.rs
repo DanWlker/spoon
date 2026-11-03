@@ -1,4 +1,4 @@
-use std::ops::RangeInclusive;
+use std::{ops::RangeInclusive, time::Instant};
 
 use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
@@ -97,8 +97,9 @@ impl DiffPane {
         self.set_diff(Some(diff));
     }
 
-    pub fn is_loading(&self) -> bool {
-        self.loading.is_some()
+    // When its diff started loading in the background, None when it isn't.
+    pub fn loading_since(&self) -> Option<Instant> {
+        self.loading.as_ref().map(Job::started)
     }
 
     // Whether the diff is of one file, which shows more or less context around its changes.

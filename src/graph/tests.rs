@@ -2136,6 +2136,8 @@ fn graph_laid_out_again_keeps_the_images_of_the_rows_drawn_the_same() -> TestRes
     let uploads = upload_all(&mut unfolded);
     assert!((2..5).contains(&uploads), "{uploads} of 5 uploaded again");
     assert_eq!(cells(&unfolded, "base1"), base1);
+    // left to no one, so dropping it writes no deletes to the test's output
+    drop(unfolded.into_images());
 
     Ok(())
 }

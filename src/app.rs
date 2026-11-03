@@ -23,7 +23,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::Job,
+    background::{shows_loading, Job},
     browse::{self, LinkAction, LinkTarget},
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, GraphColorConfig, UiConfig},
@@ -282,8 +282,8 @@ pub struct AppShell {
     reload_generation: u64,
     // the blame or timeline opening, see `App::open_window`
     opening: Option<Opening>,
-    // how many layouts of the graph run after folding merges, see `App::start_regraph`
-    regraphs: usize,
+    // when each layout of the graph running after folding merges started, see `App::start_regraph`
+    regraphs: Vec<Instant>,
 }
 
 // What the app shows again once the repository reloaded in the background lands.
@@ -305,7 +305,16 @@ pub struct Reloaded {
 
 // A window over everything whose file history loads on another thread, see `App::open_window`.
 #[derive(Debug)]
-enum Opening {
+struct Opening {
+    window: OpeningWindow,
+    // the file, named in the status bar while it loads, see `App::background_activity`
+    path: String,
+    // redraws the spinner meanwhile
+    _spinning: std::sync::mpsc::Sender<()>,
+}
+
+#[derive(Debug)]
+enum OpeningWindow {
     Blame {
         job: Job<FileBlameResult>,
         line: Option<usize>,
@@ -313,9 +322,22 @@ enum Opening {
     Timeline(Job<FileHistoryResult>),
 }
 
+impl Opening {
+    // What the status bar says once it takes long, see `shows_loading`.
+    fn activity(&self) -> Option<String> {
+        let (name, started) = match &self.window {
+            OpeningWindow::Blame { job, .. } => ("blame", job.started()),
+            OpeningWindow::Timeline(job) => ("timeline", job.started()),
+        };
+        shows_loading(started).then(|| format!("Loading the {name} of {}", self.path))
+    }
+}
+
 // The reload of the repository running in the background, see `App::start_reload`.
 #[derive(Debug)]
 struct PendingReload {
+    // of the first one asked for while the others ran, see `App::background_activity`
+    started: Instant,
     // of the latest one asked for: a result of one asked for before is dropped
     generation: u64,
     restore: Restore,
@@ -618,7 +640,7 @@ impl<'a> App<'a> {
                 reload: None,
                 reload_generation: 0,
                 opening: None,
-                regraphs: 0,
+                regraphs: Vec::new(),
             },
         };
         // gone, like after a rebase
@@ -902,15 +924,19 @@ impl App<'_> {
             AppEvent::OpenBlame { commit, path, line } => {
                 let work = self.repository.file_blame_work(&commit, &path);
                 let job = Job::spawn(self.ec.sender(), work);
-                self.shell.opening = Some(Opening::Blame { job, line });
-                let message = format!("Loading the blame of {path}…");
-                self.shell.app_status.status_line = StatusLine::Transient(message);
+                self.shell.opening = Some(Opening {
+                    window: OpeningWindow::Blame { job, line },
+                    path,
+                    _spinning: spin(self.ec.sender()),
+                });
             }
             AppEvent::OpenTimeline { commit, path } => {
                 let work = self.repository.file_history_work(&commit, &path);
-                self.shell.opening = Some(Opening::Timeline(Job::spawn(self.ec.sender(), work)));
-                let message = format!("Loading the timeline of {path}…");
-                self.shell.app_status.status_line = StatusLine::Transient(message);
+                self.shell.opening = Some(Opening {
+                    window: OpeningWindow::Timeline(Job::spawn(self.ec.sender(), work)),
+                    path,
+                    _spinning: spin(self.ec.sender()),
+                });
             }
             AppEvent::Checkout(commit) => {
                 let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
@@ -941,7 +967,9 @@ impl App<'_> {
                 self.start_regraph();
             }
             AppEvent::Regraphed(layout) => {
-                self.shell.regraphs = self.shell.regraphs.saturating_sub(1);
+                if !self.shell.regraphs.is_empty() {
+                    self.shell.regraphs.remove(0);
+                }
                 // one of merges folded since is laid out after it
                 let context = self.view.refresh_context();
                 if let Some(context) = context.filter(|_| layout.folded == self.shell.folded_merges)
@@ -1012,11 +1040,14 @@ impl App<'_> {
     // Opens the blame or timeline once its file history is loaded, see `AppEvent::OpenBlame`.
     fn open_window(&mut self) {
         let (ctx, tx) = (self.ctx.clone(), self.ec.sender());
-        let window = match self.shell.opening.take() {
-            None => return,
-            Some(Opening::Blame { job, line }) => match job.try_take() {
+        let Some(opening) = self.shell.opening.take() else {
+            return;
+        };
+        let window = match opening.window {
+            OpeningWindow::Blame { job, line } => match job.try_take() {
                 None => {
-                    self.shell.opening = Some(Opening::Blame { job, line });
+                    let window = OpeningWindow::Blame { job, line };
+                    self.shell.opening = Some(Opening { window, ..opening });
                     return;
                 }
                 Some(loaded) => loaded.map(|(history, index, blame)| {
@@ -1024,9 +1055,10 @@ impl App<'_> {
                     FileWindow::Blame(Box::new(view))
                 }),
             },
-            Some(Opening::Timeline(job)) => match job.try_take() {
+            OpeningWindow::Timeline(job) => match job.try_take() {
                 None => {
-                    self.shell.opening = Some(Opening::Timeline(job));
+                    let window = OpeningWindow::Timeline(job);
+                    self.shell.opening = Some(Opening { window, ..opening });
                     return;
                 }
                 Some(loaded) => loaded.map(|(history, selected)| {
@@ -1036,7 +1068,6 @@ impl App<'_> {
                 }),
             },
         };
-        self.clear_status_line();
         match window {
             Ok(window) => self.shell.overlay = Some(Overlay::File(window)),
             Err(err) => self.ec.send(AppEvent::NotifyError(err)),
@@ -1059,7 +1090,7 @@ impl App<'_> {
         window
             || checking
             || shell.opening.is_some()
-            || shell.regraphs > 0
+            || !shell.regraphs.is_empty()
             || self.view.is_loading()
     }
 
@@ -1071,7 +1102,7 @@ impl App<'_> {
             PendingClear::ViewImages => self.clear_view_image_area(terminal)?,
             PendingClear::Screen => {
                 self.ctx.image_protocol.clear();
-                clear_fullscreen(terminal)?;
+                repaint_fullscreen(terminal);
             }
         }
         self.flush_pending_graph_uploads()?;
@@ -1082,7 +1113,7 @@ impl App<'_> {
         // again on a cleared screen
         if clear != PendingClear::Screen && self.shell.app_status.images != images {
             self.ctx.image_protocol.clear();
-            clear_fullscreen(terminal)?;
+            repaint_fullscreen(terminal);
             terminal.draw(|f| self.render(f, &keys))?;
         }
         Ok(())
@@ -1341,15 +1372,22 @@ impl App<'_> {
         f.render_widget(Line::from(spans), area);
     }
 
-    // What runs in the background, with a spinner in the status bar: the git command, else the
-    // reload of the repository.
+    // What runs in the background, with a spinner in the status bar: the git command, else what
+    // loads once it takes long (see `shows_loading`): the repository, the graph laid out again, or
+    // the file history of a window.
     fn background_activity(&self) -> Option<String> {
-        match self.ctx.running_task.lock().as_ref() {
-            Some(running) => Some(running.task.running.clone()),
-            None if self.shell.reload.is_some() => Some("Reloading".into()),
-            None if self.shell.regraphs > 0 => Some("Drawing the graph".into()),
-            None => None,
+        if let Some(running) = self.ctx.running_task.lock().as_ref() {
+            return Some(running.task.running.clone());
         }
+        let shell = &self.shell;
+        let reload = shell.reload.as_ref().map(|r| (r.started, "Reloading"));
+        let regraph = shell.regraphs.first().map(|&s| (s, "Drawing the graph"));
+        reload
+            .into_iter()
+            .chain(regraph)
+            .find(|&(started, _)| shows_loading(started))
+            .map(|(_, activity)| activity.into())
+            .or_else(|| shell.opening.as_ref().and_then(Opening::activity))
     }
 
     // A bar after a neovim statusline: the message, or what runs in the background, or the
@@ -1516,14 +1554,18 @@ fn split_app_areas(area: Rect) -> [Rect; 3] {
     .areas(area)
 }
 
-fn clear_fullscreen<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Error> {
-    // Terminal::clear queries the cursor position, competing with our input thread.
-    // A fullscreen redraw positions the cursor itself, so only clear the screen and
-    // reset both diff buffers. Swapping twice preserves the current buffer index.
-    terminal.backend_mut().clear()?;
+// Has the next frame written over every cell of the screen, as on a cleared one but without the
+// screen going blank in between: what is there without having been drawn, like what a program run
+// in the terminal printed, is written over too. The frame is diffed with a buffer it differs from
+// in every cell; Terminal::clear would also query the cursor position, competing with our input
+// thread.
+fn repaint_fullscreen<B: Backend>(terminal: &mut Terminal<B>) {
+    // all the modifiers at once, which nothing draws
+    for cell in &mut terminal.current_buffer_mut().content {
+        cell.modifier = ratatui::style::Modifier::all();
+    }
+    // the next frame drawn into the other, reset, diffed with this one
     terminal.swap_buffers();
-    terminal.swap_buffers();
-    Ok(())
 }
 
 impl App<'_> {
@@ -2613,7 +2655,7 @@ impl App<'_> {
     // Lays the graph out again on another thread with the merges folded now, the app going on
     // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`.
     fn start_regraph(&mut self) {
-        self.shell.regraphs += 1;
+        self.shell.regraphs.push(Instant::now());
         let repository = Arc::clone(self.repository);
         let primary_branch = self.load_options.primary_branch.clone();
         let folded = self.shell.folded_merges.clone();
@@ -2631,6 +2673,11 @@ impl App<'_> {
     // app is made again on it showing what `restore` says. Asked again meanwhile, it loads again,
     // keeping where a command asked to go.
     fn start_reload(&mut self, restore: Restore) {
+        let started = self
+            .shell
+            .reload
+            .as_ref()
+            .map_or_else(Instant::now, |p| p.started);
         let restore = match (self.shell.reload.take(), restore) {
             (
                 Some(PendingReload {
@@ -2644,6 +2691,7 @@ impl App<'_> {
         self.shell.reload_generation += 1;
         let generation = self.shell.reload_generation;
         self.shell.reload = Some(PendingReload {
+            started,
             generation,
             restore,
         });
@@ -3019,22 +3067,30 @@ mod tests {
     #[rstest]
     #[case(1)]
     #[case(2)]
-    fn test_fullscreen_clear_redraws_unchanged_content(#[case] frames_before_clear: usize) {
+    fn test_fullscreen_repaint_writes_over_what_was_not_drawn(#[case] frames_before: usize) {
         let mut terminal = Terminal::new(TestBackend::new(5, 1)).unwrap();
         let draw = |terminal: &mut Terminal<TestBackend>| {
             terminal
-                .draw(|frame| frame.render_widget(Paragraph::new("hello"), frame.area()))
+                .draw(|frame| frame.render_widget(Paragraph::new("he lo"), frame.area()))
                 .unwrap();
         };
-        for _ in 0..frames_before_clear {
+        for _ in 0..frames_before {
             draw(&mut terminal);
         }
+        // printed on the screen by something else where the frame has a blank, which drawing the same
+        // frame leaves
+        let junk = ratatui::buffer::Cell::new("x");
+        terminal
+            .backend_mut()
+            .draw([(2, 0, &junk)].into_iter())
+            .unwrap();
 
-        clear_fullscreen(&mut terminal).unwrap();
-        assert_eq!(terminal.backend().buffer(), &Buffer::with_lines(["     "]));
+        repaint_fullscreen(&mut terminal);
+        // not blank meanwhile
+        assert_eq!(terminal.backend().buffer(), &Buffer::with_lines(["hexlo"]));
         for _ in 0..2 {
             draw(&mut terminal);
-            assert_eq!(terminal.backend().buffer(), &Buffer::with_lines(["hello"]));
+            assert_eq!(terminal.backend().buffer(), &Buffer::with_lines(["he lo"]));
         }
     }
 

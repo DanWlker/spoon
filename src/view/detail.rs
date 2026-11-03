@@ -868,12 +868,18 @@ impl<'a> DetailView<'a> {
                 );
             }
         }
-        let loading = self.loading.is_some()
-            || match self.tab {
-                DetailTab::Info => false,
-                DetailTab::Changes => self.changes_state.is_loading(),
-                DetailTab::Files => self.files_state.is_loading(),
-            };
+        let tab = match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => self.changes_state.loading_since(),
+            DetailTab::Files => self.files_state.loading_since(),
+        };
+        let loading = self
+            .loading
+            .as_ref()
+            .map(Job::started)
+            .into_iter()
+            .chain(tab)
+            .min();
         let notes: Vec<String> = (self.query().and_then(TreeQuery::indicator).into_iter())
             .chain(loading_note(loading))
             .collect();
@@ -901,7 +907,9 @@ impl<'a> DetailView<'a> {
 
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {
-        self.loading.is_some() || self.changes_state.is_loading() || self.files_state.is_loading()
+        self.loading.is_some()
+            || self.changes_state.loading_since().is_some()
+            || self.files_state.loading_since().is_some()
     }
 
     pub fn update_layout(&mut self, area: Rect) {

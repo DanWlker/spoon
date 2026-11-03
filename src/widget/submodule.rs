@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, time::Instant};
 
 use ratatui::{
     buffer::Buffer,
@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    background::Job,
+    background::{shows_loading, Job},
     event::{Sender, UserEvent},
     git::Repository,
     graph,
@@ -109,7 +109,6 @@ impl<'a> SubmodulePanel<'a> {
         let path = path.to_string();
         match tx {
             Some(tx) => {
-                panel.message = Some("Loading…".into());
                 let job = Job::spawn(tx.clone(), work);
                 panel.loading = Some(Loading {
                     repository,
@@ -145,8 +144,8 @@ impl<'a> SubmodulePanel<'a> {
         }
     }
 
-    pub fn is_loading(&self) -> bool {
-        self.loading.is_some()
+    pub fn loading_since(&self) -> Option<Instant> {
+        self.loading.as_ref().map(|loading| loading.job.started())
     }
 
     fn show_loaded(
@@ -302,7 +301,11 @@ impl<'a> SubmodulePanel<'a> {
             );
         }
         let Some(list) = &mut self.list else {
-            let message = self.message.as_deref().unwrap_or("no commits");
+            let message = match &self.loading {
+                Some(loading) if shows_loading(loading.job.started()) => "Loading…",
+                Some(_) => "",
+                None => self.message.as_deref().unwrap_or("no commits"),
+            };
             Paragraph::new(placeholder(message, theme)).render(list_area, buf);
             return None;
         };

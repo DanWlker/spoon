@@ -121,7 +121,7 @@ impl TimelineView {
 
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {
-        self.pane.is_loading()
+        self.pane.loading_since().is_some()
     }
 
     // Selects another commit; in the diff, it stays there, on the first hunk.
@@ -348,7 +348,8 @@ impl TimelineView {
         // which waits for it, so it doesn't flicker off while moving through the commits
         let enterable = move |v: &Self| {
             commits(v)
-                && (v.pane.is_loading() || v.pane.diff().is_some_and(|d| !d.hunks.is_empty()))
+                && (v.pane.loading_since().is_some()
+                    || v.pane.diff().is_some_and(|d| !d.hunks.is_empty()))
         };
         k.add(
             &[OlderCommit, NewerCommit],
@@ -471,7 +472,7 @@ impl TimelineView {
         // the file's changes in it
         let path = self.history[self.cursor.selected()].path.clone();
         let notes = [path].into_iter().chain(indicator(!focused));
-        let notes = notes.chain(loading_note(self.pane.is_loading()));
+        let notes = notes.chain(loading_note(self.pane.loading_since()));
         let title = panel_title("[2] Diff", notes, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
         self.pane
@@ -546,7 +547,7 @@ mod tests {
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
         // from the commits, the diff loads in the background, the key into it shown meanwhile
-        assert!(view.pane.is_loading());
+        assert!(view.pane.loading_since().is_some());
         assert!(view.keys().takes(UserEvent::NavigateRight));
         view.pane.wait_loading(&repository);
         assert!(raw(&view).contains("+two"));
@@ -599,9 +600,10 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
         view.handle_event(UserEvent::OlderCommit, key, &repository);
         assert!(view.is_loading());
+        // the diff before stays, without a note while it is quick, see `shows_loading`
         let loading = diff(&mut view);
         assert!(
-            loading.contains("second") && loading.contains("loading…"),
+            loading.contains("second") && !loading.contains("loading…"),
             "{loading}"
         );
         view.pane.wait_loading(&repository);

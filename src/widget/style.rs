@@ -2,7 +2,7 @@
 // focused panel as a badge, key hints, and a mark beside the selected row.
 
 use std::ops::Range;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::{
     buffer::Buffer,
@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::{color::ColorTheme, event::UserEvent};
+use crate::{background::shows_loading, color::ColorTheme, event::UserEvent};
 
 // How often the spinner of a running task turns, see `spinner`.
 pub const SPINNER_RATE: Duration = Duration::from_millis(180);
@@ -26,10 +26,12 @@ pub fn spinner() -> &'static str {
     FRAMES[(now.as_millis() / SPINNER_RATE.as_millis()) as usize % FRAMES.len()]
 }
 
-// The note in the title of a panel loading on another thread, what it showed before staying
-// meanwhile.
-pub fn loading_note(loading: bool) -> Option<String> {
-    loading.then(|| "loading…".to_string())
+// The note in the title of a panel loading on another thread since then, what it showed before
+// staying meanwhile; only once it takes long, see `shows_loading`.
+pub fn loading_note(since: Option<Instant>) -> Option<String> {
+    since
+        .filter(|&since| shows_loading(since))
+        .map(|_| "loading…".to_string())
 }
 
 // The title of a panel, like "[1] Unstaged (3)": a badge while it has the focus.
@@ -600,6 +602,17 @@ pub fn mark_selected_bar(buf: &mut Buffer, x: u16, y: u16, focused: bool, theme:
 mod tests {
     use super::*;
     use crate::test_support::ui::{assert_key_style, theme_with_bg};
+
+    #[test]
+    fn test_loading_note_only_once_it_takes_long() {
+        let now = Instant::now();
+        let before = now
+            .checked_sub(crate::background::LOADING_SHOWN_AFTER)
+            .unwrap();
+        assert_eq!(loading_note(None), None);
+        assert_eq!(loading_note(Some(now)), None);
+        assert_eq!(loading_note(Some(before)), Some("loading…".into()));
+    }
 
     #[test]
     fn test_key_hints_name_keys_like_everywhere() {
