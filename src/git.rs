@@ -1404,6 +1404,7 @@ impl Repository {
 
     // Resolves a conflicted file by taking one side where the two conflict, keeping the changes
     // of the other side that merged cleanly, and removing the file when that side deleted it.
+    // A symlink or a submodule is taken whole, like a file the other side deleted.
     pub fn resolve_conflict(
         &self,
         path: &str,
@@ -1411,51 +1412,79 @@ impl Repository {
     ) -> std::result::Result<(), String> {
         // before the file is written, which `git add` would then be refused
         self.check_idle()?;
-        let ours = self.stage_blob(path, ConflictSide::Ours.stage());
-        let theirs = self.stage_blob(path, ConflictSide::Theirs.stage());
-        // a file with no stage of a conflict would be removed below, by `git rm`
-        if ours.is_none() && theirs.is_none() && self.stage_blob(path, 1).is_none() {
-            return Err(format!("{path} has no conflict to resolve"));
-        }
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
-        let (Some(ours), Some(theirs)) = (ours, theirs) else {
-            // one side deleted the file: it is kept as it is on the side taken
-            let kept = self.stage_blob(path, side.stage()).is_some();
-            return if kept {
-                self.run(&["checkout", side.option(), "--", spec], None)
-                    .and_then(|_| self.run(&["add", "--", spec], None))
-            } else {
-                self.run(&["rm", "--quiet", "--", spec], None)
-            };
+        // "<mode> <object> <stage>\t<path>" for each side git has of the file
+        let unmerged = git_output(&self.path, &["ls-files", "-u", "-z", "--", spec])?;
+        let stages: Vec<(&str, &str, &str)> = unmerged
+            .split('\0')
+            .filter_map(|entry| {
+                let mut fields = entry.split_once('\t')?.0.split(' ');
+                Some((fields.next()?, fields.next()?, fields.next()?))
+            })
+            .collect();
+        // a file with no stage of a conflict would be removed below, by `git rm`
+        if stages.is_empty() {
+            return Err(format!("{path} has no conflict to resolve"));
+        }
+        let mode = |side: ConflictSide| {
+            let stage = side.stage().to_string();
+            stages.iter().find(|(_, _, s)| *s == stage)
         };
-        match self.merge_file_favoring(path, side, ours, theirs) {
-            Some(merged) => std::fs::write(self.path.join(path), merged)
-                .map_err(|e| format!("failed to write {path}: {e}"))?,
-            // a binary file can't be merged by lines, so it is taken whole
-            None => self.run(&["checkout", side.option(), "--", spec], None)?,
+        let is_file =
+            |side| mode(side).is_some_and(|(mode, _, _)| matches!(*mode, "100644" | "100755"));
+        match mode(side) {
+            // the side taken deleted it
+            None => return self.run(&["rm", "--quiet", "--", spec], None),
+            // `checkout --ours` leaves a submodule as it is, so it is checked out at the commit
+            // taken, then staged, like lazygit
+            Some(("160000", commit, _)) => {
+                let args = ["checkout", commit];
+                let submodule = self.path.join(path);
+                run_logged(
+                    git_command().args(args).current_dir(submodule),
+                    &args,
+                    None,
+                    None,
+                )?;
+            }
+            // merging by lines would write a link's target through it
+            Some(_) if !is_file(ConflictSide::Ours) || !is_file(ConflictSide::Theirs) => {
+                self.run(&["checkout", side.option(), "--", spec], None)?;
+            }
+            Some(_) => match self.merge_file_favoring(path, side)? {
+                Some(merged) => std::fs::write(self.path.join(path), merged)
+                    .map_err(|e| format!("failed to write {path}: {e}"))?,
+                // a binary file can't be merged by lines, so it is taken whole
+                None => self.run(&["checkout", side.option(), "--", spec], None)?,
+            },
         }
         self.run(&["add", "--", spec], None)
     }
 
-    // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`.
+    // Merges the two sides of a conflicted file again, resolving the conflicts in favor of `side`;
+    // None for a binary file.
     fn merge_file_favoring(
         &self,
         path: &str,
         side: ConflictSide,
-        ours: Vec<u8>,
-        theirs: Vec<u8>,
-    ) -> Option<Vec<u8>> {
+    ) -> std::result::Result<Option<Vec<u8>>, String> {
+        let blob = |stage| self.stage_blob(path, stage).unwrap_or_default();
         // both sides added the file when there is no base
-        let base = self.stage_blob(path, 1).unwrap_or_default();
-        let files = [("ours", ours), ("base", base), ("theirs", theirs)]
-            .map(|(name, blob)| (self.git_dir.join(format!("spoon-merge-{name}")), blob));
-        let mut paths = vec![];
-        for (file, blob) in &files {
-            std::fs::write(file, blob).ok()?;
-            paths.push(file.to_string_lossy().into_owned());
-        }
+        let files =
+            [("ours", blob(2)), ("base", blob(1)), ("theirs", blob(3))].map(|(name, blob)| {
+                // named by the process, so two apps resolving at once don't write over each other
+                let name = format!("{MERGE_FILE_PREFIX}{}-{name}", std::process::id());
+                (self.git_dir.join(name), blob)
+            });
+        let written = files
+            .iter()
+            .try_for_each(|(file, blob)| std::fs::write(file, blob))
+            .map_err(|e| format!("failed to merge {path}: {e}"));
+        let paths = files
+            .each_ref()
+            .map(|(file, _)| file.to_string_lossy().into_owned());
         let args = [
             "merge-file",
             "-p",
@@ -1465,7 +1494,7 @@ impl Repository {
             &paths[2],
         ];
         // fails (with a negative code) on binary files
-        let merged = git_output_bytes(&self.path, &args).ok();
+        let merged = written.map(|()| git_output_bytes(&self.path, &args).ok());
         for (file, _) in &files {
             let _ = std::fs::remove_file(file);
         }
@@ -1529,6 +1558,10 @@ impl Repository {
         self.run(args, Some(patch))
     }
 }
+
+// The start of the names of the files a conflicted file's sides are merged in, see
+// `Repository::merge_file_favoring`.
+const MERGE_FILE_PREFIX: &str = "spoon-merge-";
 
 // A message git prepared, without its comment lines; None when nothing is left.
 fn without_comments(content: &str) -> Option<String> {
@@ -1654,12 +1687,16 @@ fn load_all_commits(
     let reader = BufReader::new(stdout);
 
     let mut commits = Vec::new();
+    let mut fields = Vec::with_capacity(COMMIT_FIELDS);
 
+    // each field ends with a NUL, which git keeps out of them, see `load_commits_format`
     for bytes in reader.split(b'\0') {
         let bytes = bytes.map_err(|e| format!("failed to read git log: {e}"))?;
-        let record = String::from_utf8_lossy(&bytes);
-        let fields: Vec<&str> = record.split('\x1f').collect();
-        commits.push(parse_commit(&fields));
+        fields.push(String::from_utf8_lossy(&bytes).into_owned());
+        if fields.len() == COMMIT_FIELDS {
+            commits.push(parse_commit(&fields));
+            fields.clear();
+        }
     }
 
     // the errors are read once the commits are, they are only a few lines
@@ -1677,14 +1714,18 @@ fn load_all_commits(
 // The stashes, as commits for the graph and as refs, from one `git stash list`.
 fn load_stashes(path: &Path, mailmap: bool) -> (Vec<Commit>, RefMap) {
     // the fields of a commit, then the stash's name like "stash@{0}"
-    let format = format!("{}%x1f%gd", load_commits_format(mailmap));
+    let format = format!("{}%x00%gd", load_commits_format(mailmap));
     // the dates are strict ISO in the format: a --date option would name the stashes by date
     let args = ["stash", "list", &format!("--pretty={format}"), "-z"];
     let out = git_output(path, &args).unwrap_or_default();
     let mut commits = Vec::new();
     let mut ref_map = RefMap::default();
-    for record in out.split('\0').filter(|r| !r.is_empty()) {
-        let fields: Vec<&str> = record.split('\x1f').collect();
+    for fields in out
+        .split('\0')
+        .collect::<Vec<_>>()
+        .as_chunks::<{ COMMIT_FIELDS + 1 }>()
+        .0
+    {
         let commit = parse_commit(&fields[..COMMIT_FIELDS]);
         let r = Ref::Stash {
             name: fields[COMMIT_FIELDS].into(),
@@ -1704,19 +1745,19 @@ fn load_stashes(path: &Path, mailmap: bool) -> (Vec<Commit>, RefMap) {
 const COMMIT_FIELDS: usize = 10;
 
 // A commit from the fields of `load_commits_format`.
-fn parse_commit(fields: &[&str]) -> Commit {
-    assert_eq!(fields.len(), COMMIT_FIELDS, "unexpected fields: {fields:?}");
+fn parse_commit(fields: &[impl AsRef<str>]) -> Commit {
+    let field = |i: usize| fields[i].as_ref();
     Commit {
-        commit_hash: fields[0].into(),
-        author_name: fields[1].into(),
-        author_email: fields[2].into(),
-        author_date: parse_iso_date(fields[3]),
-        committer_name: fields[4].into(),
-        committer_email: fields[5].into(),
-        committer_date: parse_iso_date(fields[6]),
-        subject: fields[7].into(),
-        body: fields[8].into(),
-        parent_commit_hashes: parse_parent_commit_hashes(fields[9]),
+        commit_hash: field(0).into(),
+        author_name: field(1).into(),
+        author_email: field(2).into(),
+        author_date: parse_iso_date(field(3)),
+        committer_name: field(4).into(),
+        committer_email: field(5).into(),
+        committer_date: parse_iso_date(field(6)),
+        subject: field(7).into(),
+        body: field(8).into(),
+        parent_commit_hashes: parse_parent_commit_hashes(field(9)),
     }
 }
 
@@ -1733,7 +1774,9 @@ fn load_commits_format(mailmap: bool) -> String {
             "%H", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%s", "%b", "%P",
         ]
     };
-    format.join("%x1f") // use Unit Separator as a delimiter
+    // like lazygit: git refuses a NUL in a commit message, so none is in a field, which other
+    // control bytes could be
+    format.join("%x00")
 }
 
 fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
@@ -2025,7 +2068,7 @@ fn blame_at(
 // the last commit as of `start` isn't on that walk, it is walked under `path` alone.
 fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHistoryResult {
     let walk = |name: &str| {
-        let format = "--format=%x01%H%x00%aI%x00%s";
+        let format = "--format=%H%x00%aI%x00%s";
         let args = [
             "log",
             "--follow",
@@ -2037,20 +2080,24 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
             "--",
             name,
         ];
-        let history: Vec<FileRevision> = git_output(repository, &args)?
-            .split('\x01')
-            .filter_map(|record| {
-                let mut fields = record.split('\0');
-                let (commit, date) = (fields.next()?, fields.next()?);
-                let (subject, path) = (fields.next()?, fields.next()?);
-                Some(FileRevision {
-                    commit: CommitHash::from(commit),
-                    date: parse_iso_date(date),
-                    subject: subject.into(),
-                    path: path.trim_start_matches('\n').into(),
-                })
-            })
-            .collect();
+        // each field ends with a NUL, which git keeps out of them, then the file's name, on a
+        // line of its own, which no field starts with
+        let out = git_output(repository, &args)?;
+        let mut fields = out.split('\0').peekable();
+        let mut history = vec![];
+        while let (Some(commit), Some(date), Some(subject)) =
+            (fields.next(), fields.next(), fields.next())
+        {
+            let Some(path) = fields.next_if(|f| f.starts_with('\n')) else {
+                continue;
+            };
+            history.push(FileRevision {
+                commit: CommitHash::from(commit),
+                date: parse_iso_date(date),
+                subject: subject.into(),
+                path: path[1..].into(),
+            });
+        }
         Ok::<_, String>(history)
     };
     // the file's name at HEAD, when it isn't there under `path`
@@ -2879,10 +2926,9 @@ impl GitTask {
         );
         let env = [
             ("GIT_SEQUENCE_EDITOR", editor.as_str()),
-            // the todo list names the commits with full hashes, of SHA-1 and SHA-256 alike
-            ("GIT_CONFIG_COUNT", "1"),
-            ("GIT_CONFIG_KEY_0", "core.abbrev"),
-            ("GIT_CONFIG_VALUE_0", "no"),
+            // the todo list names the commits with full hashes, of SHA-1 and SHA-256 alike; set as
+            // `git -c` does, leaving the user's GIT_CONFIG_COUNT entries as they are
+            ("GIT_CONFIG_PARAMETERS", "'core.abbrev=no'"),
         ];
         GitTask {
             // autosquash would move and squash `fixup!` commits nobody picked
@@ -4461,5 +4507,207 @@ mod tests {
         let info = repository.submodule_info("sub").unwrap();
         assert_eq!(info.head, None);
         assert_eq!(info.uncommitted, None);
+    }
+
+    #[test]
+    fn test_resolve_conflict_of_symlink() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = &dir.path().join("repo");
+        std::fs::create_dir(path).unwrap();
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, "outside\n").unwrap();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let link = |target: &str| {
+            let _ = std::fs::remove_file(path.join("link"));
+            std::os::unix::fs::symlink(target, path.join("link")).unwrap();
+            repo.add(&["link"]);
+        };
+        link("../base.txt");
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        link("../theirs.txt");
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        link("../outside.txt");
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        repository
+            .resolve_conflict("link", ConflictSide::Theirs)
+            .unwrap();
+        // the link is taken whole, the file it pointed at left alone
+        let target = std::fs::read_link(path.join("link")).unwrap();
+        assert_eq!(target, Path::new("../theirs.txt"));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside\n");
+        assert_eq!(
+            git(path, &["rev-parse", ":link"]),
+            git(path, &["rev-parse", "incoming:link"])
+        );
+    }
+
+    #[test]
+    fn test_resolve_conflict_of_submodule() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let inner = &dir.path().join("inner");
+        let path = &dir.path().join("repo");
+        std::fs::create_dir_all(inner).unwrap();
+        std::fs::create_dir_all(path).unwrap();
+        let inner_repo = GitRepository::new(inner);
+        inner_repo.init();
+        // commits on two branches, which git can't fast-forward one to the other
+        inner_repo.commit("c1", "2024-01-01");
+        inner_repo.checkout_b("side");
+        inner_repo.commit("c2", "2024-01-02");
+        inner_repo.checkout("master");
+        inner_repo.commit("c3", "2024-01-03");
+        let hash = |rev: &str| git(inner, &["rev-parse", rev]).trim().to_string();
+        let gitlink = |rev: &str| {
+            let info = format!("160000,{},sub", hash(rev));
+            git(path, &["update-index", "--add", "--cacheinfo", &info]);
+        };
+        let repo = GitRepository::new(path);
+        repo.init();
+        git(path, &["clone", "-q", "../inner", "sub"]);
+        gitlink("master~1");
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        gitlink("side");
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        gitlink("master");
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        repository
+            .resolve_conflict("sub", ConflictSide::Theirs)
+            .unwrap();
+        // the submodule is checked out at the commit taken, which is staged
+        assert_eq!(
+            git(&path.join("sub"), &["rev-parse", "HEAD"]).trim(),
+            hash("side")
+        );
+        let staged = git(path, &["ls-files", "--stage", "sub"]);
+        assert_eq!(staged, format!("160000 {} 0\tsub\n", hash("side")));
+    }
+
+    #[test]
+    fn test_resolve_conflict_fails_when_merging_fails() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let lines = |first: &str, last: &str| format!("{first}\n2\n3\n4\n5\n6\n7\n8\n{last}\n");
+        std::fs::write(path.join("f"), lines("1", "9")).unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        std::fs::write(path.join("f"), lines("ONE", "NINE-theirs")).unwrap();
+        repo.add(&["f"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), lines("1", "NINE-ours")).unwrap();
+        repo.add(&["f"]);
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+        let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
+        // the file the base of the merge is written to can't be
+        let git_dir = path.join(".git");
+        std::fs::create_dir(
+            git_dir.join(format!("{MERGE_FILE_PREFIX}{}-base", std::process::id())),
+        )
+        .unwrap();
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert!(repository
+            .resolve_conflict("f", ConflictSide::Ours)
+            .is_err());
+        // the conflict is left as it was, the files written meanwhile removed
+        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
+        let left: Vec<String> = std::fs::read_dir(&git_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(MERGE_FILE_PREFIX) && !name.ends_with("base"))
+            .collect();
+        assert_eq!(left, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_load_commits_with_separators_in_messages() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        // the bytes git log's fields and records were once split on
+        repo.commit("sub\x1fject\x01\n\nbo\x1fdy", "2024-01-02");
+        std::fs::write(path.join("f"), "x").unwrap();
+        repo.add(&["f"]);
+        git(path, &["stash", "push", "-q", "-m", "st\x1fash"]);
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let commit = repository.commit(&head).unwrap();
+        assert_eq!(commit.subject, "sub\x1fject\x01");
+        assert_eq!(commit.body, "bo\x1fdy\n");
+        assert_eq!(repository.parents_hash(&head).len(), 1);
+        let stash = repository
+            .all_refs()
+            .into_iter()
+            .find_map(|r| match r {
+                Ref::Stash { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(stash, "On master: st\x1fash");
+    }
+
+    #[test]
+    fn test_file_history_with_separators_in_subjects() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        for (i, subject) in ["one\x01", "two\x1f"].iter().enumerate() {
+            std::fs::write(path.join("f"), i.to_string()).unwrap();
+            repo.add(&["f"]);
+            repo.commit(subject, "2024-01-01");
+        }
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let (history, index) = repository.file_history(&head, "f").unwrap();
+        let subjects: Vec<&str> = history.iter().map(|r| r.subject.as_str()).collect();
+        assert_eq!(subjects, ["two\x1f", "one\x01"]);
+        assert!(history.iter().all(|r| r.path == "f"));
+        assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn test_rebase_todo_keeps_config_of_environment() {
+        let task = GitTask::rebase_todo(None, false, &[]);
+        let output = git_command()
+            .args(["config", "--get-regexp", r"^(core\.abbrev|spoon\.kept)$"])
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "spoon.kept")
+            .env("GIT_CONFIG_VALUE_0", "yes")
+            .envs(task.env.iter().map(|(k, v)| (k, v)))
+            .output()
+            .unwrap();
+        let config = String::from_utf8_lossy(&output.stdout);
+        assert!(config.contains("spoon.kept yes"), "{config}");
+        assert!(config.contains("core.abbrev no"), "{config}");
     }
 }

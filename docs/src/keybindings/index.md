@@ -194,7 +194,7 @@ Conflicted files are marked `U`. With the cursor on one, the diff is replaced by
 With the `diff3` or `zdiff3` conflict style (`git config merge.conflictStyle zdiff3`), the common ancestor is shown between them as **Base**, and the lines of each side the ancestor doesn't have, what that side changed, are highlighted. A line under the sides says what <kbd>Enter</kbd> does on the selected side or tool.
 <kbd>Enter</kbd> moves into it, <kbd>Left/Right</kbd> choose a side and <kbd>Up/Down</kbd> a tool, then <kbd>Enter</kbd>:
 
-- on a side, resolves the file by keeping that side entirely (removing the file if that side deleted it), and stages it.
+- on a side, resolves the file by keeping that side entirely (removing the file if that side deleted it, and checking a submodule out at that side's commit), and stages it.
 - on `Edit in merge tool`, runs `git mergetool` for the file, with the tool of [`core.git.merge_tool`](../configurations/config-file-format.md) or else git's `merge.tool` config.
 - on `Open in editor`, opens the file in `$VISUAL` or `$EDITOR` (like <kbd>e</kbd>), to edit the conflict markers by hand; stage it with <kbd>Space</kbd> afterwards.
 
