@@ -667,7 +667,10 @@ impl<'a> DetailView<'a> {
                         .pane
                         .selected_lines()
                         .map(|lines| *lines.start()),
-                    DetailTab::Files => self.files_state.selected_line(),
+                    DetailTab::Files => self
+                        .files_state
+                        .selected_lines()
+                        .map(|lines| *lines.start()),
                     DetailTab::Info => None,
                 }
             } else {
@@ -1031,7 +1034,7 @@ impl<'a> DetailView<'a> {
         if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
             let lines = match self.tab {
                 DetailTab::Changes => self.changes_state.pane.selected_lines(),
-                DetailTab::Files => self.files_state.selected_line().map(|line| line..=line),
+                DetailTab::Files => self.files_state.selected_lines(),
                 DetailTab::Info => None,
             };
             if let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) {

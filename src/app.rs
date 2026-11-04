@@ -147,6 +147,8 @@ pub struct AppContext {
     pub diff_context: Cell<usize>,
     // the options of every search, toggled while typing any of them, shared with the commit list
     pub search_options: Rc<Cell<SearchOptions>>,
+    // typing the keys of a paste but its last, which a search applies once, see `App::paste`
+    pub pasting: Cell<bool>,
 }
 
 // What a commit graph image is drawn with. The color set, style and antialias come from the
@@ -1043,13 +1045,17 @@ impl App<'_> {
         let message = self.view.is_typing_message();
         // terminals send a newline as \r, some as \r\n
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        for c in text.chars() {
+        let count = text.chars().count();
+        for (i, c) in text.chars().enumerate() {
             let code = match c {
                 '\n' if message => KeyCode::Enter,
                 '\n' | '\t' if !message => KeyCode::Char(' '),
                 c => KeyCode::Char(c),
             };
-            self.handle(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))?;
+            self.ctx.pasting.set(i + 1 < count);
+            let handled = self.handle(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            self.ctx.pasting.set(false);
+            handled?;
         }
         Ok(())
     }

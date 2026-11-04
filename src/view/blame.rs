@@ -267,10 +267,11 @@ impl BlameView {
                         self.tx.send(AppEvent::copy(name, text));
                     }
                 }
-                // the file at the commit shown, on the line
+                // the file at the commit shown, at the lines selected, else the line
                 UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                     let revision = &self.history[self.index];
-                    let lines = Some(line + 1..=line + 1);
+                    let lines = self.text.selected_lines();
+                    let lines = Some(lines.start() + 1..=lines.end() + 1);
                     let link = file_link(event, &revision.commit, &revision.path, lines);
                     self.tx.send(link);
                 }
@@ -476,13 +477,13 @@ impl BlameView {
         k.add(
             &[OpenInBrowser],
             "open in browser",
-            "Open the file at the line on the web host, on its text",
+            "Open the file at the line, or the lines selected, on the web host, on its text",
         )
         .when(on(Text));
         k.add(
             &[CopyLink],
             "copy link",
-            "Copy the link of the file at the line, on its text",
+            "Copy the link of the file at the line, or the lines selected, on its text",
         )
         .when(on(Text));
         k.add(
@@ -729,6 +730,21 @@ mod tests {
             }
             event => panic!("no editor run: {event:?}"),
         }
+        // O copies the link of the file at the lines selected
+        press(&mut view, UserEvent::GoToTop);
+        press(&mut view, UserEvent::ToggleSelect);
+        press(&mut view, UserEvent::NavigateDown);
+        while ec.try_recv().is_some() {}
+        press(&mut view, UserEvent::CopyLink);
+        match ec.try_recv() {
+            Some(AppEvent::Link {
+                target: crate::browse::LinkTarget::File { lines, .. },
+                ..
+            }) => assert_eq!(lines, Some(1..=2)),
+            event => panic!("no link: {event:?}"),
+        }
+        press(&mut view, UserEvent::ToggleSelect);
+        press(&mut view, UserEvent::Cancel);
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
         view.wait_loading();

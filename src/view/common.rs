@@ -363,18 +363,20 @@ pub fn toggle_search_option(ctx: &AppContext, key: &KeyEvent, kind: SearchKind) 
 }
 
 // A key typed into a search or filter: toggling an option applies it again, other keys edit it.
-// Returns what to apply.
+// Returns what to apply: nothing for the keys of a paste but its last, so a long query pasted
+// over a big list is searched once, see `App::paste`.
 pub fn type_query(
     ctx: &AppContext,
     query: &mut TreeQuery,
     key: KeyEvent,
     kind: SearchKind,
 ) -> Option<QueryKind> {
-    if toggle_search_option(ctx, &key, kind) {
+    let change = if toggle_search_option(ctx, &key, kind) {
         query.editing_change()
     } else {
         query.handle_key(key)
-    }
+    };
+    change.filter(|_| !ctx.pasting.get())
 }
 
 // The hash of a commit is cut to this many characters in the blame and the timeline.

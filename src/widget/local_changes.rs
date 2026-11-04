@@ -1771,14 +1771,16 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // The keys of a paste but its last edit the query without applying it, see `type_query`.
     pub fn handle_query_key(&mut self, key: KeyEvent, options: SearchOptions) {
+        let pasting = self.ctx.pasting.get();
         if self.diff_query.is_editing() {
-            if self.diff_query.handle_key(key) == Some(QueryKind::Search) {
+            if self.diff_query.handle_key(key) == Some(QueryKind::Search) && !pasting {
                 self.search_diff(SearchDirection::Current, options);
             }
             return;
         }
-        let change = self.query_mut().handle_key(key);
+        let change = self.query_mut().handle_key(key).filter(|_| !pasting);
         self.apply_query_change(change, options);
     }
 

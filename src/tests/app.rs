@@ -1336,6 +1336,7 @@ fn test_paste_is_typed() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    std::fs::write(path.join("a.txt"), "new\n").unwrap();
     let paste = |text: &'static str| {
         vec![Step::Act(Box::new(move |app: &mut App| {
             app.ec.send(AppEvent::Paste(text.into()));
@@ -1353,14 +1354,34 @@ fn test_paste_is_typed() {
         // on the graph, nothing is typed: the text isn't taken for keys, `q` quitting
         paste("q"),
         check(|app| assert!(matches!(app.view, View::List(_)))),
-        // into a search, a newline is a space instead of applying it
+        // into a search, applied once it is all typed
         keys("/"),
+        paste("feat"),
+        check(|app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            let state = view.as_list_state();
+            let hash = state.selected_commit_hash();
+            assert_eq!(app.repository.commit(hash).unwrap().subject, "feat1");
+        }),
+        // a newline is a space instead of applying it
         paste("c2\nx"),
         check(|app| assert!(app.is_typing())),
         keys("esc"),
+        // into the search of the files of the local changes page too
+        keys("tab /"),
+        paste("f.t"),
+        check(|app| {
+            let View::LocalChanges(view) = &app.view else {
+                panic!("no local changes page")
+            };
+            assert_eq!(view.context().selected_path.as_deref(), Some("f.txt"));
+        }),
+        keys("esc"),
         // into the commit message, as typed: the tab and the new lines in the description, without
         // the tab switching to the summary
-        keys("tab 3"),
+        keys("3"),
         // terminals send a newline as \r, some as \r\n
         paste("summary\rfn main() {\r\n\tcall();\n}"),
         keys("esc"),

@@ -140,7 +140,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>/</kbd> <kbd>?</kbd>            | Search/Filter files (changes and files tabs); search the diff while it has the focus | `search` `filter` |
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `select` |
 | <kbd>u</kbd>                         | Reset the selected files to how they were at the commit or before it, in the working tree and the index, after confirming (changes tab) | `reset_file` |
-| <kbd>o/O</kbd>                       | Open the commit, or the selected files at it, on the web host (with several files, each on its default remote); from the diff or the file, at the selected hunk or line; copy their links | `open_in_browser` `copy_link` |
+| <kbd>o/O</kbd>                       | Open the commit, or the selected files at it, on the web host (with several files, each on its default remote); from the diff or the file, at the selected hunk, line or lines; copy their links | `open_in_browser` `copy_link` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match | `go_to_next` `go_to_previous` |
 | <kbd>B</kbd>                         | Blame the selected file (see below), from the selected line of its diff or preview; only with one file selected | `blame` |
 | <kbd>T</kbd>                         | Show the commits changing the selected file (see below); only with one file selected | `timeline` |
@@ -338,7 +338,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the blame    | `checkout`, `select`            |
 | <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the line, or the selected lines (<kbd>y</kbd>), on its text | `short_copy` `full_copy` |
 | <kbd>v</kbd>                         | Select the lines from the first to the selected one, on the text; another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
-| <kbd>o/O</kbd>                       | Open the commit, or the file at the line, on the web host; copy its link | `open_in_browser` `copy_link` |
+| <kbd>o/O</kbd>                       | Open the commit, or the file at the line or the lines selected, on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR` | `edit` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the lines' commits (by hash, author or date, from one run of lines to the next) or the text, whichever has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |

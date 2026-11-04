@@ -40,6 +40,7 @@ pub fn test_ctx_of(color_theme: ColorTheme, ui_config: UiConfig) -> Rc<AppContex
         wrap: Default::default(),
         diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
         search_options: Default::default(),
+        pasting: Default::default(),
     })
 }
 

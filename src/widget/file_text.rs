@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, ops::Range};
+use std::{
+    collections::BTreeSet,
+    ops::{Range, RangeInclusive},
+};
 
 use ratatui::{
     buffer::Buffer,
@@ -170,6 +173,15 @@ impl FileText {
     // The selected line, from 0.
     pub fn selected_line(&self) -> usize {
         self.selected
+    }
+
+    // The lines selected, from the first to the last, else the selected line, from 0: what a link
+    // to the file points at.
+    pub fn selected_lines(&self) -> RangeInclusive<usize> {
+        match (self.selection.first(), self.selection.last()) {
+            (Some(&first), Some(&last)) => first..=last,
+            _ => self.selected..=self.selected,
+        }
     }
 
     // How the search for `query` went over the lines, the selected one among them.

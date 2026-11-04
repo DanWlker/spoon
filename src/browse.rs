@@ -220,23 +220,21 @@ pub fn links(
     for remote in remotes {
         // read for each remote, not each page: `get-url` rewrites it by `url.*.insteadOf`
         let url = repository.remote_url(&remote);
-        let made: Result<Vec<PageLink>, String> = pages
-            .iter()
-            .map(|(label, page)| {
-                let url = url
-                    .as_deref()
-                    .ok_or_else(|| format!("The remote {remote} has no URL"))?;
-                Ok(PageLink {
+        // each page its host links to, like a branch's on one without pull requests
+        for (label, page) in &pages {
+            let made = url
+                .as_deref()
+                .ok_or_else(|| format!("The remote {remote} has no URL"))
+                .and_then(|url| web_link(url, services, page));
+            match made {
+                Ok(url) => links.push(PageLink {
                     remote: remote.clone(),
                     page: label.to_string(),
-                    url: web_link(url, services, page)?,
-                })
-            })
-            .collect();
-        match made {
-            Ok(made) => links.extend(made),
-            Err(err) => {
-                error.get_or_insert(err);
+                    url,
+                }),
+                Err(err) => {
+                    error.get_or_insert(err);
+                }
             }
         }
     }
@@ -384,6 +382,43 @@ fn encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_links_of_a_host_without_some_pages() {
+        use crate::git::SortCommit;
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("init", "2024-01-01");
+        git(
+            path,
+            &["remote", "add", "origin", "https://git.sr.ht/~owner/repo"],
+        );
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        // a host with no pull requests, like sourcehut
+        let services = FxHashMap::from_iter([(
+            "git.sr.ht".to_string(),
+            Forge::Links(Links {
+                commit: None,
+                branch: Some("{base}/log/{branch}".into()),
+                pull_request: None,
+                tag: None,
+                file: None,
+                line: None,
+                lines: None,
+            }),
+        )]);
+        // the branch's page alone, the pull request left out
+        let made = links(&repository, &services, &LinkTarget::Branch("master".into())).unwrap();
+        let urls: Vec<&str> = made.iter().map(|link| link.url.as_str()).collect();
+        assert_eq!(urls, ["https://git.sr.ht/~owner/repo/log/master"]);
+        // a page it has no link for at all says so
+        let err = links(&repository, &services, &LinkTarget::Tag("v1".into())).unwrap_err();
+        assert_eq!(err, "git.sr.ht has no tag link in [core.browser.services]");
+    }
 
     #[test]
     fn test_encode() {

@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, rc::Rc, time::Instant};
+use std::{collections::BTreeSet, ops::RangeInclusive, rc::Rc, time::Instant};
 
 use rustc_hash::FxHashSet;
 
@@ -867,9 +867,11 @@ impl<'a> CommitFilesState<'a> {
             .filter(|_| self.is_preview_focused())
     }
 
-    // The number of the selected line of the preview, from 1.
-    pub fn selected_line(&self) -> Option<usize> {
-        self.selected_text().map(|_| self.text.selected_line() + 1)
+    // The lines of the preview its link points at, from 1, see `FileText::selected_lines`.
+    pub fn selected_lines(&self) -> Option<RangeInclusive<usize>> {
+        let lines = self.text.selected_lines();
+        self.selected_text()
+            .map(|_| lines.start() + 1..=lines.end() + 1)
     }
 
     // Selects the line of the preview matching `query` from the line `from`; false when nothing
@@ -1699,7 +1701,12 @@ mod tests {
         // enter focuses the preview on its first line, lines are copied as in the file
         assert!(state.enter() && state.is_preview_focused());
         assert_eq!(state.selected_text().as_deref(), Some("one"));
+        // the lines its link points at, from 1: the selected one, or those selected
+        assert_eq!(state.selected_lines(), Some(1..=1));
+        state.toggle_visual();
         state.step(Step::Next);
+        assert_eq!(state.selected_lines(), Some(1..=2));
+        state.cancel_visual();
         assert_eq!(state.selected_text().as_deref(), Some("\ttwo"));
         state.step(Step::Last);
         state.step(Step::Next);
