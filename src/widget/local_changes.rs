@@ -66,6 +66,16 @@ struct ConflictPanel {
     item: ConflictItem,
 }
 
+// What shows beside the files: the diff of the selected row, the sides of a conflicted file (a
+// conflicted submodule too, resolving it coming first), or a submodule's own commits in place of
+// its gitlink diff.
+#[derive(Debug)]
+enum Beside<'a> {
+    Diff,
+    Conflict(ConflictPanel),
+    Submodule(Box<SubmodulePanel<'a>>),
+}
+
 // What the state asks the app for, once the event is handled: a git command run in the
 // background (like continuing a rebase), a popup confirming one (like a commit), or an editor
 // or merge tool run in place of the app.
@@ -285,10 +295,8 @@ pub struct LocalChangesState<'a> {
     files_loading: Option<Job<LocalChanges>>,
     // when the files last started loading after a change, see `reload_if_changed`
     reloaded: Instant,
-    // the conflicted file under the cursor, shown instead of its diff
-    conflict: Option<ConflictPanel>,
-    // the submodule under the cursor, shown instead of its gitlink diff
-    submodule: Option<SubmodulePanel<'a>>,
+    // what shows beside the files, see `prepare_diff`
+    beside: Beside<'a>,
     // the submodule panel shown before, keyed by what it shows, to reuse when selected again
     submodule_cache: Option<(String, SubmodulePanel<'a>)>,
 }
@@ -333,8 +341,7 @@ impl<'a> LocalChangesState<'a> {
             background,
             files_loading: None,
             reloaded: Instant::now(),
-            conflict: None,
-            submodule: None,
+            beside: Beside::Diff,
             submodule_cache: None,
         };
         let focus = snapshot.as_ref().map(|snapshot| snapshot.focus);
@@ -479,7 +486,9 @@ impl<'a> LocalChangesState<'a> {
     // in the details, and the conflict panel once entered.
     fn focus(&self) -> Focus {
         match self.chosen {
-            Focus::Files | Focus::Side if self.conflict.is_none() && self.submodule.is_none() => {
+            Focus::Files | Focus::Side
+                if self.conflict().is_none() && self.submodule().is_none() =>
+            {
                 if self.pane.is_focused() {
                     Focus::Side
                 } else {
@@ -492,7 +501,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Selecting hunks or lines in the diff.
     pub fn is_diff_focused(&self) -> bool {
-        self.focus() == Focus::Side && self.conflict.is_none()
+        self.focus() == Focus::Side && self.conflict().is_none()
     }
 
     // Scrolling the submodule panel shown in place of a gitlink diff.
@@ -1075,7 +1084,7 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(|v| files(v) && !empty(v))
         .short(|v| {
-            let resolve = v.conflict.is_some() && !picks(v);
+            let resolve = v.conflict().is_some() && !picks(v);
             if resolve { "resolve" } else { "select hunks" }.into()
         });
         k.add(
@@ -1320,20 +1329,21 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn is_conflict_focused(&self) -> bool {
-        self.focus() == Focus::Side && self.conflict.is_some()
+        self.focus() == Focus::Side && self.conflict().is_some()
     }
 
     // Moves between the sides (side by side) and the tools below them.
     pub fn move_conflict_item(&mut self, direction: Direction) {
         use ConflictItem::*;
-        let Some(ConflictPanel { item, .. }) = self.conflict.as_mut() else {
+        let Some(ConflictPanel { item, view }) = self.conflict_mut() else {
             return;
         };
         *item = match (*item, direction) {
             (Existing, Direction::Right) => Incoming,
             (Incoming, Direction::Left) => Existing,
             (Existing | Incoming, Direction::Down) => MergeTool,
-            (MergeTool, Direction::Down) => Editor,
+            // no file to open for a symlink or a submodule, see `ConflictView::editable`
+            (MergeTool, Direction::Down) if view.editable => Editor,
             (Editor, Direction::Up) => MergeTool,
             (MergeTool, Direction::Up) => Existing,
             (item, _) => item,
@@ -1375,10 +1385,10 @@ impl<'a> LocalChangesState<'a> {
             }
             Focus::Submodule => {}
             // the submodule panel is read on its own, like the diff
-            Focus::Files if self.submodule.is_some() => self.chosen = Focus::Submodule,
-            Focus::Files if self.picked().is_empty() && self.conflict.is_some() => {
+            Focus::Files if self.submodule().is_some() => self.chosen = Focus::Submodule,
+            Focus::Files if self.picked().is_empty() && self.conflict().is_some() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
-                if let Some(conflict) = self.conflict.as_mut() {
+                if let Some(conflict) = self.conflict_mut() {
                     conflict.item = ConflictItem::Existing;
                 }
                 self.chosen = Focus::Side;
@@ -1407,7 +1417,7 @@ impl<'a> LocalChangesState<'a> {
         match self.focus() {
             Focus::Typing(field) => self.chosen = Focus::Commit(field),
             Focus::Commit(_) => self.chosen = Focus::Files,
-            Focus::Side if self.conflict.is_some() => self.chosen = Focus::Files,
+            Focus::Side if self.conflict().is_some() => self.chosen = Focus::Files,
             Focus::Submodule => self.chosen = Focus::Files,
             Focus::Side if self.pane.is_selecting_lines() => {
                 self.pane.back();
@@ -1490,9 +1500,9 @@ impl<'a> LocalChangesState<'a> {
     // Moves the selected line or hunk, else the cursor of the files to `row`.
     fn step(&mut self, step: Step, row: impl Fn(&Self) -> usize) {
         match self.focus() {
-            Focus::Side if self.conflict.is_none() => self.pane.step(step),
+            Focus::Side if self.conflict().is_none() => self.pane.step(step),
             Focus::Submodule => {
-                if let Some(submodule) = &mut self.submodule {
+                if let Some(submodule) = self.submodule_mut() {
                     submodule.step(step);
                 }
             }
@@ -1518,8 +1528,7 @@ impl<'a> LocalChangesState<'a> {
         match self.focus() {
             Focus::Files => self.navigate_files(event),
             Focus::Submodule => self
-                .submodule
-                .as_mut()
+                .submodule_mut()
                 .is_some_and(|submodule| submodule.navigate(event)),
             Focus::Commit(field) => self.draft.field_mut(field).scroll(event),
             Focus::Side => self.pane.scroll(event),
@@ -1529,7 +1538,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Prepares the graph images of the submodule panel, if one is shown, see `CommitListState`.
     pub fn prepare_graph_uploads(&mut self) {
-        if let Some(submodule) = &mut self.submodule {
+        if let Some(submodule) = self.submodule_mut() {
             submodule.ensure_visible_graph_uploaded();
         }
     }
@@ -1537,11 +1546,11 @@ impl<'a> LocalChangesState<'a> {
     // Tells the submodule panel the height its list is drawn in, before its graph images are
     // prepared: only the rows shown are drawn, not every commit in the range.
     pub fn update_submodule_height(&mut self, area: Rect) {
-        if self.submodule.is_none() {
+        if self.submodule().is_none() {
             return;
         }
         let diff = local_changes_areas(&self.ctx, area).diff;
-        if let Some(submodule) = &mut self.submodule {
+        if let Some(submodule) = self.submodule_mut() {
             // the panel's borders and the note line
             submodule.set_list_height(diff.height.saturating_sub(3) as usize);
         }
@@ -1549,8 +1558,7 @@ impl<'a> LocalChangesState<'a> {
 
     // The graph images the submodule panel has queued, to write to the terminal.
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
-        self.submodule
-            .as_mut()
+        self.submodule_mut()
             .map_or_else(Vec::new, SubmodulePanel::drain_pending_graph_uploads)
     }
 
@@ -1570,7 +1578,7 @@ impl<'a> LocalChangesState<'a> {
                 self.edit_message();
                 return Ok(());
             }
-            Focus::Side if let Some(conflict) = &self.conflict => {
+            Focus::Side if let Some(conflict) = self.conflict() => {
                 return self.activate_conflict_item(conflict.item);
             }
             // the submodule panel is read-only
@@ -1666,7 +1674,7 @@ impl<'a> LocalChangesState<'a> {
         let selection = self.pane.selection();
         self.load_diff();
         // stay in the diff while the same path still has hunks left
-        if in_diff && self.selected_path() == selected_path && self.conflict.is_none() {
+        if in_diff && self.selected_path() == selected_path && self.conflict().is_none() {
             self.pane.restore(selection);
         }
     }
@@ -1942,7 +1950,7 @@ impl<'a> LocalChangesState<'a> {
             self.load_diff();
         }
         self.pane.wait_loading(self.repository);
-        if let Some(submodule) = &mut self.submodule {
+        if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.wait(&self.ctx);
         }
     }
@@ -1950,8 +1958,7 @@ impl<'a> LocalChangesState<'a> {
     #[cfg(test)]
     pub fn is_diff_loading(&self) -> bool {
         let submodule = self
-            .submodule
-            .as_ref()
+            .submodule()
             .and_then(SubmodulePanel::loading_since)
             .is_some();
         self.pane.loading_since().is_some() || self.files_loading.is_some() || submodule
@@ -1969,7 +1976,7 @@ impl<'a> LocalChangesState<'a> {
             self.pane.load_in_background(tx.clone(), work);
         }
         self.pane.poll_loading(self.repository);
-        if let Some(submodule) = &mut self.submodule {
+        if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.poll(&self.ctx);
         }
     }
@@ -2008,7 +2015,7 @@ impl<'a> LocalChangesState<'a> {
         self.ctx.diff_context.set(context);
         let selection = self.pane.selection();
         self.load_diff();
-        if self.conflict.is_none() {
+        if self.conflict().is_none() {
             self.pane.restore(selection);
         }
     }
@@ -2055,25 +2062,60 @@ impl<'a> LocalChangesState<'a> {
             })
     }
 
-    // Shows the conflict or the submodule of the selected row, then false; else empties the diff
-    // and returns true, for its diff to be loaded.
+    // Shows the conflict or the submodule of the selected row beside the files, else its diff:
+    // returns whether the diff is to be loaded, as it is for a conflict too.
     fn prepare_diff(&mut self) -> bool {
-        self.conflict = self.load_conflict();
         // park the submodule panel shown before, to reuse it when it is selected again
-        if let Some(panel) = self.submodule.take() {
-            self.submodule_cache = Some((panel.key().to_string(), panel));
+        if let Beside::Submodule(panel) = std::mem::replace(&mut self.beside, Beside::Diff) {
+            self.submodule_cache = Some((panel.key().to_string(), *panel));
         }
-        self.submodule = self.load_submodule();
+        self.beside = match self.load_conflict() {
+            Some(conflict) => Beside::Conflict(conflict),
+            None => self
+                .load_submodule()
+                .map_or(Beside::Diff, |panel| Beside::Submodule(Box::new(panel))),
+        };
         // the diff or conflict selected before is gone, the commit section stays
         if !self.is_commit_focused() {
             self.chosen = Focus::Files;
         }
         // a submodule has no hunks to select, the panel beside the files shows it instead; else
         // the diff loaded replaces the one shown, see `DiffPane::load_in_background`
-        if self.submodule.is_some() {
+        let submodule = self.submodule().is_some();
+        if submodule {
             self.pane.set_diff(None);
         }
-        self.submodule.is_none()
+        !submodule
+    }
+
+    // The conflict shown beside the files, see `Beside`.
+    fn conflict(&self) -> Option<&ConflictPanel> {
+        match &self.beside {
+            Beside::Conflict(conflict) => Some(conflict),
+            _ => None,
+        }
+    }
+
+    fn conflict_mut(&mut self) -> Option<&mut ConflictPanel> {
+        match &mut self.beside {
+            Beside::Conflict(conflict) => Some(conflict),
+            _ => None,
+        }
+    }
+
+    // The submodule shown beside the files, see `Beside`.
+    fn submodule(&self) -> Option<&SubmodulePanel<'a>> {
+        match &self.beside {
+            Beside::Submodule(submodule) => Some(submodule),
+            _ => None,
+        }
+    }
+
+    fn submodule_mut(&mut self) -> Option<&mut SubmodulePanel<'a>> {
+        match &mut self.beside {
+            Beside::Submodule(submodule) => Some(submodule),
+            _ => None,
+        }
     }
 
     // The submodule of the selected file, shown in place of its gitlink diff. The last panel is
@@ -2157,9 +2199,9 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         let areas = local_changes_areas(&self.ctx, area);
         self.render_file_section(state, LocalChangesSection::Unstaged, areas.unstaged, buf);
         self.render_file_section(state, LocalChangesSection::Staged, areas.staged, buf);
-        if state.conflict.is_some() {
+        if state.conflict().is_some() {
             self.render_conflict(state, areas.diff, buf);
-        } else if state.submodule.is_some() {
+        } else if state.submodule().is_some() {
             self.render_submodule(state, areas.diff, buf);
         } else {
             self.render_diff(state, areas.diff, buf);
@@ -2308,7 +2350,7 @@ impl LocalChangesPanel<'_> {
             badge(" submodule changed ", theme.status_warn_fg, theme),
         ]);
         let focused = self.focused && state.is_submodule_focused();
-        let Some(submodule) = state.submodule.as_mut() else {
+        let Some(submodule) = state.submodule_mut() else {
             return;
         };
         submodule.render_framed(&self.ctx, area, buf, title, focused);
@@ -2336,7 +2378,7 @@ impl LocalChangesPanel<'_> {
     }
 
     fn render_conflict(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
-        let Some(conflict) = &state.conflict else {
+        let Beside::Conflict(conflict) = &state.beside else {
             return;
         };
         let theme = &self.ctx.color_theme;
@@ -2455,11 +2497,11 @@ impl LocalChangesPanel<'_> {
             Some(tool) => format!("  Edit in merge tool ({tool})  "),
             None => "  Edit in merge tool  ".to_string(),
         };
-        let tools = [
-            (ConflictItem::MergeTool, tool),
-            (ConflictItem::Editor, "  Open in editor  ".to_string()),
-        ];
-        for (i, (item, text)) in tools.into_iter().enumerate() {
+        let editor = conflict
+            .editable
+            .then(|| (ConflictItem::Editor, "  Open in editor  ".into()));
+        let tools = std::iter::once((ConflictItem::MergeTool, tool)).chain(editor);
+        for (i, (item, text)) in tools.enumerate() {
             let width = (text.chars().count() as u16).min(tools_area.width);
             // centered under the sides
             let x = tools_area.x + (tools_area.width - width) / 2;
@@ -2628,7 +2670,7 @@ mod tests {
         let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "sub");
-        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        let submodule = state.submodule().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
         // the gitlink diff isn't shown, there is nothing to enter in it
         assert!(state.pane.diff().is_none());
@@ -2641,6 +2683,57 @@ mod tests {
         state.back();
         assert!(state.is_files_focused());
         assert!(state.request_edit().is_err(), "a submodule is a directory");
+        Ok(())
+    }
+
+    #[test]
+    fn test_submodule_panel_marks_its_selected_commit() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::test_support::ui::{column_of, find_row, row_text};
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        base_repo.commit("init", "2024-01-01");
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        let add = ["-c", "protocol.file.allow=always", "submodule", "add"];
+        git(
+            &superproject,
+            &[&add[..], &[base.to_str().unwrap(), "sub"]].concat(),
+        );
+        repo.commit("add sub", "2024-01-02");
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        sub_repo.commit("second", "2024-01-03");
+        sub_repo.commit("third", "2024-01-04");
+
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        state.enter()?;
+        let area = Rect::new(0, 0, 120, 30);
+        // as the app does before drawing
+        state.update_submodule_height(area);
+        state.prepare_graph_uploads();
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(test_ctx(), true).render(area, &mut buf, &mut state);
+        // the bar at the selected commit, the first, like the commit list's
+        let title = find_row(&buf, "submodule changed");
+        let border = (0..area.width)
+            .rev()
+            .find(|&x| {
+                x < column_of(&buf, title, "submodule changed") && buf[(x, title)].symbol() == "╭"
+            })
+            .unwrap();
+        // in the panel's padding, right before the graph, like the files' bar beside it
+        let bar = |row: &str| buf[(border + 1, find_row(&buf, row))].symbol().to_string();
+        assert_eq!(bar("third"), "▌");
+        assert_eq!(bar("second"), " ");
+        // the commits the checked-out one has, the gitlink moving forward
+        assert!(row_text(&buf, title + 1).contains("2 commits added · no uncommitted files"));
         Ok(())
     }
 
@@ -2682,10 +2775,19 @@ mod tests {
         let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "sub");
-        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        let submodule = state.submodule().expect("the submodule panel");
         // the commits the recorded gitlink has that the checked-out one doesn't
         assert_eq!(submodule.subjects(), ["second"]);
         assert!(state.pane.diff().is_none());
+        // said so, the gitlink moving back
+        let area = Rect::new(0, 0, 120, 30);
+        state.update_submodule_height(area);
+        state.prepare_graph_uploads();
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(test_ctx(), true).render(area, &mut buf, &mut state);
+        let note = crate::test_support::ui::find_row(&buf, "submodule changed") + 1;
+        let note = crate::test_support::ui::row_text(&buf, note);
+        assert!(note.contains("1 commit removed, a rewind"), "{note}");
         Ok(())
     }
 
@@ -2729,16 +2831,16 @@ mod tests {
         let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "sub");
-        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        let submodule = state.submodule().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
         assert_eq!(submodule.uncommitted(), Some(2));
 
         // a third uncommitted file, then away and back: the panel is reused, its count read again
         fs::write(sub.join("two.txt"), "two\n")?;
         select_row(&mut state, "newfile.txt");
-        assert!(state.submodule.is_none());
+        assert!(state.submodule().is_none());
         select_row(&mut state, "sub");
-        let submodule = state.submodule.as_ref().expect("the submodule panel");
+        let submodule = state.submodule().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
         assert_eq!(submodule.uncommitted(), Some(3));
         Ok(())
@@ -2781,7 +2883,7 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "sub");
         assert_eq!(
-            state.submodule.as_ref().unwrap().subjects(),
+            state.submodule().unwrap().subjects(),
             ["second"],
             "unstaged: index to the working tree"
         );
@@ -2791,7 +2893,7 @@ mod tests {
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, "sub");
         assert_eq!(
-            state.submodule.as_ref().unwrap().subjects(),
+            state.submodule().unwrap().subjects(),
             ["second"],
             "staged: HEAD to the index"
         );
@@ -2851,6 +2953,33 @@ mod tests {
         assert!(state.is_diff_focused(), "the selection stays in the diff");
         state.adjust_diff_context(false);
         assert_eq!(diff(&state).rows.len(), before);
+        Ok(())
+    }
+
+    #[test]
+    fn test_diff_keys_work_while_the_diff_reloads() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), numbered_lines(20))?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        let changed = numbered_lines(20).replace("line 10\n", "line 10\nnew\n");
+        fs::write(repo_path.join("a.txt"), changed)?;
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        // loading the diffs on another thread, as the app does
+        let ec = crate::event::EventController::without_terminal();
+        let mut state =
+            LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
+        state.load_stale_diff();
+        state.enter()?;
+        state.adjust_diff_context(true);
+        // still in the diff while it reloads: its keys are listed, and the next one is taken
+        assert!(state.is_diff_focused());
+        assert!(state.keys().takes(UserEvent::IncreaseDiffContext));
+        state.load_stale_diff();
+        assert!(state.is_diff_focused());
         Ok(())
     }
 
@@ -4816,7 +4945,7 @@ mod tests {
         select_row(&mut state, "a.txt");
 
         // the conflicted file shows both sides instead of its diff
-        let conflict = &state.conflict.as_ref().unwrap().view;
+        let conflict = &state.conflict().unwrap().view;
         assert_eq!(
             (conflict.ours_label.as_str(), conflict.theirs_label.as_str()),
             ("HEAD", "feature")
@@ -4893,11 +5022,109 @@ mod tests {
         state.select()?;
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "feature\n");
         assert!(state.changes.unstaged.is_empty());
-        assert!(state.conflict.is_none());
+        assert!(state.conflict().is_none());
         assert_eq!(
             state.repository.operation_in_progress(),
             Some(Operation::Merge)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_conflict_of_a_submodule() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (inner, repo_path) = (dir.path().join("inner"), dir.path().join("repo"));
+        fs::create_dir_all(&inner)?;
+        fs::create_dir_all(&repo_path)?;
+        let inner_repo = GitRepository::new(&inner);
+        inner_repo.init();
+        // commits on two branches, which git can't fast-forward one to the other
+        inner_repo.commit("c1", "2024-01-01");
+        inner_repo.checkout_b("side");
+        inner_repo.commit("c2 side", "2024-01-02");
+        inner_repo.checkout("master");
+        inner_repo.commit("c3 master", "2024-01-03");
+        let hash = |rev: &str| git_stdout(&inner, &["rev-parse", rev]).trim().to_string();
+        let gitlink = |rev: &str| {
+            let info = format!("160000,{},sub", hash(rev));
+            git_stdout(&repo_path, &["update-index", "--add", "--cacheinfo", &info]);
+        };
+        let git = GitRepository::new(&repo_path);
+        git.init();
+        git_stdout(&repo_path, &["clone", "-q", "../inner", "sub"]);
+        gitlink("master~1");
+        git.commit("base", "2024-01-01");
+        git.checkout_b("incoming");
+        gitlink("side");
+        git.commit("incoming", "2024-01-02");
+        git.checkout("master");
+        gitlink("master");
+        git.commit("existing", "2024-01-03");
+        git_stdout(&repo_path, &["merge", "incoming"]);
+
+        let repository = Repository::load(&repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        // the conflict is shown, not the submodule's commits; enter goes into its sides
+        let texts = |rows: &[crate::widget::conflict::ConflictRow]| {
+            rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>()
+        };
+        let view = &state.conflict().unwrap().view;
+        let short = |rev: &str| hash(rev)[..7].to_string();
+        let at = |rev: &str, subject: &str| vec![format!("Submodule at {} {subject}", short(rev))];
+        assert_eq!(texts(&view.ours), at("master", "c3 master"));
+        assert_eq!(texts(&view.theirs), at("side", "c2 side"));
+        state.enter()?;
+        assert!(state.is_conflict_focused());
+        assert!(state.keys().takes(UserEvent::Select));
+        // a directory, no file to edit: the tools end at the merge tool
+        state.move_conflict_item(Direction::Down);
+        state.move_conflict_item(Direction::Down);
+        assert_eq!(state.conflict().unwrap().item, ConflictItem::MergeTool);
+        Ok(())
+    }
+
+    #[test]
+    fn test_conflict_of_a_symlink() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = &dir.path().join("repo");
+        fs::create_dir(repo_path)?;
+        // what the link points at has conflict markers of its own, which aren't the link's
+        let markers = "<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n";
+        fs::write(dir.path().join("ours.txt"), markers)?;
+        let git = GitRepository::new(repo_path);
+        git.init();
+        let link = |target: &str| -> std::io::Result<()> {
+            let _ = fs::remove_file(repo_path.join("link"));
+            std::os::unix::fs::symlink(target, repo_path.join("link"))
+        };
+        link("../base.txt")?;
+        git.add(&["link"]);
+        git.commit("base", "2024-01-01");
+        git.checkout_b("incoming");
+        link("../theirs.txt")?;
+        git.add(&["link"]);
+        git.commit("incoming", "2024-01-02");
+        git.checkout("master");
+        link("../ours.txt")?;
+        git.add(&["link"]);
+        git.commit("existing", "2024-01-03");
+        git_stdout(repo_path, &["merge", "incoming"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "link");
+        let texts = |rows: &[crate::widget::conflict::ConflictRow]| {
+            rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>()
+        };
+        let view = &state.conflict().unwrap().view;
+        assert_eq!(texts(&view.ours), ["Symlink to ../ours.txt"]);
+        assert_eq!(texts(&view.theirs), ["Symlink to ../theirs.txt"]);
+        // no file to edit: the editor would open what it points at
+        state.enter()?;
+        state.move_conflict_item(Direction::Down);
+        state.move_conflict_item(Direction::Down);
+        assert_eq!(state.conflict().unwrap().item, ConflictItem::MergeTool);
         Ok(())
     }
 
@@ -4914,7 +5141,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         select_row(&mut state, "a.txt");
-        let conflict = &state.conflict.as_ref().unwrap().view;
+        let conflict = &state.conflict().unwrap().view;
         let texts = |rows: &[crate::widget::conflict::ConflictRow]| {
             rows.iter().map(|row| row.text.clone()).collect::<Vec<_>>()
         };

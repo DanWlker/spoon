@@ -15,7 +15,7 @@ use crate::{
     git::Repository,
     graph,
     widget::{
-        commit_list::{submodule_commit_list, CommitList, CommitListState},
+        commit_list::{mark_commit_list_bar, submodule_commit_list, CommitList, CommitListState},
         diff::Step,
         style::{placeholder, render_panel, render_panel_scrollbar, render_scrollbar},
     },
@@ -33,12 +33,22 @@ pub struct SubmodulePanel<'a> {
     // the files uncommitted inside the submodule; None in a commit's historical changes, where the
     // working tree says nothing
     uncommitted: Option<usize>,
-    // None when there is nothing to list: not checked out, or its commits can't be read
-    list: Option<CommitListState<'a>>,
-    // why there is nothing to list
-    message: Option<String>,
+    shows: Shows<'a>,
+}
+
+// What the panel shows under the note of the uncommitted files.
+#[derive(Debug)]
+enum Shows<'a> {
     // its commits loading on another thread, see `poll`
-    loading: Option<Loading<'a>>,
+    Loading(Loading<'a>),
+    // the commits the second gitlink has that the first doesn't, or, when `rewind`, those it lost
+    // moving back, as `git diff --submodule=log` says
+    Commits {
+        list: Box<CommitListState<'a>>,
+        rewind: bool,
+    },
+    // why there is nothing to list: not checked out, no commits between the gitlinks, or an error
+    Message(String),
 }
 
 // The commits of a submodule between two gitlinks loading on another thread: the range that has
@@ -50,6 +60,8 @@ struct Loading<'a> {
     // the parent, which keeps the submodule's repository once loaded
     repository: &'a Repository,
     path: String,
+    // the two gitlinks compared, in order, see `shows_loaded`
+    forward: (String, String),
     job: Job<Loaded>,
 }
 
@@ -67,31 +79,33 @@ impl<'a> SubmodulePanel<'a> {
         tx: Option<&Sender>,
     ) -> Self {
         let key = submodule_key(path, from, to);
-        let mut panel = Self {
+        let panel = |shows| Self {
             key,
             uncommitted,
-            list: None,
-            message: None,
-            loading: None,
+            shows,
         };
         let Some(to) = to else {
-            panel.message = Some("submodule not checked out".into());
-            return panel;
+            return panel(Shows::Message("submodule not checked out".into()));
         };
         // nothing to load when the gitlink is unchanged: only the uncommitted files are new
         if from == to {
-            panel.message = Some("no commits ahead of the recorded one".into());
-            return panel;
+            return panel(Shows::Message(NO_COMMITS.into()));
         }
         // the commits between the two gitlinks, in the direction they differ: the checked-out
         // commit may be behind the recorded one, then its missing commits are listed
-        let loaded = [(from, to), (to, from)]
-            .into_iter()
-            .find_map(|(from, to)| repository.loaded_submodule_repository(path, from, to));
-        if let Some(submodule) = loaded {
+        let loaded =
+            [(from, to), (to, from)]
+                .into_iter()
+                .enumerate()
+                .find_map(|(i, (from, to))| {
+                    Some((
+                        repository.loaded_submodule_repository(path, from, to)?,
+                        i == 1,
+                    ))
+                });
+        if let Some((submodule, rewind)) = loaded {
             let graph = graph::calc_graph(submodule, None, &Default::default());
-            panel.show(ctx, submodule, graph);
-            return panel;
+            return panel(commits(ctx, submodule, graph, rewind));
         }
         let ranges = [(from, to), (to, from)].map(|(from, to)| {
             let work = repository.submodule_repository_work(path, from, to);
@@ -107,73 +121,56 @@ impl<'a> SubmodulePanel<'a> {
             Ok(None)
         };
         let path = path.to_string();
-        match tx {
-            Some(tx) => {
-                let job = Job::spawn(tx.clone(), work);
-                panel.loading = Some(Loading {
-                    repository,
-                    path,
-                    job,
-                });
-            }
-            None => panel.show_loaded(ctx, repository, &path, work()),
-        }
-        panel
+        let forward = (from.to_string(), to.to_string());
+        panel(match tx {
+            Some(tx) => Shows::Loading(Loading {
+                repository,
+                path,
+                forward,
+                job: Job::spawn(tx.clone(), work),
+            }),
+            None => shows_loaded(ctx, repository, &path, &forward, work()),
+        })
     }
 
     // Before drawing: the commits loaded on another thread, once they are.
     pub fn poll(&mut self, ctx: &AppContext) {
-        let Some(loaded) = self.loading.as_ref().and_then(|l| l.job.try_take()) else {
+        let Shows::Loading(loading) = &self.shows else {
             return;
         };
-        let Loading {
-            repository, path, ..
-        } = self.loading.take().expect("loading");
-        self.show_loaded(ctx, repository, &path, loaded);
+        if let Some(done) = loading.job.try_take() {
+            let (repository, path, forward) = (loading.repository, &loading.path, &loading.forward);
+            self.shows = shows_loaded(ctx, repository, path, forward, done);
+        }
     }
 
     // The commits loading on another thread, waiting for them, before a key acts on them.
     pub fn wait(&mut self, ctx: &AppContext) {
-        if let Some(Loading {
-            repository,
-            path,
-            job,
-        }) = self.loading.take()
-        {
-            self.show_loaded(ctx, repository, &path, job.wait());
-        }
+        let shows = std::mem::replace(&mut self.shows, Shows::Message(String::new()));
+        self.shows = match shows {
+            Shows::Loading(Loading {
+                repository,
+                path,
+                forward,
+                job,
+            }) => shows_loaded(ctx, repository, &path, &forward, job.wait()),
+            shows => shows,
+        };
     }
 
     pub fn loading_since(&self) -> Option<Instant> {
-        self.loading.as_ref().map(|loading| loading.job.started())
-    }
-
-    fn show_loaded(
-        &mut self,
-        ctx: &AppContext,
-        repository: &'a Repository,
-        path: &str,
-        loaded: Loaded,
-    ) {
-        self.message = None;
-        match loaded {
-            Ok(Some(((from, to), submodule, layout))) => {
-                let submodule = repository.keep_submodule_repository(path, &from, &to, submodule);
-                self.show(ctx, submodule, graph::Graph::of(submodule, layout));
-            }
-            Ok(None) => self.message = Some("no commits ahead of the recorded one".into()),
-            Err(err) => self.message = Some(err),
+        match &self.shows {
+            Shows::Loading(loading) => Some(loading.job.started()),
+            _ => None,
         }
     }
 
-    fn show(&mut self, ctx: &AppContext, submodule: &'a Repository, graph: graph::Graph<'a>) {
-        let manager = ctx.graph_image_manager(graph);
-        self.list = Some(submodule_commit_list(
-            submodule,
-            manager,
-            ctx.search_options.clone(),
-            ctx.ui_config.common.scrolloff as usize,
-        ));
+    // The commits listed, None when there are none to show.
+    fn list_mut(&mut self) -> Option<&mut CommitListState<'a>> {
+        match &mut self.shows {
+            Shows::Commits { list, .. } => Some(list),
+            _ => None,
+        }
     }
 
     // What the panel shows, to reuse it for the same submodule.
@@ -189,14 +186,13 @@ impl<'a> SubmodulePanel<'a> {
     // Moves by every key scrolling the commits: the movement keys, ctrl-d and ctrl-u, and the
     // page and line keys; false for other events or nothing to show.
     pub fn navigate(&mut self, event: UserEvent) -> bool {
-        self.list
-            .as_mut()
+        self.list_mut()
             .is_some_and(|list| list.handle_navigation(event))
     }
 
     // Moves the selected commit by `step`, for the movement keys of the page.
     pub fn step(&mut self, step: Step) {
-        let Some(list) = &mut self.list else {
+        let Some(list) = self.list_mut() else {
             return;
         };
         match step {
@@ -208,7 +204,7 @@ impl<'a> SubmodulePanel<'a> {
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
-        if let Some(list) = &mut self.list {
+        if let Some(list) = self.list_mut() {
             // the rows shown aren't known before the first draw, so upload all of them then
             if list.height() == 0 {
                 list.ensure_all_graph_uploaded();
@@ -220,22 +216,22 @@ impl<'a> SubmodulePanel<'a> {
 
     // The height the list is drawn in, set by the page before the graph images are prepared.
     pub fn set_list_height(&mut self, height: usize) {
-        if let Some(list) = &mut self.list {
+        if let Some(list) = self.list_mut() {
             list.update_height(height);
         }
     }
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
-        self.list
-            .as_mut()
+        self.list_mut()
             .map_or_else(Vec::new, |list| list.drain_pending_graph_uploads())
     }
 
     #[cfg(test)]
     pub fn subjects(&self) -> Vec<&str> {
-        self.list
-            .as_ref()
-            .map_or_else(Vec::new, |list| list.subjects())
+        match &self.shows {
+            Shows::Commits { list, .. } => list.subjects(),
+            _ => vec![],
+        }
     }
 
     #[cfg(test)]
@@ -255,7 +251,7 @@ impl<'a> SubmodulePanel<'a> {
     ) {
         let theme = &ctx.color_theme;
         let inner = render_panel(buf, area, title, focused, theme);
-        if let Some((total, offset)) = self.render_content(ctx, inner, buf) {
+        if let Some((total, offset)) = self.render_content(ctx, inner, buf, focused) {
             render_panel_scrollbar(buf, area, total, offset, focused, theme);
         }
     }
@@ -270,50 +266,107 @@ impl<'a> SubmodulePanel<'a> {
         buf: &mut Buffer,
         focused: bool,
     ) {
-        if let Some((total, offset)) = self.render_content(ctx, area, buf) {
+        if let Some((total, offset)) = self.render_content(ctx, area, buf, focused) {
             render_scrollbar(buf, scrollbar, total, offset, focused, &ctx.color_theme);
         }
     }
 
-    // Draws the note and the commits in `inner`, the list fitted to its height; the rows shown and
-    // the first one, for the caller's scrollbar. None when there is nothing to scroll.
+    // Draws the note and the commits in `inner`, the list fitted to its height, its selection
+    // marked like the commit list's; the rows shown and the first one, for the caller's
+    // scrollbar. None when there is nothing to scroll.
     fn render_content(
         &mut self,
         ctx: &Rc<AppContext>,
         inner: Rect,
         buf: &mut Buffer,
+        focused: bool,
     ) -> Option<(usize, usize)> {
         let theme = &ctx.color_theme;
-        let note_height = u16::from(self.uncommitted.is_some());
+        // the commits the gitlink moved by, then the files uncommitted inside it
+        let count = |n: usize, what: &str| match n {
+            1 => format!("1 {what}"),
+            n => format!("{n} {what}s"),
+        };
+        let moved = match &self.shows {
+            Shows::Commits { list, rewind } => Some(match rewind {
+                false => format!("{} added", count(list.len(), "commit")),
+                true => format!("{} removed, a rewind", count(list.len(), "commit")),
+            }),
+            _ => None,
+        };
+        let uncommitted = self.uncommitted.map(|n| match n {
+            0 => "no uncommitted files".to_string(),
+            n => count(n, "uncommitted file"),
+        });
+        let note: Vec<String> = moved.into_iter().chain(uncommitted).collect();
+        let note_height = u16::from(!note.is_empty());
         let [note_area, list_area] =
             Layout::vertical([Constraint::Length(note_height), Constraint::Min(0)]).areas(inner);
-        if let Some(uncommitted) = self.uncommitted {
-            let note = match uncommitted {
-                0 => "no uncommitted files".to_string(),
-                1 => "1 uncommitted file".to_string(),
-                n => format!("{n} uncommitted files"),
-            };
-            buf.set_line(
-                note_area.x,
-                note_area.y,
-                &Line::raw(note).fg(theme.muted_fg),
-                note_area.width,
-            );
-        }
-        let Some(list) = &mut self.list else {
-            let message = match &self.loading {
-                Some(loading) if shows_loading(loading.job.started()) => "Loading…",
-                Some(_) => "",
-                None => self.message.as_deref().unwrap_or("no commits"),
-            };
-            Paragraph::new(placeholder(message, theme)).render(list_area, buf);
-            return None;
+        buf.set_line(
+            note_area.x,
+            note_area.y,
+            &Line::raw(note.join(" · ")).fg(theme.muted_fg),
+            note_area.width,
+        );
+        let list = match &mut self.shows {
+            Shows::Commits { list, .. } => list,
+            Shows::Loading(loading) => {
+                // blank at first, so quick loading doesn't flash
+                if shows_loading(loading.job.started()) {
+                    Paragraph::new(placeholder("Loading…", theme)).render(list_area, buf);
+                }
+                return None;
+            }
+            Shows::Message(message) => {
+                Paragraph::new(placeholder(message.as_str(), theme)).render(list_area, buf);
+                return None;
+            }
         };
         list.update_height(list_area.height as usize);
         let (total, offset) = (list.len(), list.offset());
-        StatefulWidget::render(CommitList::new(ctx.clone()), list_area, buf, list);
+        StatefulWidget::render(CommitList::new(ctx.clone()), list_area, buf, &mut **list);
+        mark_commit_list_bar(buf, list_area, list, focused, theme);
         Some((total, offset))
     }
+}
+
+// Said when the gitlinks are the same, or have no commits between them.
+const NO_COMMITS: &str = "no commits ahead of the recorded one";
+
+// The panel's commits from the work loading them, or why there are none; a rewind when they
+// were found the other way round than `forward`, the two gitlinks compared.
+fn shows_loaded<'a>(
+    ctx: &AppContext,
+    repository: &'a Repository,
+    path: &str,
+    forward: &(String, String),
+    loaded: Loaded,
+) -> Shows<'a> {
+    match loaded {
+        Ok(Some(((from, to), submodule, layout))) => {
+            let rewind = (&from, &to) != (&forward.0, &forward.1);
+            let submodule = repository.keep_submodule_repository(path, &from, &to, submodule);
+            commits(ctx, submodule, graph::Graph::of(submodule, layout), rewind)
+        }
+        Ok(None) => Shows::Message(NO_COMMITS.into()),
+        Err(err) => Shows::Message(err),
+    }
+}
+
+fn commits<'a>(
+    ctx: &AppContext,
+    submodule: &'a Repository,
+    graph: graph::Graph<'a>,
+    rewind: bool,
+) -> Shows<'a> {
+    let manager = ctx.graph_image_manager(graph);
+    let list = Box::new(submodule_commit_list(
+        submodule,
+        manager,
+        ctx.search_options.clone(),
+        ctx.ui_config.common.scrolloff as usize,
+    ));
+    Shows::Commits { list, rewind }
 }
 
 // What a submodule panel shows: its path and the two gitlinks, so a page can reuse the panel when

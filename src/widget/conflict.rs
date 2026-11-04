@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::git::{ConflictSide, Operation, Repository};
+use crate::git::{ConflictSide, Operation, Repository, SideContent};
 
 // The lines shown around each conflict, from the file.
 const CONTEXT: usize = 3;
@@ -39,20 +39,30 @@ pub struct ConflictView {
     pub base: Option<Vec<ConflictRow>>,
     // 0 for a file without markers, deleted on a side or binary
     pub conflicts: usize,
+    // whether the working tree has a file there to open in the editor: not a symlink, which the
+    // editor would follow, nor a submodule
+    pub editable: bool,
 }
 
 impl ConflictView {
     // The conflicting blocks of the file in the working tree, or the whole content of each side when
     // the file has no conflict markers (when one side deleted it, or it is binary).
     pub fn load(repository: &Repository, path: &str) -> Self {
-        let content = std::fs::read_to_string(repository.path().join(path)).unwrap_or_default();
-        if let Some(view) = parse_conflict_markers(&content) {
-            return view;
+        let file = repository.path().join(path);
+        // the markers of a file only, not of what a symlink points at
+        let editable = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
+        if editable {
+            let content = std::fs::read_to_string(&file).unwrap_or_default();
+            if let Some(view) = parse_conflict_markers(&content) {
+                return ConflictView { editable, ..view };
+            }
         }
         let side = |side| {
-            let lines = match repository.conflict_side_content(path, side) {
-                Some(content) => content.lines().map(String::from).collect(),
-                None => vec!["(deleted)".to_string()],
+            let lines = match repository.conflict_side(path, side) {
+                SideContent::File(content) => content.lines().map(String::from).collect(),
+                SideContent::Symlink(target) => vec![format!("Symlink to {target}")],
+                SideContent::Submodule(commit) => vec![format!("Submodule at {commit}")],
+                SideContent::Deleted => vec!["(deleted)".to_string()],
             };
             lines
                 .into_iter()
@@ -66,6 +76,7 @@ impl ConflictView {
         ConflictView {
             ours: side(ConflictSide::Ours),
             theirs: side(ConflictSide::Theirs),
+            editable,
             ..Default::default()
         }
     }

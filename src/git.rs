@@ -1394,15 +1394,56 @@ impl Repository {
     }
 
     // The content of a conflicted file on one side, None when that side deleted it.
-    pub fn conflict_side_content(&self, path: &str, side: ConflictSide) -> Option<String> {
-        self.stage_blob(path, side.stage())
-            .map(|blob| String::from_utf8_lossy(&blob).into_owned())
+    // What a side of a conflicted file is in the index: a file, a symlink, a submodule or nothing.
+    pub fn conflict_side(&self, path: &str, side: ConflictSide) -> SideContent {
+        let stage = self.unmerged(path).ok().and_then(|stages| {
+            stages
+                .into_iter()
+                .find_map(|(stage, mode, object)| (stage == side.stage()).then_some((mode, object)))
+        });
+        let Some((mode, object)) = stage else {
+            return SideContent::Deleted;
+        };
+        let blob = || {
+            git_output_bytes(&self.path, &["cat-file", "blob", &object])
+                .map(|blob| String::from_utf8_lossy(&blob).into_owned())
+                .unwrap_or_default()
+        };
+        match mode.as_str() {
+            // its short hash and subject, from the submodule when it is checked out
+            "160000" => {
+                let submodule = self.path.join(path);
+                let summary = submodule
+                    .join(".git")
+                    .exists()
+                    .then(|| git_output(&submodule, &["log", "-1", "--format=%h %s", &object]).ok())
+                    .flatten()
+                    .map(|summary| summary.trim().to_string());
+                SideContent::Submodule(
+                    summary.unwrap_or_else(|| object.get(..7).unwrap_or(&object).into()),
+                )
+            }
+            "120000" => SideContent::Symlink(blob()),
+            _ => SideContent::File(blob()),
+        }
     }
 
-    // The content of a conflicted file in an index stage: 1 the base, 2 ours, 3 theirs.
-    fn stage_blob(&self, path: &str, stage: u8) -> Option<Vec<u8>> {
-        let object = format!(":{stage}:{path}");
-        git_output_bytes(&self.path, &["cat-file", "blob", &object]).ok()
+    // The stage (1 the base, 2 ours, 3 theirs), mode and object of each side git has of the
+    // conflicted `path`; none when it isn't conflicted.
+    fn unmerged(&self, path: &str) -> std::result::Result<Vec<(u8, String, String)>, String> {
+        // literal, so `x*.txt` isn't `xa.txt`
+        let spec = pathspecs(&[path]);
+        // "<mode> <object> <stage>\t<path>"
+        let out = git_output(&self.path, &["ls-files", "-u", "-z", "--", &spec[0]])?;
+        Ok(out
+            .split('\0')
+            .filter_map(|entry| {
+                let mut fields = entry.split_once('\t')?.0.split(' ');
+                let (mode, object) = (fields.next()?, fields.next()?);
+                let stage = fields.next()?.parse().ok()?;
+                Some((stage, mode.to_string(), object.to_string()))
+            })
+            .collect())
     }
 
     // Resolves a conflicted file by taking one side whole, removing the file when that side
@@ -1417,26 +1458,21 @@ impl Repository {
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
-        // "<mode> <object> <stage>\t<path>" for each side git has of the file
-        let unmerged = git_output(&self.path, &["ls-files", "-u", "-z", "--", spec])?;
-        let stages: Vec<(&str, &str, &str)> = unmerged
-            .split('\0')
-            .filter_map(|entry| {
-                let mut fields = entry.split_once('\t')?.0.split(' ');
-                Some((fields.next()?, fields.next()?, fields.next()?))
-            })
-            .collect();
+        let stages = self.unmerged(path)?;
         // a file with no stage of a conflict would be removed below, by `git rm`
         if stages.is_empty() {
             return Err(format!("{path} has no conflict to resolve"));
         }
-        let stage = side.stage().to_string();
-        match stages.iter().find(|(_, _, s)| *s == stage) {
+        let taken = stages
+            .iter()
+            .find(|(stage, ..)| *stage == side.stage())
+            .map(|(_, mode, object)| (mode.as_str(), object.as_str()));
+        match taken {
             // the side taken deleted it
             None => return self.run(&["rm", "--quiet", "--", spec], None),
             // `checkout --ours` leaves a submodule as it is, so it is checked out at the commit
             // taken, then staged, like lazygit
-            Some(("160000", commit, _)) => {
+            Some(("160000", commit)) => {
                 let args = ["checkout", commit];
                 let submodule = self.path.join(path);
                 run_logged(
@@ -2162,6 +2198,16 @@ fn diff_summary(path: &Path, base: &str, target: &str) -> Vec<FileChange> {
             LocalChangeStatus::Untracked | LocalChangeStatus::Conflicted => None,
         })
         .collect()
+}
+
+// A side of a conflicted file, see `Repository::conflict_side`: a file's content, where a symlink
+// points, a submodule's commit (its short hash and subject), or nothing, the side deleting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SideContent {
+    File(String),
+    Symlink(String),
+    Submodule(String),
+    Deleted,
 }
 
 // The two versions of a conflicted file: what was there (ours) and what is coming in (theirs).
@@ -4209,6 +4255,28 @@ mod tests {
         let status = git_output(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert_eq!(status, "?? .gitignore\n?? keep.txt\n");
         assert_eq!(gitignore_pattern(Entry::File("#x ")), "/\\#x\\ ");
+    }
+
+    #[test]
+    fn test_ignore_names_with_pattern_characters() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("init", "2024-01-01");
+        let names = ["x*.log", "!bang", "#hash", "trail ", "q?.txt"];
+        for file in names.iter().chain(&["xa.log", "qa.txt"]) {
+            std::fs::write(path.join(file), "x").unwrap();
+        }
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        for name in names {
+            repository.ignore_path(Entry::File(name)).unwrap();
+        }
+        // only those files, not the ones their characters would match as a pattern
+        let status = git_output(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
+        assert_eq!(status, "?? .gitignore\n?? qa.txt\n?? xa.log\n");
     }
 
     #[test]

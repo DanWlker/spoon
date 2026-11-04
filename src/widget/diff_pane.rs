@@ -110,8 +110,12 @@ impl DiffPane {
     }
 
     // Whether the diff is of one file, which shows more or less context around its changes.
+    // Of the diff drawn while another loads too, the keys being those of the diff reloading.
     pub fn is_single_file(&self) -> bool {
-        self.diff.as_ref().is_some_and(ParsedDiff::is_single_file)
+        self.diff
+            .as_ref()
+            .or(self.previous.as_ref())
+            .is_some_and(ParsedDiff::is_single_file)
     }
 
     // What is selected, to select it again in the diff reloaded, see `restore`.
@@ -166,17 +170,23 @@ impl DiffPane {
         jumped || self.cursor.scroll.handle_scroll(event)
     }
 
+    // The part with the focus, or that will have it once the diff loading is shown (see
+    // `restore`): the keys of the diff are taken meanwhile, each waiting for it before it acts.
+    fn focused_part(&self) -> Option<DiffPart> {
+        self.focus.or(self.pending.and_then(|p| p.focus))
+    }
+
     pub fn is_focused(&self) -> bool {
-        self.focus.is_some()
+        self.focused_part().is_some()
     }
 
     pub fn is_selecting_lines(&self) -> bool {
-        self.focus == Some(DiffPart::Line)
+        self.focused_part() == Some(DiffPart::Line)
     }
 
     // What `selected_text` is of: the hunk, until lines are selected.
     pub fn selected_part(&self) -> DiffPart {
-        self.focus.unwrap_or(DiffPart::Hunk)
+        self.focused_part().unwrap_or(DiffPart::Hunk)
     }
 
     // The lines of the selected hunk or line in the file at the commit; None outside the diff, or
@@ -525,7 +535,8 @@ mod tests {
         // entering, its first hunk
         pane.load_in_background(ec.sender(), move || raw.to_string());
         assert!(pane.enter());
-        assert!(!pane.is_focused());
+        // its keys taken meanwhile, see `focused_part`
+        assert!(pane.is_focused());
         pane.wait_loading(&repository);
         assert!(pane.is_focused());
         assert_eq!(pane.cursor.hunk, 0);

@@ -586,11 +586,7 @@ pub fn render_commit_list_panel<'a>(
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
-    // the bar on the border, the graph starts right after it
-    let y = inner.y + state.cursor.row() as u16;
-    if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
-        mark_selected_bar(f.buffer_mut(), inner.x - 1, y, focused, &ctx.color_theme);
-    }
+    mark_commit_list_bar(f.buffer_mut(), inner, state, focused, &ctx.color_theme);
     let theme = &ctx.color_theme;
     render_panel_scrollbar(
         f.buffer_mut(),
@@ -600,6 +596,21 @@ pub fn render_commit_list_panel<'a>(
         focused,
         theme,
     );
+}
+
+// The bar at the selected commit of a list drawn in `inner`, on the border left of it: the graph
+// starts right after it. Every list of commits marks its selection so, see `mark_selected_bar`.
+pub fn mark_commit_list_bar(
+    buf: &mut Buffer,
+    inner: Rect,
+    state: &CommitListState,
+    focused: bool,
+    theme: &ColorTheme,
+) {
+    let y = inner.y + state.cursor.row() as u16;
+    if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
+        mark_selected_bar(buf, inner.x - 1, y, focused, theme);
+    }
 }
 
 // The commit list of a submodule's commits, read-only: built once per selection, every commit on
