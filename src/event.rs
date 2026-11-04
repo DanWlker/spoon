@@ -103,8 +103,11 @@ pub enum AppEvent {
     ShowCommit(CommitHash),
     // the graph laid out again on another thread after a merge was folded or unfolded, see
     // `App::start_regraph`
-    // `App::start_regraph`; failing, with the merges folded before
-    Regraphed(Result<Box<crate::graph::GraphLayout>, (String, FxHashSet<CommitHash>)>),
+    // `App::start_regraph`, of the repository `from`; failing, with the merges folded before
+    Regraphed {
+        from: std::sync::Arc<crate::git::Repository>,
+        layout: Result<Box<crate::graph::GraphLayout>, (String, FxHashSet<CommitHash>)>,
+    },
     // folds or unfolds the merge commit, the graph drawn again
     FoldMerge {
         commit: CommitHash,

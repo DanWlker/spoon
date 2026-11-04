@@ -4365,6 +4365,41 @@ mod tests {
     }
 
     #[test]
+    fn test_visual_selection_of_files_follows_the_cursor_back(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"] {
+            fs::write(repo_path.join(name), "x\n")?;
+        }
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let picked = |state: &LocalChangesState| {
+            state.picked().names().map(String::from).collect::<Vec<_>>()
+        };
+        // e picked on its own first, kept by the selection after it
+        select_row(&mut state, "e.txt");
+        state.toggle_visual();
+        state.toggle_visual();
+        // moving back unpicks what the selection went over, like the commit list
+        select_row(&mut state, "a.txt");
+        state.toggle_visual();
+        (0..3).for_each(|_| _ = state.navigate_files(UserEvent::NavigateDown));
+        assert_eq!(
+            picked(&state),
+            ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]
+        );
+        (0..2).for_each(|_| _ = state.navigate_files(UserEvent::NavigateUp));
+        assert_eq!(picked(&state), ["a.txt", "b.txt", "e.txt"]);
+        state.toggle_visual();
+        assert_eq!(picked(&state), ["a.txt", "b.txt", "e.txt"]);
+        Ok(())
+    }
+
+    #[test]
     fn test_picked_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();

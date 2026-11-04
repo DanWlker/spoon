@@ -17,6 +17,7 @@ use crate::{
     git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, Tracking},
     widget::{
         file_tree::{keep_guide_color, tree_guides},
+        picks::Picks,
         style::{
             fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
             render_panel, render_panel_scrollbar, spinner, ListCursor,
@@ -96,25 +97,31 @@ impl RefSection {
 
 // The refs picked in the sidebar, all of one section so the commands on them make sense, in the
 // order they were picked; None while nothing is picked, the names never empty.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RefPicks(Option<(RefSection, Vec<String>)>);
+#[derive(Debug, Default, Clone)]
+pub struct RefPicks(Option<(RefSection, Picks<String>)>);
 
 impl RefPicks {
     // The refs `names` of `section`, picked.
     pub fn new(section: RefSection, names: Vec<String>) -> Self {
-        RefPicks((!names.is_empty()).then_some((section, names)))
+        let mut picks = Picks::default();
+        names.iter().for_each(|name| picks.insert(name));
+        RefPicks((!picks.is_empty()).then_some((section, picks)))
     }
 
+    // None while nothing is picked, a visual selection just started included.
     pub fn section(&self) -> Option<RefSection> {
-        self.0.as_ref().map(|(section, _)| *section)
+        self.0
+            .as_ref()
+            .filter(|(_, picks)| !picks.is_empty())
+            .map(|(section, _)| *section)
     }
 
     pub fn names(&self) -> &[String] {
-        self.0.as_ref().map_or(&[], |(_, names)| names)
+        self.0.as_ref().map_or(&[], |(_, picks)| picks.as_slice())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_none()
+        self.names().is_empty()
     }
 
     pub fn len(&self) -> usize {
@@ -122,14 +129,37 @@ impl RefPicks {
     }
 
     fn contains(&self, section: RefSection, name: &str) -> bool {
-        self.section() == Some(section) && self.names().iter().any(|n| n == name)
+        self.0
+            .as_ref()
+            .is_some_and(|(s, picks)| *s == section && picks.contains(&name.to_string()))
     }
 
     // Keeps the names `keep` is true for.
     fn retain(&mut self, keep: impl Fn(RefSection, &str) -> bool) {
-        if let Some((section, names)) = self.0.take() {
-            let names = names.into_iter().filter(|n| keep(section, n)).collect();
-            *self = RefPicks::new(section, names);
+        if let Some((section, mut picks)) = self.0.take() {
+            picks.retain(|name| keep(section, name));
+            *self = RefPicks((!picks.is_empty()).then_some((section, picks)));
+        }
+    }
+
+    // A visual selection starts in `section`, the one of the refs picked if any: what it picks
+    // adds to them, see `Picks`.
+    fn start_visual(&mut self, section: RefSection) {
+        let (_, picks) = self.0.get_or_insert_with(|| (section, Picks::default()));
+        picks.start_visual();
+    }
+
+    fn end_visual(&mut self) {
+        if let Some((_, picks)) = &mut self.0 {
+            picks.end_visual();
+        }
+    }
+
+    // Those picked before the visual selection, and `names`, the refs from its start to the
+    // cursor, see `Picks::sync_visual`.
+    fn sync_visual(&mut self, names: &[String]) {
+        if let Some((_, picks)) = &mut self.0 {
+            picks.sync_visual(names);
         }
     }
 }
@@ -234,6 +264,7 @@ impl RefListState {
         if self.cursor.is_visual() {
             self.cursor.cancel_visual();
             self.visual_section = None;
+            self.picked.end_visual();
             return Ok(());
         }
         let Some(row) = self.visible_rows.get(self.cursor.selected()) else {
@@ -253,6 +284,7 @@ impl RefListState {
         }
         self.cursor.toggle_visual();
         self.visual_section = Some(section);
+        self.picked.start_visual(section);
         self.sync_visual_picks();
         Ok(())
     }
@@ -267,6 +299,7 @@ impl RefListState {
         }
         self.cursor.cancel_visual();
         self.visual_section = None;
+        self.picked.end_visual();
         Some(format!(
             "Selection stopped at the {} section",
             section.plural()
@@ -280,25 +313,16 @@ impl RefListState {
         let Some(section) = self.visual_section else {
             return;
         };
-        let mut names: Vec<String> = self
-            .picked
-            .names()
-            .iter()
-            .filter(|_| self.picked.section() == Some(section))
-            .cloned()
-            .collect();
-        for name in self.visible_rows[range]
+        // the refs of its section only, see `toggle_visual`
+        let names: Vec<String> = self.visible_rows[range]
             .iter()
             .filter(|row| {
                 row.kind == RowKind::Ref && RefSection::of_root(&row.identifier[0]) == Some(section)
             })
             .filter_map(|row| row.identifier.last().and_then(NodeId::name))
-        {
-            if !names.iter().any(|picked| picked == name) {
-                names.push(name.to_string());
-            }
-        }
-        self.picked = RefPicks::new(section, names);
+            .map(String::from)
+            .collect();
+        self.picked.sync_visual(&names);
     }
 
     pub fn clear_picks(&mut self) {
@@ -990,6 +1014,30 @@ mod tests {
         let row = panel_row(&buf, "Refs", y, 1);
         assert_row_bg(&buf, row, theme.list_picked_bg);
         assert_guides_keep_color(&buf, row, &theme);
+    }
+
+    #[test]
+    fn test_visual_selection_of_refs_follows_the_cursor_back() {
+        let branch = |name: &str| Ref::Branch {
+            name: name.into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let branches: Vec<Ref> = ["a", "b", "c", "d", "e"].map(branch).into();
+        let refs: Vec<&Ref> = branches.iter().collect();
+        let mut state = RefListState::new(&refs, &[]);
+        // e picked on its own first, kept by the selection after it
+        select(&mut state, "e");
+        state.toggle_visual().unwrap();
+        state.toggle_visual().unwrap();
+        // moving back unpicks what the selection went over, like the commit list
+        select(&mut state, "a");
+        state.toggle_visual().unwrap();
+        (0..3).for_each(|_| _ = state.handle_move(UserEvent::NavigateDown));
+        assert_eq!(state.picked().names(), ["e", "a", "b", "c", "d"]);
+        (0..2).for_each(|_| _ = state.handle_move(UserEvent::NavigateUp));
+        assert_eq!(state.picked().names(), ["e", "a", "b"]);
+        state.toggle_visual().unwrap();
+        assert_eq!(state.picked().names(), ["e", "a", "b"]);
     }
 
     #[test]

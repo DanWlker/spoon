@@ -962,9 +962,14 @@ impl App<'_> {
                 };
                 self.start_regraph(before);
             }
-            AppEvent::Regraphed(layout) => {
+            AppEvent::Regraphed { from, layout } => {
                 if !self.shell.regraphs.is_empty() {
                     self.shell.regraphs.remove(0);
+                }
+                // laid out before the repository was loaded again, of commits it may no longer
+                // have; the app made again on it laid its graph out with the merges folded now
+                if !Arc::ptr_eq(&from, self.repository) {
+                    return Ok(None);
                 }
                 // the fold undone, the graph shown staying as it was
                 let layout = match layout {
@@ -2680,9 +2685,11 @@ impl App<'_> {
                 catching(|| GraphLayout::calc(&repository, primary_branch.as_deref(), &folded));
             drop(spinning);
             // the app may have quit meanwhile
-            tx.try_send(AppEvent::Regraphed(
-                layout.map(Box::new).map_err(|err| (err, before)),
-            ));
+            let layout = layout.map(Box::new).map_err(|err| (err, before));
+            tx.try_send(AppEvent::Regraphed {
+                from: repository,
+                layout,
+            });
         });
     }
 

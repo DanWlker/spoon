@@ -23,7 +23,7 @@ use crate::{
     config::GraphColorConfig,
     event::{EventController, KeyHint},
     git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
-    graph::{CellWidthType, GraphImageWidthMode, GraphStyle},
+    graph::{CellWidthType, GraphImageWidthMode, GraphLayout, GraphStyle},
     keybind::parse_key_event,
     layout::Panel,
     protocol::ImageProtocol,
@@ -1460,6 +1460,72 @@ fn test_fold_merge() {
     ]);
     // the graph is drawn again, the repository isn't loaded again
     assert_eq!(harness.loads.get(), 1);
+}
+
+#[test]
+fn test_fold_merge_laid_out_before_a_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // a branch of its own, below the merge, to delete in another terminal
+    let date = "@1700000180 +0000";
+    let output = crate::git::git_command()
+        .args([
+            "commit-tree",
+            "master^{tree}",
+            "-p",
+            "master",
+            "-m",
+            "other1",
+        ])
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    git(
+        &path,
+        &[
+            "branch",
+            "other",
+            String::from_utf8(output.stdout).unwrap().trim(),
+        ],
+    );
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    // the repository a layout was made of, and the layout
+    type Stale = Option<(Arc<crate::git::Repository>, GraphLayout)>;
+    let stale: Rc<RefCell<Stale>> = Rc::default();
+    let (keep, send) = (stale.clone(), stale);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("h"),
+        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        // the graph laid out on another thread meanwhile, from the repository before the reload
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            let folded = app.shell.folded_merges().clone();
+            let layout = GraphLayout::calc(app.repository, None, &folded);
+            keep.replace(Some((Arc::clone(app.repository), layout)));
+        }))],
+        outside_git(&["branch", "-q", "-D", "other"]),
+        keys("ctrl-r"),
+        check(|app| {
+            assert!(app
+                .repository
+                .all_commits()
+                .iter()
+                .all(|c| c.subject != "other1"))
+        }),
+        // landing after the reload, laid out of commits it no longer has
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            let (from, layout) = send.take().unwrap();
+            let layout = Ok(Box::new(layout));
+            app.ec.send(AppEvent::Regraphed { from, layout });
+        }))],
+        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+    ]);
 }
 
 #[test]

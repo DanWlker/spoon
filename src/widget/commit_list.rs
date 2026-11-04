@@ -22,6 +22,7 @@ use crate::{
     protocol::PreparedImage,
     search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{
+        picks::Picks,
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
             ListCursor,
@@ -111,8 +112,8 @@ pub struct CommitListState<'a> {
     // the commits the search matches
     search_matches: Vec<bool>,
 
-    // commits picked with space for commands on several commits, in the order they were picked
-    picked_commit_hashes: Vec<CommitHash>,
+    // commits picked for commands on several commits
+    picked: Picks<CommitHash>,
     // what part of the history is loaded, like "main only", when not all of it
     filter_note: Option<String>,
     // the checked-out branch, its label in its own color; a detached HEAD gets a label
@@ -141,7 +142,7 @@ impl<'a> CommitListState<'a> {
             query: TreeQuery::default(),
             search_options,
             search_matches,
-            picked_commit_hashes: Vec::new(),
+            picked: Picks::default(),
             filter_note: None,
             head: Head::None,
             cursor: ListCursor::default(),
@@ -154,11 +155,11 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn picked_commit_hashes(&self) -> &[CommitHash] {
-        &self.picked_commit_hashes
+        self.picked.as_slice()
     }
 
     pub fn is_picked(&self, commit_hash: &CommitHash) -> bool {
-        self.picked_commit_hashes.contains(commit_hash)
+        self.picked.contains(commit_hash)
     }
 
     // Whether the commits are being selected from where the visual selection started.
@@ -173,35 +174,36 @@ impl<'a> CommitListState<'a> {
             return;
         }
         self.cursor.toggle_visual();
+        match self.cursor.is_visual() {
+            true => self.picked.start_visual(),
+            false => self.picked.end_visual(),
+        }
         self.sync_visual_picks();
     }
 
+    // The commits from where the visual selection started to the cursor, see `Picks`.
     fn sync_visual_picks(&mut self) {
         let Some(range) = self.cursor.visual_range(self.commits.len()) else {
             return;
         };
-        let selected: Vec<CommitHash> = self.commits[range]
-            .iter()
-            .map(|commit_info| commit_info.commit.commit_hash.clone())
-            .collect();
-        for hash in selected {
-            if !self.picked_commit_hashes.contains(&hash) {
-                self.picked_commit_hashes.push(hash);
-            }
-        }
+        let hashes = self.commits[range].iter().map(|c| &c.commit.commit_hash);
+        self.picked.sync_visual(hashes);
     }
 
     pub fn clear_picks(&mut self) {
         self.cursor.cancel_visual();
-        self.picked_commit_hashes.clear();
+        self.picked.clear();
     }
 
     pub fn restore_picked_commit_hashes(&mut self, picked_commit_hashes: Vec<CommitHash>) {
         self.cursor.cancel_visual();
-        self.picked_commit_hashes = picked_commit_hashes
-            .into_iter()
-            .filter(|hash| self.commit_hash_set.contains(hash))
-            .collect();
+        self.picked.clear();
+        for hash in picked_commit_hashes
+            .iter()
+            .filter(|h| self.commit_hash_set.contains(*h))
+        {
+            self.picked.insert(hash);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -435,6 +437,7 @@ impl<'a> CommitListState<'a> {
     pub fn start_search(&mut self) {
         if !self.query.is_editing() {
             self.cursor.cancel_visual();
+            self.picked.end_visual();
             let from = self.cursor.selected();
             self.query.start(QueryKind::Search, from);
         }
@@ -2294,5 +2297,32 @@ mod tests {
             Constraint::Length(6),  // Graph
         ];
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_visual_selection_follows_the_cursor_back() {
+        let subjects = ["a", "b", "c", "d", "e", "f"];
+        with_commit_list_state(&subjects, |state| {
+            let picked = |state: &CommitListState| -> Vec<String> {
+                let subjects = state.picked_commit_hashes().iter().map(|hash| {
+                    let commit = state.commits.iter().find(|c| c.commit.commit_hash == *hash);
+                    commit.unwrap().commit.subject.clone()
+                });
+                subjects.collect()
+            };
+            // f picked on its own first, kept by the selection after it
+            state.select_last();
+            state.toggle_visual();
+            state.toggle_visual();
+            state.select_first();
+            // moving back unpicks what the selection went over, like lazygit
+            state.toggle_visual();
+            (0..3).for_each(|_| state.select_next());
+            assert_eq!(picked(state), ["f", "a", "b", "c", "d"]);
+            (0..2).for_each(|_| state.select_prev());
+            assert_eq!(picked(state), ["f", "a", "b"]);
+            state.toggle_visual();
+            assert_eq!(picked(state), ["f", "a", "b"]);
+        });
     }
 }

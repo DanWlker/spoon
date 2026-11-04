@@ -41,7 +41,7 @@ pub struct GraphImageManager<'a> {
     prepared_image_map: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
     // those of the manager before it, not checked against this graph yet, see `with_images`
     previous: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
-    image_ids: FxHashSet<u32>,
+    image_ids: ImageIds,
     pending_uploads: Vec<String>,
 
     graph: Graph<'a>,
@@ -51,7 +51,47 @@ pub struct GraphImageManager<'a> {
     image_params: ImageParams,
     drawing_pixels: DrawingPixels,
     image_protocol: ImageProtocol,
-    session_nonce: u32,
+}
+
+// The id of each commit's image in the terminal, its own for as long as the image is there: a hash
+// of the commit, as before, was another commit's too about twice in 200 000. Counted from a random
+// start, so two apps drawing in one terminal don't take each other's.
+#[derive(Debug)]
+struct ImageIds {
+    ids: FxHashMap<CommitHash, u32>,
+    next: u32,
+}
+
+impl ImageIds {
+    fn new() -> Self {
+        ImageIds {
+            ids: FxHashMap::default(),
+            next: create_session_nonce(),
+        }
+    }
+
+    // The id of the commit's image, a new one the first time.
+    fn of(&mut self, commit_hash: &CommitHash) -> u32 {
+        if let Some(&id) = self.ids.get(commit_hash) {
+            return id;
+        }
+        // kitty takes no image of id 0
+        let id = self.next.max(1);
+        self.next = id.wrapping_add(1);
+        self.ids.insert(commit_hash.clone(), id);
+        id
+    }
+
+    // The id of the commit's image deleted from the terminal, which it no longer has.
+    fn remove(&mut self, commit_hash: &CommitHash) -> Option<u32> {
+        self.ids.remove(commit_hash)
+    }
+
+    fn all(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.ids.values().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
 }
 
 impl<'a> GraphImageManager<'a> {
@@ -68,7 +108,7 @@ impl<'a> GraphImageManager<'a> {
         GraphImageManager {
             prepared_image_map: FxHashMap::default(),
             previous: FxHashMap::default(),
-            image_ids: FxHashSet::default(),
+            image_ids: ImageIds::new(),
             pending_uploads: Vec::default(),
             graph,
             cell_width_type,
@@ -77,7 +117,6 @@ impl<'a> GraphImageManager<'a> {
             image_params,
             drawing_pixels,
             image_protocol,
-            session_nonce: create_session_nonce(),
         }
     }
 
@@ -90,21 +129,19 @@ impl<'a> GraphImageManager<'a> {
             mut images,
             mut image_ids,
             mut pending_uploads,
-            session_nonce,
         } = images;
         images.retain(|commit_hash, _| {
             let shown = self.graph.commit_pos_map.contains_key(commit_hash);
             if !shown {
-                let image_id = graph_image_id(session_nonce, commit_hash);
-                image_ids.remove(&image_id);
-                pending_uploads.extend(self.image_protocol.delete_image(image_id));
+                if let Some(image_id) = image_ids.remove(commit_hash) {
+                    pending_uploads.extend(self.image_protocol.delete_image(image_id));
+                }
             }
             shown
         });
         self.previous = images;
         self.image_ids = image_ids;
         self.pending_uploads = pending_uploads;
-        self.session_nonce = session_nonce;
         self
     }
 
@@ -114,9 +151,8 @@ impl<'a> GraphImageManager<'a> {
         images.extend(self.prepared_image_map.drain());
         GraphImages {
             images,
-            image_ids: std::mem::take(&mut self.image_ids),
+            image_ids: std::mem::replace(&mut self.image_ids, ImageIds::new()),
             pending_uploads: std::mem::take(&mut self.pending_uploads),
-            session_nonce: self.session_nonce,
         }
     }
 
@@ -156,13 +192,12 @@ impl<'a> GraphImageManager<'a> {
             Some((previous, image)) if previous.bytes == graph_row_image.bytes => image,
             // the same id, so a changed image replaces the one in the terminal
             _ => {
-                let image_id = graph_image_id(self.session_nonce, commit_hash);
+                let image_id = self.image_ids.of(commit_hash);
                 let mut image =
                     graph_row_image.prepare(self.cell_width_type, self.image_protocol, image_id);
                 if let Some(upload_data) = image.take_upload_data() {
                     self.pending_uploads.push(upload_data);
                 }
-                self.image_ids.insert(image_id);
                 image
             }
         };
@@ -176,18 +211,15 @@ impl<'a> GraphImageManager<'a> {
 #[derive(Debug)]
 pub struct GraphImages {
     images: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
-    image_ids: FxHashSet<u32>,
+    image_ids: ImageIds,
     pending_uploads: Vec<String>,
-    session_nonce: u32,
 }
 
 // The manager owns the images it uploaded: deleting them when it is dropped keeps a page switch or
 // a replaced submodule panel from leaving them in the terminal until the app quits.
 impl Drop for GraphImageManager<'_> {
     fn drop(&mut self) {
-        let mut image_ids: Vec<u32> = self.image_ids.iter().copied().collect();
-        image_ids.sort_unstable();
-        let _ = self.image_protocol.delete_images(&image_ids);
+        let _ = self.image_protocol.delete_images(&self.image_ids.all());
     }
 }
 
@@ -230,13 +262,6 @@ fn create_session_nonce() -> u32 {
         .unwrap_or_default()
         .as_nanos()
         .hash(&mut hasher);
-    hasher.finish() as u32
-}
-
-fn graph_image_id(session_nonce: u32, commit_hash: &CommitHash) -> u32 {
-    let mut hasher = rustc_hash::FxHasher::default();
-    session_nonce.hash(&mut hasher);
-    commit_hash.hash(&mut hasher);
     hasher.finish() as u32
 }
 
@@ -1270,6 +1295,29 @@ fn build_image(img_buf: &[u8], image_width: u32, image_height: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn test_image_ids_are_each_commits_own() {
+        let mut ids = super::ImageIds::new();
+        let hash = |i: u128| {
+            CommitHash::from(
+                format!(
+                    "{:040x}",
+                    i.wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)
+                )
+                .as_str(),
+            )
+        };
+        // as many commits as a hash of each gave two the same id
+        let given: rustc_hash::FxHashSet<u32> = (0..200_000).map(|i| ids.of(&hash(i))).collect();
+        assert_eq!(given.len(), 200_000);
+        assert!(!given.contains(&0));
+        // the same one while the image is there, a new one once it was deleted
+        let first = ids.of(&hash(0));
+        assert_eq!(ids.of(&hash(0)), first);
+        assert_eq!(ids.remove(&hash(0)), Some(first));
+        assert_ne!(ids.of(&hash(0)), first);
+    }
 
     use image::GenericImage;
     use rstest::rstest;

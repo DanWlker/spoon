@@ -197,8 +197,6 @@ impl<'a> ListView<'a> {
     }
 }
 
-// Searching the commit list, from the list or from the details beside it: typing the query, its
-// options, going through the matches and clearing it. Returns whether the event was one of these.
 // What the keys of a commit list depend on.
 pub struct ListFacts {
     pub picked: usize,

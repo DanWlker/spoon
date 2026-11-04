@@ -1,6 +1,6 @@
 use std::{
     cell::Cell,
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     ops::Range,
 };
 
@@ -19,6 +19,7 @@ use crate::{
     event::UserEvent,
     search::{SearchOptions, SearchOutcome},
     widget::{
+        picks::Picks,
         style::{
             change_span, fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row,
             placeholder, ListCursor,
@@ -412,9 +413,9 @@ impl FileTreeState {
 // the local changes sections, the changes and files tabs of the commit details. The same type keeps
 // the visual selection, so a filter, a collapse or a reload cannot leave it indexing rows that are
 // gone.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone)]
 pub struct TreeSelection {
-    picked: BTreeSet<String>,
+    picked: Picks<String>,
 }
 
 impl TreeSelection {
@@ -428,22 +429,29 @@ impl TreeSelection {
 
     #[cfg(test)]
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.picked.iter().map(String::as_str)
+        let mut names: Vec<&str> = self.picked.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        names.into_iter()
     }
 
+    // Sorted, like the tree: the order the paths were picked in is the tree's too, but for a
+    // visual selection added to those picked before.
     pub fn paths(&self) -> Vec<String> {
-        self.picked.iter().cloned().collect()
+        let mut paths: Vec<String> = self.picked.iter().cloned().collect();
+        paths.sort_unstable();
+        paths
     }
 
     // The one picked path, or None when none or more than one is picked.
     pub fn single_path(&self) -> Option<&str> {
-        let mut paths = self.picked.iter();
-        let path = paths.next()?;
-        paths.next().is_none().then_some(path.as_str())
+        match self.picked.as_slice() {
+            [path] => Some(path),
+            _ => None,
+        }
     }
 
     pub fn contains(&self, path: &str) -> bool {
-        self.picked.contains(path)
+        self.picked.contains(&path.to_string())
     }
 
     // Whether any picked row is `path` or contains it, like a picked directory.
@@ -467,9 +475,13 @@ impl TreeSelection {
     }
 
     // Starts or ends a visual selection, picking the rows from where it started to the selected
-    // one and keeping those picked before.
+    // one and keeping those picked before, see `Picks`.
     pub fn toggle_visual(&mut self, tree: &mut FileTreeState) {
         tree.toggle_visual();
+        match tree.visual_range().is_some() {
+            true => self.picked.start_visual(),
+            false => self.picked.end_visual(),
+        }
         self.sync_visual(tree);
     }
 
@@ -479,7 +491,7 @@ impl TreeSelection {
             return;
         };
         self.picked
-            .extend(tree.rows()[range].iter().map(|row| row.path.clone()));
+            .sync_visual(tree.rows()[range].iter().map(|row| &row.path));
     }
 
     // The entries to act on: the picked rows, or the selected row when nothing is picked.

@@ -61,7 +61,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show commit details on the info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
-| <kbd>v</kbd>                         | Select a range of commits, from the first to the selected one; move to extend it, <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them | `toggle_select` |
+| <kbd>v</kbd>                         | Select a range of commits, from the first to the selected one; move to extend it (moving back unpicks what it went over), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
@@ -130,7 +130,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                         | `refresh`                       |
-| <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one; another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
+| <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one (moving back unpicks what it went over); another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
 | <kbd>y/Y</kbd>                       | Copy the picked commits' short/full hashes, or the current one; in the changes and files tabs, the relative/absolute paths of the selected files, one per line | `short_copy` `full_copy` |
 | <kbd>i</kbd>                         | Add the selected files and directories to `.gitignore`, in the changes and files tabs | `ignore` |
 | <kbd>2</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_2` |
@@ -247,7 +247,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
 | <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `select` |
-| <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
+| <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together; moving back unpicks what it went over); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 | <kbd>L</kbd>                                       | Show only the commits of the selected local branch (else the current one), or all | `branch_only` |
 
@@ -285,7 +285,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk, line or selected lines (or the picked files)<br>Type the message, in the commit section | `select` |
-| <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it, <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
+| <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it (moving back unpicks what it went over), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>]f</kbd> <kbd>[f</kbd>          | Go to next/previous file, staying in the diff                | `next_file` `previous_file`     |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk, line or selected lines (asks first) | `discard`                       |
