@@ -1,15 +1,31 @@
 # Screenshots
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/list.png" width=600>
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/detail.png" width=600>
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/refs.png" width=600>
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/searching.png" width=600>
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/applied.png" width=600>
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/diff_git.png" width=600>
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/diff_difft.png" width=600>
+Local changes, with the words changed in each line highlighted:
 
-The following repositories are used as these examples:
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/local-changes.png" width=800>
 
-- [ratatui/ratatui](https://github.com/ratatui/ratatui)
-- [charmbracelet/vhs](https://github.com/charmbracelet/vhs)
-- [lusingander/stu](https://github.com/lusingander/stu)
+The commit graph:
+
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/graph.png" width=800>
+
+A commit's changes:
+
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/details.png" width=800>
+
+Branches, remotes and tags in the sidebar:
+
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/refs.png" width=800>
+
+Who last changed each line of a file, stepping back through the commits changing it:
+
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/blame.png" width=800>
+
+The commits changing a file, with its changes in each:
+
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/timeline.png" width=800>
+
+Git commands confirm in a popup showing what they run:
+
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/popup.png" width=800>
+
+These show the [ratatui/ratatui](https://github.com/ratatui/ratatui) repository.

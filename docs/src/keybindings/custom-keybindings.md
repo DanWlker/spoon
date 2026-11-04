@@ -4,7 +4,7 @@ You can set your own custom key bindings.
 
 Custom key bindings can be applied by writing them in the `[keybind]` section of [the config file](../configurations/config-file-format.md).
 
-The default key binding settings are described in [`./assets/default-keybind.toml`](https://github.com/DanWlker/spoon/blob/master/assets/default-keybind.toml).
+The default key binding settings are described in [`./assets/default-keybind.toml`](https://github.com/DanWlker/spoon/blob/spoon/assets/default-keybind.toml).
 You can set key bindings for each action in the same format.
 
 - It is possible to set multiple key bindings for one action.
@@ -67,6 +67,7 @@ global
 ├─ graph                  the commands of the commit graph
 │  ├─ sidebar             the refs
 │  ├─ commit_list
+│  ├─ file_history        the blame and the timeline of a file
 │  └─ details             the tabs of the commit details
 │     └─ details_pane     the diff or preview beside the files
 ├─ local_changes
@@ -78,9 +79,10 @@ A key is looked up from the scope having the focus outward: the first scope bind
 The key then works only where its command does: the status bar, the keys popup (<kbd>H</kbd>) and the help list what works where the focus is, and other keys do nothing. The commands of the graph don't act on the details, say, and the diff beside the files doesn't take the keys of the files.
 
 An event written in `[keybind]` is bound in its own scope:
-the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `branch_only`) in `graph`;
-those of the refs (`create_ref`, `delete_ref`, `edit_ref`) in `sidebar`;
-those of the local changes page (`stash`, `commit`, `abort`, `toggle_amend`, `edit`, `discard`) in `local_changes`;
+the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `create_branch`, `branch_only`) in `graph`;
+those of the refs (`create_ref`, `delete_ref`, `edit_ref`, `next_section`, `previous_section`) in `sidebar`;
+`older_commit` and `newer_commit` in `file_history`;
+those of the local changes page (`stash`, `commit`, `next_file`, `previous_file`, `abort`, `toggle_amend`, `discard`) in `local_changes`;
 `next_tab`, `previous_tab` and `reset_file` in `details`;
 `dialog_edit` in `dialog`;
 and the others in `global`, working everywhere.

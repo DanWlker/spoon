@@ -466,6 +466,42 @@ mod tests {
     }
 
     #[test]
+    fn test_docs_list_the_scopes_of_the_events() {
+        let docs = include_str!("../docs/src/keybindings/custom-keybindings.md");
+        for scope in Scope::ALL {
+            assert!(
+                docs.contains(&format!("─ {} ", scope.name()))
+                    || docs.contains(&format!("─ {}\n", scope.name()))
+                    || scope == Scope::Global,
+                "{} is not in the tree of the scopes",
+                scope.name()
+            );
+        }
+        // the lines from "bound in its own scope:" each end with "in `scope`;"
+        let (_, list) = docs.split_once("is bound in its own scope:\n").unwrap();
+        let (list, _) = list.split_once("and the others in `global`").unwrap();
+        let mut listed = std::collections::HashMap::new();
+        for line in list.lines() {
+            let (events, scope) = line.rsplit_once(" in `").unwrap();
+            let scope = scope.trim_end_matches("`;");
+            for name in events.split('`').skip(1).step_by(2) {
+                listed.insert(name.to_string(), scope.to_string());
+            }
+        }
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        for name in schema["definitions"]["keybindScope"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+        {
+            let scope = parse_user_event(name).unwrap().home_scope();
+            let expected = (scope != Scope::Global).then(|| scope.name().to_string());
+            assert_eq!(listed.get(name), expected.as_ref(), "the scope of {name}");
+        }
+    }
+
+    #[test]
     fn test_parse_user_event() {
         assert_eq!(parse_user_event("go_to_top"), Ok(UserEvent::GoToTop));
         assert_eq!(

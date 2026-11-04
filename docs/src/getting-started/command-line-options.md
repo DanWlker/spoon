@@ -23,11 +23,11 @@ _Possible values:_ `chrono`, `topo`
 
 `chrono` will order commits by commit date if possible.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/order-chrono.png" width=300>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/order-chrono.png" width=300>
 
 `topo` will order commits on the same branch consecutively if possible.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/order-topo.png" width=300>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/order-topo.png" width=300>
 
 ## -g, --graph-width \<TYPE\>
 
@@ -39,9 +39,9 @@ If not specified or `auto` is specified, `double` will be used automatically if 
 
 The width is picked when the app starts and kept until it quits: a graph grown wider by a reload, or a terminal made narrower, cuts the graph off on the right.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-double.png" width=300>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/graph-width-double.png" width=300>
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-single.png" width=300>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/graph-width-single.png" width=300>
 
 ## -s, --graph-style \<TYPE\>
 
@@ -51,15 +51,15 @@ _Possible values:_ `rounded`, `angular`, `curved`
 
 `rounded` will use rounded edges for the graph lines.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/style-rounded.png" width=400>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/style-rounded.png" width=400>
 
 `angular` will use angular edges for the graph lines.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/style-angular.png" width=400>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/style-angular.png" width=400>
 
 `curved` will use curved edges for the graph lines.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/style-curved.png" width=400>
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/style-curved.png" width=400>
     
 ## --graph-antialias, --no-graph-antialias
 
@@ -83,7 +83,7 @@ _Possible values:_ `latest`, `head`
 
 The primary branch to keep on the leftmost column.
 
-When specified, Serie preserves the first-parent commit spine of the specified branch along the leftmost column, displaying other branches in subsequent columns even if they contain newer commits.
+When specified, Spoon preserves the first-parent commit spine of the specified branch along the leftmost column, displaying other branches in subsequent columns even if they contain newer commits.
 
 ## --local-changes
 

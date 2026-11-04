@@ -1,29 +1,21 @@
 # Introduction
 
-**Serie** ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that uses the terminal emulators' image display protocol to render commit graphs like `git log --graph --all`.
+**Spoon** is a lazygit-style git client in your terminal, with a rich commit graph drawn as images with your terminal's image protocol.
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/demo.gif">
+<img src="https://raw.githubusercontent.com/DanWlker/spoon/spoon/img/demo.gif">
 
-(This demo shows [Ratatui](https://github.com/ratatui/ratatui) repository!)
+(This demo shows the [Ratatui](https://github.com/ratatui/ratatui) repository.)
 
-## Why?
+## About
 
-While some users prefer to use Git via CLI, they often rely on a GUI or feature-rich TUI to view commit logs. Others may find `git log --graph` sufficient.
+Spoon is a terminal UI for everyday git work: staging, committing, branching, rebasing, pushing and pulling, with keys and flows modeled on [lazygit](https://github.com/jesseduffield/lazygit) and [fork](https://git-fork.com). It is a fork of [Serie](https://github.com/lusingander/serie), and keeps Serie's commit graph as the centerpiece.
 
-Personally, I found the output from `git log --graph` difficult to read, even with additional options. Learning complex tools just to view logs seemed cumbersome.
-
-## Goals
-
-- Provide a rich `git log --graph` experience in the terminal.
-- Offer commit graph-centric browsing of Git repositories.
-
-## Non-Goals
-
-- Implement a fully-featured Git client.
-- Create a TUI application with a complex UI.
-- Works in any terminal environment.
+- **Local changes**: stage and unstage files, directories, hunks or single lines; commit, amend, stash, discard, or add to `.gitignore`.
+- **Commit graph**: checkout, merge, rebase, cherry-pick, squash, drop, revert, reset, or amend an older commit, each asking first in a popup showing the git command it runs.
+- **Refs sidebar**: branches, remotes, tags and stashes, to create, rename, delete, diff or apply.
+- **Fetch, pull and push** in the background, **conflicts** resolved with your merge tool or editor, **blame** and a **timeline** of a file, and a **command log** of every git command run.
 
 ---
 
 _Built with Rust and [ratatui](https://github.com/ratatui/ratatui)._  
-_Serie is available on [GitHub](https://github.com/lusingander/serie) under the MIT license._
+_Spoon is available on [GitHub](https://github.com/DanWlker/spoon) under the MIT license._
