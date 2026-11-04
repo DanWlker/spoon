@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    num::NonZeroU32,
     ops::Range,
     rc::Rc,
     time::{Duration, Instant},
@@ -39,6 +40,8 @@ pub struct ParsedDiff {
     // shared with the hunks, which are parts of it
     pub raw: Rc<str>,
     pub rows: Vec<DiffRow>,
+    // the words changed in the rows, all in one list rather than one per row, see `DiffRow`
+    emphasis: Vec<Range<usize>>,
     pub hunks: Vec<DiffHunk>,
     // hunks were left out, of files diffed as text converted from them
     pub converted: bool,
@@ -815,12 +818,13 @@ pub enum DiffRowKind {
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiffRow {
     pub kind: DiffRowKind,
-    pub old: Option<u32>,
-    pub new: Option<u32>,
+    // lines count from 1, so none takes no more room than a number
+    pub old: Option<NonZeroU32>,
+    pub new: Option<NonZeroU32>,
     // the bytes of the diff showing as its text, without the mark of the change
     text: Range<usize>,
-    // the bytes of its text, as shown, that differ from the line it replaces, or that replaces it
-    emphasis: Box<[Range<usize>]>,
+    // where its ranges are in `ParsedDiff::emphasis`, see `ParsedDiff::row_emphasis`
+    emphasis: Range<u32>,
 }
 
 impl DiffRow {
@@ -834,7 +838,7 @@ impl DiffRow {
             old: None,
             new: None,
             text,
-            emphasis: Box::default(),
+            emphasis: 0..0,
         }
     }
 }
@@ -843,6 +847,12 @@ impl ParsedDiff {
     // The text of `row` as shown, its tabs as four spaces.
     pub fn row_text(&self, row: &DiffRow) -> std::borrow::Cow<'_, str> {
         shown(&self.raw[row.text.clone()])
+    }
+
+    // The bytes of the text of `row`, as shown, that differ from the line it replaces, or that
+    // replaces it.
+    pub fn row_emphasis(&self, row: &DiffRow) -> &[Range<usize>] {
+        &self.emphasis[row.emphasis.start as usize..row.emphasis.end as usize]
     }
 }
 
@@ -927,7 +937,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 
         let text = bytes(line.len().min(1));
         // a line number beyond u32 shows none, a file of billions of lines being no text
-        let number = |n: usize| u32::try_from(n).ok();
+        let number = |n: usize| u32::try_from(n).ok().and_then(NonZeroU32::new);
         let row = match line.as_bytes().first() {
             Some(b'+') => {
                 new += 1;
@@ -936,7 +946,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: None,
                     new: number(new - 1),
                     text,
-                    emphasis: Box::default(),
+                    emphasis: 0..0,
                 }
             }
             Some(b'-') => {
@@ -946,7 +956,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: number(old - 1),
                     new: None,
                     text,
-                    emphasis: Box::default(),
+                    emphasis: 0..0,
                 }
             }
             Some(b'\\') => DiffRow::without_numbers(DiffRowKind::Meta, bytes(0)),
@@ -958,24 +968,25 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old: number(old - 1),
                     new: number(new - 1),
                     text,
-                    emphasis: Box::default(),
+                    emphasis: 0..0,
                 }
             }
         };
         rows.push(row);
     }
     finish_hunk(&mut current, &mut hunks, rows.len());
-    emphasize_changes(&mut rows, &shared);
+    let emphasis = emphasize_changes(&mut rows, &shared);
     let max_line = rows
         .iter()
         .flat_map(|r| [r.old, r.new])
         .flatten()
         .max()
-        .unwrap_or(0);
+        .map_or(0, NonZeroU32::get);
 
     ParsedDiff {
         raw: shared,
         rows,
+        emphasis,
         hunks,
         converted: false,
         files: multiple_files_count,
@@ -985,7 +996,8 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 
 // Pairs the removed lines of a change with the added lines after them, in order, and marks in
 // each pair the words that differ between them, in the text as shown, the bytes of `diff`.
-fn emphasize_changes(rows: &mut [DiffRow], diff: &str) {
+fn emphasize_changes(rows: &mut [DiffRow], diff: &str) -> Vec<Range<usize>> {
+    let mut emphasis = Vec::new();
     // the rows of `kind` from `from` on, past "\ No newline" notes, and where they end
     let run = |rows: &[DiffRow], from: usize, kind: DiffRowKind| {
         let mut found = Vec::new();
@@ -1011,10 +1023,20 @@ fn emphasize_changes(rows: &mut [DiffRow], diff: &str) {
         for (&r, &a) in removed.iter().zip(&added) {
             let text = |row: &DiffRow| shown(&diff[row.text.clone()]);
             let (old, new) = changed_ranges(&text(&rows[r]), &text(&rows[a]));
-            (rows[r].emphasis, rows[a].emphasis) = (old.into(), new.into());
+            // a diff with more than u32 ranges, of over 4GB, shows the rest without them
+            let mut add = |ranges: Vec<_>| {
+                let start = u32::try_from(emphasis.len()).ok()?;
+                emphasis.extend(ranges);
+                let end = u32::try_from(emphasis.len()).ok()?;
+                Some(start..end)
+            };
+            if let (Some(old), Some(new)) = (add(old), add(new)) {
+                (rows[r].emphasis, rows[a].emphasis) = (old, new);
+            }
         }
         i = end;
     }
+    emphasis
 }
 
 // The bytes of the words of `old` and `new` that differ, by a diff of their words; none when the
@@ -1153,7 +1175,7 @@ pub fn diff_lines<'a>(
     }
 
     let width = diff.number_width;
-    let number = |n: Option<u32>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
+    let number = |n: Option<NonZeroU32>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
 
     diff.rows
         .iter()
@@ -1187,7 +1209,7 @@ pub fn diff_lines<'a>(
                 DiffRowKind::Removed => (theme.diff_delete_bg, theme.diff_delete_word_bg),
                 _ => return line,
             };
-            for range in row.emphasis.iter() {
+            for range in diff.row_emphasis(row) {
                 patch_range(&mut line, range.clone(), Style::default().bg(word_bg));
             }
             line.bg(bg)
@@ -1394,7 +1416,12 @@ mod tests {
         let actual = parse_diff(&format!("{header}{hunk1}{hunk2}"));
 
         let row = |kind, old: Option<u32>, new: Option<u32>, text: &str| {
-            (kind, old, new, text.to_string())
+            (
+                kind,
+                old.and_then(NonZeroU32::new),
+                new.and_then(NonZeroU32::new),
+                text.to_string(),
+            )
         };
         let expected_rows = vec![
             row(DiffRowKind::Hunk, None, None, "@@ -3,2 +3,2 @@ ctx"),
@@ -1414,7 +1441,7 @@ mod tests {
         assert!(actual
             .rows
             .iter()
-            .all(|r| r.emphasis.is_empty() || r.is_change()));
+            .all(|r| actual.row_emphasis(r).is_empty() || r.is_change()));
 
         let hunks: Vec<(Range<usize>, String)> = actual
             .hunks
@@ -1557,7 +1584,7 @@ mod tests {
             .rows
             .iter()
             .zip(&texts)
-            .map(|(r, text)| (text.as_ref(), r.emphasis.to_vec()))
+            .map(|(r, text)| (text.as_ref(), diff.row_emphasis(r).to_vec()))
             .collect();
         assert_eq!(
             emphasis[1..],
@@ -1760,7 +1787,7 @@ mod tests {
         // shown as spaces, the changed word marked in the text as shown
         let removed = &diff.rows[1];
         assert_eq!(diff.row_text(removed), "    a = 1");
-        assert_eq!(removed.emphasis[..], [Range { start: 8, end: 9 }]);
+        assert_eq!(diff.row_emphasis(removed), [Range { start: 8, end: 9 }]);
         // and searched as shown
         let options = SearchOptions::default();
         assert!(row_matches(&diff, 2, "    a = 2", options));

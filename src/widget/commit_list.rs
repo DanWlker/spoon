@@ -209,7 +209,7 @@ impl<'a> CommitListState<'a> {
         self.commits.len()
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.commits.is_empty()
     }

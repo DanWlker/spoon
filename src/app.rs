@@ -23,7 +23,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{catching, shows_loading, Job},
+    background::{shows_loading, Job},
     browse::{self, LinkAction, LinkTarget},
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, GraphColorConfig, UiConfig},
@@ -518,8 +518,6 @@ pub struct App<'a> {
     repository: &'a Arc<Repository>,
     // how to load it again
     load_options: LoadOptions,
-    // the merges its graph was laid out with folded, again once folding one fails
-    drawn_folds: FxHashSet<CommitHash>,
     view: View<'a>,
     shell: AppShell,
     ctx: Rc<AppContext>,
@@ -653,7 +651,6 @@ impl<'a> App<'a> {
         let mut app = Self {
             repository,
             load_options,
-            drawn_folds: shell.folded_merges.clone(),
             view,
             shell,
             ctx,
@@ -976,16 +973,6 @@ impl App<'_> {
                 if !Arc::ptr_eq(&from, self.repository) {
                     return Ok(None);
                 }
-                // the folds undone, those of the graph shown, which another layout may have drawn
-                // since this one started
-                let layout = match layout {
-                    Ok(layout) => layout,
-                    Err(err) => {
-                        self.shell.folded_merges = self.drawn_folds.clone();
-                        self.shell.notify_error(err);
-                        return Ok(None);
-                    }
-                };
                 // one of merges folded since is laid out after it
                 let context = self.view.refresh_context();
                 if let Some(context) = context.filter(|_| layout.folded == self.shell.folded_merges)
@@ -2327,7 +2314,7 @@ impl App<'_> {
             timeout: Some(LAUNCH_FETCH_TIMEOUT),
             ..fetch_all_task()
         };
-        std::thread::spawn(move || catching(|| run_task(&path, &task)));
+        std::thread::spawn(move || run_task(&path, &task));
     }
 
     // Runs the git command in the background; the app is told when it finishes.
@@ -2367,12 +2354,7 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            // a git error says where the local changes are itself, a panic doesn't
-            let result =
-                catching(|| run_task(&path, &task)).unwrap_or_else(|err| match task.stash {
-                    true => Err(format!("{err}; the local changes may be in the stash")),
-                    false => Err(err),
-                });
+            let result = run_task(&path, &task);
             drop(spinning);
             tx.send(AppEvent::TaskFinished(result));
         });
@@ -2711,11 +2693,10 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let layout =
-                catching(|| GraphLayout::calc(&repository, primary_branch.as_deref(), &folded));
+            let layout = GraphLayout::calc(&repository, primary_branch.as_deref(), &folded);
             drop(spinning);
             // the app may have quit meanwhile
-            let layout = layout.map(Box::new);
+            let layout = Box::new(layout);
             tx.try_send(AppEvent::Regraphed {
                 from: repository,
                 layout,
@@ -2756,17 +2737,14 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let result = catching(|| {
-                options.load(revisions.as_deref(), running).map(|loaded| {
-                    let repository = match &loaded {
-                        Loaded::Repository(repository) | Loaded::RefsGone(repository) => repository,
-                    };
-                    let primary_branch = options.primary_branch.as_deref();
-                    let layout = GraphLayout::calc(repository, primary_branch, &folded);
-                    Box::new(Reloaded { loaded, layout })
-                })
-            })
-            .and_then(|result| result);
+            let result = options.load(revisions.as_deref(), running).map(|loaded| {
+                let repository = match &loaded {
+                    Loaded::Repository(repository) | Loaded::RefsGone(repository) => repository,
+                };
+                let primary_branch = options.primary_branch.as_deref();
+                let layout = GraphLayout::calc(repository, primary_branch, &folded);
+                Box::new(Reloaded { loaded, layout })
+            });
             drop(spinning);
             // the app may have quit meanwhile
             tx.try_send(AppEvent::Reloaded { generation, result });

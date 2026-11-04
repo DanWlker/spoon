@@ -742,7 +742,7 @@ pub enum TreeCursor {
 // `search` highlighted; the `picked` rows and, unless the `cursor` is hidden, the selected one
 // highlighted across the row, the lines of the tree keeping their color; `empty` when there is
 // no row. Returns the first row shown, for the scrollbar.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn render_tree(
     buf: &mut Buffer,
     area: Rect,

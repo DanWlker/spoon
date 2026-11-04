@@ -2,103 +2,17 @@
 // the screen keeps up with the keys meanwhile.
 
 use std::{
-    cell::RefCell,
-    panic::{AssertUnwindSafe, PanicHookInfo},
     sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
-use crate::{
-    event::{AppEvent, Sender},
-    git::LocalChanges,
-};
+use crate::event::{AppEvent, Sender};
 
-thread_local! {
-    // where the last panic on this thread happened, see `record_panic`
-    static PANICKED_AT: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-// Keeps where a panic happened for `catching` on the same thread to tell it; the panic hook calls
-// it for the threads other than the main one, see `main`.
-pub fn record_panic(info: &PanicHookInfo) {
-    let at = info
-        .location()
-        .map(|l| format!("{}:{}", l.file(), l.line()));
-    PANICKED_AT.with_borrow_mut(|slot| *slot = at);
-}
-
-// Runs `work`, a panic in it coming back as an error saying what and where, so the app goes on:
-// work on another thread only hands a value over, which a panic leaves unhanded.
-pub fn catching<T>(work: impl FnOnce() -> T) -> Result<T, String> {
-    std::panic::catch_unwind(AssertUnwindSafe(work)).map_err(|payload| {
-        let message = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("panic");
-        match PANICKED_AT.with_borrow_mut(Option::take) {
-            Some(at) => format!("internal error at {at}: {message}"),
-            None => format!("internal error: {message}"),
-        }
-    })
-}
-
-// The result of work run with `catching` on a scoped thread, see `std::thread::scope`.
-pub fn joined<T>(
-    handle: std::thread::ScopedJoinHandle<'_, Result<T, String>>,
-) -> Result<T, String> {
-    // caught already, so it doesn't panic
+// The value of work on a scoped thread, see `std::thread::scope`; a panic in it goes on here.
+pub fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
     handle
         .join()
-        .unwrap_or_else(|_| Err("internal error".into()))
-}
-
-// What work on another thread gives when it panics, see `catching`: the error for work that can
-// fail, which shows it as its own; nothing for the rest, the error then told by itself.
-pub trait PanicResult {
-    fn from_panic(message: String, tx: &Sender) -> Self;
-}
-
-impl<T> PanicResult for Result<T, String> {
-    fn from_panic(message: String, _: &Sender) -> Self {
-        Err(message)
-    }
-}
-
-// Nothing, the panic told as an error.
-fn told<T: Default>(message: String, tx: &Sender) -> T {
-    tx.try_send(AppEvent::NotifyError(message));
-    T::default()
-}
-
-impl<T> PanicResult for Vec<T> {
-    fn from_panic(message: String, tx: &Sender) -> Self {
-        told(message, tx)
-    }
-}
-
-impl<T> PanicResult for Option<T> {
-    fn from_panic(message: String, tx: &Sender) -> Self {
-        told(message, tx)
-    }
-}
-
-impl<A: Default, B: Default> PanicResult for (A, B) {
-    fn from_panic(message: String, tx: &Sender) -> Self {
-        told(message, tx)
-    }
-}
-
-impl PanicResult for String {
-    fn from_panic(message: String, tx: &Sender) -> Self {
-        told(message, tx)
-    }
-}
-
-impl PanicResult for LocalChanges {
-    fn from_panic(message: String, tx: &Sender) -> Self {
-        told(message, tx)
-    }
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 // How long work runs before the screen says it is loading, so quick work doesn't flash it.
@@ -117,9 +31,10 @@ pub struct Job<T> {
     started: Instant,
 }
 
-impl<T: PanicResult + Send + 'static> Job<T> {
+impl<T: Send + 'static> Job<T> {
     // Runs `work`, then wakes the app up through `tx` to draw its result; also once it has run
-    // long enough to be shown loading, see `shows_loading`.
+    // long enough to be shown loading, see `shows_loading`. A panic in it stops the app, see
+    // `main`.
     // shortcut: a thread per job, the work of one replaced still runs to its end; queue them on
     // one worker if moving fast through big diffs piles up git processes.
     pub fn spawn(tx: Sender, work: impl FnOnce() -> T + Send + 'static) -> Self {
@@ -128,7 +43,7 @@ impl<T: PanicResult + Send + 'static> Job<T> {
         let waiting = Arc::downgrade(&result);
         let wake = tx.clone();
         std::thread::spawn(move || {
-            let value = catching(work).unwrap_or_else(|message| T::from_panic(message, &tx));
+            let value = work();
             let (slot, done) = &*shared;
             *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
             done.notify_all();
@@ -216,24 +131,5 @@ mod tests {
         finish.send(()).unwrap();
         slow.wait().unwrap();
         assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
-    }
-
-    #[test]
-    fn test_job_that_panics_gives_its_error() {
-        let ec = EventController::without_terminal();
-        // work that can fail fails; where it panicked is told once `main`'s hook kept it
-        let job = Job::spawn(ec.sender(), || -> Result<(), String> { panic!("boom") });
-        assert_eq!(job.wait(), Err("internal error: boom".to_string()));
-        // other work gives nothing, the error told instead
-        let job = Job::spawn(ec.sender(), || -> Vec<u8> { panic!("{}", "bang") });
-        assert_eq!(job.wait(), Vec::<u8>::new());
-        let told =
-            std::iter::from_fn(|| ec.recv_timeout(Duration::from_secs(5))).find_map(|event| {
-                match event {
-                    AppEvent::NotifyError(message) => Some(message),
-                    _ => None,
-                }
-            });
-        assert_eq!(told.as_deref(), Some("internal error: bang"));
     }
 }

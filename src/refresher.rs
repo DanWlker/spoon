@@ -3,7 +3,6 @@
 use std::{path::PathBuf, sync::mpsc, thread, time::Duration};
 
 use crate::{
-    background::catching,
     event::{AppEvent, Sender},
     git::{refs_snapshot, FilesSnapshot},
 };
@@ -24,8 +23,6 @@ pub fn spawn(
     thread::spawn(move || {
         // stops once the app quits and the events are no longer received
         let mut tick = 0u128;
-        // a check panicking is told once, and checked again on the next tick
-        let mut told = false;
         loop {
             let now = match poked.recv_timeout(refs_interval) {
                 Ok(()) => true,
@@ -33,23 +30,15 @@ pub fn spawn(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             tick += 1;
-            // sends what a check found unless the app quit; returns whether it did
-            let mut send = |checked: Result<Option<AppEvent>, String>| match checked {
-                Ok(Some(event)) => tx.try_send(event),
-                Ok(None) => true,
-                Err(_) if told => true,
-                Err(err) => {
-                    told = true;
-                    tx.try_send(AppEvent::NotifyError(err))
+            // sent unless the app quit
+            if let Ok(refs) = refs_snapshot(&work_tree, &git_dir) {
+                if !tx.try_send(AppEvent::RefsSnapshot(refs)) {
+                    break;
                 }
-            };
-            let refs = catching(|| refs_snapshot(&work_tree, &git_dir).ok());
-            if !send(refs.map(|refs| refs.map(AppEvent::RefsSnapshot))) {
-                break;
             }
             if now || tick.is_multiple_of(files_every) {
-                let files = catching(|| FilesSnapshot::load(&work_tree, &git_dir));
-                if !send(files.map(|files| Some(AppEvent::FilesTick(files)))) {
+                let files = FilesSnapshot::load(&work_tree, &git_dir);
+                if !tx.try_send(AppEvent::FilesTick(files)) {
                     break;
                 }
             }

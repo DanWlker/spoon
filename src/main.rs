@@ -258,12 +258,14 @@ fn run() -> Result<()> {
 
     let ec = event::EventController::init();
     let mut terminal = ratatui::init();
-    // a panic on the main thread gives the terminal back and is printed, by ratatui's hook; one on
-    // another thread is caught there and told as an error, the app going on, see `catching`
+    // a panic is a bug, which stops the app: ratatui's hook gives the terminal back and prints it;
+    // on another thread the main one would go on, so the app exits there
     let crash = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| match std::thread::current().name() {
-        Some("main") => crash(info),
-        _ => background::record_panic(info),
+    std::panic::set_hook(Box::new(move |info| {
+        crash(info);
+        if std::thread::current().name() != Some("main") {
+            std::process::exit(101);
+        }
     }));
     // gives the terminal back however this ends, an error loading the repository included
     let terminal_guard = TerminalGuard;

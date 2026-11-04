@@ -1622,7 +1622,7 @@ fn test_fold_merge_laid_out_before_a_reload() {
         // landing after the reload, laid out of commits it no longer has
         vec![Step::Act(Box::new(move |app: &mut App| {
             let (from, layout) = send.take().unwrap();
-            let layout = Ok(Box::new(layout));
+            let layout = Box::new(layout);
             app.ec.send(AppEvent::Regraphed { from, layout });
         }))],
         check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
@@ -1705,39 +1705,6 @@ fn test_fold_merge_while_reloading_or_laying_out() {
         // unfolded while the folded layout runs: that one is dropped
         keys_at_once("l h l"),
         shown(4, 0),
-    ]);
-}
-
-#[test]
-fn test_fold_merge_failing_after_a_later_one_landed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = repository(dir.path());
-    git(
-        &path,
-        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
-    );
-    git(&path, &["branch", "-q", "-d", "feat"]);
-    let mut harness = Harness::new(&path, launch());
-    let shown = |count: usize, folded: usize| {
-        check(move |app| {
-            let View::List(view) = &app.view else {
-                panic!("no commit list")
-            };
-            assert_eq!(view.as_list_state().position().1, count);
-            assert_eq!(app.shell.folded_merges().len(), folded);
-        })
-    };
-    harness.run(vec![
-        keys("h"),
-        shown(3, 1),
-        // the layout of a fold asked before fails after the one drawn: the merges folded are
-        // those of the graph drawn, not those before the fold that failed
-        vec![Step::Act(Box::new(|app: &mut App| {
-            let from = Arc::clone(app.repository);
-            let layout = Err("probe".to_string());
-            app.ec.send(AppEvent::Regraphed { from, layout });
-        }))],
-        shown(3, 1),
     ]);
 }
 

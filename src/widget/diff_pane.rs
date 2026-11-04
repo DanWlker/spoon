@@ -198,7 +198,7 @@ impl DiffPane {
             .rows
             .get(rows)?
             .iter()
-            .filter_map(|row| Some(row.new? as usize));
+            .filter_map(|row| Some(row.new?.get() as usize));
         let first = lines.next()?;
         Some(first..=lines.next_back().unwrap_or(first))
     }

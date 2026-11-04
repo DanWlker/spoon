@@ -106,7 +106,7 @@ pub enum AppEvent {
     // `App::start_regraph`, of the repository `from`
     Regraphed {
         from: std::sync::Arc<crate::git::Repository>,
-        layout: Result<Box<crate::graph::GraphLayout>, String>,
+        layout: Box<crate::graph::GraphLayout>,
     },
     // folds or unfolds the merge commit, the graph drawn again
     FoldMerge {
@@ -245,14 +245,8 @@ impl EventController {
         self.stop.store(false, Ordering::Relaxed);
         let stop = self.stop.clone();
         let tx = self.tx.clone();
-        let handle = thread::spawn(move || {
-            // without the keys the app can't go on: it quits, saying why
-            if let Err(err) = crate::background::catching(|| read_events(&stop, &tx)) {
-                ratatui::restore();
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-        });
+        // without the keys the app can't go on: failing to read them panics, which stops it
+        let handle = thread::spawn(move || read_events(&stop, &tx));
         *self.handle.lock().unwrap() = Some(handle);
     }
     pub fn resume(&self) {
