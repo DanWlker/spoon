@@ -5,7 +5,7 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, WrapMode};
 
-use crate::event::UserEvent;
+use crate::{event::UserEvent, widget::style::ScrollState};
 
 // Whether the text shows the caret, while it is typed into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub enum Lines {
 pub struct TextArea {
     inner: ratatui_textarea::TextArea<'static>,
     // rows scrolled from the top while the text is shown without the caret
-    scroll: i16,
+    scroll: ScrollState,
     // the rows last drawn, for a page or half a page
     height: Cell<u16>,
     // the width of the rows drawn, and whether they wrapped, to count the rows to scroll to
@@ -52,7 +52,7 @@ impl TextArea {
         inner.move_cursor(CursorMove::End);
         Self {
             inner,
-            scroll: 0,
+            scroll: ScrollState::default(),
             height: Cell::new(0),
             width: Cell::new(0),
             wrap: Cell::new(false),
@@ -76,40 +76,28 @@ impl TextArea {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         // typing shows the caret, which the viewport follows again
-        self.scroll = 0;
+        self.scroll.offset = 0;
         self.inner.input(key);
     }
 
-    // Scrolls the text by the scroll keys, shown without the caret; returns whether `event` was
-    // one of them.
+    // Scrolls the text by the scroll keys, like the other text (see `ScrollState`), and to its top
+    // and bottom, shown without the caret; returns whether `event` was one of them.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
-        let page = self.height.get().max(1) as i16;
-        // the last row the text can be scrolled to, from the rows it takes once wrapped
+        self.scroll.height = self.height.get() as usize;
+        match event {
+            UserEvent::GoToTop => self.scroll.offset = 0,
+            UserEvent::GoToBottom => self.scroll.offset = usize::MAX,
+            _ if !self.scroll.handle_scroll(event) => return false,
+            _ => {}
+        }
+        // no further than the last row, from the rows it takes once wrapped
         let rows = if self.wrap.get() {
             self.wrapped_rows()
         } else {
             self.inner.lines().len()
         };
-        let last = rows.max(1) as i16;
-        let max = (last - page).max(0);
-        let rows = match event {
-            UserEvent::ScrollDown => 1,
-            UserEvent::ScrollUp => -1,
-            UserEvent::HalfPageDown => page / 2,
-            UserEvent::HalfPageUp => -page / 2,
-            UserEvent::PageDown => page,
-            UserEvent::PageUp => -page,
-            UserEvent::GoToTop => {
-                self.scroll = 0;
-                return true;
-            }
-            UserEvent::GoToBottom => {
-                self.scroll = max;
-                return true;
-            }
-            _ => return false,
-        };
-        self.scroll = self.scroll.saturating_add(rows).clamp(0, max);
+        self.scroll
+            .fit(rows.max(1), self.height.get().max(1) as usize, 0);
         true
     }
 
@@ -140,12 +128,13 @@ impl TextArea {
             inner.set_cursor_style(style);
             inner.move_cursor(CursorMove::Top);
             inner.move_cursor(CursorMove::Head);
-            if self.scroll != 0 {
+            if self.scroll.offset != 0 {
                 // the textarea works out how its lines wrap while drawing; a first draw fills that
                 // in, so scrolling counts the wrapped rows instead of the logical lines
                 let mut settle = Buffer::empty(area);
                 inner.render(area, &mut settle);
-                inner.scroll((self.scroll, 0));
+                let rows = i16::try_from(self.scroll.offset).unwrap_or(i16::MAX);
+                inner.scroll((rows, 0));
             }
         }
         inner.render(area, buf);
@@ -248,7 +237,7 @@ mod tests {
         };
         let before = shown(&text);
         assert!(text.scroll(UserEvent::PageDown));
-        assert!(text.scroll > 0, "the scroll moved");
+        assert!(text.scroll.offset > 0, "the scroll moved");
         assert_ne!(shown(&text), before, "a wrapped long line scrolled");
     }
 }

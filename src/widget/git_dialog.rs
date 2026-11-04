@@ -1606,6 +1606,10 @@ impl GitDialog {
         if name.is_empty() || url.is_empty() {
             return Err("Type a name and a URL for the remote".into());
         }
+        // git would read it as an option, printing its usage instead of saying what is wrong
+        if name.starts_with('-') || url.starts_with('-') {
+            return Err("A remote name or URL can't start with -".into());
+        }
         Ok(RemoteValues { name, url })
     }
 
@@ -2279,13 +2283,9 @@ impl GitDialog {
         }
     }
 
-    // The git command of the popup; None for a link, which is opened instead, see `run`.
+    // The git commands of the popup, built by the command of each kind next to its constructor;
+    // None for a link, which is opened instead, see `run`.
     pub fn command(&self) -> Option<Result<GitTask, String>> {
-        self.kind_command()
-    }
-
-    // The git commands of the popup, built by the command of each kind next to its constructor.
-    fn kind_command(&self) -> Option<Result<GitTask, String>> {
         use DialogKind as K;
         Some(match &self.kind {
             K::OpenLink { .. } => return None,
@@ -3164,6 +3164,24 @@ mod tests {
             DialogOutcome::None
         ));
         assert_eq!((dialog.selected, dialog.editing), (1, true));
+    }
+
+    #[test]
+    fn test_remote_name_or_url_starting_with_a_dash() {
+        // git would read it as an option, printing its usage
+        let refused = |name: &str, url: &str| {
+            let mut dialog = GitDialog::add_remote();
+            for (field, text) in [name, url].into_iter().enumerate() {
+                dialog.selected = field;
+                dialog.editing = true;
+                text.chars()
+                    .for_each(|c| _ = dialog.handle_key(None, key(KeyCode::Char(c))));
+            }
+            dialog.editing = false;
+            dialog.command().unwrap().unwrap_err()
+        };
+        assert!(refused("-f", "https://x/y.git").contains("can't start with -"));
+        assert!(refused("up", "--mirror=fetch").contains("can't start with -"));
     }
 
     #[test]
