@@ -16,9 +16,9 @@ The default key bindings can be overridden.
 | <kbd>F1</kbd>                  | Open help   | `help_toggle`         |
 | <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
 | <kbd>1</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_1` |
-| <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> | Move the border beside the focused panel: the sidebar's, the one between the files and the diff, or after the commits of the blame and the timeline | `resize_left` `resize_right` |
-| <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
-| <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> <kbd>Alt-h</kbd> <kbd>Alt-l</kbd> <kbd>Alt-k</kbd> <kbd>Alt-j</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
+| <kbd>Alt-Left</kbd> <kbd>Alt-Right</kbd> <kbd>Alt-h</kbd> <kbd>Alt-l</kbd> | Move the border beside the focused panel: the sidebar's, the one between the files and the diff, or after the commits of the blame and the timeline | `resize_left` `resize_right` |
+| <kbd>Alt-Up</kbd> <kbd>Alt-Down</kbd> <kbd>Alt-k</kbd> <kbd>Alt-j</kbd> | Move the border above or under the focused panel: the details', the commit message's, or the one between the unstaged and staged files | `resize_up` `resize_down` |
+| <kbd>Ctrl-Left</kbd> <kbd>Ctrl-Right</kbd> <kbd>Ctrl-Up</kbd> <kbd>Ctrl-Down</kbd> <kbd>Ctrl-h</kbd> <kbd>Ctrl-l</kbd> <kbd>Ctrl-k</kbd> <kbd>Ctrl-j</kbd> | Focus the panel beside, above or under the focused one | `focus_left` `focus_right` `focus_up` `focus_down` |
 | <kbd>H</kbd>                   | Show/hide the keys of the focused panel | `keys_toggle` |
 | <kbd>@</kbd>                   | Show the command log (see below) | `command_log` |
 | <kbd>,</kbd>                   | Dismiss the errors and warnings at the top right (they also go after 10 and 5 seconds) | `dismiss_notifications` |
@@ -330,8 +330,8 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the search, the selected lines, then back to the commit shown, then close | `cancel` |
-| <kbd>1</kbd> <kbd>2</kbd> <kbd>Alt-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_1` `focus_panel_2` `focus_up` `focus_down` |
-| <kbd>Alt-Left/Right</kbd>            | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>Ctrl-Up/Down</kbd> | Focus the commit shown/the lines (<kbd>k</kbd> on the first line goes up too, <kbd>j</kbd> down) | `focus_panel_1` `focus_panel_2` `focus_up` `focus_down` |
+| <kbd>Ctrl-Left/Right</kbd>           | Focus the commits/the text of the lines                     | `focus_left` `focus_right`      |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Act on the commit or the text of the selected line<br>Blame as of the older/newer commit, on the commit shown, like <kbd>[</kbd> <kbd>]</kbd> | `navigate_left` `navigate_right` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit of the line on the graph, closing the blame | `confirm`                      |
@@ -352,7 +352,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | Key                                  | Description                                                  | Corresponding keybind           |
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the search, back out of the lines and hunks, then close | `cancel`               |
-| <kbd>1</kbd> <kbd>2</kbd> <kbd>Alt-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_1` `focus_panel_2` `focus_left` `focus_right` |
+| <kbd>1</kbd> <kbd>2</kbd> <kbd>Ctrl-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_1` `focus_panel_2` `focus_left` `focus_right` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Into the diff (its hunks)/back out of it                     | `navigate_right` `navigate_left` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |

@@ -387,7 +387,7 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    // The panel whose height changes with ctrl-up and ctrl-down: the unstaged files over the
+    // The panel whose height changes with alt-up and alt-down: the unstaged files over the
     // staged ones from them, else the commit message under the diff.
     pub fn height_panel(&self) -> Panel {
         if self.local_changes_state.is_files_focused() {

@@ -590,7 +590,7 @@ fn test_sidebar_only_beside_the_graph() {
         keys("tab"),
         check(|app| assert!(matches!(app.view, View::LocalChanges(_)))),
         focused(false),
-        keys("1 alt-h"),
+        keys("1 ctrl-h"),
         focused(false),
         keys("tab 1"),
         focused(true),
@@ -2030,9 +2030,9 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
         }),
         // the commits resized, the focus moved up to the commit shown, like on the pages
         draw(),
-        keys("ctrl-right"),
+        keys("alt-right"),
         check(|app| assert_ne!(app.ctx.layout.borrow().size(Panel::BlameCommits, 0), 0)),
-        keys("alt-up shift-h"),
+        keys("ctrl-up shift-h"),
         check(|app| {
             let shown: Vec<String> = app
                 .keys_popup_keys()
@@ -2044,7 +2044,7 @@ fn test_keys_over_everything_work_over_the_blame_and_the_timeline() {
         // and in the timeline, into the diff
         keys("shift-h esc shift-t"),
         draw(),
-        keys("ctrl-left alt-right shift-h"),
+        keys("alt-left ctrl-right shift-h"),
         overlay("timeline"),
         check(|app| {
             assert_ne!(app.ctx.layout.borrow().size(Panel::TimelineCommits, 0), 0);

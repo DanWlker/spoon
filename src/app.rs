@@ -2522,8 +2522,8 @@ impl App<'_> {
         self.run_graph_command(event, command);
     }
 
-    // Moves the border beside the focused panel with ctrl-left and ctrl-right (the sidebar, or the
-    // files beside a diff), the one above or under it with ctrl-up and ctrl-down.
+    // Moves the border beside the focused panel with alt-left and alt-right (the sidebar, or the
+    // files beside a diff), the one above or under it with alt-up and alt-down.
     fn move_border(&mut self, direction: Direction) {
         let (size, step) = match direction {
             Direction::Left => (Size::Width, -2),

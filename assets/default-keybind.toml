@@ -31,16 +31,16 @@ search_target_toggle = ["ctrl-t"]
 smart_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
 refresh = ["ctrl-r"]
-# move the border beside or above the focused panel, resizing it (borders can be dragged too)
-resize_left = ["ctrl-left", "ctrl-h"]
-resize_right = ["ctrl-right", "ctrl-l"]
-resize_up = ["ctrl-up", "ctrl-k"]
-resize_down = ["ctrl-down", "ctrl-j"]
 # move the focus to the panel beside, above or under the focused one
-focus_left = ["alt-left", "alt-h"]
-focus_right = ["alt-right", "alt-l"]
-focus_up = ["alt-up", "alt-k"]
-focus_down = ["alt-down", "alt-j"]
+focus_left = ["ctrl-left", "ctrl-h"]
+focus_right = ["ctrl-right", "ctrl-l"]
+focus_up = ["ctrl-up", "ctrl-k"]
+focus_down = ["ctrl-down", "ctrl-j"]
+# move the border beside or above the focused panel, resizing it (borders can be dragged too)
+resize_left = ["alt-left", "alt-h"]
+resize_right = ["alt-right", "alt-l"]
+resize_up = ["alt-up", "alt-k"]
+resize_down = ["alt-down", "alt-j"]
 # show the keys of the focused panel in a popup
 keys_toggle = ["shift-h"]
 

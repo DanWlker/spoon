@@ -42,8 +42,8 @@ pub enum Direction {
     Down,
 }
 
-// What the resize keys change of a panel: its width with ctrl-left and ctrl-right, its height
-// with ctrl-up and ctrl-down.
+// What the resize keys change of a panel: its width with alt-left and alt-right, its height
+// with alt-up and alt-down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Size {
     Width,
