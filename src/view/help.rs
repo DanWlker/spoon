@@ -108,7 +108,7 @@ impl HelpView {
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .areas(area);
 
-        if key_area.width - 4 /* padding */ < self.help_key_line_max_width {
+        if key_area.width.saturating_sub(4) /* padding */ < self.help_key_line_max_width {
             [key_area, value_area] = Layout::horizontal([
                 Constraint::Length(self.help_key_line_max_width + 4),
                 Constraint::Min(0),
@@ -243,6 +243,16 @@ mod tests {
     use ratatui::style::Modifier;
 
     use super::*;
+
+    #[test]
+    fn test_draws_in_a_narrow_terminal() {
+        // the column of the keys narrower than its padding
+        let ec = crate::event::EventController::without_terminal();
+        let mut help = HelpView::new(crate::test_support::ui::test_ctx(), ec.sender());
+        let backend = ratatui::backend::TestBackend::new(12, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| help.render(f, f.area())).unwrap();
+    }
 
     #[test]
     fn test_every_bound_key_is_registered() {

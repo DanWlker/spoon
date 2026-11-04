@@ -232,7 +232,7 @@ pub struct UiListConfig {
     #[garde(range(min = 1))]
     #[default = 20]
     pub subject_min_width: u16,
-    #[garde(length(min = 1))]
+    #[garde(length(min = 1), custom(valid_date_format))]
     #[default = "%Y-%m-%d"]
     pub date_format: String,
     #[garde(range(min = 0))]
@@ -263,7 +263,7 @@ pub struct UiDetailConfig {
     #[garde(range(min = 1))]
     #[default = 20]
     pub height: u16,
-    #[garde(length(min = 1))]
+    #[garde(length(min = 1), custom(valid_date_format))]
     #[default = "%Y-%m-%d %H:%M:%S %z"]
     pub date_format: String,
     #[garde(skip)]
@@ -313,6 +313,17 @@ pub struct GraphColorConfig {
     #[garde(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"))]
     #[default = "#00000000"]
     pub background: String,
+}
+
+// A date format chrono can draw a date with: one it can't, like "%Q", would fail drawing it.
+fn valid_date_format(format: &str, _: &()) -> garde::Result {
+    use chrono::format::{Item, StrftimeItems};
+    match StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
+        true => Err(garde::Error::new(format!(
+            "{format:?} is no date format, see https://docs.rs/chrono/latest/chrono/format/strftime/index.html"
+        ))),
+        false => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -670,5 +681,21 @@ mod tests {
         );
         let services = "[core.browser.services.\"git.company.com\"]\ncomit = \"{base}/c/{hash}\"\n";
         unknown(services, "git.company.com");
+    }
+
+    #[test]
+    fn test_config_invalid_date_format() {
+        // refused when loaded, naming it, else drawing a date would panic
+        for table in ["list", "detail"] {
+            let toml = format!("[ui.{table}]\ndate_format = \"%Y %Q\"\n");
+            let config: Config = toml::from_str::<OptionalConfig>(&toml).unwrap().into();
+            let err = config.validate().unwrap_err().to_string();
+            assert!(err.contains(&format!("ui.{table}.date_format")), "{err}");
+        }
+        let config: Config =
+            toml::from_str::<OptionalConfig>("[ui.list]\ndate_format = \"%Y-%m %H:%M\"\n")
+                .unwrap()
+                .into();
+        assert!(config.validate().is_ok());
     }
 }

@@ -21,7 +21,9 @@ use crate::{
         NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
     keys::{KeyList, Keys},
-    widget::style::{change_span, choice_arrows, focused_title, no_choice_arrows, render_popup},
+    widget::style::{
+        change_span, choice_arrows, focused_title, no_choice_arrows, render_popup, tabs_shown,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2594,14 +2596,19 @@ fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line
         Line::raw(""),
         Line::from(vec![
             bar(),
-            Span::raw(preview.subject.clone()).fg(theme.fg).bold(),
+            Span::raw(tabs_shown(&preview.subject).into_owned())
+                .fg(theme.fg)
+                .bold(),
         ]),
     ];
     if !preview.body.is_empty() {
         lines.push(Line::from(bar()));
     }
     for line in capped(preview.body.clone(), COMMIT_PREVIEW_LINES) {
-        lines.push(Line::from(vec![bar(), Span::styled(line, dim)]));
+        lines.push(Line::from(vec![
+            bar(),
+            Span::styled(tabs_shown(&line).into_owned(), dim),
+        ]));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
@@ -2616,7 +2623,7 @@ fn commit_preview_lines(preview: &CommitPreview, theme: &ColorTheme) -> Vec<Line
         lines.push(Line::from(vec![
             Span::raw("  "),
             change_span(file.status.symbol(), theme),
-            Span::raw(format!(" {}", file.path)).fg(theme.fg),
+            Span::raw(format!(" {}", tabs_shown(&file.path))).fg(theme.fg),
         ]));
     }
     if let Some(more) = preview
@@ -2676,9 +2683,11 @@ impl Widget for GitDialogWidget<'_> {
             for (i, line) in dialog.intro.iter().enumerate() {
                 // the heading stands out from the commits under it
                 lines.push(if i == 0 {
-                    Line::raw(line.clone()).fg(theme.accent_fg).bold()
+                    Line::raw(tabs_shown(line).into_owned())
+                        .fg(theme.accent_fg)
+                        .bold()
                 } else {
-                    Line::raw(line.clone()).fg(theme.fg)
+                    Line::raw(tabs_shown(line).into_owned()).fg(theme.fg)
                 });
             }
             lines.push(Line::raw(""));

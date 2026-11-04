@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use crate::git::{ConflictSide, Operation, Repository, SideContent};
+use crate::{
+    git::{is_conflict_marker, ConflictSide, Operation, Repository, SideContent},
+    widget::style::tabs_shown,
+};
 
 // The lines shown around each conflict, from the file.
 const CONTEXT: usize = 3;
@@ -127,8 +130,8 @@ pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
 
     for (index, line) in content.lines().enumerate() {
         let number = index + 1;
-        let marker = |m: &str| line == m || line.starts_with(&format!("{m} "));
-        let text = line.replace('\t', "    ");
+        let marker = |m: &str| is_conflict_marker(line, m);
+        let text = tabs_shown(line).into_owned();
         let context = |number: usize, text: &str| ConflictRow {
             number: Some(number),
             text: text.to_string(),

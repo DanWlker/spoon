@@ -13,7 +13,9 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
-        style::{picked_style, render_scrollbar, scroll_to, ScrollState, VisualSelection},
+        style::{
+            picked_style, render_scrollbar, scroll_to, tabs_shown, ScrollState, VisualSelection,
+        },
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
 };
@@ -265,7 +267,7 @@ impl FileText {
         let lines = rows.clone().map(|row| {
             let mut line = Line::from(vec![
                 Span::raw(format!("{:>width$} ", row + 1)).fg(theme.muted_fg),
-                Span::raw(self.lines[row].replace('\t', "    ")),
+                Span::raw(tabs_shown(&self.lines[row]).into_owned()),
             ]);
             if let Some(query) = search {
                 highlight_match(&mut line, query, ctx.search_options.get(), theme);
@@ -310,7 +312,7 @@ impl FileText {
         self.lines.iter().enumerate().map(move |(i, text)| {
             Line::from(vec![
                 Span::raw(format!("{:>width$} ", i + 1)),
-                Span::raw(text.replace('\t', "    ")),
+                Span::raw(tabs_shown(text).into_owned()),
             ])
         })
     }

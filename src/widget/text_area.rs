@@ -80,15 +80,12 @@ impl TextArea {
         self.inner.input(key);
     }
 
-    // Scrolls the text by the scroll keys, like the other text (see `ScrollState`), and to its top
-    // and bottom, shown without the caret; returns whether `event` was one of them.
+    // Scrolls the text by the scroll keys, like the other text (see `ScrollState`), shown without
+    // the caret; returns whether `event` was one of them.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
         self.scroll.height = self.height.get() as usize;
-        match event {
-            UserEvent::GoToTop => self.scroll.offset = 0,
-            UserEvent::GoToBottom => self.scroll.offset = usize::MAX,
-            _ if !self.scroll.handle_scroll(event) => return false,
-            _ => {}
+        if !self.scroll.handle_scroll(event) {
+            return false;
         }
         // no further than the last row, from the rows it takes once wrapped
         let rows = if self.wrap.get() {
@@ -205,14 +202,10 @@ mod tests {
             row.trim().to_string()
         };
         assert_eq!(first(&text), "a");
-        // a line, a page (clamped to the last rows: c, d, e), and back to the top
+        // a line, then a page (clamped to the last rows: c, d, e)
         assert!(text.scroll(UserEvent::ScrollDown));
         assert_eq!(first(&text), "b");
         assert!(text.scroll(UserEvent::PageDown));
-        assert_eq!(first(&text), "c");
-        assert!(text.scroll(UserEvent::GoToTop));
-        assert_eq!(first(&text), "a");
-        assert!(text.scroll(UserEvent::GoToBottom));
         assert_eq!(first(&text), "c");
         // typing shows the caret again, from the top
         text.handle_key(KeyEvent::from(KeyCode::Char('x')));

@@ -22,7 +22,10 @@ use crate::{
     git::{PatchDirection, Repository},
     search::SearchOptions,
     widget::{
-        style::{divider, mark_selected_bar, placeholder, scroll_to, ScrollState, VisualSelection},
+        style::{
+            divider, mark_selected_bar, placeholder, scroll_to, tabs_shown, ScrollState,
+            VisualSelection,
+        },
         tree_query::{find_around, match_range, patch_range, SearchDirection},
     },
 };
@@ -846,7 +849,7 @@ impl ParsedDiff {
 // `text` as shown, its tabs as four spaces.
 fn shown(text: &str) -> std::borrow::Cow<'_, str> {
     match text.contains('\t') {
-        true => text.replace('\t', "    ").into(),
+        true => tabs_shown(text),
         false => text.into(),
     }
 }

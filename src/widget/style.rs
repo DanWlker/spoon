@@ -1,6 +1,7 @@
 // The looks shared by the panels, after Charm's tools (lipgloss, huh, bubbles): the title of the
 // focused panel as a badge, key hints, and a mark beside the selected row.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -585,6 +586,23 @@ pub fn render_panel_scrollbar(
     if area.width > 0 && area.height > 2 {
         let column = Rect::new(area.right() - 1, area.y + 1, 1, area.height - 2);
         render_scrollbar(buf, column, total, offset, focused, theme);
+    }
+}
+
+// Text as it is drawn: ratatui drops control characters, so a tab, in a commit message, a file
+// name or the output of git, shows as four spaces. What is copied or given to git stays as it is.
+pub fn tabs_shown(text: &str) -> Cow<'_, str> {
+    match text.contains('\t') {
+        true => text.replace('\t', "    ").into(),
+        false => text.into(),
+    }
+}
+
+// The columns `c` takes once drawn, see `tabs_shown`.
+pub fn shown_width(c: char) -> usize {
+    match c {
+        '\t' => 4,
+        c => unicode_width::UnicodeWidthChar::width(c).unwrap_or(0),
     }
 }
 

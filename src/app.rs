@@ -516,6 +516,8 @@ pub struct App<'a> {
     repository: &'a Arc<Repository>,
     // how to load it again
     load_options: LoadOptions,
+    // the merges its graph was laid out with folded, again once folding one fails
+    drawn_folds: FxHashSet<CommitHash>,
     view: View<'a>,
     shell: AppShell,
     ctx: Rc<AppContext>,
@@ -649,6 +651,7 @@ impl<'a> App<'a> {
         let mut app = Self {
             repository,
             load_options,
+            drawn_folds: shell.folded_merges.clone(),
             view,
             shell,
             ctx,
@@ -879,6 +882,7 @@ impl App<'_> {
                 drop(running);
                 return Ok(Some(Ret::Quit));
             }
+            AppEvent::Paste(text) => self.paste(&text)?,
             AppEvent::OpenDetail(tab) => {
                 self.open_detail(tab);
             }
@@ -955,12 +959,11 @@ impl App<'_> {
                 return Ok(self.land_reload(generation, result));
             }
             AppEvent::FoldMerge { commit, fold } => {
-                let before = self.shell.folded_merges.clone();
                 match fold {
                     Fold::Folded => self.shell.folded_merges.insert(commit),
                     Fold::Unfolded => self.shell.folded_merges.remove(&commit),
                 };
-                self.start_regraph(before);
+                self.start_regraph();
             }
             AppEvent::Regraphed { from, layout } => {
                 if !self.shell.regraphs.is_empty() {
@@ -971,11 +974,12 @@ impl App<'_> {
                 if !Arc::ptr_eq(&from, self.repository) {
                     return Ok(None);
                 }
-                // the fold undone, the graph shown staying as it was
+                // the folds undone, those of the graph shown, which another layout may have drawn
+                // since this one started
                 let layout = match layout {
                     Ok(layout) => layout,
-                    Err((err, before)) => {
-                        self.shell.folded_merges = before;
+                    Err(err) => {
+                        self.shell.folded_merges = self.drawn_folds.clone();
                         self.shell.notify_error(err);
                         return Ok(None);
                     }
@@ -1027,6 +1031,27 @@ impl App<'_> {
             }
         }
         Ok(None)
+    }
+
+    // Types pasted text where keys are typed, as if pressed one at a time; elsewhere it is no keys,
+    // which could run anything. A newline or a tab would finish typing or switch fields, so it is
+    // a space, but in the commit message, where it is the new line or the tab itself.
+    fn paste(&mut self, text: &str) -> Result<(), std::io::Error> {
+        if self.shell.dialog.is_none() && !self.is_typing() {
+            return Ok(());
+        }
+        let message = self.view.is_typing_message();
+        // terminals send a newline as \r, some as \r\n
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        for c in text.chars() {
+            let code = match c {
+                '\n' if message => KeyCode::Enter,
+                '\n' | '\t' if !message => KeyCode::Char(' '),
+                c => KeyCode::Char(c),
+            };
+            self.handle(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))?;
+        }
+        Ok(())
     }
 
     // Lays the page out in the screen's `area` before handling the next events and drawing.
@@ -2671,9 +2696,8 @@ impl App<'_> {
     }
 
     // Lays the graph out again on another thread with the merges folded now, the app going on
-    // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`. `before`
-    // are the merges folded before, again once it fails.
-    fn start_regraph(&mut self, before: FxHashSet<CommitHash>) {
+    // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`.
+    fn start_regraph(&mut self) {
         self.shell.regraphs.push(Instant::now());
         let repository = Arc::clone(self.repository);
         let primary_branch = self.load_options.primary_branch.clone();
@@ -2685,7 +2709,7 @@ impl App<'_> {
                 catching(|| GraphLayout::calc(&repository, primary_branch.as_deref(), &folded));
             drop(spinning);
             // the app may have quit meanwhile
-            let layout = layout.map(Box::new).map_err(|err| (err, before));
+            let layout = layout.map(Box::new);
             tx.try_send(AppEvent::Regraphed {
                 from: repository,
                 layout,

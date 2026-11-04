@@ -16,7 +16,7 @@ use crate::{
     keys::Keys,
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
-        ListCursor, ScrollState,
+        tabs_shown, ListCursor, ScrollState,
     },
 };
 
@@ -193,7 +193,7 @@ impl<'a> CommandLog<'a> {
         } else {
             output
                 .lines()
-                .map(|l| Line::raw(l.to_string()).fg(theme.fg))
+                .map(|l| Line::raw(tabs_shown(l).into_owned()).fg(theme.fg))
                 .collect()
         };
         let rows = state.output.fit(lines.len(), inner.height as usize, 0);
@@ -255,6 +255,27 @@ mod tests {
         let row = panel_row(&buf, "Command log", y, 1);
         assert_row_bg(&buf, row, theme.list_selected_bg);
         assert_only_bg_changed(&plain, &buf, row);
+    }
+
+    #[test]
+    fn test_output_tabs_drawn_as_spaces() {
+        // like git's list of the files a merge would overwrite
+        let mut state = CommandLogState {
+            entries: vec![LoggedCommand {
+                at: chrono::Local::now(),
+                command: "git merge other".into(),
+                ok: false,
+                output: "would be overwritten by merge:\n\tfile".into(),
+                duration: std::time::Duration::from_millis(5),
+            }],
+            ..Default::default()
+        };
+        let area = Rect::new(0, 0, 60, 12);
+        let mut buf = Buffer::empty(area);
+        CommandLog::new(&ColorTheme::default(), 0).render(area, &mut buf, &mut state);
+        let y = find_row(&buf, "file");
+        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+        assert!(row.contains("│     file"), "{row}");
     }
 
     #[test]

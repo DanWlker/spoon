@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
-    widget::style::{key_hints, KeyLabel},
+    widget::style::{key_hints, tabs_shown, KeyLabel},
 };
 
 // shown at most, the oldest drop off
@@ -83,10 +83,11 @@ pub fn render_notices(
             Severity::Warning => (theme.status_warn_fg, " \u{f071} Warning "),
         };
         // broken at spaces where it can, else anywhere
-        let mut lines: Vec<String> = textwrap::wrap(&notice.message, text_width.max(1))
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let mut lines: Vec<String> =
+            textwrap::wrap(&tabs_shown(&notice.message), text_width.max(1))
+                .into_iter()
+                .map(String::from)
+                .collect();
         if lines.len() > MAX_LINES {
             lines.truncate(MAX_LINES);
             lines[MAX_LINES - 1].push('…');

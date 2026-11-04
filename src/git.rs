@@ -1428,6 +1428,59 @@ impl Repository {
         }
     }
 
+    // `changes`, with the conflicts resolved by hand staged like lazygit does (see
+    // `resolved_conflicts`), loaded again then; not while a git command runs, which `stage_paths`
+    // refuses.
+    pub fn stage_resolved_conflicts(&self, changes: LocalChanges) -> LocalChanges {
+        let conflicted: Vec<&str> = changes
+            .unstaged
+            .iter()
+            .filter(|f| f.status == LocalChangeStatus::Conflicted)
+            .map(|f| f.path.as_str())
+            .collect();
+        let resolved = self.resolved_conflicts(&conflicted);
+        let paths: Vec<&str> = resolved.iter().map(String::as_str).collect();
+        if paths.is_empty() || self.stage_paths(&paths).is_err() {
+            return changes;
+        }
+        self.local_changes()
+    }
+
+    // The conflicted files of `paths` resolved by hand, to stage like lazygit does: both sides
+    // changed the text of the file, and the file in the working tree has no conflict marker left.
+    // A binary file, which git leaves without markers, a side deleted, a symlink or a submodule
+    // is resolved by picking a side instead.
+    fn resolved_conflicts(&self, paths: &[&str]) -> Vec<String> {
+        let text_sides = |path: &str| {
+            self.unmerged(path).is_ok_and(|stages| {
+                [2, 3].iter().all(|side| {
+                    stages.iter().any(|(stage, mode, _)| {
+                        stage == side && matches!(mode.as_str(), "100644" | "100755")
+                    })
+                })
+            })
+        };
+        let no_markers = |path: &str| {
+            let file = self.path.join(path);
+            let Ok(content) = std::fs::read(&file) else {
+                return false;
+            };
+            // binary as git tells it, by a NUL in its first 8000 bytes
+            let binary = content.iter().take(8000).any(|&b| b == 0);
+            let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
+            regular
+                && !binary
+                && !String::from_utf8_lossy(&content)
+                    .lines()
+                    .any(|line| is_conflict_marker(line, "<<<<<<<"))
+        };
+        paths
+            .iter()
+            .filter(|path| text_sides(path) && no_markers(path))
+            .map(|path| path.to_string())
+            .collect()
+    }
+
     // The stage (1 the base, 2 ours, 3 theirs), mode and object of each side git has of the
     // conflicted `path`; none when it isn't conflicted.
     fn unmerged(&self, path: &str) -> std::result::Result<Vec<(u8, String, String)>, String> {
@@ -2344,6 +2397,12 @@ fn load_local_changes(path: &Path) -> LocalChanges {
     git_output_bytes(path, &args)
         .map(|out| parse_status_porcelain(&out))
         .unwrap_or_default()
+}
+
+// Whether `line` is the conflict marker `marker`, like "<<<<<<<", alone or followed by a label.
+pub fn is_conflict_marker(line: &str, marker: &str) -> bool {
+    line.strip_prefix(marker)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
 }
 
 // The paths of the submodules the index tracks (mode 160000), which its gitlink entries name.
@@ -4110,6 +4169,48 @@ mod tests {
             .resolve_conflict("f", ConflictSide::Theirs)
             .is_err());
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), content);
+    }
+
+    #[test]
+    fn test_resolved_conflicts() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let write = |name: &str, content: &[u8]| std::fs::write(path.join(name), content).unwrap();
+        for (name, content) in [
+            ("text", &b"base\n"[..]),
+            ("binary", b"\0base"),
+            ("gone", b"base\n"),
+        ] {
+            write(name, content);
+        }
+        repo.add(&["text", "binary", "gone"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        write("text", b"theirs\n");
+        write("binary", b"\0theirs");
+        write("gone", b"theirs\n");
+        repo.add(&["text", "binary", "gone"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        write("text", b"ours\n");
+        write("binary", b"\0ours");
+        repo.add(&["text", "binary"]);
+        git_output(path, &["rm", "-q", "gone"]).unwrap();
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let conflicted = ["text", "binary", "gone"];
+        // the markers still there
+        assert!(repository.resolved_conflicts(&conflicted).is_empty());
+        // the text edited: resolved. A binary file has no markers to remove, and a side deleted
+        // nothing to edit: both are resolved by picking a side
+        write("text", b"both\n");
+        assert_eq!(repository.resolved_conflicts(&conflicted), ["text"]);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::{
     git::{Commit, FileChange, Head, Ref, Tracking},
     widget::{
         commit_list::{refs_spans, CommitInfo},
-        style::{change_span, divider, render_scrollbar, ScrollState},
+        style::{change_span, divider, render_scrollbar, tabs_shown, ScrollState},
     },
 };
 
@@ -211,7 +211,7 @@ impl CommitDetail<'_> {
     }
 
     fn commit_message_lines(&self) -> Vec<Line<'_>> {
-        let subject_line = Line::from(self.commit.subject.as_str().bold());
+        let subject_line = Line::from(tabs_shown(&self.commit.subject).bold());
 
         let mut lines = vec![subject_line];
 
@@ -219,7 +219,7 @@ impl CommitDetail<'_> {
             return lines;
         }
 
-        let body_lines = self.commit.body.lines().map(Line::raw);
+        let body_lines = self.commit.body.lines().map(|l| Line::raw(tabs_shown(l)));
 
         lines.push(self.empty_line());
         lines.extend(body_lines);
@@ -234,8 +234,10 @@ impl CommitDetail<'_> {
                 let path = match c {
                     FileChange::Add { path }
                     | FileChange::Modify { path }
-                    | FileChange::Delete { path } => path.clone(),
-                    FileChange::Move { from, to } => format!("{from} -> {to}"),
+                    | FileChange::Delete { path } => tabs_shown(path).into_owned(),
+                    FileChange::Move { from, to } => {
+                        tabs_shown(&format!("{from} -> {to}")).into_owned()
+                    }
                 };
                 let symbol = change_span(c.symbol(), &self.ctx.color_theme);
                 Line::from(vec![symbol, " ".into(), path.into()])

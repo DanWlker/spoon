@@ -193,6 +193,11 @@ impl<'a> View<'a> {
         }
     }
 
+    // Whether the commit message is typed, where pasted text keeps its lines and tabs.
+    pub fn is_typing_message(&self) -> bool {
+        matches!(self, View::LocalChanges(view) if view.is_typing_message())
+    }
+
     pub fn of_list(
         commit_list_state: CommitListState<'a>,
         repository: &'a Repository,

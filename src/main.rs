@@ -271,7 +271,8 @@ fn run() -> Result<()> {
     let _ = ratatui::crossterm::execute!(
         std::io::stdout(),
         ratatui::crossterm::event::EnableFocusChange,
-        ratatui::crossterm::event::EnableMouseCapture
+        ratatui::crossterm::event::EnableMouseCapture,
+        ratatui::crossterm::event::EnableBracketedPaste
     );
     let Some((repository, layout)) = loader.load_showing(&ctx, &ec, &mut terminal)? else {
         return Ok(());
@@ -477,7 +478,8 @@ impl Drop for TerminalGuard {
         let _ = ratatui::crossterm::execute!(
             std::io::stdout(),
             ratatui::crossterm::event::DisableFocusChange,
-            ratatui::crossterm::event::DisableMouseCapture
+            ratatui::crossterm::event::DisableMouseCapture,
+            ratatui::crossterm::event::DisableBracketedPaste
         );
         ratatui::restore();
     }

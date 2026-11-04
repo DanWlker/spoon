@@ -1298,6 +1298,86 @@ fn test_space_in_the_sidebar_checks_out_and_applies() {
 }
 
 #[test]
+fn test_tabs_from_git_show_as_spaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("x\ty.txt"), "x\n").unwrap();
+    git(&path, &["add", "-A"]);
+    git(
+        &path,
+        &["commit", "-q", "-m", "sub\tject\n\n\tindented body"],
+    );
+    std::fs::write(path.join("f.txt"), "stashed\n").unwrap();
+    git(&path, &["stash", "push", "-q", "-m", "st\tash"]);
+    std::fs::write(path.join("un\ttracked"), "u\n").unwrap();
+    let shows = |texts: &'static [&'static str]| {
+        screen(move |screen| {
+            for text in texts {
+                assert!(screen.contains(text), "{text:?} not in\n{screen}");
+            }
+        })
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // ratatui drops a tab: drawn as four spaces, like the diffs and the previews
+        shows(&["sub    ject", "st    ash"]),
+        keys("j enter"),
+        shows(&["sub    ject", "    indented body", "x    y.txt"]),
+        keys("esc"),
+        keys("1 ] ] ] l"),
+        shows(&["On master: st    ash"]),
+        keys("esc tab"),
+        shows(&["un    tracked"]),
+    ]);
+}
+
+#[test]
+fn test_paste_is_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let paste = |text: &'static str| {
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            app.ec.send(AppEvent::Paste(text.into()));
+        }))]
+    };
+    let shows = |texts: &'static [&'static str]| {
+        screen(move |screen| {
+            for text in texts {
+                assert!(screen.contains(text), "{text:?} not in\n{screen}");
+            }
+        })
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // on the graph, nothing is typed: the text isn't taken for keys, `q` quitting
+        paste("q"),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        // into a search, a newline is a space instead of applying it
+        keys("/"),
+        paste("c2\nx"),
+        check(|app| assert!(app.is_typing())),
+        keys("esc"),
+        // into the commit message, as typed: the tab and the new lines in the description, without
+        // the tab switching to the summary
+        keys("tab 3"),
+        // terminals send a newline as \r, some as \r\n
+        paste("summary\rfn main() {\r\n\tcall();\n}"),
+        keys("esc"),
+        shows(&["summary", "fn main() {", "    call();"]),
+        check(|app| {
+            let View::LocalChanges(view) = &app.view else {
+                panic!("no local changes page")
+            };
+            assert_eq!(
+                view.context().commit_draft_message(),
+                "summary\n\nfn main() {\n\tcall();\n}"
+            );
+        }),
+    ]);
+}
+
+#[test]
 fn test_half_page_jump_in_the_sidebar() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -1604,6 +1684,39 @@ fn test_fold_merge_while_reloading_or_laying_out() {
         // unfolded while the folded layout runs: that one is dropped
         keys_at_once("l h l"),
         shown(4, 0),
+    ]);
+}
+
+#[test]
+fn test_fold_merge_failing_after_a_later_one_landed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let shown = |count: usize, folded: usize| {
+        check(move |app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().position().1, count);
+            assert_eq!(app.shell.folded_merges().len(), folded);
+        })
+    };
+    harness.run(vec![
+        keys("h"),
+        shown(3, 1),
+        // the layout of a fold asked before fails after the one drawn: the merges folded are
+        // those of the graph drawn, not those before the fold that failed
+        vec![Step::Act(Box::new(|app: &mut App| {
+            let from = Arc::clone(app.repository);
+            let layout = Err("probe".to_string());
+            app.ec.send(AppEvent::Regraphed { from, layout });
+        }))],
+        shown(3, 1),
     ]);
 }
 

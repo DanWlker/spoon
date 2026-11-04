@@ -361,6 +361,10 @@ impl<'a> LocalChangesView<'a> {
         self.tx.send(AppEvent::RunExternal(command));
     }
 
+    pub fn is_typing_message(&self) -> bool {
+        self.local_changes_state.is_editing()
+    }
+
     pub fn is_capturing_keys(&self) -> bool {
         let state = &self.local_changes_state;
         state.is_editing() || state.is_typing_query()

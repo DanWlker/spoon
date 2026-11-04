@@ -172,7 +172,7 @@ The file trees of the local changes page and of the changes and files tabs can b
 - <kbd>/</kbd> searches: the selection jumps to the first match as you type, expanding the directories hiding it, and matching names are highlighted. <kbd>n/N</kbd> go to the next/previous match.
 - <kbd>?</kbd> filters: only matching files are shown, with their directories expanded.
 
-<kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Afterwards, the panel title shows the active search and filter, and <kbd>Esc</kbd> clears the search, then the filter.
+<kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Text pasted into a query or a popup's field is typed on one line, its newlines and tabs as spaces; pasted where nothing is typed, it does nothing. Afterwards, the panel title shows the active search and filter, and <kbd>Esc</kbd> clears the search, then the filter.
 Matching ignores case unless the query has an uppercase letter.
 
 Every search shares its options with the commit list's: while typing any of them, <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
@@ -196,9 +196,11 @@ With the `diff3` or `zdiff3` conflict style (`git config merge.conflictStyle zdi
 
 - on a side, resolves the file by keeping that side entirely (removing the file if that side deleted it, and checking a submodule out at that side's commit), and stages it.
 - on `Edit in merge tool`, runs `git mergetool` for the file, with the tool of [`core.git.merge_tool`](../configurations/config-file-format.md) or else git's `merge.tool` config.
-- on `Open in editor`, opens the file in `$VISUAL` or `$EDITOR` (like <kbd>e</kbd>), to edit the conflict markers by hand; stage it with <kbd>Space</kbd> afterwards.
+- on `Open in editor`, opens the file in `$VISUAL` or `$EDITOR` (like <kbd>e</kbd>), to edit the conflict markers by hand.
 
-The app is suspended while the editor or merge tool runs, and refreshed after.
+The app is suspended while the editor or merge tool runs, and refreshed after. Like lazygit, a file whose conflict markers are all gone is staged when the files are loaded again, unless both sides aren't text (a binary file, a symlink, a submodule or a side deleting it), which is resolved by keeping a side.
+
+A conflicted file is never staged with <kbd>Space</kbd>, which would stage its markers: on the file it moves into the conflicts like <kbd>Enter</kbd>, and on a directory or picked files with a conflicted file among them it is refused.
 
 #### Changes made outside the app
 
@@ -284,7 +286,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>e</kbd>                         | Open the selected files in `$VISUAL` or `$EDITOR`<br>Type the message, in the commit section | `edit`  |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>C</kbd>                         | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
-| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk, line or selected lines (or the picked files)<br>Type the message, in the commit section | `select` |
+| <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk, line or selected lines (or the picked files)<br>Resolve a conflicted file, like <kbd>Enter</kbd><br>Type the message, in the commit section | `select` |
 | <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it (moving back unpicks what it went over), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>]f</kbd> <kbd>[f</kbd>          | Go to next/previous file, staying in the diff                | `next_file` `previous_file`     |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
@@ -313,10 +315,10 @@ Selecting a submodule shows the panel beside the files in place of the gitlink d
 <kbd>c</kbd> (or <kbd>Enter</kbd> in the commit section, or on an empty unstaged section) shows a popup with the commit to make: the branch, the message and the staged files; <kbd>Enter</kbd> or <kbd>c</kbd> again commits, <kbd>Esc</kbd> cancels. When the message is empty, it starts typing it instead.
 While a rebase is stopped (on a conflict or to edit a commit), <kbd>c</kbd> continues it instead, keeping the messages of the rebased commits.
 While a merge, cherry-pick or revert is stopped on conflicts, the message box is filled with the message git prepared, the files that conflicted listed in the description, and <kbd>c</kbd> commits to finish it (going on with the next commits of a cherry-pick or revert of several commits).
-Resolve the conflicts and stage the files with <kbd>Space</kbd> first. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
+Resolve the conflicts first; the files are staged as they are resolved. <kbd>C</kbd> aborts any of them, and amending is not available meanwhile.
 The commit section title shows when amending, rebasing, merging, cherry-picking or reverting.
-The message has a one-line summary and a description under it. Focusing the commit section (<kbd>3</kbd>, or moving down from the diff) starts typing when the message is empty; in the commit section, <kbd>j</kbd>/<kbd>k</kbd> pick the summary or the description and <kbd>Space</kbd> or <kbd>e</kbd> start typing in it. While typing, <kbd>Enter</kbd> in the summary goes on to the description, <kbd>Tab</kbd> switches between them and <kbd>Esc</kbd> stops. The keys of the file list, like search, filter, picking and discarding, do nothing in the commit section.
-While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line in the description) until <kbd>Esc</kbd>, with Emacs-like editing keys: <kbd>Ctrl-u</kbd> undoes and <kbd>Ctrl-r</kbd> redoes, <kbd>Alt-b</kbd>/<kbd>Alt-f</kbd> or <kbd>Ctrl-Left</kbd>/<kbd>Ctrl-Right</kbd> move by word, <kbd>Ctrl-w</kbd> deletes the word before the cursor, <kbd>Ctrl-k</kbd> the rest of the line. Long lines wrap at words on screen; the message keeps them as typed.
+The message has a one-line summary and a description under it. Focusing the commit section (<kbd>3</kbd>, or moving down from the diff) starts typing when the message is empty; in the commit section, <kbd>j</kbd>/<kbd>k</kbd> (and <kbd>g</kbd>/<kbd>G</kbd>) pick the summary or the description and <kbd>Space</kbd> or <kbd>e</kbd> start typing in it. While typing, <kbd>Enter</kbd> in the summary goes on to the description, <kbd>Tab</kbd> switches between them and <kbd>Esc</kbd> stops. The keys of the file list, like search, filter, picking and discarding, do nothing in the commit section.
+While editing the message, all keys are typed into it (<kbd>Enter</kbd> starts a new line in the description) until <kbd>Esc</kbd>, with Emacs-like editing keys: <kbd>Ctrl-u</kbd> undoes and <kbd>Ctrl-r</kbd> redoes, <kbd>Alt-b</kbd>/<kbd>Alt-f</kbd> or <kbd>Ctrl-Left</kbd>/<kbd>Ctrl-Right</kbd> move by word, <kbd>Ctrl-w</kbd> deletes the word before the cursor, <kbd>Ctrl-k</kbd> the rest of the line. Long lines wrap at words on screen; the message keeps them as typed. Text pasted into the message keeps its lines and tabs.
 
 <kbd>A</kbd> turns amending on: the staged files show the changes of the last commit combined with what is already staged, the message box shows its message, and <kbd>c</kbd> amends it.
 Unstaging while amending removes changes from the commit being amended. Turning it off restores the previous message, and so does HEAD moving meanwhile, by a checkout or a commit made elsewhere.

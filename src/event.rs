@@ -8,7 +8,6 @@ use std::{
 };
 
 use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
 use crate::{
@@ -26,6 +25,8 @@ pub enum AppEvent {
     // a popup confirming a git command, from a page, like a commit
     OpenDialog(Box<crate::widget::git_dialog::GitDialog>),
     Key(KeyEvent),
+    // text pasted in the terminal, see `App::paste`
+    Paste(String),
     // pressing, dragging and releasing the left button, to drag the borders of the panels, and the
     // wheel, see `App::handle_event`
     Mouse(MouseEvent),
@@ -102,11 +103,10 @@ pub enum AppEvent {
     // selects the commit on the graph
     ShowCommit(CommitHash),
     // the graph laid out again on another thread after a merge was folded or unfolded, see
-    // `App::start_regraph`
-    // `App::start_regraph`, of the repository `from`; failing, with the merges folded before
+    // `App::start_regraph`, of the repository `from`
     Regraphed {
         from: std::sync::Arc<crate::git::Repository>,
-        layout: Result<Box<crate::graph::GraphLayout>, (String, FxHashSet<CommitHash>)>,
+        layout: Result<Box<crate::graph::GraphLayout>, String>,
     },
     // folds or unfolds the merge commit, the graph drawn again
     FoldMerge {
@@ -263,7 +263,8 @@ impl EventController {
             std::io::stdout(),
             ratatui::crossterm::terminal::EnterAlternateScreen,
             ratatui::crossterm::event::EnableFocusChange,
-            ratatui::crossterm::event::EnableMouseCapture
+            ratatui::crossterm::event::EnableMouseCapture,
+            ratatui::crossterm::event::EnableBracketedPaste
         )
         .unwrap();
         ratatui::crossterm::terminal::enable_raw_mode().unwrap();
@@ -283,6 +284,7 @@ impl EventController {
             std::io::stdout(),
             ratatui::crossterm::event::DisableFocusChange,
             ratatui::crossterm::event::DisableMouseCapture,
+            ratatui::crossterm::event::DisableBracketedPaste,
             ratatui::crossterm::terminal::LeaveAlternateScreen
         )
         .unwrap();
@@ -358,6 +360,7 @@ fn read_events(stop: &AtomicBool, tx: &Sender) {
                         }
                         _ => {}
                     },
+                    ratatui::crossterm::event::Event::Paste(text) => tx.send(AppEvent::Paste(text)),
                     ratatui::crossterm::event::Event::Resize(..) => tx.send(AppEvent::Resize),
                     ratatui::crossterm::event::Event::FocusGained => {
                         tx.send(AppEvent::FocusGained);

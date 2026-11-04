@@ -316,7 +316,7 @@ impl<'a> LocalChangesState<'a> {
         snapshot: Option<LocalChangesSnapshot>,
         background: Option<Sender>,
     ) -> Self {
-        let changes = repository.take_loaded_local_changes();
+        let changes = repository.stage_resolved_conflicts(repository.take_loaded_local_changes());
         let files_stamp = repository.files_stamp(&changes);
         let sections = [
             Section::new(&changes.unstaged),
@@ -1066,10 +1066,13 @@ impl<'a> LocalChangesState<'a> {
         k.add(
             &[Select],
             "stage",
-            "Stage/unstage the file, directory, hunk or line, or the picked files",
+            "Stage/unstage the file, directory, hunk or line, or the picked files; resolve a conflict",
         )
         .when(row)
-        .short(|v| stage(v).into());
+        .short(|v| match v.conflict().is_some() && !picks(v) {
+            true => "resolve".into(),
+            false => stage(v).into(),
+        });
         k.add(
             &[Select],
             "stage",
@@ -1233,9 +1236,9 @@ impl<'a> LocalChangesState<'a> {
         );
         k.quiet(
             &[GoToTop, GoToBottom],
-            "Select the first/last file, hunk or line",
+            "Select the first/last file, hunk or line, or the summary/description",
         )
-        .when(|v| files(v) || diff(v));
+        .when(|v| files(v) || diff(v) || commit(v));
         k.quiet(
             &[NavigateRight, NavigateLeft],
             "Expand/collapse the directory; choose a side of the conflict",
@@ -1591,6 +1594,19 @@ impl<'a> LocalChangesState<'a> {
                     None => Ok(()),
                 }
             }
+            // like lazygit, a conflicted file is never staged with its markers: it is resolved in
+            // the conflict panel, and staged once resolved, see `reload_with`
+            Focus::Files if self.picked().is_empty() && self.conflict().is_some() => {
+                return self.enter();
+            }
+            Focus::Files
+                if self
+                    .target_files()
+                    .iter()
+                    .any(|f| f.status == LocalChangeStatus::Conflicted) =>
+            {
+                return Err("Cannot stage files with merge conflicts, resolve them first".into());
+            }
             Focus::Files => {
                 let result = self.toggle_stage_row();
                 if result.is_ok() {
@@ -1655,6 +1671,7 @@ impl<'a> LocalChangesState<'a> {
 
     fn reload_with(&mut self, changes: LocalChanges) {
         let selected_path = self.selected_path();
+        let changes = self.repository.stage_resolved_conflicts(changes);
 
         self.files_stamp = self.repository.files_stamp(&changes);
         self.changes = self.with_amend(changes);
@@ -2485,7 +2502,7 @@ impl LocalChangesPanel<'_> {
                 format!("{select} resolves the conflicts in the merge tool")
             }
             Some(ConflictItem::Editor) => {
-                format!("{select} opens the file to edit the markers; stage it with {select} after")
+                format!("{select} opens the file to edit the markers, staged once none is left")
             }
             None => "Enter to keep a side for the whole file, or to resolve it in a tool".into(),
         };
@@ -3042,8 +3059,13 @@ mod tests {
         let top = shown(&mut state);
         assert!(state.scroll(UserEvent::HalfPageDown));
         assert_ne!(shown(&mut state), top, "the message didn't scroll");
-        assert!(state.scroll(UserEvent::GoToTop));
-        assert_eq!(shown(&mut state), top);
+        // g and G pick the summary and the description, as j and k do
+        assert!(state.keys().takes(UserEvent::GoToTop));
+        state.select_first();
+        assert_eq!(state.commit_field(), Some(CommitField::Summary));
+        assert!(state.keys().takes(UserEvent::GoToBottom));
+        state.select_last();
+        assert_eq!(state.commit_field(), Some(CommitField::Description));
         Ok(())
     }
 
@@ -4606,11 +4628,9 @@ mod tests {
             Some(Operation::Rebase)
         );
 
-        // resolve, stage, then c continues instead of committing
+        // resolved, staged as the files load again, then c continues instead of committing
         fs::write(repo_path.join("a.txt"), "resolved\n")?;
         state.reload();
-        select_row(&mut state, "a.txt");
-        state.select()?;
         state.commit_or_continue()?;
         state.run_task()?;
         assert_eq!(state.repository.operation_in_progress(), None);
@@ -4706,11 +4726,11 @@ mod tests {
         git
     }
 
+    // edited without markers, staged as the files load again
     fn resolve_and_stage(state: &mut LocalChangesState, repo_path: &std::path::Path) {
         fs::write(repo_path.join("a.txt"), "resolved\n").unwrap();
         state.reload();
-        select_row(state, "a.txt");
-        state.select().unwrap();
+        assert!(state.changes.staged.iter().any(|f| f.path == "a.txt"));
     }
 
     #[test]
@@ -5062,6 +5082,46 @@ mod tests {
             state.repository.operation_in_progress(),
             Some(Operation::Merge)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_space_on_conflicted_files() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+        fs::write(repo_path.join("new.txt"), "new\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let staged =
+            |state: &LocalChangesState| state.changes.staged.iter().any(|f| f.path == "a.txt");
+        // like lazygit, never staged with its markers: space on it opens the conflict panel
+        select_row(&mut state, "a.txt");
+        state.select()?;
+        assert!(state.is_conflict_focused());
+        assert!(!staged(&state));
+        assert!(state.back());
+        // nor with the other files of a directory
+        select_row(&mut state, ROOT_PATH);
+        assert!(state.select().is_err());
+        assert!(!staged(&state));
+        assert!(!state.changes.staged.iter().any(|f| f.path == "new.txt"));
+
+        // resolved in the editor, no markers left: staged once the files load again, the page
+        // made again too, as after the editor
+        fs::write(repo_path.join("a.txt"), "resolved\n")?;
+        let state = LocalChangesState::load(&repository);
+        assert!(staged(&state));
+        assert!(state.changes.unstaged.iter().all(|f| f.path != "a.txt"));
+        git_stdout(repo_path, &["reset", "-q", "--", "a.txt"]);
+        git_stdout(repo_path, &["checkout", "-q", "-m", "--", "a.txt"]);
+        let mut state = LocalChangesState::load(&repository);
+        assert!(!staged(&state));
+        fs::write(repo_path.join("a.txt"), "resolved\n")?;
+        state.reload();
+        assert!(staged(&state));
         Ok(())
     }
 

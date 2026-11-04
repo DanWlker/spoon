@@ -9,7 +9,6 @@ use ratatui::{
     Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::widget::tree_query::Toward;
 use crate::{
@@ -25,7 +24,7 @@ use crate::{
         picks::Picks,
         style::{
             mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
-            ListCursor,
+            shown_width, ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
@@ -921,16 +920,16 @@ fn highlighted_cut(
     options: SearchOptions,
     theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
-    if text.width() <= width {
+    if text.chars().map(shown_width).sum::<usize>() <= width {
         return highlighted_text(text, text.len(), style, search, options, theme);
     }
-    // the bytes of the first chars that fit before the ellipsis, measured as ratatui draws them
+    // the bytes of the first chars that fit before the ellipsis, measured as they are drawn
     let limit = width.saturating_sub(ELLIPSIS.len());
     let mut used = 0;
     let shown = text
         .char_indices()
         .find(|(_, c)| {
-            used += c.width().unwrap_or(0);
+            used += shown_width(*c);
             used > limit
         })
         .map_or(text.len(), |(i, _)| i);
@@ -1044,31 +1043,38 @@ fn calc_cell_widths(
                 marker_cell_width = 1;
             }
             UserListColumnType::Name => {
-                name_cell_width = name_width + pad;
+                name_cell_width = name_width.saturating_add(pad);
             }
             UserListColumnType::Hash => {
                 hash_cell_width = 7 + pad;
             }
             UserListColumnType::Date => {
-                date_cell_width = date_width + pad;
+                date_cell_width = date_width.saturating_add(pad);
             }
             UserListColumnType::Subject => {}
         }
     }
 
-    let mut total_width = graph_cell_width
-        + marker_cell_width
-        + hash_cell_width
-        + name_cell_width
-        + date_cell_width
-        + subject_min_width;
+    // summed wider than the widths, which the config sets up to u16::MAX
+    let mut total_width: u32 = [
+        graph_cell_width,
+        marker_cell_width,
+        hash_cell_width,
+        name_cell_width,
+        date_cell_width,
+        subject_min_width,
+    ]
+    .into_iter()
+    .map(u32::from)
+    .sum();
+    let area_width = u32::from(area_width);
 
     if total_width > area_width {
-        total_width = total_width.saturating_sub(name_cell_width);
+        total_width -= u32::from(name_cell_width);
         name_cell_width = 0;
     }
     if total_width > area_width {
-        total_width = total_width.saturating_sub(date_cell_width);
+        total_width -= u32::from(date_cell_width);
         date_cell_width = 0;
     }
     if total_width > area_width {
@@ -2042,6 +2048,23 @@ mod tests {
         assert_eq!(highlight("Müller Straße", 6, "ller", false), "l");
         // an escape code after the cut doesn't move it off a char boundary
         assert_eq!(highlight("abcdé\x1b[mxyz", 5, "abc", false), "ab");
+        // a tab counts its four columns, the match after it highlighted as drawn
+        let cut = |text: &str, width: usize| {
+            highlighted_cut(
+                text,
+                width,
+                Style::default(),
+                None,
+                Default::default(),
+                &theme,
+            )
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>()
+        };
+        assert_eq!(cut("a\tb", 6), "a    b");
+        assert_eq!(cut("a\tbcdef", 6), "a...");
+        assert_eq!(highlight("a\tbc", 10, "b", false), "b");
     }
 
     #[test]
@@ -2147,6 +2170,29 @@ mod tests {
             Constraint::Length(12), // Name (10 + 2 pad)
             Constraint::Length(9),  // Hash (7 + 2 pad)
             Constraint::Length(17), // Date (15 + 2 pad)
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_calc_cell_widths_of_the_widest_config() {
+        // the widths a config can set, at their most: the columns that don't fit are left out
+        let columns = vec![
+            UserListColumnType::Graph,
+            UserListColumnType::Marker,
+            UserListColumnType::Subject,
+            UserListColumnType::Name,
+            UserListColumnType::Hash,
+            UserListColumnType::Date,
+        ];
+        let actual = calc_cell_widths(80, u16::MAX, 6, u16::MAX, u16::MAX, &columns);
+        let expected = vec![
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(0),
+            Constraint::Length(0),
+            Constraint::Length(0),
         ];
         assert_eq!(actual, expected);
     }

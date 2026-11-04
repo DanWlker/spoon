@@ -11,6 +11,7 @@ use crate::{
     color::ColorTheme,
     event::UserEvent,
     search::{case_insensitive, SearchOptions},
+    widget::style::tabs_shown,
 };
 
 // Searching (`/`) and filtering (`?`) a file tree by path.
@@ -314,12 +315,18 @@ pub fn highlighted_text(
     let mut at = 0;
     for range in ranges.into_iter().filter(|r| r.start < shown.len()) {
         let end = range.end.min(shown.len());
-        spans.push(Span::styled(shown[at..range.start].to_string(), style));
+        spans.push(Span::styled(
+            tabs_shown(&shown[at..range.start]).into_owned(),
+            style,
+        ));
         let matched = style.patch(match_style(theme));
-        spans.push(Span::styled(shown[range.start..end].to_string(), matched));
+        spans.push(Span::styled(
+            tabs_shown(&shown[range.start..end]).into_owned(),
+            matched,
+        ));
         at = end;
     }
-    spans.push(Span::styled(shown[at..].to_string(), style));
+    spans.push(Span::styled(tabs_shown(&shown[at..]).into_owned(), style));
     spans
 }
 
