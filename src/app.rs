@@ -2125,7 +2125,12 @@ impl App<'_> {
         let snapshot = self.shell.parked_local_changes.take();
         self.replace_view(View::of_local_changes(
             commit_list_state,
-            LocalChangesState::restore(self.repository, self.ctx.clone(), snapshot),
+            LocalChangesState::restore(
+                self.repository,
+                self.ctx.clone(),
+                snapshot,
+                Some(self.ec.sender()),
+            ),
             self.ctx.clone(),
             self.ec.sender(),
         ));

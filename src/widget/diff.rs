@@ -299,7 +299,10 @@ impl DiffPart {
 pub struct WrapMap {
     width: u16,
     wrap: bool,
-    // prefix[i] = the screen row logical row i starts on; one longer than the rows
+    // the rows, each its own screen row while not wrapping
+    rows: usize,
+    // prefix[i] = the screen row logical row i starts on, one longer than the rows, while
+    // wrapping; empty else, as the rows are their own screen rows
     prefix: Vec<usize>,
 }
 
@@ -307,25 +310,39 @@ impl WrapMap {
     // The rows of `diff` at `width`, wrapped when `wrap`; built once per width or wrap change, so
     // drawing still builds only the rows it shows.
     pub fn of(diff: &ParsedDiff, theme: &ColorTheme, width: u16, wrap: bool) -> Self {
-        Self::from_lines(
-            diff_lines(diff, theme, 0..diff_line_count(diff), width).into_iter(),
-            width,
-            wrap,
-        )
+        let rows = diff_line_count(diff);
+        // made a few at a time, the whole diff of lines would take as much memory again
+        const CHUNK: usize = 1024;
+        let lines = || {
+            (0..rows).step_by(CHUNK).flat_map(move |start| {
+                diff_lines(diff, theme, start..rows.min(start + CHUNK), width)
+            })
+        };
+        Self::from_lines(rows, lines, width, wrap)
     }
 
-    // The screen rows `lines` wrap to at `width`, wrapped when `wrap`; the diff and the file
-    // preview measure the same way.
-    pub fn from_lines<'a>(lines: impl Iterator<Item = Line<'a>>, width: u16, wrap: bool) -> Self {
-        let mut prefix = vec![0];
-        let mut total = 0;
-        for line in lines {
-            total += visual_height(line, width, wrap);
-            prefix.push(total);
+    // The screen rows the `rows` of `lines` wrap to at `width`, wrapped when `wrap`; the diff and
+    // the file preview measure the same way. The lines are only made while wrapping: a big diff
+    // would take a while, and as much memory again.
+    pub fn from_lines<'a, L: IntoIterator<Item = Line<'a>>>(
+        rows: usize,
+        lines: impl FnOnce() -> L,
+        width: u16,
+        wrap: bool,
+    ) -> Self {
+        let mut prefix = vec![];
+        if wrap {
+            prefix.push(0);
+            let mut total = 0;
+            for line in lines() {
+                total += wrapped_height(&line, width as usize);
+                prefix.push(total);
+            }
         }
         WrapMap {
             width,
             wrap,
+            rows,
             prefix,
         }
     }
@@ -337,7 +354,7 @@ impl WrapMap {
 
     // The screen rows the diff takes.
     pub fn total(&self) -> usize {
-        self.prefix.last().copied().unwrap_or(0)
+        self.prefix.last().copied().unwrap_or(self.rows)
     }
 
     // The screen rows logical `rows` take.
@@ -372,6 +389,9 @@ impl WrapMap {
 
     // The logical rows whose screen rows overlap `visual`.
     pub fn logical_rows(&self, visual: Range<usize>) -> Range<usize> {
+        if self.prefix.is_empty() {
+            return visual.start.min(self.rows)..visual.end.min(self.rows);
+        }
         let start = self
             .prefix
             .partition_point(|&p| p <= visual.start)
@@ -386,16 +406,7 @@ impl WrapMap {
 
 // Whether the row of `diff` at `row` is one a search matches.
 pub fn row_matches(diff: &ParsedDiff, row: usize, query: &str, options: SearchOptions) -> bool {
-    match_range(&diff.rows[row].text, query, options).is_some()
-}
-
-// The screen rows `line` takes in `width`, wrapped when `wrap`.
-fn visual_height(line: Line, width: u16, wrap: bool) -> usize {
-    if wrap {
-        wrap_line(line, width as usize).len()
-    } else {
-        1
-    }
+    match_range(&diff.row_text(&diff.rows[row]), query, options).is_some()
 }
 
 // The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
@@ -787,7 +798,7 @@ fn changed_rows(diff: &ParsedDiff) -> impl DoubleEndedIterator<Item = usize> + '
         .map(|(i, _)| i)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffRowKind {
     File,
     Hunk,
@@ -797,14 +808,16 @@ pub enum DiffRowKind {
     Meta,
 }
 
+// A row of a diff, as small as it can be: a big diff has millions, see `ParsedDiff::row_text`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiffRow {
     pub kind: DiffRowKind,
-    pub old: Option<usize>,
-    pub new: Option<usize>,
-    pub text: String,
-    // the bytes of `text` that differ from the line it replaces, or that replaces it
-    pub emphasis: Vec<Range<usize>>,
+    pub old: Option<u32>,
+    pub new: Option<u32>,
+    // the bytes of the diff showing as its text, without the mark of the change
+    text: Range<usize>,
+    // the bytes of its text, as shown, that differ from the line it replaces, or that replaces it
+    emphasis: Box<[Range<usize>]>,
 }
 
 impl DiffRow {
@@ -812,14 +825,29 @@ impl DiffRow {
         matches!(self.kind, DiffRowKind::Added | DiffRowKind::Removed)
     }
 
-    fn without_numbers(kind: DiffRowKind, text: &str) -> Self {
+    fn without_numbers(kind: DiffRowKind, text: Range<usize>) -> Self {
         Self {
             kind,
             old: None,
             new: None,
-            text: text.to_string(),
-            emphasis: Vec::new(),
+            text,
+            emphasis: Box::default(),
         }
+    }
+}
+
+impl ParsedDiff {
+    // The text of `row` as shown, its tabs as four spaces.
+    pub fn row_text(&self, row: &DiffRow) -> std::borrow::Cow<'_, str> {
+        shown(&self.raw[row.text.clone()])
+    }
+}
+
+// `text` as shown, its tabs as four spaces.
+fn shown(text: &str) -> std::borrow::Cow<'_, str> {
+    match text.contains('\t') {
+        true => text.replace('\t', "    ").into(),
+        false => text.into(),
     }
 }
 
@@ -854,13 +882,15 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         let start = end;
         end += raw.len();
         let line = raw.trim_end_matches(['\n', '\r']);
+        // the bytes of the diff of `line` from `from`
+        let bytes = |from: usize| start + from..start + line.len();
 
         if line.starts_with("diff --git ") {
             finish_hunk(&mut current, &mut hunks, rows.len());
             file_start = start;
             if multiple_files {
-                let path = line.rsplit(" b/").next().unwrap_or(line);
-                rows.push(DiffRow::without_numbers(DiffRowKind::File, path));
+                let path = line.rfind(" b/").map_or(0, |i| i + 3);
+                rows.push(DiffRow::without_numbers(DiffRowKind::File, bytes(path)));
             }
             continue;
         }
@@ -882,7 +912,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
                     old_count,
                     body: end..end,
                 });
-                rows.push(DiffRow::without_numbers(DiffRowKind::Hunk, line));
+                rows.push(DiffRow::without_numbers(DiffRowKind::Hunk, bytes(0)));
                 continue;
             }
         }
@@ -892,45 +922,47 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         };
         hunk.body.end = end;
 
-        let text = line.get(1..).unwrap_or_default().replace('\t', "    ");
+        let text = bytes(line.len().min(1));
+        // a line number beyond u32 shows none, a file of billions of lines being no text
+        let number = |n: usize| u32::try_from(n).ok();
         let row = match line.as_bytes().first() {
             Some(b'+') => {
                 new += 1;
                 DiffRow {
                     kind: DiffRowKind::Added,
                     old: None,
-                    new: Some(new - 1),
+                    new: number(new - 1),
                     text,
-                    emphasis: Vec::new(),
+                    emphasis: Box::default(),
                 }
             }
             Some(b'-') => {
                 old += 1;
                 DiffRow {
                     kind: DiffRowKind::Removed,
-                    old: Some(old - 1),
+                    old: number(old - 1),
                     new: None,
                     text,
-                    emphasis: Vec::new(),
+                    emphasis: Box::default(),
                 }
             }
-            Some(b'\\') => DiffRow::without_numbers(DiffRowKind::Meta, line),
+            Some(b'\\') => DiffRow::without_numbers(DiffRowKind::Meta, bytes(0)),
             _ => {
                 old += 1;
                 new += 1;
                 DiffRow {
                     kind: DiffRowKind::Context,
-                    old: Some(old - 1),
-                    new: Some(new - 1),
+                    old: number(old - 1),
+                    new: number(new - 1),
                     text,
-                    emphasis: Vec::new(),
+                    emphasis: Box::default(),
                 }
             }
         };
         rows.push(row);
     }
     finish_hunk(&mut current, &mut hunks, rows.len());
-    emphasize_changes(&mut rows);
+    emphasize_changes(&mut rows, &shared);
     let max_line = rows
         .iter()
         .flat_map(|r| [r.old, r.new])
@@ -949,8 +981,8 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 }
 
 // Pairs the removed lines of a change with the added lines after them, in order, and marks in
-// each pair the words that differ between them.
-fn emphasize_changes(rows: &mut [DiffRow]) {
+// each pair the words that differ between them, in the text as shown, the bytes of `diff`.
+fn emphasize_changes(rows: &mut [DiffRow], diff: &str) {
     // the rows of `kind` from `from` on, past "\ No newline" notes, and where they end
     let run = |rows: &[DiffRow], from: usize, kind: DiffRowKind| {
         let mut found = Vec::new();
@@ -974,7 +1006,9 @@ fn emphasize_changes(rows: &mut [DiffRow]) {
         }
         let (added, end) = run(rows, end, DiffRowKind::Added);
         for (&r, &a) in removed.iter().zip(&added) {
-            (rows[r].emphasis, rows[a].emphasis) = changed_ranges(&rows[r].text, &rows[a].text);
+            let text = |row: &DiffRow| shown(&diff[row.text.clone()]);
+            let (old, new) = changed_ranges(&text(&rows[r]), &text(&rows[a]));
+            (rows[r].emphasis, rows[a].emphasis) = (old.into(), new.into());
         }
         i = end;
     }
@@ -1116,7 +1150,7 @@ pub fn diff_lines<'a>(
     }
 
     let width = diff.number_width;
-    let number = |n: Option<usize>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
+    let number = |n: Option<u32>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
 
     diff.rows
         .iter()
@@ -1124,7 +1158,7 @@ pub fn diff_lines<'a>(
         .take(range.len())
         .map(|row| {
             if row.kind == DiffRowKind::File {
-                let path = format!("{} ", row.text);
+                let path = format!("{} ", diff.row_text(row));
                 let fill =
                     (panel_width as usize).saturating_sub(3 + Span::raw(path.as_str()).width());
                 return Line::from(vec![
@@ -1141,7 +1175,7 @@ pub fn diff_lines<'a>(
             };
             let mut line = Line::from(vec![
                 Span::raw(gutter).fg(dim),
-                Span::raw(row.text.as_str()).fg(text_color),
+                Span::raw(diff.row_text(row)).fg(text_color),
             ]);
             // added and removed lines on a background across the panel, what changed in them
             // on a stronger one
@@ -1150,7 +1184,7 @@ pub fn diff_lines<'a>(
                 DiffRowKind::Removed => (theme.diff_delete_bg, theme.diff_delete_word_bg),
                 _ => return line,
             };
-            for range in &row.emphasis {
+            for range in row.emphasis.iter() {
                 patch_range(&mut line, range.clone(), Style::default().bg(word_bg));
             }
             line.bg(bg)
@@ -1248,14 +1282,9 @@ pub fn render_visual_rows(
 // `line` in rows of `width` columns, the rows after the first indented past its first span, the
 // line numbers, in their style, and keeping the line's style (the background of a change).
 fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
-    let indent = if line.spans.len() > 1 {
-        line.spans[0].width()
-    } else {
-        0
-    };
-    if width <= indent + 1 {
+    let Some(indent) = wrap_indent(&line, width) else {
         return vec![owned(line)];
-    }
+    };
     let style = line.style;
     // the line numbers' style under them too, like the selection's
     let gutter_style = line.spans.first().map(|s| s.style).unwrap_or_default();
@@ -1266,7 +1295,7 @@ fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
         let mut run = String::new();
         for c in span.content.chars() {
             let w = c.width().unwrap_or(0);
-            if used + w > width && used > indent {
+            if breaks(used, w, width, indent) {
                 if !run.is_empty() {
                     spans.push(Span::styled(std::mem::take(&mut run), span.style));
                 }
@@ -1282,6 +1311,39 @@ fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
         }
     }
     rows.push(Line::from(spans).style(style));
+    rows
+}
+
+// The columns of the line numbers, the first span, that the rows of `line` after its first are
+// indented by once wrapped at `width`; None when there is no room past them to wrap.
+fn wrap_indent(line: &Line, width: usize) -> Option<usize> {
+    let indent = if line.spans.len() > 1 {
+        line.spans[0].width()
+    } else {
+        0
+    };
+    (width > indent + 1).then_some(indent)
+}
+
+// Whether a character `w` wide starts a new row, `used` columns into one past its `indent`.
+fn breaks(used: usize, w: usize, width: usize, indent: usize) -> bool {
+    used + w > width && used > indent
+}
+
+// The rows `wrap_line` wraps `line` to, counted without making them.
+fn wrapped_height(line: &Line, width: usize) -> usize {
+    let Some(indent) = wrap_indent(line, width) else {
+        return 1;
+    };
+    let (mut rows, mut used) = (1, 0);
+    for c in line.spans.iter().flat_map(|span| span.content.chars()) {
+        let w = c.width().unwrap_or(0);
+        if breaks(used, w, width, indent) {
+            rows += 1;
+            used = indent;
+        }
+        used += w;
+    }
     rows
 }
 
@@ -1328,12 +1390,8 @@ mod tests {
         let hunk2 = "@@ -20 +20 @@\n-a\r\n+b\r\n";
         let actual = parse_diff(&format!("{header}{hunk1}{hunk2}"));
 
-        let row = |kind, old, new, text: &str| DiffRow {
-            kind,
-            old,
-            new,
-            text: text.into(),
-            emphasis: Vec::new(),
+        let row = |kind, old: Option<u32>, new: Option<u32>, text: &str| {
+            (kind, old, new, text.to_string())
         };
         let expected_rows = vec![
             row(DiffRowKind::Hunk, None, None, "@@ -3,2 +3,2 @@ ctx"),
@@ -1344,7 +1402,16 @@ mod tests {
             row(DiffRowKind::Removed, Some(20), None, "a"),
             row(DiffRowKind::Added, None, Some(20), "b"),
         ];
-        assert_eq!(actual.rows, expected_rows);
+        let rows: Vec<_> = actual
+            .rows
+            .iter()
+            .map(|r| (r.kind, r.old, r.new, actual.row_text(r).into_owned()))
+            .collect();
+        assert_eq!(rows, expected_rows);
+        assert!(actual
+            .rows
+            .iter()
+            .all(|r| r.emphasis.is_empty() || r.is_change()));
 
         let hunks: Vec<(Range<usize>, String)> = actual
             .hunks
@@ -1482,10 +1549,12 @@ mod tests {
             " ctx\n-é = 1\n\\ No newline at end of file\n+é = 2\n",
             "-one two three four\n+uno dos three cuatro\n",
         ));
+        let texts: Vec<_> = diff.rows.iter().map(|r| diff.row_text(r)).collect();
         let emphasis: Vec<_> = diff
             .rows
             .iter()
-            .map(|r| (r.text.as_str(), r.emphasis.clone()))
+            .zip(&texts)
+            .map(|(r, text)| (text.as_ref(), r.emphasis.to_vec()))
             .collect();
         assert_eq!(
             emphasis[1..],
@@ -1664,5 +1733,56 @@ mod tests {
         let actual = hunk.partial_patch(&[1], PatchDirection::Reverse);
         let expected = "diff --git a/f b/f\nindex 0000000..1234567\n--- a/f\n+++ b/f\n@@ -1,1 +1,2 @@\n a\n+b\n";
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_wrap_map_makes_no_lines_unwrapped() {
+        // each row its own screen row, the lines never made
+        let map = WrapMap::from_lines(3, || -> Vec<Line> { panic!("made") }, 80, false);
+        assert_eq!(map.total(), 3);
+        assert_eq!(map.visual_range(1..2), 1..2);
+        assert_eq!(map.logical_rows(1..5), 1..3);
+        assert_eq!(map.logical_at(2), 2);
+        // while wrapping they are measured
+        let lines = || vec![Line::raw("a".repeat(25)), Line::raw("b")];
+        let map = WrapMap::from_lines(2, lines, 10, true);
+        assert_eq!(map.total(), 4);
+        assert_eq!(map.visual_range(1..2), 3..4);
+    }
+
+    #[test]
+    fn test_tabs_show_as_spaces() {
+        let diff =
+            parse_diff("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-\ta = 1\n+\ta = 2\n");
+        // shown as spaces, the changed word marked in the text as shown
+        let removed = &diff.rows[1];
+        assert_eq!(diff.row_text(removed), "    a = 1");
+        assert_eq!(removed.emphasis[..], [Range { start: 8, end: 9 }]);
+        // and searched as shown
+        let options = SearchOptions::default();
+        assert!(row_matches(&diff, 2, "    a = 2", options));
+        // the patch keeps the tab, byte for byte
+        assert!(diff.hunks[0].patch().contains("+\ta = 2"));
+    }
+
+    #[test]
+    fn test_wrapped_height_counts_the_rows_of_wrap_line() {
+        let lines = [
+            Line::from(vec![Span::raw("  1   1 "), Span::raw("x".repeat(70))]),
+            Line::from(vec![
+                Span::raw("12 "),
+                Span::raw("é漢字".repeat(9)),
+                Span::raw("tail"),
+            ]),
+            Line::raw("a single span, no line numbers to indent the rows by"),
+            Line::from(vec![Span::raw("wide gutter "), Span::raw("text")]),
+            Line::raw(""),
+        ];
+        for line in lines {
+            for width in [1, 2, 5, 12, 13, 20, 80] {
+                let made = wrap_line(line.clone(), width).len();
+                assert_eq!(wrapped_height(&line, width), made, "{line:?} at {width}");
+            }
+        }
     }
 }

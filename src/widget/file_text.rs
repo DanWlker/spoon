@@ -231,7 +231,8 @@ impl FileText {
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
         // the lines are measured again, showing the selection again with them
         if !self.wrap.matches(area.width, wrap) {
-            self.wrap = WrapMap::from_lines(self.plain_lines(), area.width, wrap);
+            let rows = self.lines.len();
+            self.wrap = WrapMap::from_lines(rows, || self.plain_lines(), area.width, wrap);
             self.scroll_to(self.selected..self.selected + 1);
         }
         let scrolloff = ctx.ui_config.common.scrolloff as usize;

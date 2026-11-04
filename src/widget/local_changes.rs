@@ -296,14 +296,17 @@ pub struct LocalChangesState<'a> {
 impl<'a> LocalChangesState<'a> {
     #[cfg(test)]
     pub fn load(repository: &'a Repository) -> Self {
-        Self::restore(repository, crate::test_support::ui::test_ctx(), None)
+        Self::restore(repository, crate::test_support::ui::test_ctx(), None, None)
     }
 
-    // Loads the page as it was in `snapshot`, loading the diff once, for the selected file.
+    // Loads the page as it was in `snapshot`, loading the diff once, for the selected file: on
+    // another thread through `background`, which wakes the app up to show it (the files and the
+    // diffs after it load there too), else right away.
     pub fn restore(
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         snapshot: Option<LocalChangesSnapshot>,
+        background: Option<Sender>,
     ) -> Self {
         let changes = repository.take_loaded_local_changes();
         let files_stamp = repository.files_stamp(&changes);
@@ -327,7 +330,7 @@ impl<'a> LocalChangesState<'a> {
             request: None,
             diff_stale: false,
             files_stamp,
-            background: None,
+            background,
             files_loading: None,
             reloaded: Instant::now(),
             conflict: None,
@@ -727,6 +730,7 @@ impl<'a> LocalChangesState<'a> {
             Box::leak(Box::new(repository)),
             self.ctx.clone(),
             Some(self.snapshot()),
+            self.background.clone(),
         );
     }
 
@@ -1627,10 +1631,6 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Loads the files on another thread with the app's `tx`, after a change, see `reload`.
-    pub fn load_in_background(&mut self, tx: Sender) {
-        self.background = Some(tx);
-    }
-
     // Reloads the changes, keeping each section's selection on the same path if it still exists,
     // otherwise on the same position, like lazygit does after staging: on another thread when the
     // view set it up, see `poll_files` and `load_stale_diff`.
@@ -1978,11 +1978,16 @@ impl<'a> LocalChangesState<'a> {
         self.tree().selected()
     }
 
+    // On another thread when the view set it up, see `restore`: a big diff would hold up the
+    // screen; the one shown before is drawn meanwhile, and a key waits for it, see `load_stale_diff`.
     fn load_diff(&mut self) {
         self.diff_stale = false;
         if self.prepare_diff() {
-            let raw = self.diff_work()();
-            self.pane.show_loaded(&raw, self.repository);
+            let work = self.diff_work();
+            match &self.background {
+                Some(tx) => self.pane.load_in_background(tx.clone(), work),
+                None => self.pane.show_loaded(&work(), self.repository),
+            }
         }
     }
 
@@ -3405,14 +3410,16 @@ mod tests {
         assert!(state.is_files_focused());
         state.enter()?;
         assert!(state.is_diff_focused());
-        let reloaded = LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()));
+        let reloaded =
+            LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()), None);
         assert!(reloaded.is_diff_focused());
 
         // in the commit section, a box being typed into only staying selected
         let mut state = LocalChangesState::load(&repository);
         state.focus_commit();
         assert!(state.is_editing());
-        let reloaded = LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()));
+        let reloaded =
+            LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()), None);
         assert!(reloaded.is_commit_focused());
         assert!(!reloaded.is_editing());
 
@@ -3420,7 +3427,8 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         state.focus_commit();
         state.focus_files();
-        let reloaded = LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()));
+        let reloaded =
+            LocalChangesState::restore(&repository, test_ctx(), Some(state.snapshot()), None);
         assert!(reloaded.is_files_focused());
         Ok(())
     }
@@ -3501,6 +3509,7 @@ mod tests {
             &merging_repository,
             crate::test_support::ui::test_ctx(),
             Some(state.snapshot()),
+            None,
         );
         assert!(during.keys().takes(UserEvent::ToggleAmend));
 
@@ -3509,6 +3518,7 @@ mod tests {
             &repository,
             crate::test_support::ui::test_ctx(),
             Some(state.snapshot()),
+            None,
         );
         assert_eq!(paths(&reloaded.changes.staged), vec!["a.txt", "c.txt"]);
 
@@ -3520,6 +3530,7 @@ mod tests {
             &merging_repository,
             crate::test_support::ui::test_ctx(),
             Some(state.snapshot()),
+            None,
         );
         assert!(!during.keys().takes(UserEvent::ToggleAmend));
         assert_eq!(paths(&state.changes.staged), vec!["b.txt", "c.txt"]);
@@ -3555,6 +3566,7 @@ mod tests {
             &repository,
             crate::test_support::ui::test_ctx(),
             Some(state.snapshot()),
+            None,
         );
         assert!(state.draft.amend.is_none());
         assert!(state.changes.staged.is_empty());
@@ -4655,6 +4667,7 @@ mod tests {
             &repository,
             crate::test_support::ui::test_ctx(),
             Some(Default::default()),
+            None,
         );
         assert_eq!(restored.draft.summary.text(), "Merge branch 'feature'");
         state.draft.set_message("");
@@ -4663,6 +4676,7 @@ mod tests {
             &repository,
             crate::test_support::ui::test_ctx(),
             Some(state.snapshot()),
+            None,
         );
         assert_eq!(restored.draft.message(), "");
         state.draft.set_message("Merge branch 'feature'");

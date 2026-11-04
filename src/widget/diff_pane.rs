@@ -34,6 +34,8 @@ pub struct DiffPane {
     diff: Option<ParsedDiff>,
     // the diff loading in the background, shown once loaded, see `load_in_background`
     loading: Option<Job<String>>,
+    // what to select in the diff loading once it is shown, see `restore` and `enter`
+    pending: Option<DiffSelection>,
     // the diff shown before the one loading, drawn meanwhile; no key acts on it
     previous: Option<ParsedDiff>,
     // the hunks or the lines while the diff has the focus, None while what is beside it does (the
@@ -72,6 +74,7 @@ impl DiffPane {
         work: impl FnOnce() -> String + Send + 'static,
     ) {
         self.outdate();
+        self.pending = None;
         self.loading = Some(Job::spawn(tx, work));
     }
 
@@ -96,6 +99,9 @@ impl DiffPane {
         let mut diff = parse_diff(raw);
         diff.drop_converted(repository);
         self.set_diff(Some(diff));
+        if let Some(selection) = self.pending.take() {
+            self.restore(selection);
+        }
     }
 
     // When its diff started loading in the background, None when it isn't.
@@ -120,7 +126,12 @@ impl DiffPane {
     // Selects again in the diff reloaded after staging part of it what `selection` was: the same
     // hunk, then the changed line at or after the same row, as the staged line itself is gone or
     // became context. Stays out of the diff when it has no hunk left.
+    // While the diff loads in the background, once it is shown.
     pub fn restore(&mut self, selection: DiffSelection) {
+        if self.loading.is_some() {
+            self.pending = Some(selection);
+            return;
+        }
         let Some(diff) = &self.diff else {
             return;
         };
@@ -173,14 +184,28 @@ impl DiffPane {
     pub fn selected_lines(&self) -> Option<RangeInclusive<usize>> {
         let diff = self.diff.as_ref().filter(|_| self.is_focused())?;
         let rows = self.cursor.highlighted(diff, self.selected_part());
-        let mut lines = diff.rows.get(rows)?.iter().filter_map(|row| row.new);
+        let mut lines = diff
+            .rows
+            .get(rows)?
+            .iter()
+            .filter_map(|row| Some(row.new? as usize));
         let first = lines.next()?;
         Some(first..=lines.next_back().unwrap_or(first))
     }
 
     // Goes one level deeper, like on the local changes page: into the hunks, then the lines of the
     // selected hunk. Returns false when the diff has no hunk.
+    // While the diff loads in the background, its first hunk once it is shown.
     pub fn enter(&mut self) -> bool {
+        if self.loading.is_some() {
+            let first = DiffSelection {
+                focus: Some(DiffPart::Hunk),
+                hunk: 0,
+                line: 0,
+            };
+            self.pending = Some(first);
+            return true;
+        }
         let Some(diff) = &self.diff else {
             return false;
         };
@@ -465,5 +490,51 @@ mod tests {
         pane.set_diff(Some(parse_diff(next)));
         let shown = dump(&draw(&mut pane, &ctx, area));
         assert!(shown.contains("new") && !shown.contains("old"), "{shown}");
+    }
+
+    #[test]
+    fn test_selects_once_the_diff_loading_is_shown() {
+        use crate::{
+            event::EventController,
+            git::{Repository, SortCommit},
+            test_support::git::GitRepository,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let git = GitRepository::new(dir.path());
+        git.init();
+        git.commit("init", "2024-01-01");
+        let repository =
+            Repository::load(dir.path(), SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let raw =
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n@@ -5 +5 @@\n-c\n+d\n";
+
+        // the hunk selected before a reload, while the reloaded diff still loads
+        let mut pane = DiffPane::default();
+        pane.load_in_background(ec.sender(), move || raw.to_string());
+        let selection = DiffSelection {
+            focus: Some(DiffPart::Hunk),
+            hunk: 1,
+            line: 0,
+        };
+        pane.restore(selection);
+        pane.wait_loading(&repository);
+        assert!(pane.is_focused());
+        assert_eq!(pane.cursor.hunk, 1);
+
+        // entering, its first hunk
+        pane.load_in_background(ec.sender(), move || raw.to_string());
+        assert!(pane.enter());
+        assert!(!pane.is_focused());
+        pane.wait_loading(&repository);
+        assert!(pane.is_focused());
+        assert_eq!(pane.cursor.hunk, 0);
+
+        // another diff loading instead drops what was to be selected
+        pane.load_in_background(ec.sender(), move || raw.to_string());
+        pane.restore(selection);
+        pane.load_in_background(ec.sender(), move || raw.to_string());
+        pane.wait_loading(&repository);
+        assert!(!pane.is_focused());
     }
 }
