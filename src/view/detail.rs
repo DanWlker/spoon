@@ -12,20 +12,18 @@ use crate::{
     background::Job,
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, Sender, UserEvent},
-    git::{
-        AfterTask, Commit, CommitHash, FileChange, GitCommand, GitTask, PatchDirection, Ref,
-        Repository,
-    },
+    git::{Commit, CommitHash, FileChange, Ref, Repository},
     graph_commands::dialog_commit,
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
-        commit_event, copy_hashes, copy_path, copy_paths, copy_selection, edit_files, file_link,
-        handle_search_event, query_status, register_commit_link_keys, register_commit_list_keys,
-        register_diff_keys, search_status, type_commit_search, type_query, typing_keys, Compare,
-        CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
+        apply_selection, commit_event, copy_hashes, copy_path, copy_paths, copy_selection,
+        edit_files, file_link, handle_search_event, query_status, register_apply_key,
+        register_commit_link_keys, register_commit_list_keys, register_diff_keys, search_status,
+        type_commit_search, type_query, typing_keys, Compare, CopyForm, ListFacts,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::CommitDetail,
@@ -199,6 +197,11 @@ impl<'a> DetailView<'a> {
             "Select the lines of the preview",
         )
         .when(|v| entry(v) && tab(DetailTab::Files)(v));
+        // the main action in the diff
+        register_apply_key(k, |v| {
+            let diff = v.focus() == Pane && v.tab == DetailTab::Changes;
+            diff.then_some(&v.changes_state.pane)
+        });
         register_diff_keys(
             k,
             |v| {
@@ -208,12 +211,6 @@ impl<'a> DetailView<'a> {
             |v| v.ctx.diff_context.get(),
         );
         k.quiet(&[Confirm], "Close the details").when(on(Info));
-        k.add(
-            &[Select],
-            "apply to working tree",
-            "Apply the selected hunk or line to the working tree",
-        )
-        .when(|v| pane(v) && tab(DetailTab::Changes)(v));
         k.add(
             &[ShortCopy],
             "copy line",
@@ -1059,7 +1056,11 @@ impl<'a> DetailView<'a> {
                         state.back();
                     }
                     UserEvent::ToggleSelect => state.toggle_range(),
-                    UserEvent::Select => self.apply_change(),
+                    UserEvent::Select => {
+                        if let Some(event) = apply_selection(state) {
+                            self.tx.send(event);
+                        }
+                    }
                     UserEvent::IncreaseDiffContext => self.adjust_diff_context(true),
                     UserEvent::DecreaseDiffContext => self.adjust_diff_context(false),
                     UserEvent::ShortCopy => {
@@ -1149,31 +1150,6 @@ impl<'a> DetailView<'a> {
         }
         let state = &mut self.changes_state;
         handle_tree_event(event, |f| state.update_tree(f))
-    }
-
-    // Applies the selected hunk or line of the diff to the working tree.
-    fn apply_change(&self) {
-        let Some(patch) = self
-            .changes_state
-            .pane
-            .selected_patch(PatchDirection::Forward)
-        else {
-            return;
-        };
-        let what = self.changes_state.pane.selected_name();
-        let task = GitTask {
-            commands: vec![GitCommand::Apply.args(["-"])],
-            input: Some(patch),
-            running: format!("Applying the {what} to the working tree"),
-            done: format!("Applied the {what} to the working tree"),
-            // git names the lines that differ, which tells little more
-            failed: Some(format!(
-                "The {what} doesn't apply to the working tree, the file differs there"
-            )),
-            after: AfterTask::KeepView,
-            ..Default::default()
-        };
-        self.tx.send(AppEvent::StartTask(task));
     }
 
     // Moves in the commit list while it has the focus, showing the details of the selected commit;

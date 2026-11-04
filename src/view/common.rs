@@ -10,7 +10,9 @@ use crate::{
     browse::{LinkAction, LinkTarget},
     event::{AppEvent, UserEvent},
     external::editor_command,
-    git::{CommitHash, FileRevision, Repository, Rev},
+    git::{
+        AfterTask, CommitHash, FileRevision, GitCommand, GitTask, PatchDirection, Repository, Rev,
+    },
     graph_commands::single_commit_command,
     keybind::Scope,
     keys::{Availability, KeyList, Keys},
@@ -284,6 +286,17 @@ pub fn register_diff_keys<T: ?Sized>(
     .when(move |v| single_file(v) && context(v) > 0);
 }
 
+// Space on the diff of a commit, where `pane` is: applying the selected hunk or lines to the
+// working tree, see `apply_selection`.
+pub fn register_apply_key<T: ?Sized>(k: &mut Keys<T>, pane: fn(&T) -> Option<&DiffPane>) {
+    k.add(
+        &[UserEvent::Select],
+        "apply to working tree",
+        "Apply the selected hunk or line to the working tree",
+    )
+    .when(move |v| pane(v).is_some());
+}
+
 // The keys of `commit_event`, where `applies`.
 pub fn register_commit_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
     use UserEvent::*;
@@ -449,6 +462,25 @@ pub fn copy_selection(text: String, name: &str) -> AppEvent {
         .map(|c| c.to_uppercase().chain(chars).collect())
         .unwrap_or_default();
     AppEvent::copy(&name, text)
+}
+
+// Applies the selected hunk or lines of a commit's diff to the working tree.
+pub fn apply_selection(pane: &DiffPane) -> Option<AppEvent> {
+    let patch = pane.selected_patch(PatchDirection::Forward)?;
+    let what = pane.selected_name();
+    let task = GitTask {
+        commands: vec![GitCommand::Apply.args(["-"])],
+        input: Some(patch),
+        running: format!("Applying the {what} to the working tree"),
+        done: format!("Applied the {what} to the working tree"),
+        // git names the lines that differ, which tells little more
+        failed: Some(format!(
+            "The {what} doesn't apply to the working tree, the file differs there"
+        )),
+        after: AfterTask::KeepView,
+        ..Default::default()
+    };
+    Some(AppEvent::StartTask(task))
 }
 
 // The value `copy_path` and `copy_paths` copy: relative to the top of the repository, or absolute

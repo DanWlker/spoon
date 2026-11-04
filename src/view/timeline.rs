@@ -16,9 +16,9 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
-        commit_event, copy_selection, edit_files, file_link, query_status, register_commit_keys,
-        register_diff_keys, register_moving_keys, revision_matches, revision_spans, search_status,
-        type_query, typing_keys,
+        apply_selection, commit_event, copy_selection, edit_files, file_link, query_status,
+        register_apply_key, register_commit_keys, register_diff_keys, register_moving_keys,
+        revision_matches, revision_spans, search_status, type_query, typing_keys,
     },
     widget::{
         diff::Step,
@@ -228,6 +228,11 @@ impl TimelineView {
                 self.pane.enter();
             }
             UserEvent::ToggleSelect => self.pane.toggle_range(),
+            UserEvent::Select => {
+                if let Some(event) = apply_selection(&self.pane) {
+                    self.tx.send(event);
+                }
+            }
             UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                 self.adjust_diff_context(event == UserEvent::IncreaseDiffContext, repository)
             }
@@ -350,6 +355,8 @@ impl TimelineView {
                 && (v.pane.loading_since().is_some()
                     || v.pane.diff().is_some_and(|d| !d.hunks.is_empty()))
         };
+        // the main action in the diff
+        register_apply_key(k, |v| v.pane.is_focused().then_some(&v.pane));
         k.add(
             &[OlderCommit, NewerCommit],
             "older/newer commit",

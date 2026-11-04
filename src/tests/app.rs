@@ -2323,6 +2323,22 @@ fn test_timeline_shows_a_commit_on_the_graph() {
 }
 
 #[test]
+fn test_timeline_diff_applies_to_the_working_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // the file as before c2
+    std::fs::write(path.join("f.txt"), "a\nb\nc\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // f.txt in the files of c2, then the hunk of c2 applied from its diff
+        keys("5 shift-t"),
+        overlay("timeline"),
+        keys("l space"),
+        wait_for(|path| std::fs::read_to_string(path.join("f.txt")).unwrap() == "a\nMASTER\nc\n"),
+    ]);
+}
+
+#[test]
 fn test_diff_of_commits_stays_open_on_reload() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

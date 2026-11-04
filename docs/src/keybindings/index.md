@@ -357,7 +357,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
 | <kbd>v</kbd>                         | While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
-| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the timeline | `checkout`, `select`            |
+| <kbd>c</kbd> <kbd>Space</kbd>        | Check out the commit, after confirming, closing the timeline<br>In the diff, <kbd>Space</kbd> applies the selected hunk, line or lines to the working tree, as in the details | `checkout`, `select`            |
 | <kbd>y/Y</kbd>                       | Copy the commit short/full hash<br>Copy the hunk or line (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes | `increase_diff_context` `decrease_diff_context` |
 | <kbd>o/O</kbd>                       | Open the commit, or from the diff the file at the selected lines, on the web host; copy its link | `open_in_browser` `copy_link` |
