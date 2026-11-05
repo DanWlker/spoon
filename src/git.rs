@@ -106,6 +106,13 @@ impl Ref {
         }
     }
 
+    // The name git takes for it alone, as a tag may have a branch's name: refs/heads/x,
+    // refs/tags/x, or stash@{0}.
+    pub fn git_name(&self) -> String {
+        self.named()
+            .map_or_else(|| self.name().to_string(), |n| n.full_name())
+    }
+
     // A branch, remote branch or tag; None for a stash.
     pub fn named(&self) -> Option<NamedRef> {
         match self {

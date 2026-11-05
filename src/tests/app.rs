@@ -648,6 +648,44 @@ fn test_page_bar_names_the_window_over_the_pages() {
 }
 
 #[test]
+fn test_command_log_keys_like_everywhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    let copy_named = |expected: &'static str| {
+        check(move |app| {
+            let hints = app.shown_keys(app.local_hints());
+            let copy = hints.iter().find(|k| k.action == "copy").unwrap();
+            assert_eq!(copy.keys, expected);
+        })
+    };
+    harness.run(vec![
+        // y starts copying there too, the popup listing what finishes it
+        keys("@"),
+        overlay("log"),
+        copy_named("yy"),
+        keys("y"),
+        check(|app| {
+            assert_eq!(app.shell.app_status.pending_keys.len(), 1);
+            let next: Vec<(String, String)> = app
+                .keys_popup_keys()
+                .into_iter()
+                .map(|k| (k.keys, k.action))
+                .collect();
+            assert_eq!(next, [("y".to_string(), "copy".to_string())]);
+        }),
+        keys("y"),
+        check(|app| assert!(app.shell.app_status.pending_keys.is_empty())),
+        keys("esc"),
+        // named the same over a diff, whose y copies at once
+        keys("tab enter @"),
+        overlay("log"),
+        copy_named("yy"),
+    ]);
+}
+
+#[test]
 fn test_help_and_command_log_cover_the_app_one_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

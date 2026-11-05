@@ -272,13 +272,6 @@ impl FileTreeState {
             .is_none_or(|(filter, options)| name_matches(path, filter, *options))
     }
 
-    // The row of the selection among `all_rows`, where a search goes from.
-    pub fn all_rows_index(&self) -> usize {
-        let path = self.selected().map(|row| row.path.as_str());
-        let all_rows = self.all_rows();
-        index_in(&all_rows, path)
-    }
-
     // Selects `path`, expanding the directories that hide it.
     pub fn reveal(&mut self, path: Option<&str>) {
         let Some(path) = path else {
@@ -524,12 +517,6 @@ pub fn tree_guides(rows: impl IntoIterator<Item = (usize, bool)>) -> Vec<String>
             guide
         })
         .collect()
-}
-
-// The row of `rows` at `path`, or 0 without it.
-fn index_in(rows: &[FileTreeRow], path: Option<&str>) -> usize {
-    path.and_then(|path| rows.iter().position(|row| row.path == path))
-        .unwrap_or(0)
 }
 
 // The path of the next row in `rows` for which `wanted` is true, from `from` in `direction`,

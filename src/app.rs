@@ -575,8 +575,7 @@ impl<'a> App<'a> {
                 let refs = repository.refs(&commit.commit_hash);
                 // by the names git takes for them alone, as a tag may have a branch's name
                 for r in &refs {
-                    let name = r.named().map_or_else(|| r.name().to_string(), |n| n.full_name());
-                    ref_name_to_commit_index_map.insert(name, i);
+                    ref_name_to_commit_index_map.insert(r.git_name(), i);
                 }
                 // the detached HEAD's row in the sidebar selects it
                 if matches!(repository.head(), Head::Detached { target } if *target == commit.commit_hash)
@@ -790,46 +789,20 @@ impl App<'_> {
                     }
                 }
 
-                if matches!(self.shell.overlay, Some(Overlay::CommandLog(_))) {
-                    if let Some(event) = self.ctx.keybind.event_in(Scope::Global, &key) {
-                        self.dispatch(event, key);
+                // typed text, in a popup, a window or the page, takes the keys as they are
+                if self.is_typing() {
+                    if !self.force_quit(&key) {
+                        self.type_key(key);
                     }
                     return Ok(None);
                 }
-                if self.shell.dialog.is_some() {
-                    self.handle_dialog_key(key);
-                    return Ok(None);
-                }
-                // typing a search in the blame or the timeline, keys go to it as they are; else
-                // they are resolved like the page's, sequences too, see `dispatch`
-                if matches!(&self.shell.overlay, Some(Overlay::File(w)) if w.is_typing()) {
-                    if let (false, Some(Overlay::File(window))) =
-                        (self.force_quit(&key), self.shell.overlay.as_mut())
-                    {
-                        window.handle_event(UserEvent::Unknown, key, self.repository);
-                    }
-                    return Ok(None);
-                }
-                if let Some(Overlay::Help(help)) = &self.shell.overlay {
-                    if !help.is_typing() {
-                        if let Some(event) = self.ctx.keybind.event_in(Scope::Global, &key) {
-                            self.dispatch(event, key);
-                        }
-                    } else if let (false, Some(Overlay::Help(help))) =
-                        (self.force_quit(&key), self.shell.overlay.as_mut())
-                    {
-                        help.type_key(key);
-                    }
+                // the key that opened a popup runs it, in the part of the app it belongs to
+                if let Some(trigger) = self.dialog_trigger(&key) {
+                    self.handle_dialog_event(Some(trigger), key);
                     return Ok(None);
                 }
 
                 let scope = self.current_scope();
-                if self.view.is_capturing_keys() {
-                    if !self.force_quit(&key) {
-                        self.view.handle_event(UserEvent::Unknown, key);
-                    }
-                    return Ok(None);
-                }
 
                 // key sequences wait for their next key; the focused scope decides, like ]
                 // cycling the tabs of the details where elsewhere it does nothing
@@ -865,8 +838,11 @@ impl App<'_> {
                     }
                 }
 
-                if let Some(event) = self.ctx.keybind.event_in(scope, &key) {
-                    self.dispatch(event, key);
+                match self.ctx.keybind.event_in(scope, &key) {
+                    Some(event) => self.dispatch(event, key),
+                    // a popup handles the keys bound to nothing too, see `GitDialog::handle_key`
+                    None if self.shell.dialog.is_some() => self.handle_dialog_event(None, key),
+                    None => {}
                 }
             }
             // the wheel moves the selection of what has the focus like j and k, whatever keys they
@@ -1207,6 +1183,9 @@ impl App<'_> {
     // The keys working where the focus is: the window's, the sidebar's or the page's, then the
     // app's, the most useful first for the keys list.
     fn focused_keys(&self) -> KeyList {
+        if let Some(Popup { dialog, .. }) = &self.shell.dialog {
+            return dialog.keys();
+        }
         let mut keys = match self.overlay_keys() {
             Some(overlay) => overlay,
             None if self.shell.sidebar_focused() => self.sidebar_keys(),
@@ -1230,10 +1209,7 @@ impl App<'_> {
     // The keys and what they do, without those bound to no key.
     fn shown_keys(&self, hints: Vec<KeyHint>) -> Vec<KeyLabel> {
         // named as they are bound where the focus is
-        let scope = match self.visible_dialog() {
-            Some(_) => Scope::Dialog,
-            None => self.current_scope(),
-        };
+        let scope = self.current_scope();
         hints
             .into_iter()
             .map(|(events, action)| KeyLabel::new(self.ctx.short_keys(scope, &events), action))
@@ -1264,15 +1240,6 @@ impl App<'_> {
     // these are in the status bar, else those of the whole app, the others in the keys popup.
     fn keys_are_local(&self) -> bool {
         self.visible_dialog().is_some() || self.shell.overlay.is_some() || self.is_typing()
-    }
-
-    // Whether a search or filter is typed, in the window over everything or the page.
-    fn is_typing(&self) -> bool {
-        match &self.shell.overlay {
-            Some(Overlay::File(window)) => window.is_typing(),
-            Some(Overlay::Help(help)) => help.is_typing(),
-            _ => self.view.is_capturing_keys(),
-        }
     }
 
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
@@ -1737,6 +1704,10 @@ impl App<'_> {
     // the window over everything, the focused sidebar or the page, when one of their keys works
     // there: no key works without being listed in the hints and the help.
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
+        if self.shell.dialog.is_some() {
+            self.handle_dialog_event(Some(event), key);
+            return;
+        }
         if self.app_keys().takes(event) {
             self.handle_app_event(event);
             return;
@@ -1998,8 +1969,14 @@ impl App<'_> {
 
     // The scope of the keys, where the focus is, see `Scope`.
     fn current_scope(&self) -> Scope {
-        if let Some(Overlay::File(window)) = &self.shell.overlay {
-            return window.scope();
+        if self.shell.dialog.is_some() {
+            return Scope::Dialog;
+        }
+        match &self.shell.overlay {
+            Some(Overlay::File(window)) => return window.scope(),
+            // the keys list and the command log take the keys of the whole app only
+            Some(Overlay::Help(_) | Overlay::CommandLog(_)) => return Scope::Global,
+            None => {}
         }
         if self.shell.sidebar_focused() {
             return Scope::Sidebar;
@@ -2183,10 +2160,7 @@ impl App<'_> {
                 .repository
                 .all_refs()
                 .into_iter()
-                .find(|r| {
-                    r.named()
-                        .map_or_else(|| r.name() == name, |n| n.full_name() == name)
-                })
+                .find(|r| r.git_name() == name)
                 .map(|r| r.target().clone()),
             None => None,
         };
@@ -2349,21 +2323,44 @@ impl App<'_> {
         }
     }
 
-    fn handle_dialog_key(&mut self, key: KeyEvent) {
-        if self.force_quit(&key) {
-            return;
+    // The event opening the popup, when `key` is its key, in the part of the app it belongs to: a
+    // single key, a sequence like y l confirms with enter.
+    fn dialog_trigger(&self, key: &KeyEvent) -> Option<UserEvent> {
+        let trigger = self.shell.dialog.as_ref()?.dialog.trigger()?;
+        (self.shell.app_status.pending_keys.is_empty()
+            && self.ctx.keybind.event_in(trigger.home_scope(), key) == Some(trigger))
+        .then_some(trigger)
+    }
+
+    // Whether the keys are typed as they are: into a field of the popup, a search of the window
+    // or the keys list, or the page.
+    fn is_typing(&self) -> bool {
+        match (&self.shell.dialog, &self.shell.overlay) {
+            (Some(popup), _) => popup.dialog.is_editing(),
+            (None, Some(Overlay::File(window))) => window.is_typing(),
+            (None, Some(Overlay::Help(help))) => help.is_typing(),
+            (None, Some(Overlay::CommandLog(_))) => false,
+            (None, None) => self.view.is_capturing_keys(),
         }
+    }
+
+    // Types the key where `is_typing` says.
+    fn type_key(&mut self, key: KeyEvent) {
+        match (&mut self.shell.dialog, &mut self.shell.overlay) {
+            (Some(_), _) => self.handle_dialog_event(None, key),
+            (None, Some(Overlay::File(window))) => {
+                window.handle_event(UserEvent::Unknown, key, self.repository)
+            }
+            (None, Some(Overlay::Help(help))) => help.type_key(key),
+            (None, Some(Overlay::CommandLog(_))) => {}
+            (None, None) => self.view.handle_event(UserEvent::Unknown, key),
+        }
+    }
+
+    // A key of the popup, as `event`, or typed into its field.
+    fn handle_dialog_event(&mut self, event: Option<UserEvent>, key: KeyEvent) {
         let Some(Popup { dialog, .. }) = self.shell.dialog.as_mut() else {
             return;
-        };
-        // the key that opened the popup runs it, in the part of the app it belongs to
-        let event = match dialog.trigger() {
-            Some(trigger)
-                if self.ctx.keybind.event_in(trigger.home_scope(), &key) == Some(trigger) =>
-            {
-                Some(trigger)
-            }
-            _ => self.ctx.keybind.event_in(Scope::Dialog, &key),
         };
         // only its keys working there, while not typing, which takes every key
         let event = event.filter(|event| dialog.is_editing() || dialog.keys().takes(*event));
@@ -2873,8 +2870,6 @@ impl App<'_> {
             .shell
             .reload
             .take_if(|pending| pending.generation == generation)?;
-        // the graph laid out for it, of the repository before, no longer lands
-        self.shell.reveal = None;
         let Reloaded { loaded, layout } = match result {
             Ok(reloaded) => *reloaded,
             Err(err) => {
@@ -2895,10 +2890,15 @@ impl App<'_> {
                 repository
             }
         };
-        let context = match pending.restore {
+        let mut context = match pending.restore {
             Restore::Current(asked) => self.view.refresh_context().unwrap_or(*asked),
             Restore::Given(context) => *context,
         };
+        // the graph is drawn with the merges folded now, which show the commit to reveal: the
+        // graph laid out for it, of the repository before, no longer lands
+        if let Some(commit) = self.shell.reveal.take() {
+            context.list_context_mut().select = Reselect::Commit(commit);
+        }
         // drawn over the last frame, like after folding a merge
         let images = self
             .take_list_state()

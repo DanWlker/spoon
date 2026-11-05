@@ -633,10 +633,7 @@ pub fn submodule_commit_list<'a>(
         .map(|(i, commit)| {
             let refs = repository.refs(&commit.commit_hash);
             for r in &refs {
-                let name = r
-                    .named()
-                    .map_or_else(|| r.name().to_string(), |n| n.full_name());
-                ref_name_to_commit_index_map.insert(name, i);
+                ref_name_to_commit_index_map.insert(r.git_name(), i);
             }
             CommitInfo::new(commit, refs, repository.branch_tracking(), true)
         })

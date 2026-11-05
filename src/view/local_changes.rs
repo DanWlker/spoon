@@ -147,8 +147,8 @@ impl<'a> LocalChangesView<'a> {
         let options = self.ctx.search_options.get();
         match event {
             UserEvent::Cancel => {
-                // lines -> hunks -> files, or commit section -> files,
-                // then clear the picked files, then the search, then the filter;
+                // the search of the diff, lines -> hunks -> files, or commit section -> files,
+                // then clear the picked files, then the filter;
                 // the page itself is left with tab, not closed
                 let state = &mut self.local_changes_state;
                 let _ = state.clear_diff_query()

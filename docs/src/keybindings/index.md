@@ -114,7 +114,7 @@ The other commands ask first, in a popup showing what they do and the git comman
 
 <kbd>L</kbd> shows only the history of `HEAD` (the commits of the current branch, and of the branches merged into it), and again all commits; the title of the commit list says so ("main only").
 The commits that are not on the current branch are dimmed, and the branches and tags at a commit are shown as labels before its subject, the checked-out branch standing out. A branch whose upstream is at the same commit shows one label, with a plugged cable () before its name.
-A merge commit is drawn as a ring, larger than a commit's dot, with a chevron in it pointing to the side the merged line comes in from. <kbd>h</kbd> folds it: the commits it brought in are hidden, even those a branch or tag points at (a commit still shown, like the checked-out one or a later commit of the branch, keeps what it reaches), and its chevron points down; <kbd>l</kbd> unfolds it. <kbd>Enter</kbd> on such a branch or tag in the refs sidebar unfolds the merges hiding its commit and selects it. Merges stay folded across reloads.
+A merge commit is drawn as a ring, larger than a commit's dot, with a chevron in it pointing to the side the merged line comes in from. <kbd>h</kbd> folds it: the commits it brought in are hidden, even those a branch or tag points at (a commit still shown, like the checked-out one or a later commit of the branch, keeps what it reaches), and its chevron points down; <kbd>l</kbd> unfolds it. <kbd>Enter</kbd> on such a branch or tag in the refs sidebar unfolds every folded merge that brought its commit in, even when unfolding one would show it, and selects it. Merges stay folded across reloads.
 
 Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
@@ -231,7 +231,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | Key                                                  | Description      | Corresponding keybind            |
 | ---------------------------------------------------- | ---------------- | -------------------------------- |
 | <kbd>Esc</kbd>                  | Back to the page | `cancel`                 |
-| <kbd>Enter</kbd>                                     | Open/Close node, else back to the page at the selected ref, unfolding the merges hiding its commit | `confirm` |
+| <kbd>Enter</kbd>                                     | Open/Close node, else back to the page at the selected ref, unfolding the folded merges that brought its commit in | `confirm` |
 | <kbd>2</kbd> - <kbd>5</kbd>                          | Focus a panel of the page | `focus_panel_2` ... `focus_panel_5` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                     | Move down/up     | `select_down` `select_up`        |

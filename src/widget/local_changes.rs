@@ -1072,7 +1072,7 @@ impl<'a> LocalChangesState<'a> {
         k.add(
             &[Cancel],
             "clear picks",
-            "Back, then clear the picked files, the search, the filter",
+            "Back, then clear the picked files, then the filter",
         )
         .when(|v| files(v) && picks(v));
         k.add(
@@ -1241,7 +1241,7 @@ impl<'a> LocalChangesState<'a> {
         .when(|v| diff(v) || conflict(v) || commit(v));
         k.quiet(
             &[Cancel],
-            "Back, then clear the picked files, the search, the filter",
+            "Back, then clear the picked files, then the filter",
         )
         .when(|v| files(v) && !picks(v));
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
@@ -1742,10 +1742,8 @@ impl<'a> LocalChangesState<'a> {
             .collect()
     }
 
-    // Starts typing a search of the diff while it has the focus, else a search or filter of the
-    // files, moving the focus back to them; a search goes from the row of what had the focus while
-    // it is typed.
-    // Starts typing a search of the diff while it has the focus, else a filter of the files.
+    // Starts typing a search of the diff while it has the focus, going from its selected row, else
+    // a filter of the files, moving the focus back to them.
     pub fn start_query(&mut self) {
         if self.is_diff_focused() {
             let from = self.pane.selected_row();
@@ -1754,8 +1752,8 @@ impl<'a> LocalChangesState<'a> {
         }
         self.focus_section(self.section);
         self.tree_mut().cancel_visual();
-        let from = self.tree().all_rows_index();
-        self.query_mut().start(QueryKind::Filter, from);
+        // a filter goes from no row, see `TreeQuery::step_from`
+        self.query_mut().start(QueryKind::Filter, 0);
     }
 
     pub fn is_typing_query(&self) -> bool {
@@ -4554,7 +4552,7 @@ mod tests {
         state.select()?;
         assert!(!paths(&state.changes.staged).contains(&"a.txt"));
 
-        // esc: back from the diff, then the picked files, then the search and filter
+        // esc: back from the diff, then the picked files, then the filter
         state.focus_section(LocalChangesSection::Unstaged);
         select_row(&mut state, "c.txt");
         state.toggle_visual();

@@ -154,11 +154,7 @@ impl<'a> DetailView<'a> {
         // a file or directory, not the root row standing for all of them
         let path = |v: &Self| v.selected_row().and_then(FileTreeRow::entry).is_some();
         // or a filter hiding all of them, to change
-        let queried = move |v: &Self| {
-            files(v)
-                && v.query()
-                    .is_some_and(|q| q.search().is_some() || q.filter().is_some())
-        };
+        let queried = move |v: &Self| files(v) && v.query().is_some_and(|q| q.filter().is_some());
 
         // the commit list: back to the diff of two commits, closing it, or the list's own keys
         k.add(
@@ -1297,7 +1293,8 @@ impl<'a> DetailView<'a> {
                 return true;
             }
             UserEvent::Cancel => {
-                // clear the search, then the filter, before closing
+                // clear the search of the diff or preview, or the filter of the files, before
+                // closing
                 let change = query.clear();
                 if change.is_none() {
                     return false;
@@ -1385,15 +1382,13 @@ impl<'a> DetailView<'a> {
         self.tx.send(event);
     }
 
-    // The row of what has the focus: the row of its file tree, or of the diff or the preview,
-    // from which a search starts.
+    // The selected row of the diff or the preview, from which a search starts; the files are
+    // filtered, which goes from no row.
     fn focus_row(&self) -> usize {
         match (self.tab, self.is_pane_focused()) {
-            (DetailTab::Info, _) => 0,
             (DetailTab::Changes, true) => self.changes_state.pane.selected_row(),
             (DetailTab::Files, true) => self.files_state.preview_selected_row(),
-            (DetailTab::Changes, false) => self.changes_state.tree_row(),
-            (DetailTab::Files, false) => self.files_state.tree_row(),
+            _ => 0,
         }
     }
 

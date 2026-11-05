@@ -133,7 +133,11 @@ impl HelpView {
                 self.tx
                     .send(query_status(&self.ctx, &self.query, SearchKind::Names));
             }
-            UserEvent::Cancel if self.query.clear().is_some() => self.apply_filter(),
+            // the filter first
+            UserEvent::Cancel if self.query.filter().is_some() => {
+                self.query.clear();
+                self.apply_filter();
+            }
             UserEvent::HelpToggle | UserEvent::Cancel => self.tx.send(AppEvent::CloseOverlay),
             event => {
                 self.cursor.navigate(event, self.shown.len());

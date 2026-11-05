@@ -151,11 +151,6 @@ impl<'a> CommitChangesState<'a> {
         self.tree.selected()
     }
 
-    // The row of the selection among the rows a search goes through.
-    pub fn tree_row(&self) -> usize {
-        self.tree.all_rows_index()
-    }
-
     // How the search for `query` went over the files, or the diff while it has the focus.
     pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
         self.pane.search_outcome(query, options)
@@ -515,11 +510,6 @@ pub struct CommitFilesState<'a> {
 impl<'a> CommitFilesState<'a> {
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
         self.tree.as_ref()?.selected()
-    }
-
-    // The row of the selection among the rows a search goes through, and of the preview's line.
-    pub fn tree_row(&self) -> usize {
-        self.tree.as_ref().map_or(0, FileTreeState::all_rows_index)
     }
 
     pub fn preview_selected_row(&self) -> usize {
