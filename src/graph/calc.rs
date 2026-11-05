@@ -25,7 +25,8 @@ pub enum Fold {
 }
 
 // The parents and children of the commits shown: a folded merge has its first parent only, and
-// the commits only it brought in are left out.
+// the commits it brought in are left out, even those a branch or tag points at, unless a commit
+// shown still reaches them; the checked-out commit always stays.
 struct Links<'a, 'f> {
     repository: &'a Repository,
     folded: &'f FxHashSet<CommitHash>,
@@ -43,13 +44,13 @@ impl<'a, 'f> Links<'a, 'f> {
         if folded.is_empty() {
             return links;
         }
-        // from the commits with no children and those of refs, which stay shown
+        // from the commits with no children and the checked-out one, which stay shown
+        let head = repository.head_commit();
         let mut stack: Vec<&CommitHash> = repository
             .all_commits()
             .into_iter()
             .map(|c| &c.commit_hash)
-            .filter(|h| repository.children_hash(h).is_empty())
-            .chain(repository.all_refs().into_iter().map(Ref::target))
+            .filter(|h| repository.children_hash(h).is_empty() || head.as_ref() == Some(*h))
             .collect();
         let mut shown = FxHashSet::default();
         while let Some(hash) = stack.pop() {
@@ -117,7 +118,35 @@ impl EdgeType {
     }
 }
 
-// The graph of the commits loaded, the `folded` merges without the commits only they brought in.
+// The `folded` merges hiding `target`, which unfolded show it: those it was brought in by; none when
+// it is shown, or not loaded.
+pub fn merges_hiding(
+    repository: &Repository,
+    folded: &FxHashSet<CommitHash>,
+    target: &CommitHash,
+) -> Vec<CommitHash> {
+    if repository.commit(target).is_none() || Links::new(repository, folded).is_shown(target) {
+        return vec![];
+    }
+    // the commits reaching it: it and its descendants
+    let mut reaching = FxHashSet::default();
+    let mut stack = vec![target];
+    while let Some(hash) = stack.pop() {
+        if reaching.insert(hash) {
+            stack.extend(repository.children_hash(hash));
+        }
+    }
+    folded
+        .iter()
+        .filter(|merge| {
+            let parents = repository.parents_hash(merge);
+            parents.iter().skip(1).any(|p| reaching.contains(p))
+        })
+        .cloned()
+        .collect()
+}
+
+// The graph of the commits loaded, the `folded` merges without the commits they brought in.
 pub fn calc_graph<'a>(
     repository: &'a Repository,
     primary_branch: Option<&str>,

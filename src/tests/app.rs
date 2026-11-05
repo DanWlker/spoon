@@ -1713,6 +1713,50 @@ fn test_fold_merge_while_reloading_or_laying_out() {
 }
 
 #[test]
+fn test_enter_on_a_ref_unfolds_the_merge_hiding_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    let feat1 = git(&path, &["rev-parse", "feat"]).trim().to_string();
+    let mut harness = Harness::new(&path, launch());
+    let shown = |count: usize, folded: usize| {
+        check(move |app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().position().1, count);
+            assert_eq!(app.shell.folded_merges().len(), folded);
+        })
+    };
+    harness.run(vec![
+        // feat1 goes with the merge folded, though feat points at it
+        keys("h"),
+        shown(3, 1),
+        // moving to feat in the sidebar leaves the merge folded
+        keys("1 j"),
+        check(|app| {
+            assert_eq!(
+                app.shell.sidebar.selected_git_name().as_deref(),
+                Some("refs/heads/feat")
+            )
+        }),
+        shown(3, 1),
+        // enter unfolds it and selects feat1 once the graph is drawn again
+        keys("enter"),
+        shown(4, 0),
+        check(move |app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().selected_commit_hash().as_str(), feat1);
+        }),
+    ]);
+}
+
+#[test]
 fn test_fold_merge_with_branch_only() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());

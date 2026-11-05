@@ -1994,7 +1994,7 @@ fn primary_branch_max_count() -> TestResult {
 }
 
 #[test]
-fn fold_merge_hides_only_what_it_alone_reaches() -> TestResult {
+fn fold_merge_hides_what_it_brought_in() -> TestResult {
     let dir = tempfile::tempdir()?;
     let repo_path = dir.path();
     let git = &GitRepository::new(repo_path);
@@ -2027,10 +2027,29 @@ fn fold_merge_hides_only_what_it_alone_reaches() -> TestResult {
     };
     let folded = [merge.clone()].into_iter().collect();
 
-    // feat still points at f2, nothing goes but the merge line
+    // f1 and f2 go, though feat still points at f2; unfolding the merge shows f2 again
+    let graph = graph::calc_graph(&repository, None, &folded);
+    assert_eq!(subjects(&graph).len(), 4);
+    assert_eq!(graph.merges[merge], graph::Fold::Folded);
+    let feat = repository
+        .all_refs()
+        .into_iter()
+        .find(|r| r.name() == "feat")
+        .map(|r| r.target().clone())
+        .unwrap();
+    assert_eq!(
+        graph::merges_hiding(&repository, &folded, &feat),
+        std::slice::from_ref(merge)
+    );
+    assert!(graph::merges_hiding(&repository, &Default::default(), &feat).is_empty());
+
+    // the checked-out commit stays, with what it reaches
+    git.checkout("feat");
+    let repository = load()?;
     let graph = graph::calc_graph(&repository, None, &folded);
     assert_eq!(subjects(&graph).len(), 6);
-    assert_eq!(graph.merges[merge], graph::Fold::Folded);
+    assert!(graph::merges_hiding(&repository, &folded, &feat).is_empty());
+    git.checkout("master");
 
     git.branch_d("feat");
     let repository = load()?;

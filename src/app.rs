@@ -35,8 +35,8 @@ use crate::{
         LoadOptions, Loaded, NamedRef, Ref, Repository, Rev, RunningTask, SharedTask,
     },
     graph::{
-        CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode, GraphImages,
-        GraphLayout, GraphStyle,
+        merges_hiding, CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode,
+        GraphImages, GraphLayout, GraphStyle,
     },
     graph_commands::{graph_command, ref_graph_command, GraphCommand},
     keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
@@ -281,6 +281,9 @@ pub struct AppShell {
     opening: Option<Opening>,
     // when each layout of the graph running after folding merges started, see `App::start_regraph`
     regraphs: Vec<Instant>,
+    // the commit to select once the graph laid out with merges unfolded to show it lands, see
+    // `App::reveal_sidebar_selection`
+    reveal: Option<CommitHash>,
 }
 
 // What the app shows again once the repository reloaded in the background lands.
@@ -652,6 +655,7 @@ impl<'a> App<'a> {
                 reload_generation: 0,
                 opening: None,
                 regraphs: Vec::new(),
+                reveal: None,
             },
         };
         // gone, like after a rebase
@@ -1009,8 +1013,12 @@ impl App<'_> {
                 }
                 // one of merges folded since is laid out after it
                 let context = self.view.refresh_context();
-                if let Some(context) = context.filter(|_| layout.folded == self.shell.folded_merges)
+                if let Some(mut context) =
+                    context.filter(|_| layout.folded == self.shell.folded_merges)
                 {
+                    if let Some(commit) = self.shell.reveal.take() {
+                        context.list_context_mut().select = Reselect::Commit(commit);
+                    }
                     // drawn over the last frame: only the rows that changed are drawn again
                     let images = self
                         .take_list_state()
@@ -1937,7 +1945,7 @@ impl App<'_> {
             UserEvent::Confirm => {
                 // a folder opens or closes, else back to the page showing what is selected
                 if !self.shell.sidebar.toggle_node() {
-                    self.select_sidebar_selection();
+                    self.reveal_sidebar_selection();
                     self.blur_sidebar();
                 }
             }
@@ -2163,6 +2171,38 @@ impl App<'_> {
             View::Detail(view) => view.select_ref(&name),
             _ => {}
         }
+    }
+
+    // Shows the selected ref on the graph like `select_sidebar_selection`, unfolding the merges
+    // hiding its commit first: the commit is selected once the graph is laid out again.
+    fn reveal_sidebar_selection(&mut self) {
+        let name = self.shell.sidebar.selected_git_name();
+        let target = match name.as_deref() {
+            Some("HEAD") => self.repository.head_commit(),
+            Some(name) => self
+                .repository
+                .all_refs()
+                .into_iter()
+                .find(|r| {
+                    r.named()
+                        .map_or_else(|| r.name() == name, |n| n.full_name() == name)
+                })
+                .map(|r| r.target().clone()),
+            None => None,
+        };
+        let hiding = target
+            .as_ref()
+            .map(|target| merges_hiding(self.repository, &self.shell.folded_merges, target))
+            .unwrap_or_default();
+        if hiding.is_empty() {
+            self.select_sidebar_selection();
+            return;
+        }
+        for merge in &hiding {
+            self.shell.folded_merges.remove(merge);
+        }
+        self.shell.reveal = target;
+        self.start_regraph();
     }
 
     // Selects the commit on the graph, from the blame, which closes; warns when the graph doesn't show it.
@@ -2833,6 +2873,8 @@ impl App<'_> {
             .shell
             .reload
             .take_if(|pending| pending.generation == generation)?;
+        // the graph laid out for it, of the repository before, no longer lands
+        self.shell.reveal = None;
         let Reloaded { loaded, layout } = match result {
             Ok(reloaded) => *reloaded,
             Err(err) => {
