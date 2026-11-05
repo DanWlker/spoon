@@ -35,7 +35,7 @@ The character width that a graph image unit cell occupies.
 
 _Possible values:_ `auto`, `double`, `single`
 
-If not specified or `auto` is specified, `double` will be used automatically if there is enough width to display it, `single` otherwise.
+If not specified or `auto` is specified, `double` will be used automatically if the commits panel, beside the refs sidebar, is wide enough to display it, `single` otherwise. `double` asked for only needs the terminal to be wide enough; beside the sidebar the graph may then be cut on the right.
 
 The width is picked when the app starts and kept until it quits: a graph grown wider by a reload, or a terminal made narrower, cuts the graph off on the right.
 

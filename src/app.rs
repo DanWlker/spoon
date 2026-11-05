@@ -1629,13 +1629,18 @@ impl App<'_> {
         } else if self.shell.sidebar_collapsed() {
             COLLAPSED_SIDEBAR_WIDTH.min(area.width)
         } else {
-            // leave the page some room on narrow terminals, unless resized
-            let default = self.ctx.ui_config.refs.width.min(area.width / 3);
-            let width = self.ctx.layout.borrow().size(Panel::Sidebar, default);
-            fit_size(width, area.width, 10, 20)
+            sidebar_width(&self.ctx, area.width)
         };
         Layout::horizontal([Constraint::Length(width), Constraint::Min(0)]).areas(area)
     }
+}
+
+// The width of the refs sidebar, shown, in an app `total` wide: the config's, or as resized.
+pub fn sidebar_width(ctx: &AppContext, total: u16) -> u16 {
+    // leave the page some room on narrow terminals, unless resized
+    let default = ctx.ui_config.refs.width.min(total / 3);
+    let width = ctx.layout.borrow().size(Panel::Sidebar, default);
+    fit_size(width, total, 10, 20)
 }
 
 // " [1] " and the border on its right

@@ -156,6 +156,8 @@ The character width that a graph image unit cell occupies.
   - `double`
   - `single`
 
+`auto` uses `double` when the commits panel, beside the refs sidebar, is wide enough for it, else `single`; see [`--graph-width`](../getting-started/command-line-options.md#-g---graph-width-type).
+
 The value specified in the command line argument takes precedence.
 
 ### `core.option.graph_style`

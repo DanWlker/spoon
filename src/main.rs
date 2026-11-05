@@ -440,7 +440,14 @@ impl Loader {
         // picked at the start and kept when made again: the graph then is cut like on a resize,
         // instead of the app quitting on a reload in a narrow terminal
         let cell_width_type = match &refresh {
-            None => check::decide_cell_width_type(&graph, size, self.graph_width)?,
+            None => {
+                // the commits panel, inside its borders, beside the sidebar
+                let page = size
+                    .0
+                    .saturating_sub(app::sidebar_width(ctx, size.0))
+                    .saturating_sub(2);
+                check::decide_cell_width_type(&graph, size, page, self.graph_width)?
+            }
             Some(_) => ctx.graph.borrow().cell_width_type,
         };
         ctx.graph.borrow_mut().cell_width_type = cell_width_type;
