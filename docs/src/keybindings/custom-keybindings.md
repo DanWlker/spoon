@@ -10,7 +10,7 @@ You can set key bindings for each action in the same format.
 - It is possible to set multiple key bindings for one action.
 - If you do not set key bindings for an action, the default key bindings will be assigned.
 - You can disable an action by setting `[]` as the key bindings.
-- Some actions have no default key (`checkout`, which <kbd>Space</kbd> does, `ignore` and `command_log`); run them from the keys list (<kbd>?</kbd>), or bind a key to them.
+- Some actions have no default key (`checkout`, which <kbd>Space</kbd> does, and `ignore`); run them from the keys list (<kbd>?</kbd>), or bind a key to them.
 
 ## Key Formats
 

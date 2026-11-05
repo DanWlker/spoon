@@ -22,7 +22,7 @@ Spoon is a terminal UI for everyday git work: staging, committing, branching, re
 - **Open in browser**: open commits, branches, pull requests, tags and files (at the selected lines) on GitHub, GitLab, Bitbucket or Gitea/Forgejo.
 - **Blame**: <kbd>B</kbd> on a file shows who last changed each line, stepping back through the commits changing it with <kbd>[</kbd> and <kbd>]</kbd>; <kbd>T</kbd> lists those commits with the file's changes in each.
 - **Keys list**: <kbd>?</kbd> lists the actions of the focused panel, filtered with <kbd>/</kbd> and run with <kbd>Enter</kbd>, so keys needn't be remembered; after the first key of a sequence, like <kbd>y</kbd> for copying, a popup lists the keys finishing it.
-- **Command log**: every git command the app ran and its output, from the keys list.
+- **Command log**: <kbd>@</kbd> shows every git command the app ran and its output.
 - **Catppuccin Mocha** colors by default, all configurable, as are the keybindings.
 
 ## Requirements
