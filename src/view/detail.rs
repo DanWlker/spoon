@@ -290,18 +290,20 @@ impl<'a> DetailView<'a> {
             "Reset the selected files to the commit or before it",
         )
         .when(|v| !v.reset_file_changes().is_empty());
-        k.add(
-            &[Search],
-            "search",
-            "Search the files; the diff or preview while it has the focus",
-        )
-        .when(|v| entry(v) || queried(v) || pane(v));
-        k.add(&[Filter], "filter", "Filter the files")
+        k.add(&[Search], "filter", "Filter the files")
             .when(|v| entry(v) || queried(v));
+        k.add(&[Search], "search", "Search the diff or preview")
+            .when(pane);
         k.add(
-            &[ShortCopy, FullCopy],
+            &[ShortCopy],
             "copy path",
-            "Copy the relative/absolute path of the file",
+            "Copy the path of the file, from the top of the repository",
+        )
+        .when(entry);
+        k.add(
+            &[FullCopy],
+            "copy full path",
+            "Copy the absolute path of the file",
         )
         .when(entry);
         k.add(
@@ -341,7 +343,7 @@ impl<'a> DetailView<'a> {
         )
         .when(|v| !v.editable_files().is_empty());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
-            .when(|v| entry(v) || queried(v) || pane(v));
+            .when(pane);
         k.quiet(
             &[NavigateDown, NavigateUp, GoToTop, GoToBottom],
             "Move or scroll down/up, to the top/bottom",
@@ -850,7 +852,7 @@ impl<'a> DetailView<'a> {
                 f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
             }
             DetailTab::Changes => {
-                let search = self.changes_query.search();
+                let search = self.changes_query.filter();
                 let diff_search = self.pane_query.search();
                 CommitTab::new(self.ctx.clone(), search, diff_search, focused).render_changes(
                     detail_area,
@@ -859,7 +861,7 @@ impl<'a> DetailView<'a> {
                 );
             }
             DetailTab::Files => {
-                let search = self.files_query.search();
+                let search = self.files_query.filter();
                 let preview_search = self.pane_query.search();
                 CommitTab::new(self.ctx.clone(), search, preview_search, focused).render_files(
                     detail_area,
@@ -1283,9 +1285,8 @@ impl<'a> DetailView<'a> {
             return false;
         };
         match event {
-            UserEvent::Search => query.start(QueryKind::Search, from),
-            UserEvent::Filter if in_diff => return true,
-            UserEvent::Filter => query.start(QueryKind::Filter, from),
+            UserEvent::Search if in_diff => query.start(QueryKind::Search, from),
+            UserEvent::Search => query.start(QueryKind::Filter, from),
             UserEvent::GoToNext | UserEvent::GoToPrevious => {
                 let direction = if event == UserEvent::GoToNext {
                     SearchDirection::Next
@@ -1315,6 +1316,7 @@ impl<'a> DetailView<'a> {
         match change {
             None => {}
             Some(QueryKind::Search) => self.search(SearchDirection::Current),
+            // the files are only filtered, see `handle_query_event`
             Some(QueryKind::Filter) => {
                 let filter = self.query().and_then(TreeQuery::filter).map(String::from);
                 let filter = filter.as_deref();
@@ -1352,29 +1354,19 @@ impl<'a> DetailView<'a> {
                 self.files_state
                     .search_preview(&search, from, direction, options);
             }
-            (DetailTab::Changes, false) => {
-                self.changes_state
-                    .update_tree(|t| t.search(&search, from, direction, options));
-            }
-            (DetailTab::Files, false) => {
-                self.files_state
-                    .update_tree(|t| t.search(&search, from, direction, options));
-            }
+            (_, false) => {}
         }
         self.update_query_status();
     }
 
-    // How the search of what has the focus went: the row of its file tree, or of the diff or the
-    // preview.
+    // How the search of the diff or the preview went, while it has the focus.
     fn search_outcome(&self) -> Option<SearchOutcome> {
         let query = self.query()?.search()?;
         let options = self.ctx.search_options.get();
         match (self.tab, self.is_pane_focused()) {
-            (DetailTab::Info, _) => None,
             (DetailTab::Changes, true) => self.changes_state.search_outcome(query, options),
-            (DetailTab::Files, true) => self.files_state.search_outcome(query, options),
-            (DetailTab::Changes, false) => self.changes_state.search_outcome(query, options),
-            (DetailTab::Files, false) => self.files_state.search_outcome(query, options),
+            (DetailTab::Files, true) => Some(self.files_state.search_outcome(query, options)),
+            _ => None,
         }
     }
 

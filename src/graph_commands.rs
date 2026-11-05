@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(state.snapshot().commit_draft_message(), "c2");
         std::fs::write(path.join("new"), "n\n").unwrap();
         git.add(&["new"]);
-        state.commit_or_continue().unwrap();
+        state.commit().unwrap();
         let dialog = state.take_dialog().unwrap();
         crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
         let repository = load();

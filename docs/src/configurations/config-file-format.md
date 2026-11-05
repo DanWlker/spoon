@@ -242,7 +242,7 @@ Whether to search with smart case when the application starts: ignoring case unl
 
 ### `core.search.fuzzy`
 
-Whether to enable fuzzy matching when the application starts. The option can be toggled while the commit list is displayed. The search (<kbd>/</kbd>) and filter (<kbd>?</kbd>) of the file trees follow it, toggled with the commit list's; searching a diff or a file stays a plain match.
+Whether to enable fuzzy matching when the application starts. The option can be toggled while the commit list is displayed. The filter (<kbd>/</kbd>) of the file trees follows it, toggled with the commit list's; searching a diff or a file stays a plain match.
 
 - type: `boolean`
 - default: `false`
@@ -264,7 +264,7 @@ The clipboard command to use for copy operations.
 
 ### `core.browser`
 
-<kbd>o</kbd> opens the page of the selected commit, branch, tag or file on the web host of its remote, after confirming in a popup showing the link (<kbd>o</kbd> again or <kbd>Enter</kbd>); <kbd>O</kbd> copies its link:
+<kbd>o</kbd> opens the page of the selected commit, branch, tag or file on the web host of its remote, after confirming in a popup showing the link (<kbd>o</kbd> again or <kbd>Enter</kbd>); <kbd>y</kbd> <kbd>l</kbd> copies its link (<kbd>Y</kbd> in a diff or the lines of a file):
 
 - a commit in the graph or the details: the commit
 - a local branch in the sidebar: its page, or a new pull request from it, chosen in the popup (its upstream branch, when it has one)

@@ -713,6 +713,26 @@ impl GitDialog {
         Self::with(" Abort ", "abort", intro, kind, Form::default())
     }
 
+    // Skips the commit the rebase, cherry-pick or revert in progress stopped at, going on with the
+    // next one.
+    pub fn skip(operation: Operation) -> Self {
+        let task = GitTask {
+            commands: vec![GitCommand::Resume(operation).args(["--skip"])],
+            running: format!("Skipping a commit of the {}", operation.name()),
+            done: format!("Skipped a commit of the {}", operation.name()),
+            ..Default::default()
+        };
+        let intro = vec![format!(
+            "Skip the commit the {} stopped at and go on with the next one",
+            operation.name()
+        )];
+        let kind = DialogKind::Prepared {
+            task: Box::new(task),
+            warning: "What the commit changes is dropped, its resolved conflicts too.",
+        };
+        Self::with(" Skip ", "skip", intro, kind, Form::default())
+    }
+
     // Commits as `preview` shows; the commit key confirms it too.
     pub fn commit(preview: CommitPreview, task: GitTask) -> Self {
         let (title, verb) = if preview.kind.amends() {

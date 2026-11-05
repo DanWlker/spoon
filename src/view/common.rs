@@ -324,9 +324,15 @@ pub fn register_commit_link_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T
     k.add(&[CopyLink], "copy link", "Copy the link of the commit")
         .when(applies);
     k.add(
-        &[ShortCopy, FullCopy],
+        &[ShortCopy],
         "copy hash",
-        "Copy the commit short/full hash",
+        "Copy the short hash of the commit",
+    )
+    .when(applies);
+    k.add(
+        &[FullCopy],
+        "copy full hash",
+        "Copy the full hash of the commit",
     )
     .when(applies);
 }

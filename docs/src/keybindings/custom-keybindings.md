@@ -10,6 +10,7 @@ You can set key bindings for each action in the same format.
 - It is possible to set multiple key bindings for one action.
 - If you do not set key bindings for an action, the default key bindings will be assigned.
 - You can disable an action by setting `[]` as the key bindings.
+- Some actions have no default key (`checkout`, which <kbd>Space</kbd> does, `ignore` and `command_log`); run them from the keys list (<kbd>?</kbd>), or bind a key to them.
 
 ## Key Formats
 
@@ -53,7 +54,8 @@ Any single character not listed above (e.g., `a`, `b`, `1`, `!`) can be used as 
 ### Key Sequences
 
 Keys separated by spaces are a sequence, pressed one after another, for example `"] f"` (the default of `next_file`).
-After the first keys, the status line shows them while waiting for the next one; <kbd>Esc</kbd> cancels, and a key that does not continue the sequence acts as usual.
+After the first keys, a popup lists the keys finishing a sequence there and what they do, like which-key, and the status line shows the keys pressed; <kbd>Esc</kbd> cancels, and a key that does not continue the sequence acts as usual.
+The popup is made from the bindings, so a group of keys is whatever starts with the same key: with `abort = ["x a"]`, <kbd>m</kbd> lists continue and skip, and <kbd>x</kbd> abort. A first key whose sequences do nothing where the focus is, like <kbd>m</kbd> with no rebase in progress, does nothing.
 
 A key cannot both start a sequence and be bound on its own, since the sequence could not be typed.
 Binding a key on its own in your config replaces the default sequences starting with it, and binding a sequence replaces the default binding of its first key.
@@ -68,6 +70,7 @@ global
 │  ├─ sidebar             the refs
 │  ├─ commit_list
 │  ├─ file_history        the blame and the timeline of a file
+│  │  └─ file_history_pane the lines of the blame, the diff of the timeline
 │  └─ details             the tabs of the commit details
 │     └─ details_pane     the diff or preview beside the files
 ├─ local_changes
@@ -76,13 +79,13 @@ global
 ```
 
 A key is looked up from the scope having the focus outward: the first scope binding it wins, so a scope can use a key differently from those around it.
-The key then works only where its command does: the status bar, the keys popup (<kbd>H</kbd>) and the help list what works where the focus is, and other keys do nothing. The commands of the graph don't act on the details, say, and the diff beside the files doesn't take the keys of the files.
+The key then works only where its command does: the status bar, the keys popup (<kbd>H</kbd>) and the keys list (<kbd>?</kbd>) show what works where the focus is, and other keys do nothing. The commands of the graph don't act on the details, say, and the diff beside the files doesn't take the keys of the files.
 
 An event written in `[keybind]` is bound in its own scope:
 the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `create_branch`, `branch_only`) in `graph`;
 those of the refs (`create_ref`, `delete_ref`, `edit_ref`, `next_section`, `previous_section`) in `sidebar`;
 `older_commit` and `newer_commit` in `file_history`;
-those of the local changes page (`stash`, `commit`, `next_file`, `previous_file`, `abort`, `toggle_amend`, `discard`) in `local_changes`;
+those of the local changes page (`stash`, `commit`, `next_file`, `previous_file`, `next_folder`, `previous_folder`, `continue`, `abort`, `skip`, `toggle_amend`, `discard`) in `local_changes`;
 `next_tab`, `previous_tab` and `reset_file` in `details`;
 `dialog_edit` in `dialog`;
 and the others in `global`, working everywhere.
@@ -96,10 +99,12 @@ A table of a scope binds keys in that scope only, overriding those around it:
 [keybind]
 quit = ["q"]
 
-# in the diff or preview beside the files, y quits instead of copying
+# in the diff or preview beside the files, x copies the selected lines
 [keybind.details_pane]
-quit = ["y"]
+short_copy = ["x"]
 ```
+
+The defaults use such tables for copying: <kbd>y</kbd> <kbd>y</kbd> copies a short hash, path or name, <kbd>y</kbd> <kbd>f</kbd> the full one and <kbd>y</kbd> <kbd>l</kbd> a link, but in `details_pane`, `local_changes_diff` and `file_history_pane` (the diffs and the lines of the blame) <kbd>y</kbd> copies the selected lines at once and <kbd>Y</kbd> their link.
 
 A key bound in your config replaces what that key did by default in its scope and in the scopes inside it.
 A key of an inner scope may also start a key sequence around it: there it acts right away, elsewhere it starts the sequence. For example <kbd>]</kbd> shows the next tab of the details, while <kbd>]</kbd> <kbd>f</kbd> goes to the next file in local changes.

@@ -162,6 +162,26 @@ impl KeyList {
             .map_or(event, |key| key.events[0])
     }
 
+    // What the event does here, for a key finishing a sequence: its short text, else its sentence;
+    // None when it doesn't work here.
+    pub fn describe(&self, event: UserEvent) -> Option<&str> {
+        let key = self
+            .0
+            .iter()
+            .filter(|key| key.active && key.events.contains(&event))
+            .min_by_key(|key| key.short.is_empty())?;
+        Some(if key.short.is_empty() {
+            key.long
+        } else {
+            &key.short
+        })
+    }
+
+    // Only the keys working where the focus is, for the keys list.
+    pub fn working(&self) -> KeyList {
+        KeyList(self.0.iter().filter(|key| key.active).cloned().collect())
+    }
+
     pub fn extend(&mut self, other: KeyList) {
         self.0.extend(other.0);
     }

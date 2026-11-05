@@ -21,7 +21,6 @@ use crate::{
             ExternalRequest, LocalChangesPanel, LocalChangesSection, LocalChangesSnapshot,
             LocalChangesState, Request,
         },
-        tree_query::QueryKind,
     },
 };
 
@@ -130,12 +129,13 @@ impl<'a> LocalChangesView<'a> {
             && matches!(
                 event,
                 UserEvent::Search
-                    | UserEvent::Filter
                     | UserEvent::GoToNext
                     | UserEvent::GoToPrevious
                     | UserEvent::ToggleSelect
                     | UserEvent::NextFile
                     | UserEvent::PreviousFile
+                    | UserEvent::NextFolder
+                    | UserEvent::PreviousFolder
                     | UserEvent::Discard
                     | UserEvent::NavigateLeft
                     | UserEvent::NavigateRight
@@ -164,6 +164,11 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.local_changes_state.select_next_file(toward);
                 self.after_action(result);
             }
+            UserEvent::NextFolder | UserEvent::PreviousFolder => {
+                let toward = Toward::of(event, UserEvent::NextFolder);
+                let result = self.local_changes_state.select_next_folder(toward);
+                self.after_action(result);
+            }
             // as of the last commit, the local changes aren't blamed
             UserEvent::Blame | UserEvent::Timeline => {
                 let state = &self.local_changes_state;
@@ -186,12 +191,12 @@ impl<'a> LocalChangesView<'a> {
                 }
             }
             UserEvent::Commit => {
-                let result = self.local_changes_state.commit_or_continue();
+                let result = self.local_changes_state.commit();
                 self.after_action(result);
             }
-            UserEvent::Abort => {
-                self.local_changes_state.request_abort();
-            }
+            UserEvent::Continue => self.local_changes_state.continue_rebase(),
+            UserEvent::Abort => self.local_changes_state.request_abort(),
+            UserEvent::Skip => self.local_changes_state.request_skip(),
             UserEvent::ToggleAmend => {
                 if let Err(err) = self.local_changes_state.toggle_amend() {
                     self.tx.send(AppEvent::NotifyError(err));
@@ -203,11 +208,7 @@ impl<'a> LocalChangesView<'a> {
                 }
             }
             UserEvent::Search => {
-                self.local_changes_state.start_query(QueryKind::Search);
-                self.update_query_status();
-            }
-            UserEvent::Filter => {
-                self.local_changes_state.start_query(QueryKind::Filter);
+                self.local_changes_state.start_query();
                 self.update_query_status();
             }
             UserEvent::GoToNext | UserEvent::GoToPrevious => {

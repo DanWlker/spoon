@@ -21,7 +21,8 @@ Spoon is a terminal UI for everyday git work: staging, committing, branching, re
 - **Conflicts**: resolve them with your merge tool or editor, then continue or abort the merge, rebase, cherry-pick or revert.
 - **Open in browser**: open commits, branches, pull requests, tags and files (at the selected lines) on GitHub, GitLab, Bitbucket or Gitea/Forgejo.
 - **Blame**: <kbd>B</kbd> on a file shows who last changed each line, stepping back through the commits changing it with <kbd>[</kbd> and <kbd>]</kbd>; <kbd>T</kbd> lists those commits with the file's changes in each.
-- **Command log**: <kbd>@</kbd> shows every git command the app ran and its output.
+- **Keys list**: <kbd>?</kbd> lists the actions of the focused panel, filtered with <kbd>/</kbd> and run with <kbd>Enter</kbd>, so keys needn't be remembered; after the first key of a sequence, like <kbd>y</kbd> for copying, a popup lists the keys finishing it.
+- **Command log**: every git command the app ran and its output, from the keys list.
 - **Catppuccin Mocha** colors by default, all configurable, as are the keybindings.
 
 ## Requirements
@@ -92,7 +93,7 @@ For details on each option, see [Command Line Options](./docs/src/getting-starte
 
 ### Keybindings
 
-<kbd>H</kbd> shows the keys of the focused panel, and <kbd>F1</kbd> lists them all. The status bar shows the main ones as you go.
+<kbd>?</kbd> lists the actions of the focused panel to search and run, then those of the other panels; <kbd>H</kbd> shows the keys of the focused panel in a popup. The status bar shows the main ones as you go. [The keymap](./docs/src/keybindings/keymap.html) shows every default key on one page, [the panels](./docs/src/keybindings/panels.html) where the focus keys go, [common tasks](./docs/src/features/tasks.html) step by step, and [coming from lazygit](./docs/src/keybindings/lazygit.html) its keys beside spoon's.
 
 The [default keybindings](./docs/src/keybindings/index.md) can be overridden; see [Custom Keybindings](./docs/src/keybindings/custom-keybindings.md).
 

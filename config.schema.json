@@ -727,9 +727,6 @@
         "search": {
           "$ref": "#/definitions/keybindArray"
         },
-        "filter": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "resize_left": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -775,6 +772,12 @@
         "previous_file": {
           "$ref": "#/definitions/keybindArray"
         },
+        "next_folder": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_folder": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "next_tab": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -787,7 +790,13 @@
         "commit": {
           "$ref": "#/definitions/keybindArray"
         },
+        "continue": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "abort": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "skip": {
           "$ref": "#/definitions/keybindArray"
         },
         "edit": {
@@ -946,6 +955,9 @@
         "file_history": {
           "$ref": "#/definitions/keybindScope"
         },
+        "file_history_pane": {
+          "$ref": "#/definitions/keybindScope"
+        },
         "dialog": {
           "$ref": "#/definitions/keybindScope"
         }
@@ -1052,9 +1064,6 @@
         "search": {
           "$ref": "#/definitions/keybindArray"
         },
-        "filter": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "resize_left": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1100,6 +1109,12 @@
         "previous_file": {
           "$ref": "#/definitions/keybindArray"
         },
+        "next_folder": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "previous_folder": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "next_tab": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1112,7 +1127,13 @@
         "commit": {
           "$ref": "#/definitions/keybindArray"
         },
+        "continue": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "abort": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "skip": {
           "$ref": "#/definitions/keybindArray"
         },
         "edit": {

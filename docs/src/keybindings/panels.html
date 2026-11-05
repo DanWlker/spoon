@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spoon panels</title>
+<style>
+  /* Catppuccin Latte, Mocha in the dark */
+  :root {
+    --base:#eff1f5; --mantle:#e6e9ef; --crust:#dce0e8; --s0:#ccd0da; --s1:#bcc0cc;
+    --ov0:#9ca0b0; --sub:#5c5f77; --text:#4c4f69; --blue:#1e66f5; --mauve:#8839ef;
+    --peach:#fe640b; --green:#40a02b; --yellow:#df8e1d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --base:#1e1e2e; --mantle:#181825; --crust:#11111b; --s0:#313244; --s1:#45475a;
+      --ov0:#6c7086; --sub:#a6adc8; --text:#cdd6f4; --blue:#89b4fa; --mauve:#cba6f7;
+      --peach:#fab387; --green:#a6e3a1; --yellow:#f9e2af;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--crust); color:var(--text); font:15px/1.5 system-ui, sans-serif; padding:24px 16px 64px; }
+  main { max-width:980px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:18px; margin:36px 0 6px; color:var(--mauve); }
+  a { color:var(--blue); }
+  .lead { color:var(--sub); margin:0 0 8px; }
+  kbd { font:13px ui-monospace, monospace; color:var(--peach); background:var(--s0); border-radius:4px; padding:0 5px; }
+  svg { width:100%; height:auto; display:block; background:var(--base); border:1px solid var(--s0); border-radius:10px; margin:10px 0; }
+  svg .panel { fill:var(--mantle); stroke:var(--s1); stroke-width:1.5; }
+  svg .title { fill:var(--blue); font:600 15px ui-monospace, monospace; }
+  svg .body { fill:var(--sub); font:13px system-ui, sans-serif; }
+  svg .arrow { stroke:var(--green); stroke-width:2.5; fill:none; marker-end:url(#head); }
+  svg .key { fill:var(--green); font:600 13px ui-monospace, monospace; }
+  svg .border { stroke:var(--peach); stroke-width:4; stroke-dasharray:6 5; }
+  svg .bkey { fill:var(--peach); font:600 13px ui-monospace, monospace; }
+  .legend { display:flex; flex-wrap:wrap; gap:18px; font-size:14px; color:var(--sub); }
+  .legend span::before { content:""; display:inline-block; width:22px; height:0; border-top:3px solid var(--c); margin-right:6px; vertical-align:middle; }
+  .legend .dash::before { border-top-style:dashed; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--s0); vertical-align:top; }
+  th { color:var(--sub); }
+</style>
+</head>
+<body>
+<main>
+<h1>Spoon panels</h1>
+<p class="lead">Where each panel is on the two pages, its number, and where the focus keys take you. <kbd>Tab</kbd> switches between the pages. A number focuses its panel directly; <kbd>Ctrl-h/j/k/l</kbd> (or <kbd>Ctrl</kbd> and the arrows) focus the panel beside; <kbd>Alt-h/j/k/l</kbd> (or <kbd>Alt</kbd> and the arrows) move the border of the focused panel, which can be dragged too. See the <a href="keymap.html">keymap</a> for every key.</p>
+<div class="legend">
+  <span style="--c:var(--green)">focus moves with <kbd>Ctrl-h/j/k/l</kbd></span>
+  <span class="dash" style="--c:var(--peach)">border moved with <kbd>Alt-h/l</kbd> or <kbd>Alt-k/j</kbd></span>
+</div>
+
+<h2>Commit graph</h2>
+<svg viewBox="0 0 900 460" role="img" aria-label="The commit graph page: the refs on the left, the commits on the top right, the details under them">
+  <defs><marker id="head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--green)"/></marker></defs>
+  <rect class="panel" x="20" y="20" width="200" height="420" rx="8"/>
+  <text class="title" x="34" y="46">[1] Refs</text>
+  <text class="body" x="34" y="72">branches, remotes,</text>
+  <text class="body" x="34" y="90">tags, stashes</text>
+  <text class="body" x="34" y="118"><tspan>1 again shrinks it</tspan></text>
+  <rect class="panel" x="250" y="20" width="630" height="170" rx="8"/>
+  <text class="title" x="264" y="46">[2] Commits</text>
+  <text class="body" x="264" y="72">the graph; Enter opens the details below</text>
+  <rect class="panel" x="250" y="230" width="630" height="210" rx="8"/>
+  <text class="title" x="264" y="256">[3] Info  [4] Changes  [5] Files</text>
+  <rect class="panel" x="264" y="270" width="230" height="156" rx="6"/>
+  <text class="body" x="278" y="294">files of the commit</text>
+  <rect class="panel" x="514" y="270" width="352" height="156" rx="6"/>
+  <text class="body" x="528" y="294">diff or preview of the file</text>
+  <!-- focus -->
+  <path class="arrow" d="M250,110 C238,110 232,110 222,110"/>
+  <path class="arrow" d="M222,140 C232,140 238,140 248,140"/>
+  <text class="key" x="226" y="100">h</text><text class="key" x="226" y="160">l</text>
+  <path class="arrow" d="M520,190 L520,228"/><text class="key" x="528" y="214">j</text>
+  <path class="arrow" d="M600,228 L600,192"/><text class="key" x="608" y="214">k</text>
+  <path class="arrow" d="M494,330 L512,330"/><text class="key" x="496" y="322">l</text>
+  <path class="arrow" d="M512,370 L496,370"/><text class="key" x="496" y="392">h</text>
+  <path class="arrow" d="M264,400 C240,400 236,400 222,400"/><text class="key" x="230" y="392">h</text>
+  <!-- borders -->
+  <line class="border" x1="235" y1="300" x2="235" y2="360"/><text class="bkey" x="160" y="460">Alt-h/l on [1]</text>
+  <line class="border" x1="420" y1="210" x2="480" y2="210"/><text class="bkey" x="640" y="214">Alt-k/j on the details</text>
+  <line class="border" x1="504" y1="380" x2="504" y2="420"/><text class="bkey" x="530" y="452">Alt-h/l between the files and the diff</text>
+</svg>
+<table>
+  <tr><th>From</th><th>Key</th><th>To</th></tr>
+  <tr><td>Commits, details files</td><td><kbd>Ctrl-h</kbd></td><td>the refs (when shown)</td></tr>
+  <tr><td>Refs</td><td><kbd>Ctrl-l</kbd></td><td>the page</td></tr>
+  <tr><td>Commits</td><td><kbd>Ctrl-j</kbd></td><td>the tab of the details shown</td></tr>
+  <tr><td>Details (any tab)</td><td><kbd>Ctrl-k</kbd></td><td>the commits, the details staying open</td></tr>
+  <tr><td>Files of the changes or files tab</td><td><kbd>Ctrl-l</kbd> / <kbd>Ctrl-h</kbd></td><td>into the diff or preview, and back</td></tr>
+</table>
+
+<h2>Local changes</h2>
+<svg viewBox="0 0 900 460" role="img" aria-label="The local changes page: unstaged files on the top left, staged files under them, the diff on the right, the commit message under it">
+  <defs><marker id="head2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--green)"/></marker></defs>
+  <style>.a2 { stroke:var(--green); stroke-width:2.5; fill:none; marker-end:url(#head2); }</style>
+  <rect class="panel" x="20" y="20" width="300" height="230" rx="8"/>
+  <text class="title" x="34" y="46">[1] Unstaged</text>
+  <text class="body" x="34" y="72">space stages, d discards</text>
+  <text class="body" x="34" y="92">] f / ] F next file / folder</text>
+  <rect class="panel" x="20" y="280" width="300" height="160" rx="8"/>
+  <text class="title" x="34" y="306">[2] Staged</text>
+  <text class="body" x="34" y="332">space unstages</text>
+  <rect class="panel" x="350" y="20" width="530" height="280" rx="8"/>
+  <text class="title" x="364" y="46">diff of the selected file</text>
+  <text class="body" x="364" y="72">Enter: hunks, then lines; space stages them</text>
+  <rect class="panel" x="350" y="330" width="530" height="110" rx="8"/>
+  <text class="title" x="364" y="356">[3] Commit</text>
+  <text class="body" x="364" y="382">summary and description; c commits</text>
+  <!-- focus -->
+  <path class="a2" d="M150,250 L150,278"/><text class="key" x="158" y="270">j</text>
+  <path class="a2" d="M210,278 L210,252"/><text class="key" x="218" y="270">k</text>
+  <path class="a2" d="M320,110 L348,110"/><text class="key" x="326" y="102">l</text>
+  <path class="a2" d="M348,150 L322,150"/><text class="key" x="326" y="170">h</text>
+  <path class="a2" d="M560,300 L560,328"/><text class="key" x="568" y="320">j</text>
+  <path class="a2" d="M640,328 L640,302"/><text class="key" x="648" y="320">k</text>
+  <path class="a2" d="M350,400 C335,400 330,400 322,400"/><text class="key" x="326" y="392">h</text>
+  <!-- borders -->
+  <line class="border" x1="335" y1="180" x2="335" y2="240"/><text class="bkey" x="20" y="460">Alt-h/l between the files and the diff</text>
+  <line class="border" x1="60" y1="265" x2="120" y2="265"/><text class="bkey" x="20" y="268" dx="110">Alt-k/j</text>
+  <line class="border" x1="700" y1="315" x2="760" y2="315"/><text class="bkey" x="770" y="319">Alt-k/j</text>
+</svg>
+<table>
+  <tr><th>From</th><th>Key</th><th>To</th></tr>
+  <tr><td>Unstaged / staged</td><td><kbd>Ctrl-j</kbd> / <kbd>Ctrl-k</kbd></td><td>the other section</td></tr>
+  <tr><td>Files</td><td><kbd>Ctrl-l</kbd></td><td>into the diff (with no files, the commit message)</td></tr>
+  <tr><td>Diff, commit message</td><td><kbd>Ctrl-h</kbd></td><td>back to the files</td></tr>
+  <tr><td>Diff</td><td><kbd>Ctrl-j</kbd></td><td>the commit message</td></tr>
+  <tr><td>Commit message</td><td><kbd>Ctrl-k</kbd></td><td>the diff of the selected file</td></tr>
+</table>
+
+<h2>Windows over the pages</h2>
+<p><kbd>B</kbd> opens the blame of a file over everything: <b>[1] Commit</b>, the commit it is shown as of, at the top, and <b>[2] Blame</b>, the lines, below; <kbd>Ctrl-k/j</kbd> move between them, and in the lines <kbd>Ctrl-h/l</kbd> between the commit column and the text. <kbd>T</kbd> opens the timeline: <b>[1] Commits</b> on the left and <b>[2] Diff</b> beside them, <kbd>Ctrl-h/l</kbd> between them. In both, <kbd>Alt-h/l</kbd> moves the border after the commits. <kbd>?</kbd> opens the keys list over the page, and the command log is run from it.</p>
+</main>
+</body>
+</html>

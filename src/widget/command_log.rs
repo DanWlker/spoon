@@ -101,11 +101,7 @@ impl CommandLogState {
         );
         k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
         k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
-        k.add(
-            &[ShortCopy, FullCopy],
-            "copy",
-            "Copy the command and its output",
-        );
+        k.add(&[ShortCopy], "copy", "Copy the command and its output");
         k.add(&[Cancel, CommandLog], "close", "Close the command log");
     }
 

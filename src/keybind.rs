@@ -18,6 +18,7 @@ const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 // │  ├─ sidebar             the refs; the commands of the graph work on the selected ref
 // │  ├─ commit_list
 // │  ├─ file_history        the blame and the timeline of a file, over everything
+// │  │  └─ file_history_pane the lines of the blame, the diff of the timeline
 // │  └─ details
 // │     └─ details_pane     the diff or preview beside the files
 // ├─ local_changes
@@ -34,11 +35,12 @@ pub enum Scope {
     LocalChanges,
     LocalChangesDiff,
     FileHistory,
+    FileHistoryPane,
     Dialog,
 }
 
 impl Scope {
-    const ALL: [Scope; 10] = [
+    const ALL: [Scope; 11] = [
         Scope::Global,
         Scope::Graph,
         Scope::Sidebar,
@@ -48,6 +50,7 @@ impl Scope {
         Scope::LocalChanges,
         Scope::LocalChangesDiff,
         Scope::FileHistory,
+        Scope::FileHistoryPane,
         Scope::Dialog,
     ];
 
@@ -60,6 +63,7 @@ impl Scope {
             }
             Scope::DetailsPane => Some(Scope::Details),
             Scope::LocalChangesDiff => Some(Scope::LocalChanges),
+            Scope::FileHistoryPane => Some(Scope::FileHistory),
         }
     }
 
@@ -84,6 +88,7 @@ impl Scope {
             Scope::LocalChanges => "local_changes",
             Scope::LocalChangesDiff => "local_changes_diff",
             Scope::FileHistory => "file_history",
+            Scope::FileHistoryPane => "file_history_pane",
             Scope::Dialog => "dialog",
         }
     }
@@ -152,6 +157,31 @@ impl KeyBind {
         SequenceMatch::None
     }
 
+    // The sequences the keys pressed so far start in `scope`, as `resolve` would finish them: the
+    // keys left to press and the event, in the order of those keys.
+    pub fn continuations(&self, scope: Scope, pressed: &[KeyEvent]) -> Vec<(String, UserEvent)> {
+        let mut next: Vec<(String, UserEvent)> = self
+            .bindings
+            .iter()
+            .filter(|((bound_scope, keys), event)| {
+                keys.len() > pressed.len()
+                    && keys.starts_with(pressed)
+                    && self.does(scope, *bound_scope, keys, **event)
+            })
+            .map(|((_, keys), event)| (keys_to_string(&keys[pressed.len()..]), *event))
+            .collect();
+        next.sort_by(|a, b| a.0.cmp(&b.0));
+        next
+    }
+
+    // Whether the keys, bound in `bound_scope`, do the event in `scope`: bound around it, and
+    // typed there, each key but the last waiting for the next, and not doing something else.
+    fn does(&self, scope: Scope, bound_scope: Scope, keys: &[KeyEvent], event: UserEvent) -> bool {
+        scope.within(bound_scope)
+            && (1..keys.len()).all(|n| self.resolve(scope, &keys[..n]) == SequenceMatch::Partial)
+            && self.resolve(scope, keys) == SequenceMatch::Complete(event)
+    }
+
     // The event of a single key in `scope`, see `resolve`.
     pub fn event_in(&self, scope: Scope, key: &KeyEvent) -> Option<UserEvent> {
         match self.resolve(scope, std::slice::from_ref(key)) {
@@ -166,11 +196,15 @@ impl KeyBind {
         self.bindings.values().copied()
     }
 
-    pub fn keys_for_event(&self, user_event: UserEvent) -> Vec<String> {
+    // The keys doing the event in `scope`: bound in it or around it, and not doing something else
+    // there, like y copying the lines of a diff where elsewhere it starts y y.
+    pub fn keys_for_event(&self, scope: Scope, user_event: UserEvent) -> Vec<String> {
         let mut keys: Vec<&Vec<KeyEvent>> = self
             .bindings
             .iter()
-            .filter(|(_, ue)| **ue == user_event)
+            .filter(|((bound_scope, keys), event)| {
+                **event == user_event && self.does(scope, *bound_scope, keys, user_event)
+            })
             .map(|((_, keys), _)| keys)
             .collect();
         // KeyEvent orders partially, but key bindings compare
@@ -181,23 +215,13 @@ impl KeyBind {
 
     // The keys of the events for a hint, like "j/k" or "space/e": the shortest of each, with names
     // like Enter in lower case (but letters as they are, "A" is shift-a); empty when none is bound.
-    pub fn short_keys(&self, events: &[UserEvent]) -> String {
+    pub fn short_keys(&self, scope: Scope, events: &[UserEvent]) -> String {
         let keys: Vec<String> = events
             .iter()
             .filter_map(|event| {
-                let keys = self.keys_for_event(*event);
+                let keys = self.keys_for_event(scope, *event);
                 keys.into_iter().min_by_key(|key| key.chars().count())
             })
-            .map(key_name)
-            .collect();
-        keys.join("/")
-    }
-
-    // All the keys of the events, named like `short_keys`, for the help: "k/up".
-    pub fn all_keys(&self, events: &[UserEvent]) -> String {
-        let keys: Vec<String> = events
-            .iter()
-            .flat_map(|event| self.keys_for_event(*event))
             .map(key_name)
             .collect();
         keys.join("/")
@@ -445,7 +469,7 @@ mod tests {
         assert_eq!(tables, expected);
         let in_scope = names(&schema["definitions"]["keybindScope"]);
         assert_eq!(events, in_scope);
-        // each one an event, each event there: every event has a default key
+        // each one an event, each event with a default key there
         for name in &events {
             assert!(parse_user_event(name).is_ok(), "{name} is no event");
         }
@@ -463,6 +487,60 @@ mod tests {
                 "{name} is not in the schema"
             );
         }
+    }
+
+    #[test]
+    fn test_keymap_page_shows_the_default_keys() {
+        // each row of the page: its scope, its action and its keys, as the defaults bind them
+        let page = include_str!("../docs/src/keybindings/keymap.html");
+        let attribute = |row: &str, name: &str| -> String {
+            let start = row.find(&format!("{name}=\"")).unwrap() + name.len() + 2;
+            let value = &row[start..];
+            value[..value.find('"').unwrap()].to_string()
+        };
+        let mut shown: Vec<(String, String, String)> = page
+            .split("<li ")
+            .filter(|row| row.contains("data-action="))
+            .map(|row| {
+                let keys = attribute(row, "data-keys");
+                (
+                    attribute(row, "data-scope"),
+                    attribute(row, "data-action"),
+                    keys,
+                )
+            })
+            .collect();
+        shown.sort();
+
+        let defaults: toml::Table = toml::from_str(DEFAULT_KEY_BIND).unwrap();
+        let entry = |scope: &str, name: &str, keys: &toml::Value| {
+            let keys: Vec<&str> = keys
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|key| key.as_str().unwrap())
+                .collect();
+            (scope.to_string(), name.to_string(), keys.join("|"))
+        };
+        let mut bound = vec![];
+        for (name, value) in &defaults {
+            match value.as_table() {
+                Some(table) => bound.extend(table.iter().map(|(n, keys)| entry(name, n, keys))),
+                None => {
+                    let scope = parse_user_event(name).unwrap().home_scope();
+                    bound.push(entry(scope.name(), name, value));
+                }
+            }
+        }
+        // the actions without a key, shown as such, have no default key anywhere
+        for (scope, name, keys) in shown.iter().filter(|(_, _, keys)| keys.is_empty()) {
+            assert!(!defaults.contains_key(name), "{name} has a key");
+            let event = parse_user_event(name).unwrap();
+            assert_eq!(event.home_scope().name(), scope);
+            bound.push((scope.clone(), name.clone(), keys.clone()));
+        }
+        bound.sort();
+        assert_eq!(shown, bound);
     }
 
     #[test]
@@ -542,7 +620,7 @@ mod tests {
             SequenceMatch::Complete(UserEvent::Quit)
         );
         assert_eq!(
-            keybind.keys_for_event(UserEvent::GoToNext),
+            keybind.keys_for_event(Scope::Global, UserEvent::GoToNext),
             vec!["]m", "gn"]
         );
 
@@ -577,6 +655,45 @@ mod tests {
             defaults.resolve(Scope::Global, &[key('g'), key('g')]),
             SequenceMatch::Complete(UserEvent::GoToTop)
         );
+    }
+
+    #[test]
+    fn test_keys_named_and_finished_where_the_focus_is() {
+        use UserEvent::*;
+        let keybind = KeyBind::new(None);
+        // y starts copying in the lists; in a diff it copies the lines at once, Y their link
+        assert_eq!(keybind.keys_for_event(Scope::CommitList, ShortCopy), ["yy"]);
+        assert_eq!(keybind.keys_for_event(Scope::DetailsPane, ShortCopy), ["y"]);
+        assert_eq!(keybind.keys_for_event(Scope::CommitList, CopyLink), ["yl"]);
+        assert_eq!(keybind.keys_for_event(Scope::DetailsPane, CopyLink), ["Y"]);
+        assert_eq!(
+            keybind.short_keys(Scope::FileHistoryPane, &[ShortCopy]),
+            "y"
+        );
+        // the keys finishing a sequence, in their order
+        let next = |scope, first| keybind.continuations(scope, &[key(first)]);
+        assert_eq!(
+            next(Scope::CommitList, 'y'),
+            [
+                ("f".to_string(), FullCopy),
+                ("l".to_string(), CopyLink),
+                ("y".to_string(), ShortCopy)
+            ]
+        );
+        assert_eq!(
+            next(Scope::LocalChangesDiff, 'm'),
+            [
+                ("a".to_string(), Abort),
+                ("c".to_string(), Continue),
+                ("s".to_string(), Skip)
+            ]
+        );
+        assert_eq!(
+            next(Scope::LocalChanges, ']'),
+            [("F".to_string(), NextFolder), ("f".to_string(), NextFile)]
+        );
+        // m merges on the graph, it starts nothing there
+        assert!(next(Scope::CommitList, 'm').is_empty());
     }
 
     #[test]

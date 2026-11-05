@@ -138,7 +138,7 @@ pub struct AppContext {
     // the git command running in the background, kept across refreshes, shared with the repository
     pub running_task: SharedTask,
     // the keys of the hints in the status bar, see `short_keys`
-    pub key_names: RefCell<FxHashMap<Vec<UserEvent>, String>>,
+    pub key_names: RefCell<FxHashMap<(Scope, Vec<UserEvent>), String>>,
     // the sizes of the panels, set by the user, kept across refreshes
     pub layout: RefCell<PanelLayout>,
     // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
@@ -195,11 +195,11 @@ impl AppContext {
     }
 
     // The keys of the events for a hint, see `KeyBind::short_keys`, found once for each.
-    pub fn short_keys(&self, events: &[UserEvent]) -> String {
+    pub fn short_keys(&self, scope: Scope, events: &[UserEvent]) -> String {
         let mut names = self.key_names.borrow_mut();
         names
-            .entry(events.to_vec())
-            .or_insert_with(|| self.keybind.short_keys(events))
+            .entry((scope, events.to_vec()))
+            .or_insert_with(|| self.keybind.short_keys(scope, events))
             .clone()
     }
 
@@ -354,7 +354,7 @@ impl Overlay {
     // Its name in the page bar, with the path of the file of the blame and the timeline.
     fn title(&self) -> (&'static str, Option<&str>) {
         match self {
-            Overlay::Help(_) => ("Help", None),
+            Overlay::Help(_) => ("Keys", None),
             Overlay::File(FileWindow::Blame(blame)) => ("Blame", Some(blame.path())),
             Overlay::File(FileWindow::Timeline(timeline)) => ("Timeline", Some(timeline.path())),
             Overlay::CommandLog(_) => ("Command Log", None),
@@ -382,6 +382,20 @@ impl FileWindow {
         match self {
             FileWindow::Blame(blame) => blame.handle_event(event, key, repository),
             FileWindow::Timeline(timeline) => timeline.handle_event(event, key, repository),
+        }
+    }
+
+    // The lines of the blame and the diff of the timeline have keys of their own, like y copying
+    // the selected lines.
+    fn scope(&self) -> Scope {
+        let pane = match self {
+            FileWindow::Blame(blame) => blame.is_text_focused(),
+            FileWindow::Timeline(timeline) => timeline.is_diff_focused(),
+        };
+        if pane {
+            Scope::FileHistoryPane
+        } else {
+            Scope::FileHistory
         }
     }
 
@@ -792,9 +806,15 @@ impl App<'_> {
                     }
                     return Ok(None);
                 }
-                if matches!(self.shell.overlay, Some(Overlay::Help(_))) {
-                    if let Some(event) = self.ctx.keybind.event_in(Scope::Global, &key) {
-                        self.dispatch(event, key);
+                if let Some(Overlay::Help(help)) = &self.shell.overlay {
+                    if !help.is_typing() {
+                        if let Some(event) = self.ctx.keybind.event_in(Scope::Global, &key) {
+                            self.dispatch(event, key);
+                        }
+                    } else if let (false, Some(Overlay::Help(help))) =
+                        (self.force_quit(&key), self.shell.overlay.as_mut())
+                    {
+                        help.type_key(key);
                     }
                     return Ok(None);
                 }
@@ -816,7 +836,14 @@ impl App<'_> {
                     .keybind
                     .resolve(scope, &self.shell.app_status.pending_keys)
                 {
-                    SequenceMatch::Partial => return Ok(None),
+                    SequenceMatch::Partial => {
+                        // a sequence finishing in nothing working here, like m with no rebase in
+                        // progress, does nothing
+                        if self.next_keys().is_empty() {
+                            self.shell.app_status.pending_keys.clear();
+                        }
+                        return Ok(None);
+                    }
                     SequenceMatch::Complete(ue) => {
                         self.shell.app_status.pending_keys.clear();
                         self.dispatch(ue, key);
@@ -911,8 +938,15 @@ impl App<'_> {
             // only redraws
             AppEvent::SpinnerTick | AppEvent::Resize | AppEvent::Loaded => {}
             AppEvent::OpenHelp => {
-                let help = HelpView::new(self.ctx.clone(), self.ec.sender());
+                let here = self.focused_keys();
+                let scope = self.current_scope();
+                let help = HelpView::new(self.ctx.clone(), self.ec.sender(), &here, scope);
                 self.shell.overlay = Some(Overlay::Help(help));
+            }
+            AppEvent::RunAction(event) => {
+                self.shell.overlay = None;
+                self.clear_status_line();
+                self.dispatch(event, KeyEvent::new(KeyCode::Null, KeyModifiers::NONE));
             }
             AppEvent::CloseOverlay => {
                 self.shell.overlay = None;
@@ -1162,11 +1196,39 @@ impl App<'_> {
         }
     }
 
+    // The keys working where the focus is: the window's, the sidebar's or the page's, then the
+    // app's, the most useful first for the keys list.
+    fn focused_keys(&self) -> KeyList {
+        let mut keys = match self.overlay_keys() {
+            Some(overlay) => overlay,
+            None if self.shell.sidebar_focused() => self.sidebar_keys(),
+            None => self.view.keys(),
+        };
+        keys.extend(self.app_keys());
+        keys
+    }
+
+    // The keys finishing the sequence started, which work where the focus is, and what they do.
+    fn next_keys(&self) -> Vec<KeyLabel> {
+        let keys = self.focused_keys();
+        self.ctx
+            .keybind
+            .continuations(self.current_scope(), &self.shell.app_status.pending_keys)
+            .into_iter()
+            .filter_map(|(next, event)| Some(KeyLabel::new(next, keys.describe(event)?)))
+            .collect()
+    }
+
     // The keys and what they do, without those bound to no key.
     fn shown_keys(&self, hints: Vec<KeyHint>) -> Vec<KeyLabel> {
+        // named as they are bound where the focus is
+        let scope = match self.visible_dialog() {
+            Some(_) => Scope::Dialog,
+            None => self.current_scope(),
+        };
         hints
             .into_iter()
-            .map(|(events, action)| KeyLabel::new(self.ctx.short_keys(&events), action))
+            .map(|(events, action)| KeyLabel::new(self.ctx.short_keys(scope, &events), action))
             .filter(|label| !label.keys.is_empty())
             .collect()
     }
@@ -1200,6 +1262,7 @@ impl App<'_> {
     fn is_typing(&self) -> bool {
         match &self.shell.overlay {
             Some(Overlay::File(window)) => window.is_typing(),
+            Some(Overlay::Help(help)) => help.is_typing(),
             _ => self.view.is_capturing_keys(),
         }
     }
@@ -1207,6 +1270,10 @@ impl App<'_> {
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
     // hidden. Computed once a frame, for clearing the screen and drawing.
     fn keys_popup_keys(&self) -> Vec<KeyLabel> {
+        // after the first keys of a sequence, the keys finishing it, like which-key
+        if !self.shell.app_status.pending_keys.is_empty() {
+            return self.next_keys();
+        }
         // over the windows with keys of their own, not the help, which lists them all
         let shown = match self.shell.overlay {
             Some(Overlay::File(_) | Overlay::CommandLog(_)) => {
@@ -1337,7 +1404,9 @@ impl App<'_> {
             let popup = KeysPopup::new(keys, &self.ctx.color_theme);
             f.render_widget(popup, app_area);
         }
-        let dismiss = self.ctx.short_keys(&[UserEvent::DismissNotifications]);
+        let dismiss = self
+            .ctx
+            .short_keys(Scope::Global, &[UserEvent::DismissNotifications]);
         let theme = &self.ctx.color_theme;
         render_notices(
             &self.shell.notices,
@@ -1732,7 +1801,12 @@ impl App<'_> {
             "Show the git commands run that changed the repository, with their output",
         )
         .when(page);
-        k.add(&[HelpToggle], "help", "Open help").when(page);
+        k.add(
+            &[HelpToggle],
+            "keys list",
+            "Search the actions of the focused panel and run one",
+        )
+        .when(page);
         k.add(
             &[ToggleWrap],
             "wrap",
@@ -1771,11 +1845,7 @@ impl App<'_> {
     fn overlay_keys(&self) -> Option<KeyList> {
         Some(match self.shell.overlay.as_ref()? {
             Overlay::File(window) => window.keys(),
-            Overlay::Help(help) => {
-                let mut keys = Keys::of(help);
-                HelpView::register_keys(&mut keys);
-                keys.list()
-            }
+            Overlay::Help(help) => help.keys(),
             Overlay::CommandLog(state) => {
                 let mut keys = Keys::of(state);
                 CommandLogState::register_keys(&mut keys);
@@ -1915,8 +1985,8 @@ impl App<'_> {
 
     // The scope of the keys, where the focus is, see `Scope`.
     fn current_scope(&self) -> Scope {
-        if let Some(Overlay::File(_)) = self.shell.overlay {
-            return Scope::FileHistory;
+        if let Some(Overlay::File(window)) = &self.shell.overlay {
+            return window.scope();
         }
         if self.shell.sidebar_focused() {
             return Scope::Sidebar;
@@ -1995,12 +2065,8 @@ impl App<'_> {
             }
             .into()
         });
-        k.add(
-            &[ShortCopy, FullCopy],
-            "copy name",
-            "Copy the name of the ref",
-        )
-        .when(applies(ShortCopy));
+        k.add(&[ShortCopy], "copy name", "Copy the name of the ref")
+            .when(applies(ShortCopy));
         k.add(
             &[OpenInBrowser],
             "open in browser",

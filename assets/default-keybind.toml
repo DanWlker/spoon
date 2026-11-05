@@ -1,6 +1,8 @@
 force_quit = ["ctrl-c"]
 quit = ["q"]
-help_toggle = ["f1"]
+# the keys list: the actions of the focused panel, to search (with /) and run (with enter), then
+# those of the other panels
+help_toggle = ["?"]
 cancel = ["esc"]
 
 navigate_up = ["k", "up"]
@@ -24,9 +26,8 @@ go_to_previous = ["shift-n"]
 confirm = ["enter"]
 # switch between the local changes page and the commit graph
 ref_list = ["tab"]
+# search; in file trees, filter the files
 search = ["/"]
-# filter file trees
-filter = ["?"]
 search_target_toggle = ["ctrl-t"]
 smart_case_toggle = ["ctrl-g"]
 fuzzy_toggle = ["ctrl-x"]
@@ -70,10 +71,13 @@ previous_tab = ["["]
 reset_file = ["u"]
 # stash local changes, or only the selected files
 stash = ["s"]
-# commit (or amend), or continue the rebase in progress
+# commit (or amend)
 commit = ["c"]
-# abort the rebase, merge, cherry-pick or revert in progress, after confirming
-abort = ["shift-c"]
+# the rebase, merge, cherry-pick or revert in progress: continue the rebase, abort it or skip the
+# commit it stopped at (not a merge), after confirming
+continue = ["m c"]
+abort = ["m a"]
+skip = ["m s"]
 # amend the last commit instead of making a new one
 toggle_amend = ["shift-a"]
 # open the selected files in $VISUAL or $EDITOR: in local changes, the changes and files tabs of the commit details, the blame and the timeline
@@ -83,6 +87,10 @@ discard = ["d"]
 # go to the next/previous file in local changes, from the files or the diff, staying in the diff
 next_file = ["] f"]
 previous_file = ["[ f"]
+# go to the next/previous folder at the same depth (or a level up when there is none) in local changes;
+# from the diff, show the first file of it
+next_folder = ["] shift-f"]
+previous_folder = ["[ shift-f"]
 
 # the commit graph; these keys may also be used on the local changes page, for something else there
 # diff the selected commit with HEAD, or the two picked commits, in the details
@@ -91,8 +99,7 @@ diff = ["shift-d"]
 rebase = ["r"]
 # merge the selected branch into the current branch, after confirming
 merge = ["m"]
-# check out the selected branch or commit, after confirming
-checkout = ["c"]
+# check out the selected branch or commit, after confirming: space does it, see select
 # cherry-pick the picked commits, or the selected one, after confirming
 cherry_pick = ["shift-c"]
 # squash the picked commits, or the selected one, into their parents, after confirming
@@ -112,9 +119,8 @@ create_tag = ["t"]
 # show only the commits of the current branch (the history of HEAD), or all of them again
 branch_only = ["shift-l"]
 # open the page of the selected commit, branch (or a new pull request), remote branch, tag or file on
-# the web host of its remote; copy its link
+# the web host of its remote
 open_in_browser = ["o"]
-copy_link = ["shift-o"]
 
 # the refs sidebar: create a remote (on a remote or the remotes header), delete the selected branch
 # or tag or drop the selected stash, rename a branch or change its upstream
@@ -138,13 +144,15 @@ pull = ["p"]
 # push a branch to a remote, chosen in a popup
 push = ["shift-p"]
 
-# copy part of information, ex: copy the short commit hash not all
-short_copy = ["y"]
-full_copy = ["shift-y"]
-# add the selected file or directory to the .gitignore at the top of the repository
-ignore = ["i"]
-# show the git commands the app ran that changed the repository, with their output
-command_log = ["@"]
+# copy: y then y the short form (a short hash, a relative path, a name), f the full one, l the link of
+# the page on the web host of its remote; in a diff or the lines of a file, y copies the selected
+# lines at once (see the tables at the end)
+short_copy = ["y y"]
+full_copy = ["y f"]
+copy_link = ["y l"]
+# with no key, run from the keys list (?): add the selected file or directory to the .gitignore at
+# the top of the repository (ignore), show the git commands the app ran that changed the repository
+# (command_log)
 # hide the errors and warnings shown at the top right (they also go after 10 and 5 seconds)
 dismiss_notifications = [","]
 # wrap the long lines of the diffs and file previews, or not
@@ -156,3 +164,17 @@ timeline = ["shift-t"]
 # in these windows, the older/newer commit changing the file
 older_commit = ["["]
 newer_commit = ["]"]
+
+# keys of a part of the app overriding the outer ones: in the diffs and the lines of the blame, y
+# copies the selected lines at once, and Y copies their link
+[details_pane]
+short_copy = ["y"]
+copy_link = ["shift-y"]
+
+[local_changes_diff]
+short_copy = ["y"]
+copy_link = ["shift-y"]
+
+[file_history_pane]
+short_copy = ["y"]
+copy_link = ["shift-y"]

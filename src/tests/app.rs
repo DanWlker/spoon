@@ -631,9 +631,12 @@ fn test_page_bar_names_the_window_over_the_pages() {
         })
     };
     harness.run(vec![
-        keys("f1"),
-        named("Help"),
-        keys("esc @"),
+        keys("?"),
+        named("Keys"),
+        // the command log has no key, it is run from the keys list
+        keys("/"),
+        typing("git commands run"),
+        keys("enter enter"),
         named("Command Log"),
         keys("esc 5 shift-b"),
         named("Blame"),
@@ -650,22 +653,25 @@ fn test_help_and_command_log_cover_the_app_one_at_a_time() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        keys("f1"),
+        keys("?"),
         overlay("help"),
         // one panel, like the command log's, scrolled with its scrollbar
         screen(|screen| {
-            assert!(screen.contains("╭ Help "), "{screen}");
+            assert!(screen.contains("╭ Keys "), "{screen}");
             let thumb = screen.lines().any(|l| l.ends_with('█'));
             assert!(thumb, "{screen}");
         }),
-        // the help takes the keys
-        keys("@"),
+        // the keys list takes the keys
+        keys("tab"),
         overlay("help"),
         keys("esc"),
         overlay("none"),
-        keys("@"),
+        // the command log has no key, it is run from the keys list
+        keys("? /"),
+        typing("git commands run"),
+        keys("enter enter"),
         overlay("log"),
-        keys("f1"),
+        keys("?"),
         overlay("log"),
         keys("esc"),
         overlay("none"),
@@ -1002,9 +1008,6 @@ fn test_files_keys_do_nothing_in_their_diff() {
         check(|app| assert!(app.shell.dialog.is_some())),
         keys("esc enter u"),
         check(|app| assert!(app.shell.dialog.is_none())),
-        // nor filters them
-        keys("?"),
-        check(|app| assert!(!app.is_typing())),
     ]);
 }
 
@@ -1085,7 +1088,7 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
             // the others stay
             assert!(listed(app, "new branch"));
         }),
-        keys("c"),
+        keys("space"),
         check(|app| assert_notice(app, "A merge is in progress")),
     ]);
 }
@@ -1369,14 +1372,15 @@ fn test_paste_is_typed() {
         paste("c2\nx"),
         check(|app| assert!(app.is_typing())),
         keys("esc"),
-        // into the search of the files of the local changes page too
+        // into the filter of the files of the local changes page too
         keys("tab /"),
         paste("f.t"),
         check(|app| {
-            let View::LocalChanges(view) = &app.view else {
-                panic!("no local changes page")
-            };
-            assert_eq!(view.context().selected_path.as_deref(), Some("f.txt"));
+            let said = &app.shell.app_status.status_line;
+            assert!(
+                matches!(said, StatusLine::Input { message, .. } if message == "filter: f.t"),
+                "{said:?}"
+            );
         }),
         keys("esc"),
         // into the commit message, as typed: the tab and the new lines in the description, without
@@ -1941,6 +1945,73 @@ fn test_blame_shows_a_commit_on_the_graph_and_checks_one_out() {
 }
 
 #[test]
+fn test_keys_finishing_a_sequence_popped_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let popup = |expected: &'static [(&'static str, &'static str)]| {
+        check(move |app| {
+            let shown: Vec<(String, String)> = app
+                .keys_popup_keys()
+                .into_iter()
+                .map(|k| (k.keys, k.action))
+                .collect();
+            let expected: Vec<(String, String)> = expected
+                .iter()
+                .map(|(k, a)| (k.to_string(), a.to_string()))
+                .collect();
+            assert_eq!(shown, expected);
+        })
+    };
+    harness.run(vec![
+        // y on the commit list: what copying can go on with, the keys popup hidden
+        popup(&[]),
+        keys("y"),
+        popup(&[
+            ("f", "copy full hash"),
+            ("l", "copy link"),
+            ("y", "copy hash"),
+        ]),
+        keys("esc"),
+        popup(&[]),
+        // the keys popup names them as typed there
+        keys("shift-h"),
+        check(|app| {
+            let keys = app.keys_popup_keys();
+            let copy = keys.iter().find(|k| k.action == "copy hash").unwrap();
+            assert_eq!(copy.keys, "yy");
+        }),
+        keys("shift-h"),
+        // m with no operation in progress starts nothing on the local changes page
+        keys("tab m"),
+        check(|app| assert!(app.shell.app_status.pending_keys.is_empty())),
+        popup(&[]),
+    ]);
+}
+
+#[test]
+fn test_keys_list_runs_the_action() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // checking out has no key but space; filtered, run from the list, it asks to confirm
+        keys("? /"),
+        typing("Check out the branch"),
+        keys("enter enter"),
+        overlay("none"),
+        check(|app| assert!(app.shell.dialog.is_some())),
+        keys("esc"),
+        // on another panel's action, enter does nothing
+        keys("? /"),
+        typing("Stash all changes"),
+        keys("enter enter"),
+        overlay("help"),
+        check(|app| assert!(app.shell.dialog.is_none())),
+    ]);
+}
+
+#[test]
 fn test_keys_popup_over_the_blame_and_the_timeline() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -1972,10 +2043,12 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
         keys("/"),
         popup_has(&[]),
         check(|app| assert!(app.keys_popup_keys().is_empty())),
-        // over the command log, not the help, which lists every key
-        keys("esc esc @"),
+        // over the command log, not the keys list, which lists them itself
+        keys("esc esc ? /"),
+        typing("git commands run"),
+        keys("enter enter"),
         popup_has(&["move", "copy", "close"]),
-        keys("esc f1"),
+        keys("esc ?"),
         check(|app| assert!(app.keys_popup_keys().is_empty())),
     ]);
 }
@@ -2122,10 +2195,11 @@ fn test_no_match_said_alike_on_every_page() {
     // the keys to a search, and the page they are on
     let pages = [
         ("", StartPage::Graph),
-        ("5", StartPage::Graph),
+        // the file trees are filtered, their diff or preview searched
+        ("5 enter", StartPage::Graph),
         ("5 shift-b l", StartPage::Graph),
         ("5 shift-t", StartPage::Graph),
-        ("", StartPage::LocalChanges),
+        ("enter", StartPage::LocalChanges),
     ];
     for (to_search, page) in pages {
         let dir = tempfile::tempdir().unwrap();
@@ -2160,13 +2234,14 @@ fn test_found_match_counted_alike_on_every_page() {
     // the keys to a search, the page they are on, the query, and what it matches there
     let pages = [
         ("", StartPage::Graph, "feat1", 1),
-        ("4", StartPage::Graph, "f.txt", 1),
-        ("5", StartPage::Graph, "f.txt", 1),
+        // the file trees are filtered, their diff or preview searched: c2's
+        ("4 enter", StartPage::Graph, "MASTER", 1),
+        ("5 enter", StartPage::Graph, "MASTER", 1),
         // the graph selects c2 first, whose file has an "a" line
         ("5 shift-b l", StartPage::Graph, "a", 2),
         // from feat1, whose file's history has it
         ("j 5 shift-t", StartPage::Graph, "feat1", 1),
-        ("", StartPage::LocalChanges, "f.txt", 1),
+        ("enter", StartPage::LocalChanges, "changed", 1),
     ];
     for (to_search, page, query, total) in pages {
         let dir = tempfile::tempdir().unwrap();
@@ -2404,7 +2479,7 @@ fn test_pull_conflicting_then_aborted() {
                 draft(app)
             );
         }),
-        keys("shift-c enter"),
+        keys("m a enter"),
         check(|app| {
             assert!(app.repository.operation_in_progress().is_none());
             // the merge's message went with it
@@ -2467,7 +2542,7 @@ fn test_checkout_refused_over_local_changes() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         // c1, the first commit
-        keys("shift-g c enter"),
+        keys("shift-g space enter"),
         check(|app| {
             assert_notice(app, "would be overwritten by checkout");
             assert!(app.repository.current_branch().as_deref() == Some("master"));
@@ -2518,7 +2593,7 @@ fn test_revert_conflicting_then_aborted() {
             assert_notice(app, "git revert failed: CONFLICT");
             assert!(matches!(app.view, View::LocalChanges(_)));
         }),
-        keys("shift-c enter"),
+        keys("m a enter"),
         check(|app| {
             assert!(app.repository.operation_in_progress().is_none());
             assert_eq!(draft(app), "");
@@ -2907,10 +2982,11 @@ fn test_clearing_a_search_clears_its_status_line() {
     // the keys to a search, and the page they are on
     let pages = [
         ("", StartPage::Graph),
-        ("4", StartPage::Graph),
+        // the file trees are filtered, their diff or preview searched
+        ("4 enter", StartPage::Graph),
         ("5 shift-b l", StartPage::Graph),
         ("5 shift-t", StartPage::Graph),
-        ("", StartPage::LocalChanges),
+        ("enter", StartPage::LocalChanges),
     ];
     for (to_search, page) in pages {
         let dir = tempfile::tempdir().unwrap();

@@ -162,6 +162,10 @@ impl BlameView {
     }
 
     // While typing a search, every key goes to it as is.
+    pub fn is_text_focused(&self) -> bool {
+        self.focus == BlameFocus::Text
+    }
+
     pub fn is_typing(&self) -> bool {
         self.query.is_editing()
     }

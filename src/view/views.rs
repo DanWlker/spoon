@@ -108,7 +108,7 @@ impl<'a> View<'a> {
         }
     }
 
-    // The panel ctrl and the arrow keys resize, by its `size`; none when the page has no such
+    // The panel alt and the arrow keys resize, by its `size`; none when the page has no such
     // border there.
     pub fn resizable_panel(&self, size: Size) -> Option<Panel> {
         match (self, size) {

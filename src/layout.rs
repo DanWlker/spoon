@@ -1,4 +1,4 @@
-// The sizes of the panels that can be resized, with ctrl and the arrow keys or by dragging their
+// The sizes of the panels that can be resized, with alt and the arrow keys or by dragging their
 // borders with the mouse, and the borders drawn in the last frame to drag.
 
 use ratatui::layout::Rect;

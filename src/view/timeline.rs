@@ -139,6 +139,10 @@ impl TimelineView {
     }
 
     // While typing a search, every key goes to it as is.
+    pub fn is_diff_focused(&self) -> bool {
+        self.pane.is_focused()
+    }
+
     pub fn is_typing(&self) -> bool {
         self.query.is_editing()
     }

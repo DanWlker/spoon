@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spoon common tasks</title>
+<style>
+  /* Catppuccin Latte, Mocha in the dark */
+  :root {
+    --base:#eff1f5; --mantle:#e6e9ef; --crust:#dce0e8; --s0:#ccd0da; --s1:#bcc0cc;
+    --ov0:#9ca0b0; --sub:#5c5f77; --text:#4c4f69; --blue:#1e66f5; --mauve:#8839ef;
+    --peach:#fe640b; --green:#40a02b; --yellow:#df8e1d; --red:#d20f39;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --base:#1e1e2e; --mantle:#181825; --crust:#11111b; --s0:#313244; --s1:#45475a;
+      --ov0:#6c7086; --sub:#a6adc8; --text:#cdd6f4; --blue:#89b4fa; --mauve:#cba6f7;
+      --peach:#fab387; --green:#a6e3a1; --yellow:#f9e2af; --red:#f38ba8;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--crust); color:var(--text); font:15px/1.5 system-ui, sans-serif; padding:24px 16px 64px; }
+  main { max-width:900px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:18px; margin:36px 0 8px; color:var(--mauve); }
+  a { color:var(--blue); }
+  .lead { color:var(--sub); margin:0 0 8px; }
+  kbd { font:13px ui-monospace, monospace; color:var(--peach); background:var(--s0); border-radius:4px; padding:0 5px; white-space:nowrap; }
+  ol.steps { list-style:none; counter-reset:step; padding:0; margin:0; }
+  ol.steps > li { counter-increment:step; display:grid; grid-template-columns:34px 1fr; gap:4px 12px; margin:0 0 14px; }
+  ol.steps > li::before { content:counter(step); grid-row:span 2; width:26px; height:26px; border-radius:50%; background:var(--s0); color:var(--mauve); font-weight:700; display:flex; align-items:center; justify-content:center; }
+  .press { font-weight:600; }
+  .term { font:12.5px/1.45 ui-monospace, monospace; background:var(--base); border:1px solid var(--s0); border-radius:8px; padding:8px 10px; white-space:pre; overflow-x:auto; color:var(--sub); }
+  .b { color:var(--blue); } .g { color:var(--green); } .r { color:var(--red); } .y { color:var(--yellow); } .p { color:var(--peach); } .sel { background:var(--s0); color:var(--text); }
+</style>
+</head>
+<body>
+<main>
+<h1>Common tasks, step by step</h1>
+<p class="lead">The keys for what you do most, one step at a time. Whenever a key slips your mind, <kbd>?</kbd> lists the actions of the panel you're on: <kbd>/</kbd>, type a few words, <kbd>Enter</kbd>, <kbd>Enter</kbd> runs it. See the <a href="../keybindings/panels.html">panels</a> for where things are and the <a href="../keybindings/keymap.html">keymap</a> for every key.</p>
+
+<h2>Stage some lines and commit</h2>
+<ol class="steps">
+<li><span class="press"><kbd>Tab</kbd> to the local changes page, <kbd>j/k</kbd> to the file</span><span>The diff of the selected file shows on the right.</span></li>
+<li><span class="press"><kbd>Enter</kbd> selects its hunks, <kbd>Enter</kbd> again the lines of one</span><span>Or <kbd>Space</kbd> on the file to stage all of it, or on the <kbd>/</kbd> row at the top to stage everything.</span></li>
+<li><span class="press"><kbd>v</kbd>, <kbd>j</kbd> to select lines, <kbd>Space</kbd> stages them</span>
+<div class="term">   <span class="b">@@ -10,4 +10,6 @@</span>
+<span class="sel"><span class="g">+ let wanted = …</span>   </span>
+<span class="sel"><span class="g">+ find_next(…)</span>      </span>
+<span class="r">- old_line()</span></div></li>
+<li><span class="press"><kbd>c</kbd> commits</span><span>With no message yet, it starts typing the summary: <kbd>Enter</kbd> goes on to the description, <kbd>Esc</kbd> stops. <kbd>c</kbd> again shows the commit to make; <kbd>Enter</kbd> makes it.</span></li>
+</ol>
+
+<h2>Squash a few commits</h2>
+<ol class="steps">
+<li><span class="press">On the graph, <kbd>v</kbd> on the newest, <kbd>j</kbd> down to the oldest</span><span>The picked commits are marked; <kbd>Esc</kbd> clears them.</span></li>
+<li><span class="press"><kbd>s</kbd> squashes them into their parents</span><span>The popup asks how to combine the messages and shows the git command; <kbd>Enter</kbd> runs it.</span></li>
+</ol>
+
+<h2>Rebase, and get through a conflict</h2>
+<ol class="steps">
+<li><span class="press"><kbd>r</kbd> on the commit to rebase onto, <kbd>Enter</kbd></span><span>On a conflict the local changes page opens.</span></li>
+<li><span class="press"><kbd>Enter</kbd> on a conflicted file, <kbd>h/l</kbd> picks a side, <kbd>Space</kbd> keeps it</span><span>Or open it in your merge tool or editor from the conflict panel. The file is staged once resolved.</span></li>
+<li><span class="press"><kbd>m</kbd> shows what you can do with the rebase</span>
+<div class="term">  Unstaged             <span class="b">╭ Keys ───────────────────╮</span>
+                       <span class="b">│</span> <span class="p">a</span> ➜ abort              <span class="b">│</span>
+                       <span class="b">│</span> <span class="p">c</span> ➜ continue           <span class="b">│</span>
+                       <span class="b">│</span> <span class="p">s</span> ➜ skip               <span class="b">│</span>
+                       <span class="b">╰─────────────────────────╯</span></div></li>
+<li><span class="press"><kbd>c</kbd> continues</span><span><kbd>s</kbd> skips the commit it stopped at, dropping its changes; <kbd>a</kbd> goes back to where it started. Both ask first. A merge, cherry-pick or revert is finished with <kbd>c</kbd>, committing, and <kbd>m</kbd> <kbd>a</kbd> aborts it.</span></li>
+</ol>
+
+<h2>Walk through a big change folder by folder</h2>
+<ol class="steps">
+<li><span class="press">In the files of the local changes page, <kbd>]</kbd> <kbd>F</kbd></span><span>Goes to the next folder at the same depth, over the folders inside, a level up when none is left; <kbd>[</kbd> <kbd>F</kbd> goes back. <kbd>]</kbd> <kbd>f</kbd> goes file by file.</span></li>
+<li><span class="press">From the diff, <kbd>]</kbd> <kbd>F</kbd> stays in the diff</span><span>Showing the first file of the next folder.</span></li>
+</ol>
+
+<h2>Copy a hash, a path or a link</h2>
+<ol class="steps">
+<li><span class="press"><kbd>y</kbd></span><span>A popup lists what can be copied there: <kbd>y</kbd> the short hash (a relative path on a file, a name on a ref), <kbd>f</kbd> the full one, <kbd>l</kbd> the link on GitHub, GitLab and the like.</span></li>
+<li><span class="press">In a diff or the lines of a file, <kbd>y</kbd> copies the selected lines at once</span><span><kbd>Y</kbd> copies their link.</span></li>
+</ol>
+
+<h2>Find an action you don't remember</h2>
+<ol class="steps">
+<li><span class="press"><kbd>?</kbd> opens the keys list</span><span>The actions of the panel you're on first, with their keys, then those of the other panels, dimmed.</span></li>
+<li><span class="press"><kbd>/</kbd>, type <em>gitignore</em>, <kbd>Enter</kbd></span><span>Only the matching actions stay.</span></li>
+<li><span class="press"><kbd>Enter</kbd> runs the selected one</span><span>Actions with no key, like the command log or ignoring a file, run from here.</span></li>
+</ol>
+</main>
+</body>
+</html>

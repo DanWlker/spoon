@@ -56,6 +56,8 @@ pub enum AppEvent {
     // the git command running in the background finished, see `AppContext::running_task`
     TaskFinished(Result<(), String>),
     OpenHelp,
+    // runs the action chosen in the keys list, closing it, as if its key were pressed
+    RunAction(UserEvent),
     // closes the help or another window over everything
     CloseOverlay,
     CopyToClipboard {
@@ -406,7 +408,6 @@ pub enum UserEvent {
     Confirm,
     RefList,
     Search,
-    Filter,
     #[serde(skip)]
     FocusPanel(usize),
     ResizeLeft,
@@ -426,11 +427,15 @@ pub enum UserEvent {
     DecreaseDiffContext,
     NextFile,
     PreviousFile,
+    NextFolder,
+    PreviousFolder,
     NextTab,
     PreviousTab,
     Stash,
     Commit,
+    Continue,
     Abort,
+    Skip,
     Edit,
     ToggleAmend,
     Discard,
@@ -550,7 +555,11 @@ impl UserEvent {
             | UserEvent::Commit
             | UserEvent::NextFile
             | UserEvent::PreviousFile
+            | UserEvent::NextFolder
+            | UserEvent::PreviousFolder
+            | UserEvent::Continue
             | UserEvent::Abort
+            | UserEvent::Skip
             | UserEvent::ToggleAmend
             | UserEvent::Discard => Scope::LocalChanges,
             UserEvent::DialogEdit => Scope::Dialog,

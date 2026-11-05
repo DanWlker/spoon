@@ -158,10 +158,7 @@ impl<'a> CommitChangesState<'a> {
 
     // How the search for `query` went over the files, or the diff while it has the focus.
     pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
-        match self.pane.is_focused() {
-            true => self.pane.search_outcome(query, options),
-            false => Some(self.tree.search_outcome(query, options)),
-        }
+        self.pane.search_outcome(query, options)
     }
 
     // Whether the files are being selected from where the visual selection started.
@@ -529,15 +526,9 @@ impl<'a> CommitFilesState<'a> {
         self.text.selected_line()
     }
 
-    // How the search for `query` went over the files, or the preview while it has the focus.
-    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
-        match self.is_preview_focused() {
-            true => Some(self.text.search_outcome(query, options)),
-            false => self
-                .tree
-                .as_ref()
-                .map(|tree| tree.search_outcome(query, options)),
-        }
+    // How the search for `query` went over the preview; the files are only filtered.
+    pub fn search_outcome(&self, query: &str, options: SearchOptions) -> SearchOutcome {
+        self.text.search_outcome(query, options)
     }
 
     // Whether the files are being selected from where the visual selection started.
@@ -964,7 +955,7 @@ fn apply_changes(
 // The changes or the files tab of the details: a file tree beside the diff or the preview.
 pub struct CommitTab {
     ctx: Rc<AppContext>,
-    // highlighted in the names
+    // the filter, highlighted in the names
     search: Option<String>,
     // highlighted in the diff or the preview
     pane_search: Option<String>,

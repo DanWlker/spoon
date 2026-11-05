@@ -519,23 +519,9 @@ impl<'a> LocalChangesState<'a> {
         self.pane.selected_name()
     }
 
-    // Continues the rebase when one is in progress; otherwise asks to confirm the commit (which also
-    // finishes a merge, cherry-pick or revert), or starts typing the message when there is none yet.
-    pub fn commit_or_continue(&mut self) -> Result<(), String> {
-        if let Some(operation) = self.continuing_operation() {
-            let name = operation.name();
-            self.request = Some(Request::Task(GitTask {
-                commands: self
-                    .repository
-                    .continue_args(operation)
-                    .into_iter()
-                    .collect(),
-                running: format!("Continuing the {name}"),
-                done: format!("Continued the {name}"),
-                ..Default::default()
-            }));
-            return Ok(());
-        }
+    // Asks to confirm the commit (which also finishes a merge, cherry-pick or revert, or goes on with
+    // the rebase it stopped in), or starts typing the message when there is none yet.
+    pub fn commit(&mut self) -> Result<(), String> {
         if self.draft.summary.text().trim().is_empty() {
             self.focus_files();
             self.chosen = Focus::Typing(CommitField::Summary);
@@ -589,7 +575,7 @@ impl<'a> LocalChangesState<'a> {
         Ok(())
     }
 
-    // Whether there is something to commit; the message isn't empty, see `commit_or_continue`.
+    // Whether there is something to commit; the message isn't empty, see `commit`.
     fn check_commit(&self) -> Result<(), String> {
         let amend = self.draft.amend.is_some();
         // a merge can be committed without changes, when its resolution keeps one side
@@ -607,6 +593,39 @@ impl<'a> LocalChangesState<'a> {
         if let Some(operation) = self.repository.operation_in_progress() {
             self.request = Some(Request::Dialog(GitDialog::abort(operation)));
         }
+    }
+
+    // Goes on with the rebase in progress, the other operations being finished by committing; its
+    // key works only then.
+    pub fn continue_rebase(&mut self) {
+        let Some(operation) = self.continuing_operation() else {
+            return;
+        };
+        let name = operation.name();
+        self.request = Some(Request::Task(GitTask {
+            commands: self
+                .repository
+                .continue_args(operation)
+                .into_iter()
+                .collect(),
+            running: format!("Continuing the {name}"),
+            done: format!("Continued the {name}"),
+            ..Default::default()
+        }));
+    }
+
+    // Asks for confirmation to skip the commit the rebase, cherry-pick or revert stopped at; its
+    // key works only then, a merge having no commit to skip.
+    pub fn request_skip(&mut self) {
+        if let Some(operation) = self.skippable_operation() {
+            self.request = Some(Request::Dialog(GitDialog::skip(operation)));
+        }
+    }
+
+    fn skippable_operation(&self) -> Option<Operation> {
+        self.repository
+            .operation_in_progress()
+            .filter(|operation| *operation != Operation::Merge)
     }
 
     // Fills the empty message box with git's message for the merge, cherry-pick or revert in progress,
@@ -641,12 +660,11 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // The rebase that committing continues, rather than making a commit: the commit it stopped at
-    // to edit is amended first.
-    pub fn continuing_operation(&self) -> Option<Operation> {
+    // The rebase in progress, which goes on without committing, see `continue_rebase`.
+    fn continuing_operation(&self) -> Option<Operation> {
         self.repository
             .operation_in_progress()
-            .filter(|o| o.continues_without_commit() && !self.editing_commit())
+            .filter(|o| o.continues_without_commit())
     }
 
     // Commits the staged changes with the typed message, amending HEAD while amend is checked, then
@@ -1041,16 +1059,10 @@ impl<'a> LocalChangesState<'a> {
         };
         let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
         let what = |v: &Self| v.pane.selected_name();
-        // committing, or amending, or continuing an operation
+        // committing, or amending
         let commit_word = |v: &Self| {
             if v.editing_commit() || v.draft.amend.is_some() {
                 "amend"
-            } else if v
-                .repository
-                .operation_in_progress()
-                .is_some_and(Operation::continues_without_commit)
-            {
-                "continue"
             } else {
                 "commit"
             }
@@ -1131,7 +1143,7 @@ impl<'a> LocalChangesState<'a> {
         // say so, unlisted
         let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));
         const COMMIT: &str =
-            "Commit after confirming (finishing a merge, cherry-pick or revert), or continue a rebase";
+            "Commit after confirming (finishing a merge, cherry-pick or revert, or going on with a rebase)";
         let availability = move |applies: bool, v: &Self| match (applies, committable(v)) {
             (false, _) => Availability::Off,
             (true, false) => Availability::Warns,
@@ -1146,12 +1158,20 @@ impl<'a> LocalChangesState<'a> {
             availability(not_typing(v), v)
         })
         .short(commit_word);
+        k.add(&[Continue], "continue", "Continue the rebase in progress")
+            .when(|v| v.continuing_operation().is_some());
         k.add(
             &[Abort],
             "abort",
-            "Abort the rebase, merge, cherry-pick or revert in progress",
+            "Abort the rebase, merge, cherry-pick or revert in progress, after confirming",
         )
         .when(|v| v.repository.operation_in_progress().is_some());
+        k.add(
+            &[Skip],
+            "skip",
+            "Skip the commit the rebase, cherry-pick or revert stopped at, after confirming",
+        )
+        .when(|v| v.skippable_operation().is_some());
         k.add(
             &[ToggleAmend],
             "amend",
@@ -1192,18 +1212,19 @@ impl<'a> LocalChangesState<'a> {
             "Show the commits changing the selected file",
         )
         .when(|v| v.single_target_file().is_some());
-        k.add(
-            &[Search],
-            "search",
-            "Search the files, or the diff while it has the focus",
-        )
-        .when(|v| (files(v) && !empty(v)) || diff(v));
-        k.add(&[Filter], "filter", "Filter the files")
+        k.add(&[Search], "filter", "Filter the files")
             .when(|v| files(v) && !empty(v));
+        k.add(&[Search], "search", "Search the diff").when(diff);
         k.add(
-            &[ShortCopy, FullCopy],
+            &[ShortCopy],
             "copy path",
-            "Copy the relative/absolute path of the file",
+            "Copy the path of the file, from the top of the repository",
+        )
+        .when(row);
+        k.add(
+            &[FullCopy],
+            "copy full path",
+            "Copy the absolute path of the file",
         )
         .when(row);
         k.add(
@@ -1224,10 +1245,19 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(|v| files(v) && !picks(v));
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
+            .when(diff);
+        k.quiet(&[NextFile], "Next file, staying in the diff")
+            .when(|v| files(v) || diff(v));
+        k.quiet(&[PreviousFile], "Previous file, staying in the diff")
             .when(|v| files(v) || diff(v));
         k.quiet(
-            &[NextFile, PreviousFile],
-            "Go to the next/previous file, staying in the diff",
+            &[NextFolder],
+            "Next folder at the same depth (or a level up), staying in the diff",
+        )
+        .when(|v| files(v) || diff(v));
+        k.quiet(
+            &[PreviousFolder],
+            "Previous folder at the same depth (or a level up), staying in the diff",
         )
         .when(|v| files(v) || diff(v));
         k.quiet(
@@ -1382,7 +1412,7 @@ impl<'a> LocalChangesState<'a> {
     // conflict panel, whose choice space runs, see `select`.
     pub fn enter(&mut self) -> Result<(), String> {
         match self.focus() {
-            Focus::Commit(_) | Focus::Typing(_) => self.commit_or_continue()?,
+            Focus::Commit(_) | Focus::Typing(_) => self.commit()?,
             Focus::Side => {
                 self.pane.enter();
             }
@@ -1401,7 +1431,7 @@ impl<'a> LocalChangesState<'a> {
             Focus::Files if self.files().is_empty() => match self.section {
                 LocalChangesSection::Unstaged => {
                     self.focus_commit();
-                    self.commit_or_continue()?;
+                    self.commit()?;
                 }
                 LocalChangesSection::Staged => self.focus_section(LocalChangesSection::Unstaged),
             },
@@ -1715,18 +1745,17 @@ impl<'a> LocalChangesState<'a> {
     // Starts typing a search of the diff while it has the focus, else a search or filter of the
     // files, moving the focus back to them; a search goes from the row of what had the focus while
     // it is typed.
-    pub fn start_query(&mut self, kind: QueryKind) {
+    // Starts typing a search of the diff while it has the focus, else a filter of the files.
+    pub fn start_query(&mut self) {
         if self.is_diff_focused() {
-            if kind == QueryKind::Search {
-                let from = self.pane.selected_row();
-                self.diff_query.start(kind, from);
-            }
+            let from = self.pane.selected_row();
+            self.diff_query.start(QueryKind::Search, from);
             return;
         }
         self.focus_section(self.section);
         self.tree_mut().cancel_visual();
         let from = self.tree().all_rows_index();
-        self.query_mut().start(kind, from);
+        self.query_mut().start(QueryKind::Filter, from);
     }
 
     pub fn is_typing_query(&self) -> bool {
@@ -1742,14 +1771,14 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // How the search of the diff while it has the focus, else of the focused section, went.
+    // How the search of the diff went, while it has the focus; the files are only filtered.
     pub fn search_outcome(&self) -> Option<SearchOutcome> {
-        let query = self.active_query().search()?;
-        let options = self.ctx.search_options.get();
-        match self.is_diff_focused() {
-            true => self.pane.search_outcome(query, options),
-            false => Some(self.tree().search_outcome(query, options)),
-        }
+        let query = self
+            .diff_query
+            .search()
+            .filter(|_| self.is_diff_focused())?;
+        self.pane
+            .search_outcome(query, self.ctx.search_options.get())
     }
 
     // The diff is searched as text, the files by name.
@@ -1798,12 +1827,7 @@ impl<'a> LocalChangesState<'a> {
 
     // Returns false when the search matched nothing, see `active_query`.
     pub fn search_next(&mut self, toward: Toward, options: SearchOptions) -> bool {
-        let direction = SearchDirection::from(toward);
-        if self.is_diff_focused() {
-            self.search_diff(direction, options)
-        } else {
-            self.search(direction, options)
-        }
+        !self.is_diff_focused() || self.search_diff(SearchDirection::from(toward), options)
     }
 
     // Selects the match of the diff search: the changed line it is on, else its hunk. Returns
@@ -1821,28 +1845,13 @@ impl<'a> LocalChangesState<'a> {
         self.pane.selected_text().filter(|_| self.is_diff_focused())
     }
 
+    // The files are only filtered, see `start_query`.
     fn apply_query_change(&mut self, change: Option<QueryKind>, options: SearchOptions) {
-        match change {
-            None => {}
-            Some(QueryKind::Search) => {
-                self.search(SearchDirection::Current, options);
-            }
-            Some(QueryKind::Filter) => {
-                // only the focused section is filtered
-                let filter = self.query().filter().map(String::from);
-                self.update_tree(|tree| tree.set_filter(filter.as_deref(), options));
-            }
+        if change == Some(QueryKind::Filter) {
+            // only the focused section is filtered
+            let filter = self.query().filter().map(String::from);
+            self.update_tree(|tree| tree.set_filter(filter.as_deref(), options));
         }
-    }
-
-    // Selects the match of the search in the current section, expanding the directories hiding it.
-    // Returns false when there is none.
-    fn search(&mut self, direction: SearchDirection, options: SearchOptions) -> bool {
-        let Some(query) = self.query().search().map(String::from) else {
-            return true;
-        };
-        let from = self.query().step_from(self.tree().all_rows_index());
-        self.update_tree(|tree| tree.search(&query, from, direction, options))
     }
 
     // Goes to the next file of the section, skipping directories; from its diff, on in the diff of
@@ -1861,6 +1870,58 @@ impl<'a> LocalChangesState<'a> {
         let path = find_next(&rows, current, direction, |row| !row.is_dir());
         self.chosen = Focus::Files;
         self.update_tree(|tree| tree.reveal(path.as_deref()));
+        if in_diff && self.picked().is_empty() {
+            self.enter()?;
+        }
+        Ok(())
+    }
+
+    // Goes to the next folder at the depth of the selected one (of the selected file's), or a level
+    // up when none is left at it, round; closed folders stay closed. From the diff, on in the diff
+    // of the first file of that folder.
+    pub fn select_next_folder(&mut self, toward: Toward) -> Result<(), String> {
+        let in_diff = self.is_diff_focused();
+        if !(in_diff || self.focus() == Focus::Files) {
+            return Ok(());
+        }
+        let rows = self.tree().all_rows();
+        let selected = self
+            .selected_path()
+            .and_then(|path| rows.iter().position(|row| row.path == path));
+        let folder = match selected {
+            // the root row, above everything: the first or the last folder at the top
+            None => {
+                let mut top = rows.iter().filter(|row| row.is_dir() && row.depth == 0);
+                match toward {
+                    Toward::Next => top.next(),
+                    Toward::Previous => top.next_back(),
+                }
+                .map(|row| row.path.clone())
+            }
+            Some(selected) => {
+                // a file goes from its folder; a file at the top from itself
+                let from = (0..=selected)
+                    .rev()
+                    .find(|&i| rows[i].is_dir() && rows[i].contains(&rows[selected].path))
+                    .unwrap_or(selected);
+                let anchor = &rows[from];
+                find_next(&rows, from, SearchDirection::from(toward), |row| {
+                    row.is_dir() && row.depth <= anchor.depth && !anchor.contains(&row.path)
+                })
+            }
+        };
+        let Some(folder) = folder else {
+            return Ok(());
+        };
+        let target = match in_diff {
+            true => rows
+                .iter()
+                .find(|row| !row.is_dir() && path_contains(&folder, &row.path))
+                .map_or(folder, |file| file.path.clone()),
+            false => folder,
+        };
+        self.chosen = Focus::Files;
+        self.update_tree(|tree| tree.reveal(Some(&target)));
         if in_diff && self.picked().is_empty() {
             self.enter()?;
         }
@@ -2319,8 +2380,8 @@ impl LocalChangesPanel<'_> {
             inner,
             tree,
             |i| Some(files[i].status.symbol()),
-            // the search is highlighted in the section it applies to
-            state.query_of(section).search(),
+            // the filter is highlighted in the section it applies to
+            state.query_of(section).filter(),
             |path| picked.contains(path),
             match (active, tree.is_visual(), self.focused) {
                 (false, _, _) => TreeCursor::Hidden,
@@ -2485,7 +2546,10 @@ impl LocalChangesPanel<'_> {
         state.pane.scroll_state().height = height;
 
         // what the select key, space, does on the item selected, named as it is bound
-        let select = self.ctx.keybind.short_keys(&[UserEvent::Select]);
+        let select = self
+            .ctx
+            .keybind
+            .short_keys(crate::keybind::Scope::LocalChanges, &[UserEvent::Select]);
         let mut chars = select.chars();
         let select: String = chars
             .next()
@@ -2609,7 +2673,7 @@ mod tests {
             git::{git, GitRepository},
             ui::test_ctx,
         },
-        widget::{file_tree::ROOT_PATH, tree_query::QueryKind},
+        widget::file_tree::ROOT_PATH,
     };
 
     fn numbered_lines(n: usize) -> String {
@@ -3136,6 +3200,60 @@ mod tests {
     }
 
     #[test]
+    fn test_next_folder() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        for file in [
+            "src/view/list.rs",
+            "src/widget/w.rs",
+            "src/app.rs",
+            "docs/d.md",
+            "tests/t.rs",
+            "README",
+        ] {
+            let path = repo_path.join(file);
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(path, "x\n")?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let go = |state: &mut LocalChangesState, from: &str, toward| {
+            select_row(state, from);
+            state.select_next_folder(toward).unwrap();
+            state.selected_path().unwrap()
+        };
+        // the next folder at the same depth, over the folders inside
+        assert_eq!(go(&mut state, "src", Toward::Next), "tests");
+        assert_eq!(go(&mut state, "src/view", Toward::Next), "src/widget");
+        // none left at that depth: a level up
+        assert_eq!(go(&mut state, "src/widget", Toward::Next), "tests");
+        // a file goes from its folder, a file at the top from itself, round; the root to the top
+        assert_eq!(go(&mut state, "src/widget/w.rs", Toward::Next), "tests");
+        assert_eq!(go(&mut state, ROOT_PATH, Toward::Next), "docs");
+        assert_eq!(go(&mut state, "README", Toward::Next), "docs");
+        assert_eq!(go(&mut state, "src/widget", Toward::Previous), "src/view");
+        assert_eq!(go(&mut state, "docs", Toward::Previous), "tests");
+
+        // a closed folder stays closed
+        select_row(&mut state, "docs");
+        state.collapse();
+        assert_eq!(go(&mut state, "src", Toward::Previous), "docs");
+        assert!(!state.tree().is_open("docs"));
+
+        // from the diff, on in the diff of the folder's first file
+        select_row(&mut state, "src/view/list.rs");
+        state.enter()?;
+        assert!(state.is_diff_focused());
+        state.select_next_folder(Toward::Next)?;
+        assert_eq!(state.selected_path().as_deref(), Some("src/widget/w.rs"));
+        assert!(state.is_diff_focused());
+        Ok(())
+    }
+
+    #[test]
     fn test_next_file() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -3349,7 +3467,7 @@ mod tests {
         assert!(state.selected_diff_text().unwrap().contains("+new A"));
 
         // the search of the diff selects the line matched; the files' query is left alone
-        state.start_query(QueryKind::Search);
+        state.start_query();
         for c in "new".chars() {
             state.handle_query_key(
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
@@ -3368,9 +3486,7 @@ mod tests {
         state.search_next(Toward::Next, SearchOptions::default());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
 
-        // a filter can't start from the diff, esc clears the search before going back
-        state.start_query(QueryKind::Filter);
-        assert!(!state.is_typing_query());
+        // esc clears the search before going back
         assert!(state.clear_diff_query() && !state.clear_diff_query());
         assert!(state.is_diff_focused());
         Ok(())
@@ -3822,7 +3938,7 @@ mod tests {
             UserEvent::Select,
             UserEvent::ToggleSelect,
             UserEvent::Edit,
-            UserEvent::Filter,
+            UserEvent::Search,
             UserEvent::Ignore,
         ] {
             assert!(!keys.takes(event), "{event:?}");
@@ -3877,7 +3993,7 @@ mod tests {
 
         // c with an empty message starts typing it instead
         state.draft.set_message("");
-        state.commit_or_continue()?;
+        state.commit()?;
         assert!(state.is_editing());
         state.back();
         state.back();
@@ -3920,7 +4036,7 @@ mod tests {
 
         // c with a message asks to confirm the commit, showing it
         state.draft.set_message("first change\n\nbody");
-        state.commit_or_continue()?;
+        state.commit()?;
         let Some(preview) = state.dialog().and_then(GitDialog::commit_preview) else {
             panic!("no commit to confirm");
         };
@@ -4147,8 +4263,8 @@ mod tests {
         Ok(())
     }
 
-    fn type_query(state: &mut LocalChangesState, kind: QueryKind, text: &str) {
-        state.start_query(kind);
+    fn type_query(state: &mut LocalChangesState, text: &str) {
+        state.start_query();
         for c in text.chars() {
             state.handle_query_key(key(KeyCode::Char(c)), SearchOptions::default());
         }
@@ -4156,61 +4272,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_search_goes_from_where_it_started_and_steps_from_the_selection(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let repo_path = dir.path();
-        let git = GitRepository::new(repo_path);
-        git.init();
-        git.commit("init", "2024-01-01");
-        for name in ["apple", "avocado", "banana", "grape"] {
-            fs::write(repo_path.join(name), "x\n")?;
-        }
-        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
-        let mut state = LocalChangesState::load(&repository);
-        let options = SearchOptions::default();
-
-        // typed from banana, "av" goes around to avocado
-        select_row(&mut state, "banana");
-        state.start_query(QueryKind::Search);
-        for c in "av".chars() {
-            state.handle_query_key(key(KeyCode::Char(c)), options);
-        }
-        assert_eq!(state.selected_path().as_deref(), Some("avocado"));
-
-        // backspacing goes on from where the search started, and banana matches the shorter query
-        state.handle_query_key(key(KeyCode::Backspace), options);
-        assert_eq!(state.selected_path().as_deref(), Some("banana"));
-
-        // how the search went: the third of the four paths matching "a"
-        assert_eq!(
-            state.search_outcome(),
-            Some(SearchOutcome::Found {
-                index: 3,
-                total: 4,
-                query: "a".into(),
-            })
-        );
-
-        // kept, the step keys go on from the selection
-        state.handle_query_key(key(KeyCode::Enter), options);
-        state.search_next(Toward::Next, options);
-        assert_eq!(state.selected_path().as_deref(), Some("grape"));
-        assert_eq!(
-            state.search_outcome(),
-            Some(SearchOutcome::Found {
-                index: 4,
-                total: 4,
-                query: "a".into(),
-            })
-        );
-        state.search_next(Toward::Previous, options);
-        assert_eq!(state.selected_path().as_deref(), Some("banana"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_search_and_filter() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_filter() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
         let git = GitRepository::new(repo_path);
@@ -4228,23 +4290,15 @@ mod tests {
             state.rows().iter().map(|r| r.path.clone()).collect()
         };
 
-        // search reveals a match in a collapsed directory
-        select_row(&mut state, "src");
-        state.collapse();
-        type_query(&mut state, QueryKind::Search, "app");
-        assert_eq!(state.selected_path().as_deref(), Some("src/app.rs"));
-        assert!(diff(&state).raw.contains("+a"));
+        // / filters the files, then staging everything shown stages only the matching files
+        type_query(&mut state, "list");
         assert_eq!(
             state
                 .query_of(LocalChangesSection::Unstaged)
                 .indicator()
                 .as_deref(),
-            Some("/app")
+            Some("filter: list")
         );
-        assert!(state.clear_query(SearchOptions::default()));
-
-        // filter, then stage everything shown: only the matching files
-        type_query(&mut state, QueryKind::Filter, "list");
         assert_eq!(
             visible(&state),
             vec![
@@ -4273,16 +4327,7 @@ mod tests {
             None
         );
 
-        // n and N step through matches, wrapping around
-        type_query(&mut state, QueryKind::Search, "list");
-        assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
-        state.search_next(Toward::Next, SearchOptions::default());
-        assert_eq!(state.selected_path().as_deref(), Some("src/view/list.rs"));
-        state.search_next(Toward::Next, SearchOptions::default());
-        assert_eq!(state.selected_path().as_deref(), Some("docs/list.md"));
-
-        // esc clears the search of the staged section, the filter is the unstaged one's
-        assert!(state.clear_query(SearchOptions::default()));
+        // esc clears the filter of the section it is in only
         assert!(!state.clear_query(SearchOptions::default()));
         state.focus_section(LocalChangesSection::Unstaged);
         assert!(visible(&state).is_empty());
@@ -4514,7 +4559,7 @@ mod tests {
         select_row(&mut state, "c.txt");
         state.toggle_visual();
         state.toggle_visual();
-        type_query(&mut state, QueryKind::Filter, "txt");
+        type_query(&mut state, "txt");
         state.enter()?;
         assert!(state.back());
         assert!(!state.back());
@@ -4606,6 +4651,26 @@ mod tests {
     }
 
     #[test]
+    fn test_rebase_skip() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = conflicting_rebase(repo_path);
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+
+        // skipping drops the commit it stopped at, after confirming, and the rebase goes on
+        state.request_skip();
+        assert!(prompt(&state).is_some_and(|p| p.starts_with("Skip the commit the rebase")));
+        confirm_and_run(&mut state)?;
+        assert_eq!(state.repository.operation_in_progress(), None);
+        assert_eq!(
+            git_stdout(repo_path, &["log", "--format=%s", "-1"]),
+            "master change"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_rebase_continue() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let repo_path = dir.path();
@@ -4622,18 +4687,20 @@ mod tests {
             LocalChangeStatus::Conflicted
         );
 
-        // continuing with the conflict unresolved fails and keeps rebasing
-        state.commit_or_continue()?;
+        // m c continues, m s skips, while rebasing; continuing with the conflict unresolved fails
+        // and keeps rebasing
+        assert!(state.keys().takes(UserEvent::Continue) && state.keys().takes(UserEvent::Skip));
+        state.continue_rebase();
         assert!(state.run_task().is_err());
         assert_eq!(
             state.repository.operation_in_progress(),
             Some(Operation::Rebase)
         );
 
-        // resolved, staged as the files load again, then c continues instead of committing
+        // resolved, staged as the files load again, then continued
         fs::write(repo_path.join("a.txt"), "resolved\n")?;
         state.reload();
-        state.commit_or_continue()?;
+        state.continue_rebase();
         state.run_task()?;
         assert_eq!(state.repository.operation_in_progress(), None);
         assert_eq!(
@@ -4641,8 +4708,10 @@ mod tests {
             "feature change\nmaster change"
         );
 
-        // abort only works while rebasing
-        assert!(!state.keys().takes(UserEvent::Abort));
+        // abort, continue and skip only work while rebasing
+        for event in [UserEvent::Abort, UserEvent::Continue, UserEvent::Skip] {
+            assert!(!state.keys().takes(event), "{event:?}");
+        }
         Ok(())
     }
 
@@ -4866,9 +4935,12 @@ mod tests {
         );
         assert_eq!(restored.draft.message(), "");
         state.draft.set_message("Merge branch 'feature'");
+        // a merge is finished by committing, with no commit to skip
+        assert!(state.keys().takes(UserEvent::Abort));
+        assert!(!state.keys().takes(UserEvent::Continue) && !state.keys().takes(UserEvent::Skip));
 
         resolve_and_stage(&mut state, repo_path);
-        state.commit_or_continue()?;
+        state.commit()?;
         confirm_and_run(&mut state)?;
         assert_eq!(state.repository.operation_in_progress(), None);
         // a merge commit, with both parents
@@ -4922,7 +4994,7 @@ mod tests {
         );
 
         resolve_and_stage(&mut state, repo_path);
-        state.commit_or_continue()?;
+        state.commit()?;
         confirm_and_run(&mut state)?;
         assert_eq!(state.repository.operation_in_progress(), None);
         assert_eq!(

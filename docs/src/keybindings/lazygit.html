@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From lazygit</title>
+<style>
+  /* Catppuccin Latte, Mocha in the dark */
+  :root {
+    --base:#eff1f5; --mantle:#e6e9ef; --crust:#dce0e8; --s0:#ccd0da; --s1:#bcc0cc;
+    --ov0:#9ca0b0; --sub:#5c5f77; --text:#4c4f69; --blue:#1e66f5; --mauve:#8839ef;
+    --peach:#fe640b; --green:#40a02b; --yellow:#df8e1d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --base:#1e1e2e; --mantle:#181825; --crust:#11111b; --s0:#313244; --s1:#45475a;
+      --ov0:#6c7086; --sub:#a6adc8; --text:#cdd6f4; --blue:#89b4fa; --mauve:#cba6f7;
+      --peach:#fab387; --green:#a6e3a1; --yellow:#f9e2af;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--crust); color:var(--text); font:15px/1.5 system-ui, sans-serif; padding:24px 16px 64px; }
+  main { max-width:980px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:17px; margin:30px 0 4px; color:var(--mauve); }
+  a { color:var(--blue); }
+  .lead { color:var(--sub); margin:0 0 8px; }
+  kbd { font:13px ui-monospace, monospace; color:var(--peach); background:var(--s0); border-radius:4px; padding:0 5px; white-space:nowrap; }
+  .wrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:6px 0; background:var(--base); border-radius:8px; }
+  th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--s0); vertical-align:top; }
+  th { color:var(--sub); font-weight:600; }
+  td:nth-child(2), td:nth-child(3) { white-space:nowrap; }
+  tr.diff td:nth-child(3) { color:var(--yellow); }
+  .legend { font-size:14px; color:var(--sub); }
+  .legend b { color:var(--yellow); }
+</style>
+</head>
+<body>
+<main>
+<h1>Coming from lazygit</h1>
+<p class="lead">Spoon follows lazygit's keys where it can. The rows in <span class="legend"><b>yellow</b></span> work differently. As in lazygit, <kbd>?</kbd> lists the keys of the focused panel and runs them. See the <a href="keymap.html">keymap</a> for every key of spoon.</p>
+
+<h2>Everywhere</h2>
+<div class="wrap"><table>
+<tr><th>Action</th><th>lazygit</th><th>spoon</th><th>Notes</th></tr>
+<tr><td>Keys of the panel, run one</td><td><kbd>?</kbd></td><td><kbd>?</kbd></td><td>Filtered with <kbd>/</kbd>; the other panels' actions follow, dimmed. <kbd>H</kbd> shows the keys in a popup while you work.</td></tr>
+<tr><td>Search / filter</td><td><kbd>/</kbd></td><td><kbd>/</kbd></td><td>Filters file trees, searches commits and diffs.</td></tr>
+<tr><td>Focus a panel</td><td><kbd>1</kbd>–<kbd>5</kbd></td><td><kbd>1</kbd>–<kbd>5</kbd></td><td>The numbers are in the panel titles.</td></tr>
+<tr class="diff"><td>Panel beside</td><td><kbd>h</kbd> <kbd>l</kbd> <kbd>Tab</kbd></td><td><kbd>Ctrl-h/j/k/l</kbd></td><td><kbd>h/l</kbd> open and close folders and folds; <kbd>Tab</kbd> switches between the local changes page and the graph.</td></tr>
+<tr class="diff"><td>Resize panels</td><td><kbd>+</kbd> <kbd>_</kbd> screen modes</td><td><kbd>Alt-h/j/k/l</kbd></td><td>Or drag the borders.</td></tr>
+<tr><td>Range select</td><td><kbd>v</kbd></td><td><kbd>v</kbd></td><td></td></tr>
+<tr><td>Next / previous tab</td><td><kbd>]</kbd> <kbd>[</kbd></td><td><kbd>]</kbd> <kbd>[</kbd></td><td>Of the commit details.</td></tr>
+<tr><td>Push / pull / fetch</td><td><kbd>P</kbd> <kbd>p</kbd> <kbd>f</kbd></td><td><kbd>P</kbd> <kbd>p</kbd> <kbd>f</kbd></td><td><kbd>F</kbd> fetches all remotes.</td></tr>
+<tr class="diff"><td>Refresh</td><td><kbd>R</kbd></td><td><kbd>Ctrl-r</kbd></td><td>Spoon also reloads every few seconds.</td></tr>
+<tr class="diff"><td>Copy</td><td><kbd>y</kbd> menu, <kbd>Ctrl-o</kbd></td><td><kbd>y</kbd> then <kbd>y</kbd> / <kbd>f</kbd> / <kbd>l</kbd></td><td>Short form, full form, link. In a diff <kbd>y</kbd> copies the lines at once.</td></tr>
+<tr><td>Open in browser</td><td><kbd>o</kbd></td><td><kbd>o</kbd></td><td></td></tr>
+<tr><td>Edit file</td><td><kbd>e</kbd></td><td><kbd>e</kbd></td><td></td></tr>
+<tr class="diff"><td>Command log</td><td><kbd>@</kbd> menu</td><td>keys list</td><td><kbd>?</kbd>, <kbd>/</kbd> <em>git commands</em>.</td></tr>
+<tr class="diff"><td>Undo</td><td><kbd>z</kbd></td><td>—</td><td>Not in spoon.</td></tr>
+</table></div>
+
+<h2>Files</h2>
+<div class="wrap"><table>
+<tr><th>Action</th><th>lazygit</th><th>spoon</th><th>Notes</th></tr>
+<tr><td>Stage / unstage</td><td><kbd>Space</kbd></td><td><kbd>Space</kbd></td><td>Files, folders, hunks or lines.</td></tr>
+<tr class="diff"><td>Stage all</td><td><kbd>a</kbd></td><td><kbd>Space</kbd> on <kbd>/</kbd></td><td>The root row at the top of the files.</td></tr>
+<tr><td>Commit</td><td><kbd>c</kbd></td><td><kbd>c</kbd></td><td>The message is typed in the page, not a popup.</td></tr>
+<tr><td>Amend last commit</td><td><kbd>A</kbd></td><td><kbd>A</kbd></td><td>Turns amending on, then <kbd>c</kbd>.</td></tr>
+<tr><td>Discard</td><td><kbd>d</kbd></td><td><kbd>d</kbd></td><td></td></tr>
+<tr><td>Stash</td><td><kbd>s</kbd></td><td><kbd>s</kbd></td><td>All changes, or the picked files.</td></tr>
+<tr class="diff"><td>Ignore</td><td><kbd>i</kbd></td><td>keys list</td><td>No default key.</td></tr>
+<tr class="diff"><td>Next / previous file</td><td><kbd>n</kbd> <kbd>N</kbd> in the diff</td><td><kbd>]</kbd><kbd>f</kbd> <kbd>[</kbd><kbd>f</kbd></td><td><kbd>]</kbd><kbd>F</kbd> <kbd>[</kbd><kbd>F</kbd> go folder by folder.</td></tr>
+<tr><td>Continue / abort / skip</td><td><kbd>m</kbd> menu</td><td><kbd>m</kbd> then <kbd>c</kbd> / <kbd>a</kbd> / <kbd>s</kbd></td><td>Only while a rebase, merge, cherry-pick or revert is in progress.</td></tr>
+</table></div>
+
+<h2>Commits and branches</h2>
+<div class="wrap"><table>
+<tr><th>Action</th><th>lazygit</th><th>spoon</th><th>Notes</th></tr>
+<tr><td>Check out</td><td><kbd>Space</kbd></td><td><kbd>Space</kbd></td><td>A commit, branch, remote branch or tag.</td></tr>
+<tr><td>Squash</td><td><kbd>s</kbd></td><td><kbd>s</kbd></td><td>The picked commits, or the selected one.</td></tr>
+<tr><td>Drop</td><td><kbd>d</kbd></td><td><kbd>d</kbd></td><td></td></tr>
+<tr class="diff"><td>Revert</td><td><kbd>t</kbd></td><td><kbd>u</kbd></td><td></td></tr>
+<tr class="diff"><td>Reset</td><td><kbd>g</kbd> menu</td><td><kbd>U</kbd></td><td>Soft, mixed or hard, chosen in the popup.</td></tr>
+<tr><td>Amend an older commit</td><td><kbd>A</kbd></td><td><kbd>A</kbd></td><td>On the local changes page, by an interactive rebase.</td></tr>
+<tr class="diff"><td>Cherry-pick</td><td><kbd>C</kbd> copy, <kbd>V</kbd> paste</td><td><kbd>C</kbd></td><td>Onto HEAD at once, after confirming.</td></tr>
+<tr><td>Rebase onto</td><td><kbd>r</kbd> (branches)</td><td><kbd>r</kbd></td><td>Onto a commit or a ref.</td></tr>
+<tr class="diff"><td>Merge</td><td><kbd>M</kbd></td><td><kbd>m</kbd></td><td></td></tr>
+<tr class="diff"><td>New branch</td><td><kbd>n</kbd></td><td><kbd>b</kbd></td><td></td></tr>
+<tr><td>New tag</td><td><kbd>T</kbd></td><td><kbd>t</kbd></td><td></td></tr>
+<tr class="diff"><td>Rename branch, upstream</td><td><kbd>R</kbd> <kbd>u</kbd></td><td><kbd>e</kbd></td><td>In the refs sidebar.</td></tr>
+<tr><td>Delete branch</td><td><kbd>d</kbd></td><td><kbd>d</kbd></td><td>In the refs sidebar.</td></tr>
+<tr class="diff"><td>Diff two commits</td><td><kbd>W</kbd> menu</td><td><kbd>D</kbd></td><td>With HEAD, or the two picked.</td></tr>
+<tr class="diff"><td>Current branch only</td><td><kbd>Ctrl-l</kbd> menu</td><td><kbd>L</kbd></td><td></td></tr>
+<tr class="diff"><td>Blame, file history</td><td>—</td><td><kbd>B</kbd> <kbd>T</kbd></td><td>Over everything, stepping through the commits with <kbd>[</kbd> <kbd>]</kbd>.</td></tr>
+</table></div>
+</main>
+</body>
+</html>
