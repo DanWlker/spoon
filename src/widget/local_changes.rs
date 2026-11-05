@@ -3523,6 +3523,27 @@ mod tests {
         Ok(())
     }
 
+    // A file that isn't UTF-8 is read as text with U+FFFD in place of its bytes: staging a hunk
+    // of it used to write U+FFFD into the index.
+    #[test]
+    fn test_hunks_of_a_file_not_in_utf8_are_not_staged() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("latin1.txt"), b"x\n")?;
+        git.add(&["latin1.txt"]);
+        git.commit("init", "2024-01-01");
+        fs::write(repo_path.join("latin1.txt"), b"x\ncaf\xe9\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "latin1.txt");
+        assert_eq!(state.enter().unwrap_err(), CONVERTED_DIFF);
+        assert_eq!(state.focus(), Focus::Files);
+        Ok(())
+    }
+
     #[test]
     fn test_toggle_stage_a_range_of_lines() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;

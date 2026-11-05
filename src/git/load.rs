@@ -645,6 +645,42 @@ mod tests {
     use super::*;
     use crate::git::FileChange;
 
+    // `log.showSignature` makes git print the check of a signature before the fields of a signed
+    // commit, which used to be read as its hash.
+    #[test]
+    fn test_load_signed_commits_with_show_signature() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let key = path.join("key");
+        let keygen = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()
+            .unwrap();
+        assert!(keygen.success());
+        let repo = GitRepository::new(path);
+        repo.init();
+        git(path, &["config", "gpg.format", "ssh"]);
+        git(path, &["config", "user.signingkey", key.to_str().unwrap()]);
+        git(path, &["config", "commit.gpgsign", "true"]);
+        git(path, &["config", "log.showSignature", "true"]);
+        repo.commit("signed", "2024-01-01");
+        repo.stash("2024-01-02");
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repo.rev_parse_head();
+        assert_eq!(repository.head_commit().unwrap().as_str(), head.trim());
+        for commit in repository.all_commits() {
+            let hash = commit.commit_hash.as_str();
+            assert!(
+                hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{hash:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_load_root_commit_and_stash() {
         use crate::test_support::git::GitRepository;

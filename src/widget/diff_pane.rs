@@ -55,9 +55,12 @@ impl DiffPane {
     }
 
     // The diff is no longer the one selected: drawn until the next one is shown, where it was
-    // scrolled, the focus beside it so no key acts on it.
+    // scrolled, the focus beside it so no key acts on it. The one loading is of what was selected
+    // too, so it is dropped.
     pub fn outdate(&mut self) {
         self.previous = self.diff.take().or(self.previous.take());
+        self.loading = None;
+        self.pending = None;
         self.focus = None;
     }
 
@@ -74,7 +77,6 @@ impl DiffPane {
         work: impl FnOnce() -> String + Send + 'static,
     ) {
         self.outdate();
-        self.pending = None;
         self.loading = Some(Job::spawn(tx, work));
     }
 

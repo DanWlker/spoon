@@ -567,13 +567,22 @@ pub fn stash_args(paths: &[String], message: &str) -> GitArgs {
 
 // A git command of the app, taking no lock it can do without, like `git status` refreshing the
 // index, which would make the user's own git commands fail meanwhile. In tests, the git config of
-// the user's home and system is left out, so the tests behave alike everywhere.
+// the user's home and system is left out, so the tests behave alike everywhere. A signature's check
+// would come before the fields read from `log`, `show` and `stash list`.
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
-    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd.args(["-c", "log.showSignature=false"])
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    // the repository a git hook running the tests was given would be written in place of theirs
     #[cfg(test)]
     cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
     cmd
 }
 
@@ -687,6 +696,17 @@ mod tests {
     use super::*;
     use crate::git::refs_snapshot;
     use crate::git::SortCommit;
+
+    // A git hook gives git the repository it runs for: the tests, run from one, used to write
+    // there instead of in their own repositories.
+    #[test]
+    fn test_git_commands_of_the_tests_leave_out_the_repository_of_the_environment() {
+        let cmd = git_command();
+        let removed: Vec<_> = cmd.get_envs().filter(|(_, v)| v.is_none()).collect();
+        for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+            assert!(removed.iter().any(|(k, _)| *k == name), "{name}");
+        }
+    }
 
     // A git command running in the background, saying `running`.
     fn running(running: &str) -> RunningTask {

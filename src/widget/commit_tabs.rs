@@ -1570,6 +1570,32 @@ mod tests {
         Ok(())
     }
 
+    // Moving to another file while the diff of the one before loads shows the diff of the file
+    // moved to: it used to show the one before, loaded late.
+    #[test]
+    fn test_moving_while_a_diff_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        fs::write(repo_path.join("b.txt"), "b\n")?;
+        git.add(&["a.txt", "b.txt"]);
+        git.commit("first", "2024-01-01");
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let first = repository.all_commits()[0].commit_hash.clone();
+        let (_, changes) = repository.commit_detail(&first);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), first, &changes);
+        let ec = crate::event::EventController::without_terminal();
+        let tx = ec.sender();
+        state.update_tree(|tree| tree.select_path("a.txt"));
+        state.ensure_loaded_in_background(&tx);
+        state.update_tree(|tree| tree.select_path("b.txt"));
+        state.ensure_loaded();
+        assert!(state.pane.diff().unwrap().raw.contains("+++ b/b.txt"));
+        Ok(())
+    }
+
     #[test]
     fn test_diff_focus() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;

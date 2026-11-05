@@ -33,7 +33,7 @@ use crate::{
 
 // Why the hunks of a file aren't selectable, see `ParsedDiff::drop_converted`.
 pub const CONVERTED_DIFF: &str =
-    "This diff is text converted from the file (textconv): its hunks and lines can't be staged or applied, only the whole file";
+    "This diff is text converted from the file (textconv, or not UTF-8): its hunks and lines can't be staged or applied, only the whole file";
 
 #[derive(Debug, Default)]
 pub struct ParsedDiff {
@@ -43,7 +43,7 @@ pub struct ParsedDiff {
     // the words changed in the rows, all in one list rather than one per row, see `DiffRow`
     emphasis: Vec<Range<usize>>,
     pub hunks: Vec<DiffHunk>,
-    // hunks were left out, of files diffed as text converted from them
+    // hunks were left out, of files diffed as text converted from them or not in UTF-8
     pub converted: bool,
     // how many files the diff spans
     files: usize,
@@ -58,16 +58,16 @@ impl ParsedDiff {
     }
 
     // Leaves out the hunks of files git diffs as text converted from them, like a .docx with a
-    // textconv driver: the text isn't in the file, so they can't be staged or applied.
+    // textconv driver, and the hunks with bytes that aren't UTF-8, read as U+FFFD: the text isn't
+    // in the file, so they can't be staged or applied.
     pub fn drop_converted(&mut self, repository: &Repository) {
         let mut paths: Vec<&str> = self.hunks.iter().map(DiffHunk::path).collect();
         paths.dedup();
         let converted = repository.converted_paths(&paths);
-        if converted.is_empty() {
-            return;
-        }
-        self.hunks.retain(|h| !converted.contains(h.path()));
-        self.converted = true;
+        let before = self.hunks.len();
+        self.hunks
+            .retain(|h| !converted.contains(h.path()) && !h.body().contains('\u{FFFD}'));
+        self.converted = self.hunks.len() != before;
     }
 }
 

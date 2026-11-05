@@ -256,17 +256,19 @@ fn run() -> Result<()> {
         pasting: Default::default(),
     });
 
-    let ec = event::EventController::init();
     let mut terminal = ratatui::init();
     // a panic is a bug, which stops the app: ratatui's hook gives the terminal back and prints it;
-    // on another thread the main one would go on, so the app exits there
+    // on another thread the main one would go on, so the app exits there, before `TerminalGuard`
+    // is dropped. Set before the threads start, the input's first.
     let crash = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
         crash(info);
         if std::thread::current().name() != Some("main") {
             std::process::exit(101);
         }
     }));
+    let ec = event::EventController::init();
     // gives the terminal back however this ends, an error loading the repository included
     let terminal_guard = TerminalGuard;
     // the focus coming back reloads what changed meanwhile, like lazygit; the mouse drags the
@@ -480,17 +482,23 @@ impl Loader {
 }
 
 // Gives the terminal back however the app ends: quitting, an error while reloading, or a panic
-// (ratatui's panic hook leaves the mouse captured).
+// on the main thread.
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = ratatui::crossterm::execute!(
-            std::io::stdout(),
-            ratatui::crossterm::event::DisableFocusChange,
-            ratatui::crossterm::event::DisableMouseCapture,
-            ratatui::crossterm::event::DisableBracketedPaste
-        );
-        ratatui::restore();
+        restore_terminal();
     }
+}
+
+// Turns off what the app turned on in the terminal: ratatui's own restoring leaves the mouse
+// captured.
+fn restore_terminal() {
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableFocusChange,
+        ratatui::crossterm::event::DisableMouseCapture,
+        ratatui::crossterm::event::DisableBracketedPaste
+    );
+    ratatui::restore();
 }
