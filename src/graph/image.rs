@@ -1318,6 +1318,15 @@ fn build_image(img_buf: &[u8], image_width: u32, image_height: u32) -> Vec<u8> {
 mod tests {
     use std::path::Path;
 
+    use image::GenericImage;
+    use rstest::rstest;
+
+    use crate::{config::GraphColorConfig, test_support::image_snapshot::compare_image_snapshot};
+
+    use super::*;
+
+    use EdgeType::*;
+
     #[test]
     fn test_image_ids_are_each_commits_own() {
         let mut ids = super::ImageIds::new();
@@ -1341,13 +1350,6 @@ mod tests {
         assert_ne!(ids.of(&hash(0)), first);
     }
 
-    use image::GenericImage;
-    use rstest::rstest;
-
-    use crate::{config::GraphColorConfig, test_support::image_snapshot::compare_image_snapshot};
-
-    use super::*;
-
     #[test]
     fn test_fit_cell() {
         let params = |cell| {
@@ -1363,7 +1365,6 @@ mod tests {
         assert_eq!(params(None).height, 50);
         assert_eq!(params(Some((0, 0))).height, 50);
     }
-    use EdgeType::*;
 
     const OUTPUT_DIR: &str = "./out/ut/graph/image";
     const SNAPSHOT_DIR: &str = "./tests/graph/image";

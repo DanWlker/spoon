@@ -8,7 +8,8 @@ use std::{
 
 use crate::event::{AppEvent, Sender};
 
-// The value of work on a scoped thread, see `std::thread::scope`; a panic in it goes on here.
+// The value of work on a scoped thread, see `std::thread::scope`. A panic in it stops the app in
+// the hook of `main` before it gets here; without that hook, in the tests, it goes on here.
 pub fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
     handle
         .join()

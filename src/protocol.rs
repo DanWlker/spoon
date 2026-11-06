@@ -615,7 +615,9 @@ fn kitty_unicode_prepare(
     );
     let image_id_msb = ((image_id >> 24) & 0xff) as usize;
 
-    for column in 0..cell_width {
+    // a placeholder names its column by a diacritic, of which there are so many: a wider image
+    // shows its first columns, cut on the right like a graph wider than the panel; it used to panic
+    for column in 0..cell_width.min(ROW_COLUMN_DIACRITICS.len()) {
         let symbol = [
             KITTY_PLACEHOLDER,
             row_column_diacritic(0),
@@ -709,6 +711,13 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::*;
+
+    // A graph wider than the columns kitty's placeholders can name is cut, not a panic.
+    #[test]
+    fn test_kitty_unicode_wider_than_its_columns() {
+        let image = ImageProtocol::KittyUnicode { tmux: true }.prepare_image(&[0; 32], 400, 1);
+        assert_eq!(image.cells().len(), ROW_COLUMN_DIACRITICS.len());
+    }
 
     // A row image 10 cells wide at the left of a buffer of 20; `cover` cells from x=6 drawn over it.
     // The buffer, and where the images are drawn.

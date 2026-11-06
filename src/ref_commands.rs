@@ -199,11 +199,21 @@ fn delete_refs(
             Ok(GitDialog::delete_tags(names, remote))
         }
         RefSection::Stashes => {
-            let stashes = names
+            // as loaded, with the commits they must still be when dropped, see `GitTask::verify`
+            let stashes = repository
+                .all_refs()
                 .into_iter()
-                .map(|name| {
-                    let message = stash_message(repository, &name);
-                    Stash { name, message }
+                .filter_map(|r| match r {
+                    Ref::Stash {
+                        name,
+                        message,
+                        target,
+                    } if names.contains(name) => Some(Stash {
+                        name: name.clone(),
+                        message: message.clone(),
+                        target: target.clone(),
+                    }),
+                    _ => None,
                 })
                 .collect();
             Ok(GitDialog::drop_stashes(stashes))

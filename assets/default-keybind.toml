@@ -152,8 +152,8 @@ full_copy = ["y f"]
 copy_link = ["y l"]
 # show the git commands the app ran that changed the repository, with their output
 command_log = ["@"]
-# with no key, run from the keys list (?): add the selected file or directory to the .gitignore at
-# the top of the repository (ignore)
+# add the selected file or directory to the .gitignore at the top of the repository
+ignore = ["i"]
 # hide the errors and warnings shown at the top right (they also go after 10 and 5 seconds)
 dismiss_notifications = [","]
 # wrap the long lines of the diffs and file previews, or not

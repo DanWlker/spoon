@@ -136,7 +136,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Ctrl-r</kbd>                    | Refresh                         | `refresh`                       |
 | <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one (moving back unpicks what it went over); another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the picked commits' short/full hashes, or the current one; in the changes and files tabs, the relative/absolute paths of the selected files, one per line | `short_copy` `full_copy` |
-| (no key)                             | Add the selected files and directories to `.gitignore`, in the changes and files tabs, from the keys list | `ignore` |
+| <kbd>i</kbd>                         | Add the selected files and directories to `.gitignore`, in the changes and files tabs | `ignore` |
 | <kbd>2</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_2` |
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus | `next_tab` `previous_tab` |
@@ -220,7 +220,7 @@ Everything the app shows, its keys included, is the repository as last loaded. A
 On the local changes page, <kbd>v</kbd> starts selecting files and directories: moving extends the selection (highlighted, with the count in the panel title), and <kbd>v</kbd> again ends it, keeping them picked. Another selection adds to them; <kbd>Esc</kbd> clears them.
 A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file. File names and lines that aren't UTF-8 show `�` for those bytes, and are staged, discarded and stashed as they are.
 
-Ignoring (no key: run it from the keys list, <kbd>?</kbd>) adds the selected files and directories to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
+Ignoring (<kbd>i</kbd>) adds the selected files and directories to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
 
 While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to them instead of the row under the cursor; <kbd>Enter</kbd> opens the diff of the row under the cursor only.
 <kbd>e</kbd> opens the picked files only, and <kbd>B</kbd>/<kbd>T</kbd> work only when exactly one file is picked: a picked directory is not expanded into the files under it, and a submodule is not opened as a file.
@@ -299,7 +299,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>/</kbd>                         | Filter files<br>Search the diff, while it has the focus      | `search`                        |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the relative/absolute paths of the selected files, one per line<br>Copy the line, selected lines or hunk (<kbd>y</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
-| (no key)                             | Add the file or directory to `.gitignore` (see below), from the keys list | `ignore`         |
+| <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below) | `ignore`         |
 | <kbd>B</kbd>                         | Blame the file as of the last commit (see below); the local changes aren't blamed, and only one file may be picked | `blame`     |
 | <kbd>T</kbd>                         | Show the commits changing the file (see below); only one file may be picked | `timeline`                      |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |

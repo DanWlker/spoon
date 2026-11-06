@@ -179,11 +179,12 @@ impl Rev {
     }
 }
 
-// A stash, like "stash@{0}", and what it says.
+// A stash, like "stash@{0}", what it says, and its commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stash {
     pub name: String,
     pub message: String,
+    pub target: CommitHash,
 }
 
 impl Stash {

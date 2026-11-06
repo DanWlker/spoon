@@ -778,9 +778,14 @@ fn build_ref_tree_nodes(refs: &[&Ref], remotes: &[String]) -> Vec<RefTreeNode> {
             Ref::Tag { name, .. } => tag_refs.push(name.into()),
             Ref::Branch { name, .. } => branch_refs.push(name.into()),
             Ref::RemoteBranch { name, .. } => remote_refs.push(name.into()),
-            Ref::Stash { name, message, .. } => stash_refs.push(Stash {
+            Ref::Stash {
+                name,
+                message,
+                target,
+            } => stash_refs.push(Stash {
                 name: name.clone(),
                 message: message.clone(),
+                target: target.clone(),
             }),
         }
     }
@@ -827,7 +832,7 @@ impl RefTreeNode {
 
 fn refs_to_stash_ref_tree_nodes(stashes: Vec<Stash>) -> Vec<RefTreeNode> {
     let mut nodes: Vec<RefTreeNode> = Vec::new();
-    for Stash { name, message } in stashes {
+    for Stash { name, message, .. } in stashes {
         let node = RefTreeNode {
             identifier: NodeId::Name(name),
             name: message.to_string(),

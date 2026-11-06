@@ -286,6 +286,9 @@ pub struct GitTask {
     pub failed: Option<String>,
     // stopped once it runs longer, like a fetch from a remote that never answers
     pub timeout: Option<Duration>,
+    // revisions that must still name these commits, else nothing runs: like `stash@{1}`, which a
+    // stash pushed meanwhile, from outside the app, makes another
+    pub verify: Vec<(String, CommitHash)>,
 }
 
 // What the app shows once a git command is done.
@@ -414,6 +417,14 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     });
+    for (rev, commit) in &task.verify {
+        let now = git_output(path, &["rev-parse", "--verify", "--quiet", rev]).unwrap_or_default();
+        if now.trim() != commit.as_str() {
+            return Err(format!(
+                "{rev} changed meanwhile, nothing was done; try again once it is reloaded"
+            ));
+        }
+    }
     // stashed when the stash changed: git stashes nothing for some changes it lists, like those
     // in a submodule, and popping then would take an older stash
     let stash_top = || git_output(path, &["rev-parse", "--verify", "--quiet", "refs/stash"]).ok();

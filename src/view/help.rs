@@ -323,15 +323,11 @@ mod tests {
     use super::*;
     use crate::event::EventController;
 
-    // The keys list over a panel whose actions are rebasing and ignoring a file, which has no key.
+    // The keys list over a panel whose actions are rebasing and checking out, which has no key.
     fn list(ec: &EventController) -> HelpView {
         let mut keys = Keys::<()>::all();
         keys.add(&[UserEvent::Rebase], "rebase", "Rebase onto the commit");
-        keys.add(
-            &[UserEvent::Ignore],
-            "ignore",
-            "Add the file or directory to .gitignore",
-        );
+        keys.add(&[UserEvent::Checkout], "checkout", "Check out the commit");
         let ctx = crate::test_support::ui::test_ctx();
         HelpView::new(ctx, ec.sender(), &keys.list(), Scope::CommitList)
     }
@@ -366,12 +362,12 @@ mod tests {
         assert_eq!(help.rows[1].keys, "");
         help.handle_event(UserEvent::Search);
         assert!(help.is_typing());
-        type_text(&mut help, "gitignore");
+        type_text(&mut help, "Check out the commit");
         assert!(!help.is_typing());
-        // once: the other panels ignoring files say the same
+        // once: the other panels checking out a commit say the same
         assert_eq!(help.shown.len(), 1);
         help.handle_event(UserEvent::Confirm);
-        assert_eq!(runs(&ec), [UserEvent::Ignore]);
+        assert_eq!(runs(&ec), [UserEvent::Checkout]);
 
         // the other panels' actions are listed, not run
         help.handle_event(UserEvent::Cancel);

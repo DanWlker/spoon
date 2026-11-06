@@ -1766,6 +1766,10 @@ impl GitDialog {
         // the newest first would renumber the older ones, so the oldest go first
         let mut stashes = stashes.to_vec();
         stashes.sort_by_key(|stash| std::cmp::Reverse(stash.index()));
+        let verify = stashes
+            .iter()
+            .map(|s| (s.name.clone(), s.target.clone()))
+            .collect();
         let names: Vec<String> = stashes.into_iter().map(|s| s.name).collect();
         let what = names_label("stash", "stashes", &names);
         let commands = names
@@ -1775,6 +1779,7 @@ impl GitDialog {
             commands: commands.collect(),
             running: format!("Dropping {what}"),
             done: format!("Dropped {what}"),
+            verify,
             ..Default::default()
         })
     }
@@ -3809,6 +3814,39 @@ mod tests {
         git(path, &["commit", "-q", "--amend", "-m", "c4 once more"]);
         assert!(force_push().is_err());
         assert_eq!(remote_head(), theirs);
+    }
+
+    // Dropping a stash checks it is still the one the popup named: a stash pushed meanwhile, from
+    // outside the app, used to renumber them, the one after it dropped instead.
+    #[test]
+    fn test_drop_refused_once_the_stashes_moved() {
+        let dir = test_repo();
+        let path = dir.path();
+        let stash = |text: &str| {
+            std::fs::write(path.join("f"), text).unwrap();
+            git(path, &["stash", "-q"]);
+        };
+        stash("kept\n");
+        let target = git(path, &["rev-parse", "stash@{0}"]).trim().to_string();
+        let shown = crate::git::Stash {
+            name: "stash@{0}".into(),
+            message: "kept".into(),
+            target: target.as_str().into(),
+        };
+        let task = GitDialog::drop_stashes(vec![shown])
+            .command()
+            .unwrap()
+            .unwrap();
+
+        stash("pushed meanwhile\n");
+        assert!(crate::git::run_task(path, &task).is_err());
+        assert_eq!(git(path, &["stash", "list"]).lines().count(), 2);
+        assert_eq!(git(path, &["rev-parse", "stash@{1}"]).trim(), target);
+
+        // as it was: dropped
+        git(path, &["stash", "drop", "-q"]);
+        crate::git::run_task(path, &task).unwrap();
+        assert_eq!(git(path, &["stash", "list"]), "");
     }
 
     #[test]

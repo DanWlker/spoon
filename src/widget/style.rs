@@ -43,6 +43,8 @@ pub fn panel_title(
     focused: bool,
     theme: &ColorTheme,
 ) -> Line<'static> {
+    // a title can name a file, or a branch git put on conflict markers
+    let label = tabs_shown(label);
     let mut spans = vec![if focused {
         focused_title(format!(" {label} "), theme)
     } else {
@@ -50,7 +52,8 @@ pub fn panel_title(
     }];
     let notes: Vec<String> = notes.into_iter().collect();
     if !notes.is_empty() {
-        spans.push(Span::raw(format!(" {} ", notes.join(" · "))).fg(theme.highlight_fg));
+        let notes = tabs_shown(&notes.join(" · ")).into_owned();
+        spans.push(Span::raw(format!(" {notes} ")).fg(theme.highlight_fg));
     }
     Line::from(spans)
 }
@@ -631,6 +634,17 @@ pub fn mark_selected_bar(buf: &mut Buffer, x: u16, y: u16, focused: bool, theme:
 mod tests {
     use super::*;
     use crate::test_support::ui::{assert_key_style, theme_with_bg};
+
+    // A title naming a file draws it like the rows do: its tabs as spaces, a byte that isn't
+    // UTF-8 as U+FFFD, which a terminal used to leave out.
+    #[test]
+    fn test_panel_title_draws_names_like_the_rows() {
+        let theme = ColorTheme::default();
+        let name = crate::git::text_from_git(b"caf\xe9\t.txt");
+        let title = panel_title(&name, [name.clone()], false, &theme);
+        let text: String = title.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, " caf\u{FFFD}    .txt  caf\u{FFFD}    .txt ");
+    }
 
     #[test]
     fn test_loading_note_only_once_it_takes_long() {
