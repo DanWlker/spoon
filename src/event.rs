@@ -334,45 +334,34 @@ impl EventController {
     }
 }
 
-// Sends the keys, mouse and terminal events read until `stop` is set.
+// Sends the keys, mouse and terminal events read until `stop` is set, or the app quit.
 fn read_events(stop: &AtomicBool, tx: &Sender) {
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
+    use ratatui::crossterm::event::Event;
+    while !stop.load(Ordering::Relaxed) {
         match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
-            Ok(true) => match ratatui::crossterm::event::read() {
-                Ok(e) => match e {
-                    ratatui::crossterm::event::Event::Key(key) => {
-                        tx.send(AppEvent::Key(key));
-                    }
-                    ratatui::crossterm::event::Event::Mouse(mouse) => match mouse.kind {
+            Ok(true) => {
+                let event = match ratatui::crossterm::event::read() {
+                    Ok(Event::Key(key)) => AppEvent::Key(key),
+                    Ok(Event::Mouse(mouse)) => match mouse.kind {
                         MouseEventKind::ScrollDown
                         | MouseEventKind::ScrollUp
                         | MouseEventKind::Down(MouseButton::Left)
                         | MouseEventKind::Drag(MouseButton::Left)
-                        | MouseEventKind::Up(MouseButton::Left) => {
-                            tx.send(AppEvent::Mouse(mouse));
-                        }
-                        _ => {}
+                        | MouseEventKind::Up(MouseButton::Left) => AppEvent::Mouse(mouse),
+                        _ => continue,
                     },
-                    ratatui::crossterm::event::Event::Paste(text) => tx.send(AppEvent::Paste(text)),
-                    ratatui::crossterm::event::Event::Resize(..) => tx.send(AppEvent::Resize),
-                    ratatui::crossterm::event::Event::FocusGained => {
-                        tx.send(AppEvent::FocusGained);
-                    }
-                    _ => {}
-                },
-                Err(e) => {
-                    panic!("Failed to read event: {e}");
+                    Ok(Event::Paste(text)) => AppEvent::Paste(text),
+                    Ok(Event::Resize(..)) => AppEvent::Resize,
+                    Ok(Event::FocusGained) => AppEvent::FocusGained,
+                    Ok(_) => continue,
+                    Err(e) => panic!("Failed to read event: {e}"),
+                };
+                if !tx.try_send(event) {
+                    break;
                 }
-            },
-            Ok(false) => {
-                continue;
             }
-            Err(e) => {
-                panic!("Failed to poll event: {e}");
-            }
+            Ok(false) => {}
+            Err(e) => panic!("Failed to poll event: {e}"),
         }
     }
 }

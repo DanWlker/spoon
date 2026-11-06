@@ -43,7 +43,7 @@ use crate::{
 struct Args {
     /// Maximum number of commits to render
     #[arg(short = 'n', long, value_name = "NUMBER")]
-    max_count: Option<usize>,
+    max_count: Option<std::num::NonZeroUsize>,
 
     /// Image protocol to render graph [default: auto]
     #[arg(short, long, value_name = "TYPE")]
@@ -193,7 +193,7 @@ fn run() -> Result<()> {
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
-    let max_count = args.max_count;
+    let max_count = args.max_count.map(std::num::NonZeroUsize::get);
     let image_protocol = args.protocol.or(core_config.option.protocol).into();
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
@@ -368,10 +368,9 @@ impl Loader {
     {
         let (options, running) = (self.options.clone(), running.clone());
         move || {
-            let (git::Loaded::Repository(repository) | git::Loaded::RefsGone(repository)) =
-                options.load(None, running)?;
-            let primary_branch = options.primary_branch.as_deref();
-            let layout = graph::GraphLayout::calc(&repository, primary_branch, &Default::default());
+            let (loaded, layout) =
+                app::load_laid_out(&options, None, running, &Default::default())?;
+            let (git::Loaded::Repository(repository) | git::Loaded::RefsGone(repository)) = loaded;
             Ok((repository, layout))
         }
     }

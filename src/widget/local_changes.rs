@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use rustc_hash::FxHashSet;
 
 use crate::widget::tree_query::Toward;
 use crate::{
@@ -23,14 +24,14 @@ use crate::{
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions, SearchOutcome},
-    view::register_diff_keys,
+    view::{register_diff_keys, type_query},
     widget::{
         conflict::{side_names, ConflictView, RowKind},
         diff::{Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
-            TreeCursor, TreeSelection, TreeShape,
+            TreeCursor, TreeSelection, TreeShape, ROOT_PATH,
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
@@ -855,8 +856,11 @@ impl<'a> LocalChangesState<'a> {
         };
         let path = if !self.picked().is_empty() && !self.is_diff_focused() {
             picked_files_label(self.target_files().len())
-        } else if row.is_root() {
+        } else if row.is_root() && self.query().filter().is_none() {
             "all files".to_string()
+        } else if row.is_root() {
+            // the files the filter leaves, see `row_files`
+            format!("the {} files filtered", self.target_files().len())
         } else {
             row.path.clone()
         };
@@ -1085,13 +1089,9 @@ impl<'a> LocalChangesState<'a> {
             true => "resolve".into(),
             false => stage(v).into(),
         });
-        k.add(
-            &[Select],
-            "stage",
-            "Stage/unstage the file, directory, hunk or line, or the picked files",
-        )
-        .when(diff)
-        .short(|v| format!("{} {}", stage(v), what(v)));
+        k.add(&[Select], "stage", "Stage/unstage the hunk or line")
+            .when(diff)
+            .short(|v| format!("{} {}", stage(v), what(v)));
         k.add(
             &[Confirm],
             "select hunks",
@@ -1100,7 +1100,12 @@ impl<'a> LocalChangesState<'a> {
         .when(|v| files(v) && !empty(v))
         .short(|v| {
             let resolve = v.conflict().is_some() && !picks(v);
-            if resolve { "resolve" } else { "select hunks" }.into()
+            match (resolve, v.submodule().is_some()) {
+                (true, _) => "resolve",
+                (false, true) => "submodule",
+                (false, false) => "select hunks",
+            }
+            .into()
         });
         k.add(
             &[Confirm],
@@ -1138,7 +1143,8 @@ impl<'a> LocalChangesState<'a> {
             "discard",
             "Discard the unstaged file, directory, hunk or line",
         )
-        .when(|v| (row(v) || diff(v)) && unstaged(v));
+        // `git restore` leaves a submodule's checkout as it is
+        .when(|v| (row(v) || diff(v)) && unstaged(v) && v.submodule().is_none());
         // on the empty unstaged files enter commits too, see `enter`; with nothing to commit they
         // say so, unlisted
         let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));
@@ -1205,13 +1211,13 @@ impl<'a> LocalChangesState<'a> {
             "blame",
             "Blame the selected file as of the last commit",
         )
-        .when(|v| v.single_target_file().is_some());
+        .when(move |v| (files(v) || diff(v)) && v.single_target_file().is_some());
         k.add(
             &[Timeline],
             "timeline",
             "Show the commits changing the selected file",
         )
-        .when(|v| v.single_target_file().is_some());
+        .when(move |v| (files(v) || diff(v)) && v.single_target_file().is_some());
         k.add(&[Search], "filter", "Filter the files")
             .when(|v| files(v) && !empty(v));
         k.add(&[Search], "search", "Search the diff").when(diff);
@@ -1324,29 +1330,13 @@ impl<'a> LocalChangesState<'a> {
     // Adds the picked files and directories, or the selected one, to .gitignore; returns what to
     // tell.
     pub fn ignore_selected(&mut self) -> Result<String, String> {
-        let picked = self.picked().clone();
-        let entries: Vec<Entry> = if picked.is_empty() {
-            self.selected_row()
-                .and_then(FileTreeRow::entry)
-                .into_iter()
-                .collect()
-        } else {
-            self.tree()
-                .rows()
-                .iter()
-                .filter(|row| picked.contains(&row.path))
-                .filter_map(FileTreeRow::entry)
-                .collect()
-        };
+        let entries = self.picked().entries(self.tree());
         if entries.is_empty() {
             return Ok(String::new());
         }
-        let mut messages = Vec::new();
-        for entry in entries {
-            messages.push(self.repository.ignore_path(entry)?);
-        }
+        let result = self.repository.ignore_entries(&entries);
         self.reload();
-        Ok(messages.join("; "))
+        result
     }
 
     pub fn toplevel(&self) -> &std::path::Path {
@@ -1395,7 +1385,7 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(());
             }
             ConflictItem::Editor => {
-                let path = self.repository.path().join(path);
+                let path = crate::git::work_path(self.repository.path(), &path);
                 self.request = Some(Request::External(ExternalRequest::Editor(vec![path])));
                 return Ok(());
             }
@@ -1711,10 +1701,19 @@ impl<'a> LocalChangesState<'a> {
         for (section, files) in self.sections.iter_mut().zip(files) {
             section.tree.set_tree(file_tree(files));
             section.tree.cancel_visual();
-            // the picks with no changes left, discarded or stashed, go
+            // the picks with no changes left, discarded or stashed, go: those that are no file nor
+            // directory of one, see `path_contains`
+            let kept: FxHashSet<&str> = files
+                .iter()
+                .flat_map(|f| {
+                    let path = f.path.as_str();
+                    let dirs = path.match_indices('/').map(move |(i, _)| &path[..i]);
+                    std::iter::once(path).chain(dirs)
+                })
+                .collect();
             section
                 .picked
-                .retain(|p| files.iter().any(|f| path_contains(p, &f.path)));
+                .retain(|p| kept.contains(p) || (p == ROOT_PATH && !files.is_empty()));
         }
 
         let in_diff = self.is_diff_focused();
@@ -1788,27 +1787,19 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Applies the query being typed again, with other options.
-    pub fn reapply_query(&mut self, options: SearchOptions) {
+    // Types `key` in the query being typed, see `type_query`: the search of the diff, else the
+    // search or the filter of the files.
+    pub fn type_query_key(&mut self, key: KeyEvent) {
+        let ctx = self.ctx.clone();
+        let kind = self.query_kind();
         if self.diff_query.is_editing() {
-            self.search_diff(SearchDirection::Current, options);
-        } else {
-            let change = self.query().editing_change();
-            self.apply_query_change(change, options);
-        }
-    }
-
-    // The keys of a paste but its last edit the query without applying it, see `type_query`.
-    pub fn handle_query_key(&mut self, key: KeyEvent, options: SearchOptions) {
-        let pasting = self.ctx.pasting.get();
-        if self.diff_query.is_editing() {
-            if self.diff_query.handle_key(key) == Some(QueryKind::Search) && !pasting {
-                self.search_diff(SearchDirection::Current, options);
+            if type_query(&ctx, &mut self.diff_query, key, kind) == Some(QueryKind::Search) {
+                self.search_diff(SearchDirection::Current, ctx.search_options.get());
             }
             return;
         }
-        let change = self.query_mut().handle_key(key).filter(|_| !pasting);
-        self.apply_query_change(change, options);
+        let change = type_query(&ctx, self.query_mut(), key, kind);
+        self.apply_query_change(change, ctx.search_options.get());
     }
 
     // Clears the search, or else the filter. Returns false when there was neither.
@@ -1853,7 +1844,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Goes to the next file of the section, skipping directories; from its diff, on in the diff of
-    // the next file. The diff of the picked files has no next one.
+    // the next file.
     pub fn select_next_file(&mut self, toward: Toward) -> Result<(), String> {
         let in_diff = self.is_diff_focused();
         if !(in_diff || self.focus() == Focus::Files) {
@@ -1868,7 +1859,7 @@ impl<'a> LocalChangesState<'a> {
         let path = find_next(&rows, current, direction, |row| !row.is_dir());
         self.chosen = Focus::Files;
         self.update_tree(|tree| tree.reveal(path.as_deref()));
-        if in_diff && self.picked().is_empty() {
+        if in_diff {
             self.enter()?;
         }
         Ok(())
@@ -1920,7 +1911,7 @@ impl<'a> LocalChangesState<'a> {
         };
         self.chosen = Focus::Files;
         self.update_tree(|tree| tree.reveal(Some(&target)));
-        if in_diff && self.picked().is_empty() {
+        if in_diff {
             self.enter()?;
         }
         Ok(())
@@ -2077,20 +2068,10 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // Shows more or fewer lines around the changes of the selected file, loading its diff again.
-    pub fn adjust_diff_context(&mut self, increase: bool) {
-        if !self.is_diff_focused() || !self.pane.is_single_file() {
+    pub fn adjust_diff_context(&mut self, event: UserEvent) {
+        if !self.ctx.adjust_diff_context(event) {
             return;
         }
-        let context = self.ctx.diff_context.get();
-        let context = if increase {
-            context.saturating_add(1)
-        } else {
-            context.saturating_sub(1)
-        };
-        if context == self.ctx.diff_context.get() {
-            return;
-        }
-        self.ctx.diff_context.set(context);
         let selection = self.pane.selection();
         self.load_diff();
         if self.conflict().is_none() {
@@ -2098,7 +2079,7 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // The diff of the picked files, else of the selected row, as work to run.
+    // The diff of the selected row, as work to run.
     fn diff_work(&self) -> Box<dyn FnOnce() -> String + Send> {
         let context = self.ctx.diff_context.get();
         let tracked_of = match self.section {
@@ -2198,7 +2179,7 @@ impl<'a> LocalChangesState<'a> {
 
     // The submodule of the selected file, shown in place of its gitlink diff. The last panel is
     // reused when it shows the same submodule, so moving away and back is instant; only its
-    // uncommitted count is read again. None for a directory, the picked files or a plain file.
+    // uncommitted count is read again. None for a directory or a plain file.
     fn load_submodule(&mut self) -> Option<SubmodulePanel<'a>> {
         let row = self.selected_row()?;
         let is_dir = row.is_dir();
@@ -2756,8 +2737,10 @@ mod tests {
         // the gitlink diff isn't shown, there is nothing to enter in it
         assert!(state.pane.diff().is_none());
 
-        // the files have the focus; Enter focuses the submodule panel, Esc goes back
+        // the files have the focus; Enter focuses the submodule panel, Esc goes back; discard,
+        // which leaves a submodule's checkout as it is, isn't offered
         assert!(state.is_files_focused());
+        assert!(!state.keys().takes(UserEvent::Discard));
         state.enter()?;
         assert!(state.is_submodule_focused());
         assert!(!state.is_files_focused());
@@ -3029,10 +3012,10 @@ mod tests {
         assert!(state.keys().takes(UserEvent::IncreaseDiffContext));
 
         let before = diff(&state).rows.len();
-        state.adjust_diff_context(true);
+        state.adjust_diff_context(UserEvent::IncreaseDiffContext);
         assert!(diff(&state).rows.len() > before);
         assert!(state.is_diff_focused(), "the selection stays in the diff");
-        state.adjust_diff_context(false);
+        state.adjust_diff_context(UserEvent::DecreaseDiffContext);
         assert_eq!(diff(&state).rows.len(), before);
         Ok(())
     }
@@ -3055,7 +3038,7 @@ mod tests {
             LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
         state.load_stale_diff();
         state.enter()?;
-        state.adjust_diff_context(true);
+        state.adjust_diff_context(UserEvent::IncreaseDiffContext);
         // still in the diff while it reloads: its keys are listed, and the next one is taken
         assert!(state.is_diff_focused());
         assert!(state.keys().takes(UserEvent::IncreaseDiffContext));
@@ -3291,6 +3274,15 @@ mod tests {
         state.select_next_file(Toward::Next)?;
         assert_eq!(state.selected_path().as_ref(), Some(&files[0]));
         assert!(state.is_diff_focused());
+        // files picked change nothing: the focus used to go back to the files
+        state.back();
+        state.toggle_visual();
+        state.toggle_visual();
+        assert!(!state.picked().is_empty());
+        state.enter()?;
+        state.select_next_file(Toward::Next)?;
+        assert_eq!(state.selected_path().as_ref(), Some(&files[1]));
+        assert!(state.is_diff_focused());
 
         // the diff alone says whether it has the keys: once it selects nothing, the files do
         state.pane.leave();
@@ -3467,15 +3459,9 @@ mod tests {
         // the search of the diff selects the line matched; the files' query is left alone
         state.start_query();
         for c in "new".chars() {
-            state.handle_query_key(
-                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
-                SearchOptions::default(),
-            );
+            state.type_query_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         }
-        state.handle_query_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            SearchOptions::default(),
-        );
+        state.type_query_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(state.is_selecting_lines());
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A"));
         assert_eq!(state.query().search(), None);
@@ -3541,6 +3527,105 @@ mod tests {
         select_row(&mut state, "latin1.txt");
         assert_eq!(state.enter().unwrap_err(), CONVERTED_DIFF);
         assert_eq!(state.focus(), Focus::Files);
+        Ok(())
+    }
+
+    // Fewer lines around the changes stop at one: git can't apply a hunk without any, which made
+    // staging fail at 0.
+    #[test]
+    fn test_hunks_stage_with_the_least_context() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), numbered_lines(20))?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        let modified = numbered_lines(20).replace("line 10\n", "line 10\nnew\n");
+        fs::write(repo_path.join("a.txt"), modified)?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        state.enter()?;
+        for _ in 0..5 {
+            state.adjust_diff_context(UserEvent::DecreaseDiffContext);
+        }
+        assert_eq!(state.ctx.diff_context.get(), 1);
+        assert!(!state.keys().takes(UserEvent::DecreaseDiffContext));
+        state.select()?;
+        let staged = repository.local_change_diff(
+            &["a.txt"],
+            DiffOf::Staged { base: None },
+            crate::git::DEFAULT_DIFF_CONTEXT,
+        );
+        assert!(staged.contains("+new"));
+        Ok(())
+    }
+
+    // The keys of the selected file act from the files and its diff alone: blame and timeline
+    // used to act on it from the commit message too.
+    #[test]
+    fn test_file_keys_wait_for_the_files_or_the_diff() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        fs::write(repo_path.join("a.txt"), "b\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        assert!(state.keys().takes(UserEvent::Blame));
+        state.enter()?;
+        assert!(state.keys().takes(UserEvent::Timeline));
+        state.focus_commit();
+        state.handle_text_key(KeyEvent::from(KeyCode::Esc));
+        assert!(matches!(state.focus(), Focus::Commit(_)));
+        assert!(!state.keys().takes(UserEvent::Blame));
+        assert!(!state.keys().takes(UserEvent::Timeline));
+        Ok(())
+    }
+
+    // The keys of the files do nothing in the commit section, the focus staying there: its keys
+    // leave them out, which is all that keeps them from acting.
+    #[test]
+    fn test_file_keys_left_out_in_the_commit_section() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        git.commit("init", "2024-01-01");
+        fs::write(repo_path.join("a.txt"), "b\n")?;
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.focus_commit();
+        state.handle_text_key(KeyEvent::from(KeyCode::Esc));
+        assert!(matches!(state.focus(), Focus::Commit(_)));
+        use UserEvent::*;
+        for event in [
+            Search,
+            GoToNext,
+            GoToPrevious,
+            ToggleSelect,
+            NextFile,
+            PreviousFile,
+            NextFolder,
+            PreviousFolder,
+            Discard,
+            NavigateLeft,
+            NavigateRight,
+            ShortCopy,
+            FullCopy,
+            Ignore,
+        ] {
+            assert!(!state.keys().takes(event), "{event:?}");
+        }
         Ok(())
     }
 
@@ -4108,6 +4193,65 @@ mod tests {
         Ok(())
     }
 
+    // File names that aren't UTF-8 are staged, unstaged, discarded and ignored as they are: two
+    // used to be shown as one, U+FFFD in place of their bytes, which matched no file in git.
+    #[test]
+    fn test_names_not_in_utf8() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        let name = |b: &[u8]| repo_path.join(std::ffi::OsStr::from_bytes(b));
+        fs::write(name(b"caf\xe9.txt"), "e\n")?;
+        fs::write(name(b"caf\xe8.txt"), "e\n")?;
+        // an ignore file in Latin-1 already
+        fs::write(repo_path.join(".gitignore"), b"/d\xe9j\xe0\n")?;
+        let (e9, e8) = (
+            crate::git::text_from_git(b"caf\xe9.txt"),
+            crate::git::text_from_git(b"caf\xe8.txt"),
+        );
+        assert_ne!(e9, e8);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let staged = || {
+            crate::git::git_command()
+                .args(["diff", "--cached", "--name-only", "-z"])
+                .current_dir(repo_path)
+                .output()
+                .unwrap()
+                .stdout
+        };
+
+        // staged as itself
+        select_row(&mut state, &e9);
+        state.select()?;
+        assert_eq!(staged(), b"caf\xe9.txt\0");
+        // and unstaged
+        state.focus_section(LocalChangesSection::Staged);
+        select_row(&mut state, &e9);
+        state.select()?;
+        assert!(staged().is_empty());
+        state.focus_section(LocalChangesSection::Unstaged);
+
+        // ignored as itself, the lines before kept as they were
+        select_row(&mut state, &e8);
+        state.ignore_selected()?;
+        assert_eq!(
+            fs::read(repo_path.join(".gitignore"))?,
+            b"/d\xe9j\xe0\n/caf\xe8.txt\n"
+        );
+
+        // discarded, an untracked file gone
+        select_row(&mut state, &e9);
+        state.request_discard()?;
+        confirm_and_run(&mut state)?;
+        assert!(!name(b"caf\xe9.txt").exists());
+        Ok(())
+    }
+
     #[test]
     fn test_discard() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -4285,9 +4429,9 @@ mod tests {
     fn type_query(state: &mut LocalChangesState, text: &str) {
         state.start_query();
         for c in text.chars() {
-            state.handle_query_key(key(KeyCode::Char(c)), SearchOptions::default());
+            state.type_query_key(key(KeyCode::Char(c)));
         }
-        state.handle_query_key(key(KeyCode::Enter), SearchOptions::default());
+        state.type_query_key(key(KeyCode::Enter));
     }
 
     #[test]
@@ -4383,6 +4527,35 @@ mod tests {
         assert_eq!(
             fs::read_to_string(repo_path.join(".gitignore"))?,
             "/a.txt\n/b.txt\n"
+        );
+        Ok(())
+    }
+
+    // Ignore adds what is picked, shown or not: a pick in a closed directory used to be left
+    // out, as only the rows shown were looked at.
+    #[test]
+    fn test_ignore_picks_in_a_closed_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::create_dir(repo_path.join("dir"))?;
+        fs::write(repo_path.join("dir/u.txt"), "u\n")?;
+        fs::write(repo_path.join("dir/v.txt"), "v\n")?;
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+
+        select_row(&mut state, "dir/u.txt");
+        state.toggle_visual();
+        state.toggle_visual();
+        select_row(&mut state, "dir");
+        state.collapse();
+        assert!(!state.tree().rows().iter().any(|r| r.path == "dir/u.txt"));
+        state.ignore_selected()?;
+        assert_eq!(
+            fs::read_to_string(repo_path.join(".gitignore"))?,
+            "/dir/u.txt\n"
         );
         Ok(())
     }

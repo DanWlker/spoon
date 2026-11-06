@@ -40,10 +40,12 @@ fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), St
         .write_all(value.as_bytes())
         .map_err(|e| format!("Failed to write to {}: {e}", commands[0]))?;
 
-    child
+    let status = child
         .wait()
         .map_err(|e| format!("{} failed: {e}", commands[0]))?;
-
+    if !status.success() {
+        return Err(format!("{} failed: {status}", commands[0]));
+    }
     Ok(())
 }
 
@@ -139,6 +141,15 @@ mod tests {
             err.ends_with("exited with non-zero status: exit status: 3"),
             "{err}"
         );
+    }
+
+    // A clipboard command failing used to say it copied.
+    #[test]
+    fn test_failing_clipboard_command() {
+        let sh = |script: &str| ["sh", "-c", script].map(String::from).to_vec();
+        assert!(copy_to_clipboard_custom("x".into(), &sh("cat >/dev/null")).is_ok());
+        let err = copy_to_clipboard_custom("x".into(), &sh("cat >/dev/null; exit 1")).unwrap_err();
+        assert!(err.contains("failed"), "{err}");
     }
 
     #[test]

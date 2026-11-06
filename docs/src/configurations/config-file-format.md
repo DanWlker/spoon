@@ -383,7 +383,7 @@ https://docs.rs/chrono/latest/chrono/format/strftime/index.html
 
 ### `ui.detail.date_local`
 
-Whether to show a author/committer date in the commit list in local timezone.
+Whether to show a author/committer date in the commit detail in local timezone.
 
 - type: `boolean`
 - default: `true`

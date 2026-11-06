@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
+    time::Instant,
 };
 
 use chrono::{DateTime, FixedOffset};
@@ -42,6 +43,7 @@ impl Repository {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
         // what doesn't depend on the commits loads alongside them
+        let local_changes_started = Instant::now();
         std::thread::scope(|scope| {
             let local_changes = scope.spawn(|| load_local_changes(path));
             let remotes = scope.spawn(|| load_remotes(path));
@@ -56,6 +58,7 @@ impl Repository {
             repository.remotes = joined(remotes);
             repository.textconv_drivers = joined(textconv_drivers);
             repository.loaded_local_changes = Mutex::new(Some(joined(local_changes)));
+            repository.local_changes_started = Mutex::new(local_changes_started);
             repository.refs_snapshot = joined(refs_snapshot);
             repository.operation = joined(operation);
             repository.tracking = joined(tracking);
@@ -138,6 +141,7 @@ impl Repository {
             path,
             git_dir,
             loaded_local_changes: Default::default(),
+            local_changes_started: Mutex::new(Instant::now()),
             taken_count: Default::default(),
             running: Default::default(),
             refs_snapshot: None,
@@ -500,14 +504,12 @@ fn merge_ref_maps(m1: &mut RefMap, m2: RefMap) {
 }
 
 fn parse_branch_refs(hash: &str, refs: &str) -> Option<Ref> {
-    if refs.starts_with("refs/heads/") {
-        let name = refs.trim_start_matches("refs/heads/");
+    if let Some(name) = refs.strip_prefix("refs/heads/") {
         Some(Ref::Branch {
             name: name.into(),
             target: hash.into(),
         })
-    } else if refs.starts_with("refs/remotes/") {
-        let name = refs.trim_start_matches("refs/remotes/");
+    } else if let Some(name) = refs.strip_prefix("refs/remotes/") {
         // "origin/HEAD" only points at the default branch of the remote, which is shown already
         if name.ends_with("/HEAD") {
             return None;
@@ -522,9 +524,9 @@ fn parse_branch_refs(hash: &str, refs: &str) -> Option<Ref> {
 }
 
 fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
-    if refs.starts_with("refs/tags/") {
-        let name = refs.trim_start_matches("refs/tags/");
-        let name = name.trim_end_matches("^{}");
+    if let Some(name) = refs.strip_prefix("refs/tags/") {
+        // the commit of an annotated tag, see `load_refs`
+        let name = name.strip_suffix("^{}").unwrap_or(name);
         Some(Ref::Tag {
             name: name.into(),
             target: hash.into(),
@@ -681,6 +683,31 @@ mod tests {
         }
     }
 
+    // `git branch refs/heads/foo` makes `refs/heads/refs/heads/foo`, which used to be read as the
+    // branch `foo`, another one.
+    #[test]
+    fn test_load_branch_named_like_a_ref() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        git(path, &["branch", "refs/heads/foo"]);
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let mut names: Vec<String> = repository
+            .all_refs()
+            .into_iter()
+            .filter_map(|r| match r {
+                Ref::Branch { name, .. } | Ref::Tag { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names, ["master", "refs/heads/foo"]);
+    }
+
     #[test]
     fn test_load_root_commit_and_stash() {
         use crate::test_support::git::GitRepository;
@@ -726,6 +753,7 @@ mod tests {
 
     #[test]
     fn test_load_alongside_commits() {
+        let before = std::time::Instant::now();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         let git = crate::test_support::git::GitRepository::new(path);
@@ -747,6 +775,14 @@ mod tests {
         assert_eq!(repository.loaded_local_change_count(), 1);
         // taken again, they are as they are now
         assert_eq!(repository.take_loaded_local_changes().count(), 2);
+        // a `git status` started before is older than them: dropped
+        let older = crate::git::FilesSnapshot {
+            changes: Default::default(),
+            stamp: 0,
+            started: before,
+        };
+        repository.set_local_changes(older);
+        assert_eq!(repository.loaded_local_change_count(), 2);
         assert_eq!(repository.remotes(), ["origin"]);
         assert_eq!(
             repository.refs_snapshot(),

@@ -2237,6 +2237,33 @@ fn test_esc_clears_the_picks_before_the_search() {
     ]);
 }
 
+// The commit list beside the details clears the picks first too: it used to clear the search,
+// its hint saying it cleared the picks.
+#[test]
+fn test_esc_clears_the_picks_before_the_search_beside_the_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let state = |picked: usize, searched: bool| {
+        check(move |app| {
+            assert!(matches!(app.view, View::Detail(_)));
+            let state = app.view.as_list_state().unwrap();
+            let shown = (state.picked_commit_hashes().len(), state.search_applied());
+            assert_eq!(shown, (picked, searched));
+        })
+    };
+    harness.run(vec![
+        keys("v /"),
+        typing("c"),
+        keys("enter v enter 2"),
+        state(1, true),
+        keys("esc"),
+        state(0, true),
+        keys("esc"),
+        state(0, false),
+    ]);
+}
+
 #[test]
 fn test_visual_selects_the_commits_from_the_first_to_the_last_moved_to() {
     let dir = tempfile::tempdir().unwrap();

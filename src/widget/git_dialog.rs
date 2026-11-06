@@ -658,7 +658,7 @@ impl GitDialog {
         kind: DialogKind,
         form: Form,
     ) -> Self {
-        GitDialog {
+        let mut dialog = GitDialog {
             title,
             verb,
             intro,
@@ -669,7 +669,10 @@ impl GitDialog {
             trigger: None,
             conflicts: Conflicts::None,
             pushed: None,
-        }
+        };
+        // a text field first is typed in right away
+        dialog.editing = dialog.can_edit();
+        dialog
     }
 
     // Warns that rewriting the commits, already on `remote_branch`, means force pushing them.
@@ -759,9 +762,7 @@ impl GitDialog {
             target,
             message,
         };
-        let mut dialog = Self::with(" Stash ", "stash", intro, kind, form);
-        dialog.editing = dialog.can_edit();
-        dialog
+        Self::with(" Stash ", "stash", intro, kind, form)
     }
 
     fn stash_command(
@@ -1049,7 +1050,8 @@ impl GitDialog {
         Ok(GitTask::new(
             GitCommand::Rebase,
             &[stash, onto],
-            description.replace("Rebased", "Rebasing"),
+            // the first word only: a branch can be named so too
+            description.replacen("Rebased", "Rebasing", 1),
             description.to_string(),
         ))
     }
@@ -1097,7 +1099,7 @@ impl GitDialog {
             ..GitTask::new(
                 GitCommand::Merge,
                 &args,
-                description.replace("Merged", "Merging"),
+                description.replacen("Merged", "Merging", 1),
                 done,
             )
         })
@@ -1378,9 +1380,7 @@ impl GitDialog {
             from,
             checkout,
         };
-        let mut dialog = Self::with(" New branch ", "create", vec![], kind, form);
-        dialog.editing = dialog.can_edit();
-        dialog
+        Self::with(" New branch ", "create", vec![], kind, form)
     }
 
     fn create_branch_command(
@@ -1512,9 +1512,7 @@ impl GitDialog {
             new_name,
             new_upstream,
         };
-        let mut dialog = Self::with(" Edit branch ", "save", vec![], kind, form);
-        dialog.editing = dialog.can_edit();
-        dialog
+        Self::with(" Edit branch ", "save", vec![], kind, form)
     }
 
     fn edit_branch_command(
@@ -1569,9 +1567,7 @@ impl GitDialog {
             url: url.to_string(),
             fields,
         };
-        let mut dialog = Self::with(" Edit remote ", "save", vec![], kind, form);
-        dialog.editing = dialog.can_edit();
-        dialog
+        Self::with(" Edit remote ", "save", vec![], kind, form)
     }
 
     fn edit_remote_command(
@@ -1603,9 +1599,7 @@ impl GitDialog {
     pub fn add_remote() -> Self {
         let mut form = Form::default();
         let kind = DialogKind::AddRemote(RemoteFields::new(&mut form, "", ""));
-        let mut dialog = Self::with(" New remote ", "add", vec![], kind, form);
-        dialog.editing = dialog.can_edit();
-        dialog
+        Self::with(" New remote ", "add", vec![], kind, form)
     }
 
     fn add_remote_command(&self, fields: RemoteFields) -> Result<GitTask, String> {
@@ -1643,9 +1637,7 @@ impl GitDialog {
         // where the cursor is, nothing else to choose
         form.fixed("At", at.label());
         let kind = DialogKind::CreateTag { at, name, message };
-        let mut dialog = Self::with(" New tag ", "create", vec![], kind, form);
-        dialog.editing = dialog.can_edit();
-        dialog
+        Self::with(" New tag ", "create", vec![], kind, form)
     }
 
     fn create_tag_command(
@@ -2484,13 +2476,22 @@ impl GitDialog {
             Some(Err(err)) => return err,
             None => return String::new(),
         };
+        // the paths of a command on many files are cut, for the popup to stay short; wrapping
+        // them all took long, each frame
+        // shortcut: the command itself is still made each frame; keep it in the dialog if a
+        // popup of 100k paths is slow to draw
+        const SHOWN_ARGS: usize = 20;
         let git = |args: &GitArgs| {
-            let args: Vec<_> = args
-                .argv()
+            let argv = args.argv();
+            let mut shown: Vec<_> = argv
                 .iter()
+                .take(SHOWN_ARGS)
                 .map(|a| shorten_hash(a).into_owned())
                 .collect();
-            format!("git {}", args.join(" "))
+            if argv.len() > SHOWN_ARGS {
+                shown.push(format!("… ({} more)", argv.len() - SHOWN_ARGS));
+            }
+            format!("git {}", shown.join(" "))
         };
         // with those run after it
         let command = task.commands.iter().map(git).collect::<Vec<_>>().join("; ");
@@ -2741,7 +2742,9 @@ impl Widget for GitDialogWidget<'_> {
                         bar,
                         Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
                         left,
-                        Span::raw(options[*index].clone()).fg(theme.fg).bold(),
+                        Span::raw(options.get(*index).cloned().unwrap_or_default())
+                            .fg(theme.fg)
+                            .bold(),
                         right,
                         Span::styled(more, dim),
                     ])
@@ -2857,6 +2860,32 @@ mod tests {
     use rustc_hash::FxHashMap;
 
     use super::*;
+
+    // What a rebase or merge is doing says it of its first word only: a branch named like it was
+    // changed too.
+    // A command on many paths shows the first ones only: wrapping all of them, each frame, was
+    // slow.
+    #[test]
+    fn test_summary_of_many_paths_is_cut() {
+        let paths: Vec<String> = (0..1000).map(|i| format!("f{i}")).collect();
+        let dialog = GitDialog::stash("1000 files".into(), paths);
+        let summary = dialog.summary();
+        assert!(summary.contains("more)"), "{summary}");
+        assert!(summary.len() < 400, "{summary}");
+    }
+
+    #[test]
+    fn test_running_rebase_and_merge_keep_the_names() {
+        let running = |dialog: GitDialog| dialog.command().unwrap().unwrap().running;
+        assert_eq!(
+            running(GitDialog::rebase("Rebased", "x".into(), "Rebased-2", false)),
+            "Rebasing Rebased onto Rebased-2"
+        );
+        assert_eq!(
+            running(GitDialog::merge("Merged", "x".into(), "Merged-2", None)),
+            "Merging Merged-2 into Merged"
+        );
+    }
 
     #[test]
     fn test_typing_popups_open_typing_into_text() {
@@ -3673,6 +3702,54 @@ mod tests {
             message.contains("c2") && message.contains("c3"),
             "{message}"
         );
+    }
+
+    // Popping a stash that stops on conflicts keeps it, its changes not lost.
+    #[test]
+    fn test_pop_stopping_on_conflicts_keeps_the_stash() {
+        let dir = test_repo();
+        let path = dir.path();
+        std::fs::write(path.join("f"), "stashed\n").unwrap();
+        git(path, &["stash", "-q"]);
+        std::fs::write(path.join("f"), "committed\n").unwrap();
+        git(path, &["commit", "-qam", "c5"]);
+
+        let mut dialog = GitDialog::apply_stash("stash@{0}", "On main: c4");
+        // the second check: pop
+        dialog.handle_key(Some(UserEvent::NavigateDown), key(KeyCode::Null));
+        dialog.handle_key(Some(UserEvent::NavigateRight), key(KeyCode::Null));
+        let task = dialog.command().unwrap().unwrap();
+        assert!(task.commands[0].args.contains(&"pop".to_string()));
+        assert!(crate::git::run_task(path, &task).is_err());
+
+        assert_eq!(git(path, &["stash", "list"]).lines().count(), 1);
+        let stashed = git(path, &["show", "stash@{0}:f"]);
+        assert_eq!(stashed, "stashed\n");
+    }
+
+    // A hard reset to the selected commit moves the branch there, its changes gone.
+    #[test]
+    fn test_hard_reset_runs() {
+        let dir = test_repo();
+        let path = dir.path();
+        let target = git(path, &["rev-parse", "HEAD~2"]).trim().to_string();
+        std::fs::write(path.join("f"), "uncommitted\n").unwrap();
+
+        let commit = DialogCommit {
+            hash: target.as_str().into(),
+            line: String::new(),
+        };
+        let mut dialog = GitDialog::reset("main", commit);
+        // mixed, soft, hard
+        for _ in 0..2 {
+            dialog.handle_key(Some(UserEvent::NavigateRight), key(KeyCode::Null));
+        }
+        let task = dialog.command().unwrap().unwrap();
+        assert!(task.commands[0].args.contains(&"--hard".to_string()));
+        crate::git::run_task(path, &task).unwrap();
+
+        assert_eq!(git(path, &["rev-parse", "HEAD"]).trim(), target);
+        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), "2\n");
     }
 
     #[test]

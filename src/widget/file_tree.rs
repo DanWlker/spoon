@@ -122,6 +122,18 @@ impl FileTree {
         Self { root }
     }
 
+    // Whether `path` is a directory of the tree.
+    fn is_dir(&self, path: &str) -> bool {
+        let mut node = &self.root;
+        for part in path.split('/') {
+            let Some(dir) = node.dirs.get(part) else {
+                return false;
+            };
+            node = dir;
+        }
+        true
+    }
+
     // The rows of the files for which `keep` is true and their directories, descending only into the
     // directories for which `is_open` is true.
     pub fn rows(
@@ -419,12 +431,16 @@ impl TreeSelection {
     }
 
     pub fn contains(&self, path: &str) -> bool {
-        self.picked.contains(&path.to_string())
+        self.picked.contains(path)
     }
 
-    // Whether any picked row is `path` or contains it, like a picked directory.
+    // Whether any picked row is `path` or contains it, like a picked directory or the root.
     pub fn contains_under(&self, path: &str) -> bool {
-        self.picked.iter().any(|picked| path_contains(picked, path))
+        let dirs = path.match_indices('/').map(|(i, _)| &path[..i]);
+        [ROOT_PATH, path]
+            .into_iter()
+            .chain(dirs)
+            .any(|row| self.picked.contains(row))
     }
 
     // Clears the picked rows, and the visual selection with them.
@@ -462,8 +478,9 @@ impl TreeSelection {
             .sync_visual(tree.rows()[range].iter().map(|row| &row.path));
     }
 
-    // The entries to act on: the picked rows, or the selected row when nothing is picked.
-    pub fn entries<'a>(&self, tree: &'a FileTreeState) -> Vec<Entry<'a>> {
+    // The entries to act on: those picked, shown or not (in a closed directory, or left out by
+    // the filter), else the selected row; in the order of the tree.
+    pub fn entries<'a>(&'a self, tree: &'a FileTreeState) -> Vec<Entry<'a>> {
         if self.picked.is_empty() {
             return tree
                 .selected()
@@ -471,10 +488,19 @@ impl TreeSelection {
                 .into_iter()
                 .collect();
         }
-        tree.rows()
+        let mut paths: Vec<&str> = self
+            .picked
             .iter()
-            .filter(|row| self.picked.contains(&row.path))
-            .filter_map(FileTreeRow::entry)
+            .map(String::as_str)
+            .filter(|path| *path != ROOT_PATH)
+            .collect();
+        paths.sort_unstable();
+        paths
+            .into_iter()
+            .map(|path| match tree.tree.is_dir(path) {
+                true => Entry::Dir(path),
+                false => Entry::File(path),
+            })
             .collect()
     }
 }
@@ -699,7 +725,12 @@ pub fn render_tree(
     ctx: &AppContext,
 ) -> usize {
     let theme = &ctx.color_theme;
-    let options = ctx.search_options.get();
+    // the filter highlights what it matched, with the options it was set with
+    let options = tree
+        .filter
+        .as_ref()
+        .filter(|(filter, _)| search == Some(filter.as_str()))
+        .map_or(ctx.search_options.get(), |(_, options)| *options);
     let rows = tree.rows();
     if rows.is_empty() {
         Paragraph::new(placeholder(empty, theme)).render(area, buf);
@@ -967,6 +998,34 @@ mod tests {
         assert!(visible(&state).is_empty());
         state.set_filter(None, SearchOptions::default());
         assert_eq!(visible(&state).len(), 7);
+    }
+
+    // A filter set fuzzy highlights what it matched once the search options change: it used to
+    // highlight with them, matching nothing.
+    #[test]
+    fn test_filter_highlighted_with_its_options() {
+        let fuzzy = SearchOptions {
+            fuzzy: true,
+            ..SearchOptions::default()
+        };
+        let mut tree = FileTreeState::new(FileTree::new(["axb.rs"]), TreeShape::Closed);
+        tree.set_filter(Some("ab"), fuzzy);
+        let ctx = crate::test_support::ui::test_ctx();
+        ctx.search_options.set(SearchOptions::default());
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        render_tree(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &tree,
+            |_| None,
+            Some("ab"),
+            |_| false,
+            TreeCursor::Hidden,
+            "",
+            &ctx,
+        );
+        let x = (0..20).find(|&x| buf[(x, 0)].symbol() == "a").unwrap();
+        assert_eq!(buf[(x, 0)].bg, ctx.color_theme.list_match_bg);
     }
 
     #[test]

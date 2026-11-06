@@ -61,21 +61,19 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let (mut label_lines, mut value_lines) = self.contents(area);
 
-        state.fit(value_lines.len(), area.height as usize, 0);
+        // the changed files, which can be 100k, are made only for the rows shown
+        let head = value_lines.len();
+        let total = head + self.changes.len();
+        let shown = state.fit(total, area.height as usize, 0);
         // on the right border, like the diffs'
         let border = Rect::new(area.right(), area.y, 1, area.height);
         let theme = &self.ctx.color_theme;
-        render_scrollbar(
-            buf,
-            border,
-            value_lines.len(),
-            state.offset,
-            self.focused,
-            theme,
-        );
+        render_scrollbar(buf, border, total, state.offset, self.focused, theme);
 
         label_lines = label_lines.into_iter().skip(state.offset).collect();
         value_lines = value_lines.into_iter().skip(state.offset).collect();
+        let changes = shown.start.saturating_sub(head)..shown.end.saturating_sub(head);
+        value_lines.extend(self.changes_lines(changes));
 
         let style = Style::default().fg(self.ctx.color_theme.fg);
         Paragraph::new(label_lines)
@@ -121,7 +119,6 @@ impl CommitDetail<'_> {
         value_lines.extend(self.commit_message_lines());
 
         value_lines.push(self.divider_line(area.width as usize));
-        value_lines.extend(self.changes_lines());
 
         (label_lines, value_lines)
     }
@@ -159,9 +156,9 @@ impl CommitDetail<'_> {
         };
         vec![
             Line::from(vec![
-                name.fg(self.ctx.color_theme.detail_name_fg),
+                tabs_shown(name).fg(self.ctx.color_theme.detail_name_fg),
                 " <".into(),
-                email.fg(self.ctx.color_theme.detail_email_fg),
+                tabs_shown(email).fg(self.ctx.color_theme.detail_email_fg),
                 "> ".into(),
             ]),
             Line::from(date_str.fg(self.ctx.color_theme.detail_date_fg)),
@@ -227,8 +224,11 @@ impl CommitDetail<'_> {
         lines
     }
 
-    fn changes_lines(&self) -> Vec<Line<'_>> {
+    // The lines of the changed files in `range`.
+    fn changes_lines(&self, range: std::ops::Range<usize>) -> Vec<Line<'_>> {
         self.changes
+            .get(range.start.min(self.changes.len())..range.end.min(self.changes.len()))
+            .unwrap_or_default()
             .iter()
             .map(|c| {
                 let path = match c {
@@ -294,6 +294,41 @@ mod tests {
         .render(area, &mut buf, &mut ScrollState::default());
         let border: String = (0..10).map(|y| buf[(60, y)].symbol()).collect();
         assert!(border.contains('█'), "{border:?}");
+    }
+
+    // The changed files are made for the rows shown alone: scrolled, they are those at the
+    // offset, after the commit's own rows.
+    #[test]
+    fn test_changed_files_scrolled() {
+        let commit = Commit::default();
+        let changes: Vec<FileChange> = (0..100)
+            .map(|i| FileChange::Add {
+                path: format!("f{i}"),
+            })
+            .collect();
+        let tracking = FxHashMap::default();
+        let area = Rect::new(0, 0, 40, 12);
+        let draw = |state: &mut ScrollState| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 41, 12));
+            CommitDetail::new(
+                &commit,
+                &changes,
+                &vec![],
+                &Head::None,
+                &tracking,
+                true,
+                test_ctx(),
+            )
+            .render(area, &mut buf, state);
+            buf
+        };
+        let mut state = ScrollState::default();
+        let buf = draw(&mut state);
+        find_row(&buf, " f0");
+        state.offset = 1000;
+        let buf = draw(&mut state);
+        assert!(row_text(&buf, 11).contains("f99"), "{}", row_text(&buf, 11));
+        assert!(row_text(&buf, 10).contains("f98"), "{}", row_text(&buf, 10));
     }
 
     #[test]

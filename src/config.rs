@@ -235,13 +235,13 @@ pub struct UiListConfig {
     #[garde(length(min = 1), custom(valid_date_format))]
     #[default = "%Y-%m-%d"]
     pub date_format: String,
-    #[garde(range(min = 0))]
+    #[garde(skip)]
     #[default = 10]
     pub date_width: u16,
     #[garde(skip)]
     #[default = true]
     pub date_local: bool,
-    #[garde(range(min = 0))]
+    #[garde(skip)]
     #[default = 20]
     pub name_width: u16,
 }
@@ -681,6 +681,75 @@ mod tests {
         );
         let services = "[core.browser.services.\"git.company.com\"]\ncomit = \"{base}/c/{hash}\"\n";
         unknown(services, "git.company.com");
+    }
+
+    // The defaults config.schema.json gives, written to a config, load as the code's defaults:
+    // the schema is written by hand, and its default of a color had drifted.
+    #[test]
+    fn test_schema_defaults_are_the_code_defaults() {
+        fn defaults(schema: &serde_json::Value) -> Option<toml::Value> {
+            if let Some(properties) = schema["properties"].as_object() {
+                let table: toml::Table = properties
+                    .iter()
+                    .filter_map(|(name, property)| Some((name.clone(), defaults(property)?)))
+                    .collect();
+                return (!table.is_empty()).then_some(toml::Value::Table(table));
+            }
+            let default = schema.get("default")?;
+            Some(serde_json::from_value(default.clone()).unwrap())
+        }
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut table = toml::Table::new();
+        for section in ["core", "ui", "graph", "color"] {
+            let section_defaults = defaults(&schema["properties"][section]).unwrap();
+            table.insert(section.into(), section_defaults);
+        }
+        let toml = toml::to_string(&table).unwrap();
+        let mut config: Config = toml::from_str::<OptionalConfig>(&toml)
+            .unwrap_or_else(|e| panic!("{e}\n{toml}"))
+            .into();
+        // unset in the code, they fall back with the command line's options, see `main`
+        // shortcut: the defaults of `core.option` aren't compared; resolve them here to check them.
+        config.core.option = CoreOptionConfig::default();
+        assert_eq!(config, Config::default(), "{toml}");
+    }
+
+    // Each value that crashes later, or shows nothing, is refused when loaded, naming it.
+    #[test]
+    fn test_config_invalid_values() {
+        let refused = [
+            ("[ui.list]\ncolumns = []\n", "ui.list.columns"),
+            (
+                "[ui.list]\nsubject_min_width = 0\n",
+                "ui.list.subject_min_width",
+            ),
+            ("[ui.detail]\nheight = 0\n", "ui.detail.height"),
+            ("[ui.refs]\nwidth = 0\n", "ui.refs.width"),
+            ("[graph.color]\nbranches = []\n", "graph.color.branches"),
+            (
+                "[graph.color]\nbranches = [\"#aé000\"]\n",
+                "graph.color.branches",
+            ),
+            ("[graph.color]\nedge = \"red\"\n", "graph.color.edge"),
+            (
+                "[graph.color]\nbackground = \"#12345\"\n",
+                "graph.color.background",
+            ),
+            (
+                "[core.external]\nclipboard = { custom = { commands = [] } }\n",
+                "core.external.clipboard",
+            ),
+            (
+                "[core.external]\nclipboard = { custom = { commands = [\"\"] } }\n",
+                "core.external.clipboard",
+            ),
+        ];
+        for (toml, field) in refused {
+            let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+            let err = config.validate().unwrap_err().to_string();
+            assert!(err.contains(field), "{toml}: {err}");
+        }
     }
 
     #[test]

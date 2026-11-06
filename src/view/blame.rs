@@ -20,8 +20,8 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
-        commit_event, edit_files, file_link, query_status, register_commit_keys,
-        register_moving_keys, revision_spans, search_status, type_query, typing_keys,
+        commit_event, copy_selection, edit_files, file_link, query_or_search_status,
+        register_commit_keys, register_moving_keys, revision_spans, type_query, typing_keys,
         SHORT_HASH_WIDTH,
     },
     widget::{
@@ -263,12 +263,8 @@ impl BlameView {
             BlameFocus::Text => match event {
                 UserEvent::ShortCopy => {
                     if let Some(text) = self.text.selected_text() {
-                        let name = if self.text.has_selection() {
-                            "Lines"
-                        } else {
-                            "Line"
-                        };
-                        self.tx.send(AppEvent::copy(name, text));
+                        self.tx
+                            .send(copy_selection(text, self.text.selected_name()));
                     }
                 }
                 // the file at the commit shown, at the lines selected, else the line
@@ -394,10 +390,7 @@ impl BlameView {
 
     fn update_query_status(&self) {
         let kind = self.query_kind();
-        let event = match self.query.is_editing() {
-            true => query_status(&self.ctx, &self.query, kind),
-            false => search_status(kind, self.ctx.search_options.get(), self.search_outcome()),
-        };
+        let event = query_or_search_status(&self.ctx, &self.query, kind, || self.search_outcome());
         self.tx.send(event);
     }
 

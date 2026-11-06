@@ -11,7 +11,8 @@ use crate::{
     event::{AppEvent, UserEvent},
     external::editor_command,
     git::{
-        AfterTask, CommitHash, FileRevision, GitCommand, GitTask, PatchDirection, Repository, Rev,
+        git_bytes, work_path, AfterTask, CommitHash, FileRevision, GitCommand, GitTask,
+        PatchDirection, Repository, Rev,
     },
     graph_commands::single_commit_command,
     keybind::Scope,
@@ -211,10 +212,10 @@ pub fn revision_matches(
     query: &str,
     options: SearchOptions,
 ) -> bool {
-    let date = format_date(ctx, &revision.date);
-    [revision.commit.as_str(), &date, &revision.subject]
-        .iter()
-        .any(|text| name_matches(text, query, options))
+    // the date, formatted for it, looked at last
+    name_matches(revision.commit.as_str(), query, options)
+        || name_matches(&revision.subject, query, options)
+        || name_matches(&format_date(ctx, &revision.date), query, options)
 }
 
 // The keys moving in a list of lines, in the blame and the timeline, where `applies`.
@@ -283,7 +284,7 @@ pub fn register_diff_keys<T: ?Sized>(
         "less context",
         "Show fewer lines around the changes",
     )
-    .when(move |v| single_file(v) && context(v) > 0);
+    .when(move |v| single_file(v) && context(v) > 1);
 }
 
 // Space on the diff of a commit, where `pane` is: applying the selected hunk or lines to the
@@ -432,6 +433,20 @@ pub fn revision_spans(
 
 // The status line showing the `query` being typed, a search of `kind`, with its cursor and its
 // options on the right; cleared when nothing is typed.
+// What the status line says of `query`, searching `kind`: the query while it is typed, else how
+// its search went, the `outcome`.
+pub fn query_or_search_status(
+    ctx: &AppContext,
+    query: &TreeQuery,
+    kind: SearchKind,
+    outcome: impl FnOnce() -> Option<SearchOutcome>,
+) -> AppEvent {
+    match query.is_editing() {
+        true => query_status(ctx, query, kind),
+        false => search_status(kind, ctx.search_options.get(), outcome()),
+    }
+}
+
 pub fn query_status(ctx: &AppContext, query: &TreeQuery, kind: SearchKind) -> AppEvent {
     match query.status_input() {
         Some((message, cursor_byte_index)) => AppEvent::UpdateStatusInput {
@@ -495,23 +510,19 @@ fn path_value(repository: &Repository, relative: &str, form: CopyForm) -> String
     let relative = if relative == ROOT_PATH { "." } else { relative };
     match form {
         CopyForm::Full => {
-            let absolute = repository.path().join(relative);
+            let absolute = work_path(repository.path(), relative);
             let absolute = absolute.to_string_lossy();
             absolute.trim_end_matches("/.").to_string()
         }
-        CopyForm::Short => relative.to_string(),
+        // a byte that isn't UTF-8 copied as U+FFFD, see `text_from_git`
+        CopyForm::Short => String::from_utf8_lossy(&git_bytes(relative)).into_owned(),
     }
 }
 
 // Copies the path of a file in the repository: relative to its top, or absolute in full.
 pub fn copy_path(repository: &Repository, row: &FileTreeRow, form: CopyForm) -> AppEvent {
     // the root row stands for the whole repository
-    let relative = row.entry().map_or(".", Entry::path);
-    let (name, value) = match form {
-        CopyForm::Full => ("Absolute Path", path_value(repository, relative, form)),
-        CopyForm::Short => ("Path", path_value(repository, relative, form)),
-    };
-    AppEvent::copy(name, value)
+    copy_paths(repository, [row.entry().map_or(".", Entry::path)], form)
 }
 
 // Copies the paths of several files, one per line: relative to the top, or absolute in full.

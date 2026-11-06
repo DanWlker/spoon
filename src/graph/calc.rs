@@ -739,3 +739,39 @@ fn calc_edges(
 
     (edges, max_pos_x)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Runs ending, starting or crossing at the edges of the chunks are found on each of their
+    // rows, once, by a row and by a range of rows.
+    #[test]
+    fn test_runs_across_chunks() {
+        let runs = [0..200, 63..65, 64..128, 127..129, 128..129, 10..11];
+        let mut edges = GraphEdges::new(200);
+        for (x, rows) in runs.iter().enumerate() {
+            edges.push_run(rows.clone(), x, x, rows.end);
+        }
+        for row in 0..200 {
+            let expected: Vec<usize> = (0..runs.len())
+                .filter(|&x| runs[x].contains(&row))
+                .collect();
+            let mut found: Vec<usize> =
+                edges.runs_crossing(row..row + 1).map(|r| r.pos_x).collect();
+            found.sort_unstable();
+            assert_eq!(found, expected, "row {row}");
+        }
+        for range in [60..140, 0..200, 64..65, 127..128, 199..200] {
+            let mut found: Vec<usize> = edges
+                .runs_crossing(range.clone())
+                .map(|r| r.pos_x)
+                .collect();
+            found.sort_unstable();
+            let expected: Vec<usize> = (0..runs.len())
+                .filter(|&x| runs[x].start < range.end && range.start < runs[x].end)
+                .collect();
+            assert_eq!(found, expected, "rows {range:?}");
+        }
+    }
+}

@@ -134,6 +134,7 @@ impl DiffHunk {
     // The patch is applied in `direction`: forward to stage, in reverse to unstage or discard.
     // Unselected changes must leave the target as is, so they become context on the side that is
     // in it (removed lines when staging, added lines when unstaging) and are dropped from the other.
+    // `selected` is sorted.
     pub fn partial_patch(&self, selected: &[usize], direction: PatchDirection) -> String {
         let reverse = direction == PatchDirection::Reverse;
         let mut body = String::new();
@@ -144,12 +145,12 @@ impl DiffHunk {
         for (i, line) in self.lines().enumerate() {
             let as_context = || format!(" {}", &line[1..]);
             match line.as_bytes().first() {
-                Some(b'+') if selected.contains(&i) => {
+                Some(b'+') if selected.binary_search(&i).is_ok() => {
                     body.push_str(line);
                     new_count += 1;
                     kept = true;
                 }
-                Some(b'-') if selected.contains(&i) => {
+                Some(b'-') if selected.binary_search(&i).is_ok() => {
                     body.push_str(line);
                     old_count += 1;
                     kept = true;
@@ -411,8 +412,9 @@ impl WrapMap {
 }
 
 // Whether the row of `diff` at `row` is one a search matches.
+// Whether the text of `row` matches, as it is in the file, like a file preview's lines.
 pub fn row_matches(diff: &ParsedDiff, row: usize, query: &str, options: SearchOptions) -> bool {
-    match_range(&diff.row_text(&diff.rows[row]), query, options).is_some()
+    match_range(&diff.raw[diff.rows[row].text.clone()], query, options).is_some()
 }
 
 // The selected hunk, or changed line, of a diff and its scroll offset; the local changes and the
@@ -508,10 +510,13 @@ impl DiffCursor {
         let row = find_around(diff.rows.len(), from, direction, |r| {
             row_matches(diff, r, query, options)
         })?;
-        // the row the next search goes on from, in the hunk it is in
+        // the row the next search goes on from, in the hunk it is in; the lines picked stay, but
+        // in their own hunk only, which staging them takes them from
         self.line = row;
-        self.cancel_range();
         if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
+            if index != self.hunk {
+                self.cancel_range();
+            }
             self.hunk = index;
         }
         self.scroll_to(row..row + 1);
@@ -640,6 +645,53 @@ impl DiffCursor {
         true
     }
 
+    // After ctrl-e or ctrl-y scrolled the window: the selected line pulled along to the nearest
+    // changed line in it, like vim's; the selected hunk once it left the window whole, to the
+    // nearest hunk in it. The window stays where it scrolled to.
+    pub fn keep_in_view(&mut self, diff: &ParsedDiff, part: DiffPart) {
+        let height = self.scroll.height;
+        self.scroll.offset = self
+            .scroll
+            .offset
+            .min(self.wrap.total().saturating_sub(height.max(1)));
+        let offset = self.scroll.offset;
+        let window = self.wrap.logical_rows(offset..offset + height);
+        if window.is_empty() {
+            return;
+        }
+        let crosses = |rows: &Range<usize>| rows.start < window.end && window.start < rows.end;
+        match part {
+            DiffPart::Line => {
+                if window.contains(&self.line) {
+                    return;
+                }
+                let row = match self.line < window.start {
+                    true => self.selectable_rows(diff).find(|&r| r >= window.start),
+                    false => self.selectable_rows(diff).rfind(|&r| r < window.end),
+                };
+                if let Some(row) = row.filter(|r| window.contains(r)) {
+                    self.select_line(diff, row);
+                }
+            }
+            DiffPart::Hunk => {
+                let Some(hunk) = diff.hunks.get(self.hunk) else {
+                    return;
+                };
+                if crosses(&hunk.rows) {
+                    return;
+                }
+                let index = match hunk.rows.end <= window.start {
+                    true => diff.hunks.iter().position(|h| crosses(&h.rows)),
+                    false => diff.hunks.iter().rposition(|h| crosses(&h.rows)),
+                };
+                if let Some(index) = index {
+                    self.select_hunk(diff, index);
+                }
+            }
+        }
+        self.scroll.offset = offset;
+    }
+
     // The changed rows the selected line can move to: those of the selected hunk while lines are
     // picked, which stay in one hunk, else all.
     fn selectable_rows<'d>(
@@ -677,7 +729,7 @@ impl DiffCursor {
         self.visual.is_visual()
     }
 
-    // The rows of the lines picked, else of the selected line.
+    // The rows of the lines picked, else of the selected line, sorted.
     fn line_rows(&self) -> Vec<usize> {
         match self.picked.is_empty() {
             true => vec![self.line],
@@ -772,7 +824,7 @@ impl DiffCursor {
         let lines: Vec<&str> = hunk
             .lines()
             .enumerate()
-            .filter(|(i, _)| rows.contains(&(first + i)))
+            .filter(|(i, _)| rows.binary_search(&(first + i)).is_ok())
             .map(|(_, line)| line)
             // "\ No newline at end of file" isn't a line of the file
             .filter(|line| !line.starts_with('\\'))
@@ -902,7 +954,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
             finish_hunk(&mut current, &mut hunks, rows.len());
             file_start = start;
             if multiple_files {
-                let path = line.rfind(" b/").map_or(0, |i| i + 3);
+                let path = new_path_start(line);
                 rows.push(DiffRow::without_numbers(DiffRowKind::File, bytes(path)));
             }
             continue;
@@ -1118,6 +1170,22 @@ fn words(line: &str) -> Vec<&str> {
         words.push(&line[start..]);
     }
     words
+}
+
+// Where the new path starts in "diff --git a/<old> b/<new>": after the middle " b/" when both are
+// alike, which a path holding " b/" itself needs, else after the last " b/", a rename's.
+fn new_path_start(line: &str) -> usize {
+    let prefix = "diff --git a/".len();
+    let rest = line.get(prefix..).unwrap_or_default();
+    let half = rest.len().saturating_sub(3) / 2;
+    let same = rest.get(half..half + 3) == Some(" b/")
+        && rest
+            .get(..half)
+            .is_some_and(|old| rest.get(half + 3..) == Some(old));
+    match same {
+        true => prefix + half + 3,
+        false => line.rfind(" b/").map_or(0, |i| i + 3),
+    }
 }
 
 // "@@ -12,3 +12,4 @@ fn foo()" -> (12, 3, 12): old start, old count and new start
@@ -1406,6 +1474,16 @@ mod tests {
             assert!(line.to_string().ends_with('─'));
             assert_eq!(line.spans[0].style.fg, Some(theme.divider_fg));
         }
+    }
+
+    // A path holding " b/" used to be shown from its last " b/" on.
+    #[test]
+    fn test_new_path_start() {
+        let name = |line: &str| line[new_path_start(line)..].to_string();
+        assert_eq!(name("diff --git a/x b/y b/x b/y"), "x b/y");
+        assert_eq!(name("diff --git a/src/a.rs b/src/a.rs"), "src/a.rs");
+        assert_eq!(name("diff --git a/old.rs b/new.rs"), "new.rs");
+        assert_eq!(name("diff --git a/é b/é"), "é");
     }
 
     #[test]
@@ -1780,6 +1858,28 @@ mod tests {
         assert_eq!(map.visual_range(1..2), 3..4);
     }
 
+    // A search keeps the lines picked while it stays in their hunk; in another one it clears them,
+    // as they are staged from the selected hunk. It used to clear them always.
+    #[test]
+    fn test_search_keeps_the_lines_picked_in_their_hunk() {
+        let diff = parse_diff(concat!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n",
+            "@@ -1,2 +1,2 @@\n-one\n+uno\n-two\n+dos\n",
+            "@@ -10 +10 @@\n-ten\n+diez\n",
+        ));
+        let options = SearchOptions::default();
+        let mut cursor = DiffCursor::default();
+        assert!(cursor.select_hunk(&diff, 0));
+        assert!(cursor.enter_lines(&diff));
+        cursor.toggle_range();
+        assert!(cursor.has_range());
+        cursor.search(&diff, "dos", 0, SearchDirection::Next, options);
+        assert!(cursor.has_range());
+        cursor.search(&diff, "diez", 0, SearchDirection::Next, options);
+        assert!(!cursor.has_range());
+        assert_eq!(cursor.hunk, 1);
+    }
+
     #[test]
     fn test_tabs_show_as_spaces() {
         let diff =
@@ -1788,9 +1888,10 @@ mod tests {
         let removed = &diff.rows[1];
         assert_eq!(diff.row_text(removed), "    a = 1");
         assert_eq!(diff.row_emphasis(removed), [Range { start: 8, end: 9 }]);
-        // and searched as shown
+        // and searched as in the file, like a file preview
         let options = SearchOptions::default();
-        assert!(row_matches(&diff, 2, "    a = 2", options));
+        assert!(row_matches(&diff, 2, "\ta = 2", options));
+        assert!(!row_matches(&diff, 2, "    a = 2", options));
         // the patch keeps the tab, byte for byte
         assert!(diff.hunks[0].patch().contains("+\ta = 2"));
     }

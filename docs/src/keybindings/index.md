@@ -14,7 +14,7 @@ The default key bindings can be overridden.
 
 | Key                            | Description | Corresponding keybind |
 | ------------------------------ | ----------- | --------------------- |
-| <kbd>Ctrl-c</kbd> <kbd>q</kbd> | Quit app    | `force_quit` `quit`   |
+| <kbd>Ctrl-c</kbd> <kbd>q</kbd> | Quit app, waiting for the running git command; <kbd>Ctrl-c</kbd> also while typing | `force_quit` `quit`   |
 | <kbd>?</kbd>                   | Open the keys list: search the actions of the focused panel and run one | `help_toggle` |
 | <kbd>Tab</kbd>                 | Switch between the local changes page and the commit graph | `ref_list` |
 | <kbd>1</kbd>                   | Focus the refs sidebar; again to shrink it to its title, and again to grow it back | `focus_panel_1` |
@@ -61,7 +61,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>g/G</kbd>                       | Go to top/bottom                                   | `go_to_top` `go_to_bottom`                   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up                                | `page_down` `page_up`                        |
 | <kbd>Ctrl-d/u</kbd>                  | Jump half page down/up, scrolling as needed       | `half_page_down` `half_page_up`              |
-| <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                     | `scroll_down` `scroll_up`                    |
+| <kbd>Ctrl-e/y</kbd>                  | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`                    |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show commit details on the info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
@@ -80,8 +80,9 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>t</kbd>                         | Create a tag at the selected commit                | `create_tag`                                 |
 | <kbd>L</kbd>                         | Show only the commits of the current branch, or all again | `branch_only`                         |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd> | Open the commit on the web host of its remote; copy its link | `open_in_browser` `copy_link`       |
+| <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the short/full hashes of the picked commits, or the selected one, one per line | `short_copy` `full_copy` |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
-| <kbd>Esc</kbd>                       | Cancel search<br>Clear picked commits              | `cancel`                                     |
+| <kbd>Esc</kbd>                       | Clear picked commits, then the search              | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
 | <kbd>Ctrl-t</kbd>                    | Toggle search target                               | `search_target_toggle`                       |
 | <kbd>Ctrl-g</kbd>                    | Toggle smart case or case-sensitive, for every search (see below)  | `smart_case_toggle`                         |
@@ -121,7 +122,6 @@ Rebase, merge, checkout and reset work on the selected commit only, so they erro
 The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them. The popups of merge, rebase, cherry-pick, revert and drop warn of the first conflict the command would stop at, looked for in the background once the popup opens: "Checking for conflicts…" shows until it is found.
 
 These keys are bound for the commit graph only: the local changes page uses <kbd>d</kbd> <kbd>s</kbd> <kbd>m</kbd> for its own commands. While the commit details are open, they work with the commit list focused (<kbd>2</kbd>), not from the tabs of the details.
-| <kbd>y/Y</kbd>                       | Copy the selected commits' short/full hashes, one per line | `short_copy` `full_copy` |
 
 #### Commit Detail
 
@@ -165,13 +165,13 @@ In the changes tab (and a diff of two commits), <kbd>Enter</kbd> moves the focus
 - <kbd>v</kbd>, while selecting lines, selects the lines from the selected one, like in the file preview: moving extends the selection, <kbd>v</kbd> again ends it keeping them selected, another selection adds to them, and <kbd>Esc</kbd> clears them. While lines are selected, the selection stays in their hunk.
 - <kbd>y</kbd> copies the selected line or lines as in the file (without their `+`/`-`), or the selected hunk as a diff, at once: in a diff <kbd>y</kbd> starts no sequence. <kbd>Y</kbd> copies the link of the file at those lines.
 - <kbd>Space</kbd> applies the selected hunk, line or lines to the working tree (`git apply`), when it applies there; the count of the local changes in the page bar follows.
-- <kbd>+</kbd> and <kbd>-</kbd> show more or fewer lines around the changes, when the diff is of one file.
+- <kbd>+</kbd> and <kbd>-</kbd> show more or fewer lines around the changes, when the diff is of one file; at least one, which git needs to stage or apply a hunk.
 
 While the diff or the preview has the focus, only its own keys work there: the keys of the files beside it (copying paths, filtering, <kbd>h/l</kbd>, <kbd>J/K</kbd> to the next commit) do nothing. In the preview, <kbd>v</kbd> selects lines and <kbd>y</kbd> copies them. The same goes for the diff of the local changes page, where <kbd>/</kbd> searches the diff, <kbd>v</kbd> selects lines and <kbd>y</kbd> copies the lines or hunk too (<kbd>Space</kbd> and <kbd>d</kbd> stage and discard the lines selected), and the keys of the files, like <kbd>h/l</kbd>, do nothing. The commands of the page still work, like committing or the commands of the commit graph.
 
 #### Filtering files
 
-The file trees of the local changes page and of the changes and files tabs are filtered by path with <kbd>/</kbd>, like lazygit's: only matching files are shown, with their directories expanded, and the matching letters of the names are highlighted. The diff or preview beside them is searched with <kbd>/</kbd> while it has the focus.
+The file trees of the local changes page and of the changes and files tabs are filtered by path with <kbd>/</kbd>, like lazygit's: only matching files are shown, with their directories expanded, and the matching letters of the names are highlighted. The diff or preview beside them is searched with <kbd>/</kbd> while it has the focus, matching the text as it is in the file (a tab, drawn as spaces, is matched as a tab). The lines picked stay picked, unless the match is in another hunk of the diff.
 
 <kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Text pasted into a query or a popup's field is typed on one line, its newlines and tabs as spaces; pasted where nothing is typed, it does nothing. Afterwards, the panel title shows the active filter, and <kbd>Esc</kbd> clears it.
 Matching ignores case unless the query has an uppercase letter.
@@ -238,7 +238,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
 | <kbd>Ctrl-d/u</kbd>                                | Jump half page down/up, scrolling as needed | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-f/b</kbd>                                | Scroll a page down/up | `page_down` `page_up`           |
-| <kbd>Ctrl-e/y</kbd>                                | Scroll down/up   | `scroll_down` `scroll_up`        |
+| <kbd>Ctrl-e/y</kbd>                                | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`        |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
 | <kbd>Ctrl-r</kbd>                                  | Refresh          | `refresh`                        |
@@ -308,7 +308,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
 | <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
-| <kbd>Ctrl-e/y</kbd>                  | Scroll down/up                                                | `scroll_down` `scroll_up`       |
+| <kbd>Ctrl-e/y</kbd>                  | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                                                      | `refresh`                       |
 
 While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end. From the files, every scroll key moves the files, like the other lists; the diff, the commit message or a submodule panel is scrolled with them only while it has the focus.

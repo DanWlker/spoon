@@ -81,6 +81,14 @@ impl FileText {
     }
 
     // Whether lines are selected, while the visual selection or after it ended.
+    // What is selected, for the keys and messages: "line" or "lines", like `DiffPane`'s.
+    pub fn selected_name(&self) -> &'static str {
+        match self.has_selection() {
+            true => "lines",
+            false => "line",
+        }
+    }
+
     pub fn has_selection(&self) -> bool {
         !self.selection.is_empty()
     }
@@ -135,14 +143,35 @@ impl FileText {
         true
     }
 
-    // Scrolls the window `rows` screen rows, the selected line staying put.
+    // Scrolls the window `rows` screen rows, the selected line staying put until it would leave
+    // the `scrolloff` rows at the edge, then moving along, like vim's ctrl-e/y.
     fn scroll_view(&mut self, rows: isize) {
-        let last = self.wrap.total().saturating_sub(self.scroll_state.height);
-        self.scroll_state.offset = self
-            .scroll_state
-            .offset
-            .saturating_add_signed(rows)
-            .min(last);
+        let ScrollState {
+            offset,
+            height,
+            scrolloff,
+        } = self.scroll_state;
+        let last = self.wrap.total().saturating_sub(height.max(1));
+        let offset = offset.saturating_add_signed(rows).min(last);
+        self.scroll_state.offset = offset;
+        let margin = scrolloff.min(height.saturating_sub(1) / 2);
+        let top = offset + margin;
+        let bottom = (offset + height).saturating_sub(1 + margin).max(top);
+        let screen = self.wrap.visual_start(self.selected);
+        let moved = if screen < top {
+            // the first line starting at or below the top row
+            let line = self.logical_at(top);
+            match self.wrap.visual_start(line) < top {
+                true => (line + 1).min(self.lines.len().saturating_sub(1)),
+                false => line,
+            }
+        } else if screen > bottom {
+            self.logical_at(bottom)
+        } else {
+            return;
+        };
+        self.selected = moved;
+        self.sync_selection();
     }
 
     // Scrolls the window `rows` screen rows and moves the selected line as many, like vim's
@@ -189,9 +218,8 @@ impl FileText {
         let matched = self
             .lines
             .iter()
-            .map(|line| match_range(line, query, options).is_some())
-            .collect::<Vec<_>>();
-        SearchOutcome::of(query, self.selected, matched.into_iter())
+            .map(|line| match_range(line, query, options).is_some());
+        SearchOutcome::of(query, self.selected, matched)
     }
 
     // The selected line as in the file, or the selected lines, to copy.
@@ -440,11 +468,25 @@ mod tests {
         text.scroll(UserEvent::ScrollDown);
         assert_eq!(text.scroll_state.offset, offset + 1);
         assert_eq!(text.selected_line(), 20);
+        // until it would leave the window, then it moves along, like vim's
+        for _ in 0..20 {
+            text.scroll(UserEvent::ScrollDown);
+        }
+        let top = text.scroll_state.offset;
+        assert_eq!(text.selected_line(), top);
+        // and the other way, at the bottom
+        for _ in 0..20 {
+            text.scroll(UserEvent::ScrollUp);
+        }
+        let bottom = text.scroll_state.offset + text.scroll_state.height - 1;
+        assert_eq!(text.selected_line(), bottom);
+        text.select_line(20);
 
         // ctrl-d: both move half a page
+        let (offset, line) = (text.scroll_state.offset, text.selected_line());
         text.scroll(UserEvent::HalfPageDown);
-        assert_eq!(text.scroll_state.offset, offset + 1 + 5);
-        assert_eq!(text.selected_line(), 25);
+        assert_eq!(text.scroll_state.offset, offset + 5);
+        assert_eq!(text.selected_line(), line + 5);
     }
 
     // v selects from the line it starts on to the selected one, which the movement keys move.

@@ -2,7 +2,7 @@
 // Every list picks alike: one at a time, or a visual selection from where it started to the
 // cursor, which adds to those picked before it and, moving back, unpicks what it went over.
 
-use std::hash::Hash;
+use std::{borrow::Borrow, hash::Hash};
 
 use rustc_hash::FxHashSet;
 
@@ -33,7 +33,10 @@ impl<K: Clone + Eq + Hash> Picks<K> {
         }
     }
 
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains<Q: Hash + Eq + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
         self.set.contains(key)
     }
 

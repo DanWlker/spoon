@@ -20,7 +20,7 @@ use crate::{
         picks::Picks,
         style::{
             fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
-            render_panel, render_panel_scrollbar, spinner, ListCursor,
+            render_panel, render_panel_scrollbar, spinner, tabs_shown, ListCursor,
         },
     },
 };
@@ -131,7 +131,7 @@ impl RefPicks {
     fn contains(&self, section: RefSection, name: &str) -> bool {
         self.0
             .as_ref()
-            .is_some_and(|(s, picks)| *s == section && picks.contains(&name.to_string()))
+            .is_some_and(|(s, picks)| *s == section && picks.contains(name))
     }
 
     // Keeps the names `keep` is true for.
@@ -183,6 +183,8 @@ pub enum RefSelection {
 pub struct RefListState {
     roots: Vec<RefTreeNode>,
     visible_rows: Vec<VisibleRefRow>,
+    // the indent markers of the visible rows, see `tree_guides`, made with them
+    guides: Vec<String>,
     selected: Vec<NodeId>,
     opened: HashSet<Vec<NodeId>>,
     // the row of `selected` and the rows shown, see `sync_cursor`
@@ -206,6 +208,7 @@ impl RefListState {
         let mut state = Self {
             roots: build_ref_tree_nodes(refs, remotes),
             visible_rows: Vec::new(),
+            guides: Vec::new(),
             selected,
             opened,
             cursor: ListCursor::default(),
@@ -247,6 +250,8 @@ impl RefListState {
             }
             Head::None => None,
         };
+        // the checked-out branch's dot takes a column of the lines
+        self.rebuild_guides();
     }
 
     pub fn picked(&self) -> &RefPicks {
@@ -533,7 +538,26 @@ impl RefListState {
     fn rebuild_visible_rows(&mut self) {
         self.visible_rows.clear();
         collect_visible_rows(&self.roots, &self.opened, &[], &mut self.visible_rows);
+        self.rebuild_guides();
     }
+
+    // The lines of the tree, like the file trees'; a folder's fold marker and the checked-out
+    // branch's dot go in their own column.
+    fn rebuild_guides(&mut self) {
+        let head = &self.head;
+        self.guides = tree_guides(
+            self.visible_rows
+                .iter()
+                .map(|row| (row.depth, row.kind == RowKind::Folder || is_head(row, head))),
+        );
+    }
+}
+
+// Whether `row` is the checked-out branch `head`, or the detached HEAD.
+fn is_head(row: &VisibleRefRow, head: &Option<NodeId>) -> bool {
+    row.depth > 0
+        && row.identifier[0] == NodeId::Section(RefSection::Branches)
+        && head.as_ref() == row.identifier.last()
 }
 
 #[derive(Debug)]
@@ -632,31 +656,18 @@ impl StatefulWidget for RefList {
         // the sections stand out from the refs in them
         let root_style = item_style.add_modifier(Modifier::BOLD);
 
-        // the lines of the tree, like the file trees'; a folder's fold marker and the checked-out
-        // branch's dot go in their own column
         let branches = NodeId::Section(RefSection::Branches);
-        let is_head = |row: &VisibleRefRow| {
-            row.depth > 0
-                && row.identifier[0] == branches
-                && state.head.as_ref() == row.identifier.last()
-        };
-        let guides = tree_guides(
-            state
-                .visible_rows
-                .iter()
-                .map(|row| (row.depth, row.kind == RowKind::Folder || is_head(row))),
-        );
         for ((line, row), guide) in state
             .visible_rows
             .iter()
             .skip(offset)
             .take(height)
             .enumerate()
-            .zip(guides.iter().skip(offset))
+            .zip(state.guides.iter().skip(offset))
         {
             let y = inner.y + line as u16;
             // the checked-out branch, like `git branch`
-            let head = is_head(row);
+            let head = is_head(row, &state.head);
             let symbol = if head {
                 "● "
             } else if row.kind != RowKind::Folder {
@@ -707,6 +718,8 @@ impl StatefulWidget for RefList {
             let tracking = branch
                 .filter(|_| running.is_none())
                 .and_then(|branch| state.tracking.get(branch));
+            // a stash's message can hold tabs
+            let name = tabs_shown(&row.name);
             let mut counts = vec![];
             if let Some(&Tracking { ahead, behind, .. }) = tracking {
                 if ahead > 0 {
@@ -718,7 +731,7 @@ impl StatefulWidget for RefList {
             }
             if let Some(status) = running {
                 // shortened to "↑ ∙●∙" when the name leaves no room for "Pushing ∙●∙"
-                let room = (remaining as usize).saturating_sub(row.name.width() + 1);
+                let room = (remaining as usize).saturating_sub(name.width() + 1);
                 let label = format!("{} {}", status.label, spinner());
                 let label = if label.width() <= room {
                     label
@@ -729,7 +742,7 @@ impl StatefulWidget for RefList {
             }
             let counts_width: usize = counts.iter().map(|(c, _)| c.width() + 1).sum();
             let name_width = (remaining as usize).saturating_sub(counts_width);
-            let (mut x, _) = buf.set_stringn(text_x, y, &row.name, name_width, style);
+            let (mut x, _) = buf.set_stringn(text_x, y, &name, name_width, style);
             for (count, fg) in counts {
                 let width = inner.right().saturating_sub(x + 1) as usize;
                 (x, _) = buf.set_stringn(x + 1, y, count, width, Style::default().fg(fg));
@@ -873,6 +886,8 @@ fn prefix_identifiers(nodes: &mut [RefTreeNode], prefix: &str) {
 
 fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
     let mut nodes: Vec<RefTreeNode> = Vec::new();
+    // where each node is among its parent's children, by its full name, which only it has
+    let mut index_of: FxHashMap<String, usize> = FxHashMap::default();
 
     for ref_name in ref_names {
         let mut current_nodes = &mut nodes;
@@ -885,10 +900,11 @@ fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
             } else {
                 format!("{parent_identifier}/{part}")
             };
-            if let Some(index) = current_nodes.iter().position(|n| n.name == part) {
+            if let Some(&index) = index_of.get(&identifier) {
                 current_nodes = &mut current_nodes[index].children;
                 parent_identifier = identifier;
             } else {
+                index_of.insert(identifier.clone(), current_nodes.len());
                 let node = RefTreeNode {
                     identifier: NodeId::Name(identifier.clone()),
                     name: part.to_string(),
@@ -1112,6 +1128,26 @@ mod tests {
         // and stays selected through a reload
         state.set_refs(&[&branch], &[], &head);
         assert_eq!(state.selection(), selection);
+    }
+
+    // A tab of a stash's message is drawn as spaces: ratatui used to drop it.
+    #[test]
+    fn test_stash_message_tabs_drawn_as_spaces() {
+        let stash = Ref::Stash {
+            name: "stash@{0}".into(),
+            message: "On main: a\tb".into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let mut state = RefListState::new(&[&stash], &[]);
+        state.reset_tree_status(
+            vec![
+                NodeId::Section(RefSection::Stashes),
+                NodeId::Name("stash@{0}".into()),
+            ],
+            vec![vec![NodeId::Section(RefSection::Stashes)]],
+        );
+        let buf = draw(&mut state, true);
+        find_row(&buf, "a    b");
     }
 
     #[test]

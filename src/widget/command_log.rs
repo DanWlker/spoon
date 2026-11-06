@@ -76,11 +76,11 @@ impl CommandLogState {
     // The keys of the command log, see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
-        k.add(
-            &[FocusPanel(1), FocusPanel(2)],
-            "focus",
-            "Focus the commands or the output",
-        );
+        // like every page, the number of the panel with the focus does nothing
+        k.quiet(&[FocusPanel(1)], "Focus the commands")
+            .when(|s| s.focus() == CommandLogFocus::Output);
+        k.quiet(&[FocusPanel(2)], "Focus the output")
+            .when(|s| s.focus() == CommandLogFocus::Commands);
         k.add(
             &[NavigateDown, NavigateUp, SelectDown, SelectUp],
             "move",
@@ -165,11 +165,15 @@ impl<'a> CommandLog<'a> {
                 Span::raw(entry.at.format("%H:%M:%S ").to_string()).fg(theme.detail_label_fg),
                 Span::raw(format!("{:>6} ", format_duration(entry.duration)))
                     .fg(theme.detail_label_fg),
-                Span::raw(entry.command.clone()).fg(if entry.ok { theme.fg } else { color }),
+                Span::raw(tabs_shown(&entry.command).into_owned()).fg(if entry.ok {
+                    theme.fg
+                } else {
+                    color
+                }),
             ]);
             line.render(Rect::new(inner.x, y, inner.width, 1), buf);
             if row == state.cursor.selected() {
-                mark_selected_row(buf, inner, y, true, theme);
+                mark_selected_row(buf, inner, y, commands_focused, theme);
             }
         }
 
@@ -184,26 +188,28 @@ impl<'a> CommandLog<'a> {
             .entries
             .get(state.cursor.selected())
             .map_or("", |entry| entry.output.as_str());
-        let lines: Vec<Line> = if output.is_empty() && !state.entries.is_empty() {
-            vec![placeholder("No output", theme)]
-        } else {
-            output
-                .lines()
-                .map(|l| Line::raw(tabs_shown(l).into_owned()).fg(theme.fg))
-                .collect()
-        };
-        let rows = state.output.fit(lines.len(), inner.height as usize, 0);
+        if output.is_empty() && !state.entries.is_empty() {
+            placeholder("No output", theme).render(inner, buf);
+            return;
+        }
+        // only the rows shown are made, the output can be long
+        let total = output.lines().count();
+        let rows = state.output.fit(total, inner.height as usize, 0);
         render_panel_scrollbar(
             buf,
             output_area,
-            lines.len(),
+            total,
             rows.start,
             !commands_focused,
             theme,
         );
-        Paragraph::new(lines)
-            .scroll((rows.start as u16, 0))
-            .render(inner, buf);
+        let lines: Vec<Line> = output
+            .lines()
+            .skip(rows.start)
+            .take(rows.len())
+            .map(|l| Line::raw(tabs_shown(l).into_owned()).fg(theme.fg))
+            .collect();
+        Paragraph::new(lines).render(inner, buf);
     }
 }
 
@@ -272,6 +278,53 @@ mod tests {
         let y = find_row(&buf, "file");
         let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
         assert!(row.contains("│     file"), "{row}");
+    }
+
+    // The selected command's bar is quieter while the output has the focus, like every list's:
+    // it used to stay as while focused.
+    #[test]
+    fn test_selection_bar_quiet_without_the_focus() {
+        let theme = ColorTheme::default();
+        let mut state = CommandLogState {
+            entries: vec![LoggedCommand {
+                at: chrono::Local::now(),
+                command: "git push".into(),
+                ok: true,
+                output: "done".into(),
+                duration: std::time::Duration::from_millis(5),
+            }],
+            ..Default::default()
+        };
+        let area = Rect::new(0, 0, 60, 12);
+        let bar = |state: &mut CommandLogState| {
+            let mut buf = Buffer::empty(area);
+            CommandLog::new(&theme, 0).render(area, &mut buf, state);
+            let y = find_row(&buf, "git push");
+            let x = (0..area.width)
+                .find(|&x| buf[(x, y)].symbol() == "▌")
+                .unwrap();
+            buf[(x, y)].fg
+        };
+        assert_eq!(bar(&mut state), theme.highlight_fg);
+        state.focus_panel(2);
+        assert_eq!(bar(&mut state), theme.muted_fg);
+    }
+
+    // The number of the panel with the focus does nothing, like on every page: it used to be
+    // taken, and shown.
+    #[test]
+    fn test_focus_keys_of_the_other_panel_only() {
+        let takes = |state: &CommandLogState, event| {
+            let mut keys = crate::keys::Keys::of(state);
+            CommandLogState::register_keys(&mut keys);
+            keys.list().takes(event)
+        };
+        let mut state = CommandLogState::default();
+        assert!(!takes(&state, UserEvent::FocusPanel(1)));
+        assert!(takes(&state, UserEvent::FocusPanel(2)));
+        state.focus_panel(2);
+        assert!(takes(&state, UserEvent::FocusPanel(1)));
+        assert!(!takes(&state, UserEvent::FocusPanel(2)));
     }
 
     #[test]

@@ -88,3 +88,11 @@ When specified, Spoon preserves the first-parent commit spine of the specified b
 ## --local-changes
 
 Start on the local changes page instead of the commit graph.
+
+## -h, --help
+
+Print the options.
+
+## -V, --version
+
+Print the version.

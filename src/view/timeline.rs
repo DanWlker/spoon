@@ -16,9 +16,9 @@ use crate::{
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
-        apply_selection, commit_event, copy_selection, edit_files, file_link, query_status,
-        register_apply_key, register_commit_keys, register_diff_keys, register_moving_keys,
-        revision_matches, revision_spans, search_status, type_query, typing_keys,
+        apply_selection, commit_event, copy_selection, edit_files, file_link,
+        query_or_search_status, register_apply_key, register_commit_keys, register_diff_keys,
+        register_moving_keys, revision_matches, revision_spans, type_query, typing_keys,
     },
     widget::{
         diff::Step,
@@ -238,7 +238,7 @@ impl TimelineView {
                 }
             }
             UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
-                self.adjust_diff_context(event == UserEvent::IncreaseDiffContext, repository)
+                self.adjust_diff_context(event, repository)
             }
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
@@ -260,17 +260,10 @@ impl TimelineView {
     }
 
     // Shows more or less of the file around the changes in the selected commit.
-    fn adjust_diff_context(&mut self, increase: bool, repository: &Repository) {
-        let context = self.ctx.diff_context.get();
-        let context = if increase {
-            context.saturating_add(1)
-        } else {
-            context.saturating_sub(1)
-        };
-        if context == self.ctx.diff_context.get() {
+    fn adjust_diff_context(&mut self, event: UserEvent, repository: &Repository) {
+        if !self.ctx.adjust_diff_context(event) {
             return;
         }
-        self.ctx.diff_context.set(context);
         let selection = self.pane.selection();
         self.load(repository);
         self.pane.restore(selection);
@@ -319,10 +312,7 @@ impl TimelineView {
 
     fn update_query_status(&self) {
         let kind = self.query_kind();
-        let event = match self.query.is_editing() {
-            true => query_status(&self.ctx, &self.query, kind),
-            false => search_status(kind, self.ctx.search_options.get(), self.search_outcome()),
-        };
+        let event = query_or_search_status(&self.ctx, &self.query, kind, || self.search_outcome());
         self.tx.send(event);
     }
 

@@ -20,8 +20,8 @@ use crate::{
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_hashes, copy_path, copy_paths, copy_selection,
-        edit_files, file_link, handle_search_event, query_status, register_apply_key,
-        register_commit_link_keys, register_commit_list_keys, register_diff_keys, search_status,
+        edit_files, file_link, handle_search_event, query_or_search_status, register_apply_key,
+        register_commit_link_keys, register_commit_list_keys, register_diff_keys,
         type_commit_search, type_query, typing_keys, Compare, CopyForm, ListFacts,
         ListRefreshViewContext, RefreshViewContext,
     },
@@ -573,9 +573,13 @@ impl<'a> DetailView<'a> {
             let before = self.as_list_state().selected_commit_hash().clone();
             let (ctx, tx) = (self.ctx.clone(), self.tx.clone());
             let state = self.as_mut_list_state();
+            // the picked commits are cleared before the search, below
+            let picked = !state.picked_commit_hashes().is_empty();
             let handled = if state.is_typing_search() {
                 type_commit_search(state, &ctx, &tx, key);
                 true
+            } else if event == UserEvent::Cancel && picked {
+                false
             } else {
                 handle_search_event(state, &ctx, &tx, event)
             };
@@ -767,18 +771,13 @@ impl<'a> DetailView<'a> {
                 if entries.is_empty() {
                     return;
                 }
-                let mut messages = Vec::new();
-                for entry in entries {
-                    match self.repository.ignore_path(entry) {
-                        Ok(message) => messages.push(message),
-                        Err(err) => {
-                            self.tx.send(AppEvent::NotifyError(err));
-                            return;
-                        }
-                    }
-                }
+                // those added before a failure are shown too
+                let result = self.repository.ignore_entries(&entries);
                 self.tx.send(AppEvent::LocalChangesChanged);
-                self.tx.send(AppEvent::NotifySuccess(messages.join("; ")));
+                self.tx.send(match result {
+                    Ok(message) => AppEvent::NotifySuccess(message),
+                    Err(err) => AppEvent::NotifyError(err),
+                });
                 return;
             }
         }
@@ -1059,8 +1058,9 @@ impl<'a> DetailView<'a> {
                             self.tx.send(event);
                         }
                     }
-                    UserEvent::IncreaseDiffContext => self.adjust_diff_context(true),
-                    UserEvent::DecreaseDiffContext => self.adjust_diff_context(false),
+                    UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
+                        self.adjust_diff_context(event)
+                    }
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
                             self.tx.send(copy_selection(text, state.selected_name()));
@@ -1085,12 +1085,7 @@ impl<'a> DetailView<'a> {
                     UserEvent::ToggleSelect => state.toggle_visual(),
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
-                            let name = if state.has_selection() {
-                                "Lines"
-                            } else {
-                                "Line"
-                            };
-                            self.tx.send(AppEvent::copy(name, text));
+                            self.tx.send(copy_selection(text, state.selected_name()));
                         }
                     }
                     _ => {
@@ -1103,21 +1098,10 @@ impl<'a> DetailView<'a> {
     }
 
     // Shows more or less of the file around the changes, loading the diff again.
-    fn adjust_diff_context(&mut self, increase: bool) {
-        if !self.changes_state.pane.is_single_file() {
-            return;
+    fn adjust_diff_context(&mut self, event: UserEvent) {
+        if self.ctx.adjust_diff_context(event) {
+            self.changes_state.reload_diff();
         }
-        let context = self.ctx.diff_context.get();
-        let context = if increase {
-            context.saturating_add(1)
-        } else {
-            context.saturating_sub(1)
-        };
-        if context == self.ctx.diff_context.get() {
-            return;
-        }
-        self.ctx.diff_context.set(context);
-        self.changes_state.reload_diff();
     }
 
     // Returns whether the event was handled by the files of the changes tab.
@@ -1370,14 +1354,11 @@ impl<'a> DetailView<'a> {
     // Shows the search or filter being typed in the status line, else how the search went.
     fn update_query_status(&self) {
         // the info tab has no search
-        let event = match (self.query(), self.is_typing_query()) {
-            (Some(query), true) => query_status(&self.ctx, query, self.query_kind()),
-            (Some(_), false) => search_status(
-                self.query_kind(),
-                self.ctx.search_options.get(),
-                self.search_outcome(),
-            ),
-            (None, _) => AppEvent::ClearStatusLine,
+        let event = match self.query() {
+            Some(query) => query_or_search_status(&self.ctx, query, self.query_kind(), || {
+                self.search_outcome()
+            }),
+            None => AppEvent::ClearStatusLine,
         };
         self.tx.send(event);
     }

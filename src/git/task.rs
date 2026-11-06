@@ -30,7 +30,9 @@ impl Repository {
     ) -> std::result::Result<(), String> {
         self.check_idle()?;
         run_logged(
-            git_command().args(args).current_dir(&self.path),
+            git_command()
+                .args(args.iter().map(|a| git_arg(a)))
+                .current_dir(&self.path),
             args,
             stdin,
             None,
@@ -55,12 +57,16 @@ impl Repository {
     // With the files git lists as conflicted, which it comments out, under "Conflicts:".
     pub fn prepared_message(&self) -> Option<String> {
         let content = self.git_file("MERGE_MSG")?;
-        let message = without_comments(&content)?;
+        let starts = self.comment_starts();
+        let message = without_comments(&content, &starts)?;
+        fn comment<'l>(line: &'l str, starts: &[String]) -> Option<&'l str> {
+            starts.iter().find_map(|s| line.strip_prefix(s.as_str()))
+        }
         let conflicts: Vec<String> = content
             .lines()
-            .skip_while(|l| l.trim() != "# Conflicts:")
+            .skip_while(|l| comment(l, &starts).is_none_or(|c| c.trim() != "Conflicts:"))
             .skip(1)
-            .map_while(|l| l.strip_prefix('#').map(str::trim))
+            .map_while(|l| comment(l, &starts).map(str::trim))
             .filter(|path| !path.is_empty())
             .map(|path| format!("  {path}"))
             .collect();
@@ -70,9 +76,24 @@ impl Repository {
         Some(format!("{message}\n\nConflicts:\n{}", conflicts.join("\n")))
     }
 
+    // What git starts the comment lines of the messages it prepares with: core.commentString, else
+    // core.commentChar, else "#". With "auto" it takes the first of these no line of the message
+    // starts with, so it can be any.
+    fn comment_starts(&self) -> Vec<String> {
+        let get = |key| {
+            let value = git_output(&self.path, &["config", "--get", key]).ok()?;
+            Some(value.trim_end_matches('\n').to_string()).filter(|v| !v.is_empty())
+        };
+        match get("core.commentString").or_else(|| get("core.commentChar")) {
+            None => vec!["#".into()],
+            Some(auto) if auto == "auto" => "#;@!$%^&|:".chars().map(String::from).collect(),
+            Some(start) => vec![start],
+        }
+    }
+
     // The message `git merge --squash` prepared, until the squash is committed.
     pub fn squash_message(&self) -> Option<String> {
-        without_comments(&self.git_file("SQUASH_MSG")?)
+        without_comments(&self.git_file("SQUASH_MSG")?, &self.comment_starts())
     }
 
     // A file of the repository's git directory, like MERGE_MSG.
@@ -341,11 +362,14 @@ impl GitTask {
              || {{ echo 'spoon: a commit is missing from the todo list of the rebase' >&2; exit 1; }}; }}; todo",
             expressions.len()
         );
+        // the todo list names the commits with full hashes, of SHA-1 and SHA-256 alike
+        let parameters = config_parameters(
+            std::env::var("GIT_CONFIG_PARAMETERS").ok(),
+            "core.abbrev=no",
+        );
         let env = [
             ("GIT_SEQUENCE_EDITOR", editor.as_str()),
-            // the todo list names the commits with full hashes, of SHA-1 and SHA-256 alike; set as
-            // `git -c` does, leaving the user's GIT_CONFIG_COUNT entries as they are
-            ("GIT_CONFIG_PARAMETERS", "'core.abbrev=no'"),
+            ("GIT_CONFIG_PARAMETERS", parameters.as_str()),
         ];
         GitTask {
             // autosquash would move and squash `fixup!` commits nobody picked
@@ -361,6 +385,16 @@ impl GitTask {
                 .collect(),
             ..Default::default()
         }
+    }
+}
+
+// `GIT_CONFIG_PARAMETERS` with `parameter` added to the `inherited` one, as `git -c` adds it:
+// the user's own, of a `git -c` alias running the app, are kept.
+fn config_parameters(inherited: Option<String>, parameter: &str) -> String {
+    let added = format!("'{parameter}'");
+    match inherited.filter(|p| !p.is_empty()) {
+        Some(inherited) => format!("{inherited} {added}"),
+        None => added,
     }
 }
 
@@ -430,7 +464,7 @@ fn run_task_step(
 ) -> std::result::Result<(), String> {
     let args = args.argv();
     let mut cmd = git_command();
-    cmd.args(&args)
+    cmd.args(args.iter().map(|a| git_arg(a)))
         .current_dir(path)
         .env("GIT_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -485,7 +519,7 @@ pub(super) fn run_logged(
         Some(timeout) => match wait_with_timeout(child, timeout).map_err(command_error)? {
             Some(output) => output,
             None => {
-                let error = format!("git {name} timed out after {}s", timeout.as_secs());
+                let error = format!("git {name} timed out after {timeout:?}");
                 log_command(args, false, &error, started);
                 return Err(error);
             }
@@ -586,6 +620,58 @@ pub fn git_command() -> Command {
     cmd
 }
 
+// The bytes of a file name that aren't UTF-8 are kept in its text as private-use characters, one
+// for each, from U+F780 for the byte 0x80 to U+F7FF for 0xFF: so the name goes back to git and to
+// the file system as it was, see `git_arg`; shown as U+FFFD, see `tabs_shown`.
+const BYTE_CHARS: u32 = 0xF700;
+
+// A file name, or any text, git gave as bytes; see `BYTE_CHARS`.
+pub fn text_from_git(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        text.extend(
+            chunk
+                .invalid()
+                .iter()
+                .filter_map(|&b| char::from_u32(BYTE_CHARS + u32::from(b))),
+        );
+    }
+    text
+}
+
+// Whether `c` is a byte `text_from_git` kept as a character.
+pub fn is_kept_byte(c: char) -> bool {
+    (BYTE_CHARS + 0x80..=BYTE_CHARS + 0xFF).contains(&u32::from(c))
+}
+
+// The bytes of `text`, with those `text_from_git` kept as characters back.
+pub fn git_bytes(text: &str) -> std::borrow::Cow<'_, [u8]> {
+    let kept = is_kept_byte;
+    if !text.chars().any(kept) {
+        return text.as_bytes().into();
+    }
+    let mut bytes = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        match kept(c) {
+            true => bytes.push((u32::from(c) - BYTE_CHARS) as u8),
+            false => bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+        }
+    }
+    bytes.into()
+}
+
+// An argument of git, a file name as it is on disk, see `git_bytes`.
+pub fn git_arg(text: &str) -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStringExt;
+    std::ffi::OsString::from_vec(git_bytes(text).into_owned())
+}
+
+// The file at `path` of the working tree at `root`, see `git_bytes`.
+pub fn work_path(root: &Path, path: &str) -> std::path::PathBuf {
+    root.join(git_arg(path))
+}
+
 // Paths of files or directories for git, taken as they are, not as patterns: a file named
 // `*.log` is only that file. The root of the repository stays ":/".
 pub fn pathspecs(paths: &[&str]) -> Vec<String> {
@@ -605,7 +691,7 @@ pub(super) fn git_output_with_status(
     args: &[impl AsRef<OsStr>],
 ) -> Option<(Option<i32>, String)> {
     let output = git_command()
-        .args(args)
+        .args(args.iter().map(|a| git_arg(&a.as_ref().to_string_lossy())))
         .current_dir(path)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -621,7 +707,7 @@ pub(super) fn git_output(path: &Path, args: &[&str]) -> std::result::Result<Stri
 
 pub(super) fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, String> {
     let output = git_command()
-        .args(args)
+        .args(args.iter().map(|a| git_arg(a)))
         .current_dir(path)
         .stdin(Stdio::null())
         .output()
@@ -696,6 +782,22 @@ mod tests {
     use super::*;
     use crate::git::refs_snapshot;
     use crate::git::SortCommit;
+
+    // A name that isn't UTF-8 goes back to git as it came, drawn with U+FFFD for its bytes.
+    #[test]
+    fn test_text_from_git_round_trip() {
+        for bytes in [
+            &b"caf\xe9.txt"[..],
+            b"plain",
+            b"\xff\xfe",
+            "é漢字".as_bytes(),
+        ] {
+            let text = text_from_git(bytes);
+            assert_eq!(&git_bytes(&text)[..], bytes);
+        }
+        let shown = crate::widget::style::tabs_shown(&text_from_git(b"caf\xe9\t.txt")).into_owned();
+        assert_eq!(shown, "caf\u{FFFD}    .txt");
+    }
 
     // A git hook gives git the repository it runs for: the tests, run from one, used to write
     // there instead of in their own repositories.
@@ -873,6 +975,35 @@ mod tests {
         );
     }
 
+    // The comments git writes in MERGE_MSG start with core.commentChar: with another than "#"
+    // they used to stay in the message, and be committed.
+    #[test]
+    fn test_prepared_message_with_another_comment_char() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        git_output(path, &["config", "core.commentChar", ";"]).unwrap();
+        std::fs::write(path.join("f"), "base\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("side");
+        std::fs::write(path.join("f"), "side\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("side", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), "master\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("master", "2024-01-03");
+        let _ = git_output(path, &["merge", "side"]);
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let message = repository.prepared_message().unwrap();
+        assert_eq!(message, "Merge branch 'side'\n\nConflicts:\n  f");
+    }
+
     #[test]
     fn test_hook_failing_before_reading_the_message() {
         let dir = tempfile::tempdir().unwrap();
@@ -1027,7 +1158,7 @@ mod tests {
         git_output(&work, &slow).unwrap();
         let started = Instant::now();
         let err = run_task(&work, &fetch(Some(Duration::from_millis(300)))).unwrap_err();
-        assert_eq!(err, "git fetch timed out after 0s");
+        assert_eq!(err, "git fetch timed out after 300ms");
         assert!(started.elapsed() < Duration::from_secs(3));
         git_output(&work, &["config", "--unset", "remote.origin.uploadpack"]).unwrap();
         run_task(&work, &fetch(None)).unwrap();
@@ -1047,5 +1178,23 @@ mod tests {
         let config = String::from_utf8_lossy(&output.stdout);
         assert!(config.contains("spoon.kept yes"), "{config}");
         assert!(config.contains("core.abbrev no"), "{config}");
+    }
+
+    // The `git -c` settings the app was started with used to be replaced during a rebase.
+    #[test]
+    fn test_config_parameters_keep_the_inherited_ones() {
+        let parameters = config_parameters(Some("'spoon.kept=yes'".into()), "core.abbrev=no");
+        let output = git_command()
+            .args(["config", "--get-regexp", r"^(core\.abbrev|spoon\.kept)$"])
+            .env("GIT_CONFIG_PARAMETERS", parameters)
+            .output()
+            .unwrap();
+        let config = String::from_utf8_lossy(&output.stdout);
+        assert!(config.contains("spoon.kept yes"), "{config}");
+        assert!(config.contains("core.abbrev no"), "{config}");
+        assert_eq!(
+            config_parameters(None, "core.abbrev=no"),
+            "'core.abbrev=no'"
+        );
     }
 }

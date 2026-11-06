@@ -200,8 +200,9 @@ pub fn match_range(
             lower.push(l);
         }
     }
-    let start = lower.find(&query.to_lowercase())?;
-    let end = start + query.to_lowercase().len();
+    let query = query.to_lowercase();
+    let start = lower.find(&query)?;
+    let end = start + query.len();
     let origin = |i: usize| {
         let found = origins.iter().find(|(from, _)| *from >= i);
         found.map_or(text.len(), |(_, at)| *at)
@@ -375,7 +376,8 @@ pub fn match_ranges(
     };
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
     for (i, (at, c)) in name.char_indices().enumerate() {
-        if !indices.contains(&i) {
+        // in order, as the matcher gives them
+        if indices.binary_search(&i).is_err() {
             continue;
         }
         match ranges.last_mut() {

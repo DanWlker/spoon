@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use rustc_hash::FxHashSet;
+
 use crate::{
     git::{is_conflict_marker, ConflictSide, Operation, Repository, SideContent},
     widget::style::tabs_shown,
@@ -51,7 +53,7 @@ impl ConflictView {
     // The conflicting blocks of the file in the working tree, or the whole content of each side when
     // the file has no conflict markers (when one side deleted it, or it is binary).
     pub fn load(repository: &Repository, path: &str) -> Self {
-        let file = repository.path().join(path);
+        let file = crate::git::work_path(repository.path(), path);
         // the markers of a file only, not of what a symlink points at
         let editable = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
         if editable {
@@ -62,7 +64,10 @@ impl ConflictView {
         }
         let side = |side| {
             let lines = match repository.conflict_side(path, side) {
-                SideContent::File(content) => content.lines().map(String::from).collect(),
+                SideContent::File(content) => content
+                    .lines()
+                    .map(|l| tabs_shown(l).into_owned())
+                    .collect(),
                 SideContent::Symlink(target) => vec![format!("Symlink to {target}")],
                 SideContent::Submodule(commit) => vec![format!("Submodule at {commit}")],
                 SideContent::Deleted => vec!["(deleted)".to_string()],
@@ -140,7 +145,7 @@ pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
         if part == Part::Outside && marker("<<<<<<<") {
             view.conflicts += 1;
             if view.ours_label.is_empty() {
-                view.ours_label = line.get(8..).unwrap_or_default().to_string();
+                view.ours_label = tabs_shown(line.get(8..).unwrap_or_default()).into_owned();
             }
             let header = ConflictRow {
                 number: None,
@@ -161,15 +166,19 @@ pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
             part = Part::Theirs;
         } else if part == Part::Theirs && marker(">>>>>>>") {
             if view.theirs_label.is_empty() {
-                view.theirs_label = line.get(8..).unwrap_or_default().to_string();
+                view.theirs_label = tabs_shown(line.get(8..).unwrap_or_default()).into_owned();
             }
             has_base |= block_has_base;
             let height = ours.len().max(ancestor.len()).max(theirs.len());
             let ancestor = std::mem::take(&mut ancestor);
+            let ancestor_lines: FxHashSet<&str> = ancestor
+                .iter()
+                .map(|(_, a): &(usize, String)| a.as_str())
+                .collect();
             // a side's rows, compared to the ancestor's lines when the block has them, padded
             let side = |lines: Vec<(usize, String)>, compare: bool| {
                 let rows = lines.into_iter().map(|(number, text)| {
-                    let changed = compare && !ancestor.iter().any(|(_, a)| *a == text);
+                    let changed = compare && !ancestor_lines.contains(text.as_str());
                     let kind = match changed {
                         true => RowKind::Changed,
                         false => RowKind::Kept,

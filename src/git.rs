@@ -4,6 +4,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Instant,
 };
 
 use chrono::{DateTime, FixedOffset};
@@ -28,8 +29,9 @@ use local_changes::{load_local_changes, parse_name_status, without_comments};
 pub use local_changes::{Entry, FilesSnapshot, LocalChangeFile, LocalChangeStatus, LocalChanges};
 use submodule::{load_submodules, SubmoduleRepositories};
 pub use task::{
-    command_log, git_command, pathspecs, run_task, stash_args, todo_action, AfterTask,
-    BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, SharedTask,
+    command_log, git_arg, git_bytes, git_command, is_kept_byte, pathspecs, run_task, stash_args,
+    text_from_git, todo_action, work_path, AfterTask, BranchStatus, GitArgs, GitCommand, GitTask,
+    LoggedCommand, RunningTask, SharedTask,
 };
 use task::{git_output, git_output_bytes, git_output_with_status, lock, run_logged};
 
@@ -250,6 +252,8 @@ pub struct Repository {
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
     loaded_local_changes: Mutex<Option<LocalChanges>>,
+    // when the last ones it holds or handed over started loading, see `set_local_changes`
+    local_changes_started: Mutex<Instant>,
     // their count once the page took them, for the page bar not to run `git status` again
     taken_count: Mutex<Option<usize>>,
     // the git command the app runs in the background, shared with it: the repository refuses to
@@ -361,13 +365,12 @@ impl Repository {
         }
     }
 
-    // The git directory, None when git can't tell.
+    // The git directory, like `.git`.
     pub fn git_dir(&self) -> &Path {
         &self.git_dir
     }
 
-    // The commit checked out, None in a repository without commits.
-    // The commit checked out, as loaded.
+    // The commit checked out, as loaded; None in a repository without commits.
     pub fn head_commit(&self) -> Option<CommitHash> {
         match &self.head {
             Head::Branch { target, .. } | Head::Detached { target } => Some(target.clone()),

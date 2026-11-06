@@ -116,7 +116,7 @@
         },
         "browser": {
           "type": "object",
-          "description": "Opening the pages of commits, branches, tags and files on the web host of a remote (o), or copying their links (O).",
+          "description": "Opening the pages of commits, branches, tags and files on the web host of a remote (o), or copying their links (y l).",
           "properties": {
             "services": {
               "type": "object",
@@ -433,12 +433,12 @@
         },
         "list_picked_fg": {
           "type": "string",
-          "description": "Foreground color for commits picked with space in the commit list.",
+          "description": "Foreground color for commits picked with v in the commit list.",
           "default": "#1e1e2e"
         },
         "list_picked_bg": {
           "type": "string",
-          "description": "Background color for commits picked with space in the commit list.",
+          "description": "Background color for commits picked with v in the commit list.",
           "default": "#cba6f7"
         },
         "list_ref_branch_fg": {
@@ -634,7 +634,7 @@
         "panel_title_focused_bg": {
           "type": "string",
           "description": "Background color of the focused panel's title, a badge; \"reset\" colors only the text, like lazygit.",
-          "default": "#89b4fa"
+          "default": "reset"
         },
         "highlight_fg": {
           "type": "string",

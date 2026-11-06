@@ -143,7 +143,7 @@ pub struct AppContext {
     pub layout: RefCell<PanelLayout>,
     // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
     pub wrap: Cell<bool>,
-    // the lines shown around each change in a diff, see `UserEvent::IncreaseDiffContext`
+    // the lines shown around each change in a diff, see `AppContext::adjust_diff_context`
     pub diff_context: Cell<usize>,
     // the options of every search, toggled while typing any of them, shared with the commit list
     pub search_options: Rc<Cell<SearchOptions>>,
@@ -174,7 +174,33 @@ impl Default for GraphRender {
     }
 }
 
+// Loads the repository of `options` with the history of `revisions` (None: all of it), and lays
+// its graph out with the `folded` merges: when the app starts, and reloads, on another thread.
+pub fn load_laid_out(
+    options: &LoadOptions,
+    revisions: Option<&[String]>,
+    running: SharedTask,
+    folded: &FxHashSet<CommitHash>,
+) -> Result<(Loaded, GraphLayout), String> {
+    let loaded = options.load(revisions, running)?;
+    let (Loaded::Repository(repository) | Loaded::RefsGone(repository)) = &loaded;
+    let layout = GraphLayout::calc(repository, options.primary_branch.as_deref(), folded);
+    Ok((loaded, layout))
+}
+
 impl AppContext {
+    // Shows a line more or fewer around the changes of every diff, by `event`, at least one: git
+    // applies no hunk staged without any. Returns whether it changed.
+    pub fn adjust_diff_context(&self, event: UserEvent) -> bool {
+        let context = self.diff_context.get();
+        let adjusted = match event {
+            UserEvent::IncreaseDiffContext => context.saturating_add(1),
+            _ => context.saturating_sub(1).max(1),
+        };
+        self.diff_context.set(adjusted);
+        adjusted != context
+    }
+
     // The image manager of a graph built beside the main one, drawn with the same settings.
     pub fn graph_image_manager<'a>(&self, graph: Graph<'a>) -> GraphImageManager<'a> {
         let render = self.graph.borrow();
@@ -1585,7 +1611,12 @@ impl App<'_> {
             &self.ctx.ui_config.common.cursor_type,
         ) {
             let cursor_position = message[..*cursor_byte_index].width();
-            let x = area.x + (left_width + cursor_position) as u16;
+            // input wider than the bar is cut, the cursor kept on its last column
+            let offset = u16::try_from(left_width + cursor_position).unwrap_or(u16::MAX);
+            let x = area
+                .x
+                .saturating_add(offset)
+                .min(area.right().saturating_sub(1));
             f.set_cursor_position((x, area.y));
         }
     }
@@ -2464,7 +2495,8 @@ impl App<'_> {
             let spinning = spin(tx.clone());
             let result = run_task(&path, &task);
             drop(spinning);
-            tx.send(AppEvent::TaskFinished(result));
+            // the app may have quit meanwhile, not waiting for it
+            tx.try_send(AppEvent::TaskFinished(result));
         });
     }
 
@@ -2845,14 +2877,8 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let result = options.load(revisions.as_deref(), running).map(|loaded| {
-                let repository = match &loaded {
-                    Loaded::Repository(repository) | Loaded::RefsGone(repository) => repository,
-                };
-                let primary_branch = options.primary_branch.as_deref();
-                let layout = GraphLayout::calc(repository, primary_branch, &folded);
-                Box::new(Reloaded { loaded, layout })
-            });
+            let result = load_laid_out(&options, revisions.as_deref(), running, &folded)
+                .map(|(loaded, layout)| Box::new(Reloaded { loaded, layout }));
             drop(spinning);
             // the app may have quit meanwhile
             tx.try_send(AppEvent::Reloaded { generation, result });
@@ -2923,7 +2949,7 @@ impl App<'_> {
         match &mut self.view {
             View::LocalChanges(view) => view.reload_files(files),
             _ => {
-                self.repository.set_local_changes(files.changes);
+                self.repository.set_local_changes(files);
             }
         }
     }

@@ -841,6 +841,11 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
+    // See `FileText::selected_name`.
+    pub fn selected_name(&self) -> &'static str {
+        self.text.selected_name()
+    }
+
     // The selected line of the preview, to copy.
     pub fn selected_text(&self) -> Option<String> {
         self.text

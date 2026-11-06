@@ -17,7 +17,7 @@ use crate::{
     widget::{
         commit_list::{mark_commit_list_bar, submodule_commit_list, CommitList, CommitListState},
         diff::Step,
-        style::{placeholder, render_panel, render_panel_scrollbar, render_scrollbar},
+        style::{placeholder, render_panel, render_panel_scrollbar, render_scrollbar, tabs_shown},
     },
 };
 
@@ -318,7 +318,12 @@ impl<'a> SubmodulePanel<'a> {
                 return None;
             }
             Shows::Message(message) => {
-                Paragraph::new(placeholder(message.as_str(), theme)).render(list_area, buf);
+                // git's errors take several lines
+                let lines: Vec<Line> = message
+                    .lines()
+                    .map(|l| placeholder(tabs_shown(l), theme))
+                    .collect();
+                Paragraph::new(lines).render(list_area, buf);
                 return None;
             }
         };

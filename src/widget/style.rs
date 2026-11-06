@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::{background::shows_loading, color::ColorTheme, event::UserEvent};
+use crate::{background::shows_loading, color::ColorTheme, event::UserEvent, git::is_kept_byte};
 
 // How often the spinner of a running task turns, see `spinner`.
 pub const SPINNER_RATE: Duration = Duration::from_millis(180);
@@ -524,7 +524,8 @@ impl ListCursor {
     // leave the `scrolloff` rows at the edge, then moving along.
     pub fn scroll_lines(&mut self, rows: isize, total: usize) {
         let margin = self.margin();
-        let last_offset = total.saturating_sub(self.height);
+        // before the first draw too, the selected row stays at or below the first shown
+        let last_offset = total.saturating_sub(self.height.max(1));
         self.offset = self.offset.saturating_add_signed(rows).min(last_offset);
         let top = self.offset + margin;
         let bottom = (self.offset + self.height).saturating_sub(1 + margin);
@@ -590,12 +591,22 @@ pub fn render_panel_scrollbar(
 }
 
 // Text as it is drawn: ratatui drops control characters, so a tab, in a commit message, a file
-// name or the output of git, shows as four spaces. What is copied or given to git stays as it is.
+// name or the output of git, shows as four spaces; a byte of a name that isn't UTF-8 as U+FFFD, see
+// `text_from_git`. What is copied or given to git stays as it is.
 pub fn tabs_shown(text: &str) -> Cow<'_, str> {
-    match text.contains('\t') {
-        true => text.replace('\t', "    ").into(),
-        false => text.into(),
+    if !text.chars().any(|c| c == '\t' || is_kept_byte(c)) {
+        return text.into();
     }
+    text.chars()
+        .fold(String::with_capacity(text.len()), |mut shown, c| {
+            match c {
+                '\t' => shown.push_str("    "),
+                c if is_kept_byte(c) => shown.push('\u{FFFD}'),
+                c => shown.push(c),
+            }
+            shown
+        })
+        .into()
 }
 
 // The columns `c` takes once drawn, see `tabs_shown`.
@@ -680,6 +691,17 @@ mod tests {
         assert_eq!(cursor.moved_to(UserEvent::HalfPageDown, 30), Some(5));
         // the other movement keys move it a row
         assert_eq!(cursor.moved_to(UserEvent::NavigateDown, 30), Some(1));
+    }
+
+    // Scrolled before the list is drawn, the first row shown used to pass the selected one,
+    // which `row` underflowed on.
+    #[test]
+    fn test_scroll_lines_before_the_first_draw() {
+        let mut cursor = ListCursor::default();
+        for _ in 0..3 {
+            cursor.scroll_lines(1, 3);
+        }
+        assert_eq!(cursor.row(), 0);
     }
 
     #[test]

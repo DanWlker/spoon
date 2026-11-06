@@ -4,8 +4,8 @@
 use std::path::Path;
 
 use super::{
-    git_command, git_output, git_output_bytes, git_output_with_status, pathspecs, run_logged,
-    CommitHash, LocalChangeStatus, LocalChanges, Repository,
+    git_arg, git_command, git_output, git_output_bytes, git_output_with_status, pathspecs,
+    run_logged, work_path, CommitHash, LocalChangeStatus, LocalChanges, Repository,
 };
 
 impl Repository {
@@ -115,7 +115,7 @@ impl Repository {
             })
         };
         let no_markers = |path: &str| {
-            let file = self.path.join(path);
+            let file = work_path(&self.path, path);
             let Ok(content) = std::fs::read(&file) else {
                 return false;
             };
@@ -182,8 +182,14 @@ impl Repository {
             Some(("160000", commit)) => {
                 let args = ["checkout", commit];
                 let submodule = self.path.join(path);
+                // without a `.git` of its own git would check out in the superproject above
+                if !submodule.join(".git").exists() {
+                    return Err(format!("submodule {path} is not checked out"));
+                }
                 run_logged(
-                    git_command().args(args).current_dir(submodule),
+                    git_command()
+                        .args(args.iter().map(|a| git_arg(a)))
+                        .current_dir(submodule),
                     &args,
                     None,
                     None,
@@ -250,11 +256,18 @@ fn first_conflict_at(
     // the first steps only, which bounds the work of a long rebase
     for (base, commit) in steps.iter().take(MAX_CONFLICT_STEPS) {
         let base = base.as_ref().map(|b| format!("--merge-base={b}"));
-        let mut args = vec!["merge-tree", "--write-tree", "--name-only", "--no-messages"];
+        let mut args = vec![
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            "-z",
+        ];
         args.extend(base.as_deref());
         args.extend([tree.as_str(), commit.as_str()]);
         let (status, out) = git_output_with_status(path, &args)?;
-        let mut lines = out.lines();
+        // the tree, then the conflicted files, each ended by a NUL
+        let mut lines = out.split('\0');
         let result = lines.next()?.to_string();
         match status {
             Some(0) => tree = result,
@@ -296,6 +309,34 @@ mod tests {
             head_before_commit: None,
             quit_after: false,
         }
+    }
+
+    // A conflicted file named with characters git quotes used to be shown quoted.
+    #[test]
+    fn test_first_conflict_names_the_files_as_they_are() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        let name = "x y\"q";
+        git.commit("base", "2024-01-01");
+        git.checkout_b("feature");
+        std::fs::write(path.join(name), "feature\n").unwrap();
+        git.add(&[name]);
+        git.commit("feature", "2024-01-02");
+        git.checkout("master");
+        std::fs::write(path.join(name), "master\n").unwrap();
+        git.add(&[name]);
+        git.commit("master", "2024-01-03");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+
+        let conflict = repository.first_conflict_work("HEAD", vec![(None, "feature".into())])();
+        assert_eq!(
+            conflict,
+            Some(Conflict::At("feature".into(), vec![name.into()]))
+        );
     }
 
     #[test]
@@ -504,5 +545,37 @@ mod tests {
         );
         let staged = git(path, &["ls-files", "--stage", "sub"]);
         assert_eq!(staged, format!("160000 {} 0\tsub\n", hash("side")));
+    }
+
+    // A submodule not checked out has no `.git`: taking a side used to run its checkout in the
+    // superproject above.
+    #[test]
+    fn test_resolve_conflict_of_submodule_not_checked_out() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let gitlink = |n: char| {
+            let info = format!("160000,{},sub", n.to_string().repeat(40));
+            git(path, &["update-index", "--add", "--cacheinfo", &info]);
+        };
+        gitlink('1');
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        gitlink('2');
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        gitlink('3');
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+        std::fs::create_dir_all(path.join("sub")).unwrap();
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let err = repository
+            .resolve_conflict("sub", ConflictSide::Theirs)
+            .unwrap_err();
+        assert!(err.contains("not checked out"), "{err}");
     }
 }

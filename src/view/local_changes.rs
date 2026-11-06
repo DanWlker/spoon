@@ -12,8 +12,8 @@ use crate::{
     keys::KeyList,
     layout::{Direction, Panel},
     view::{
-        copy_path, copy_paths, copy_selection, query_status, search_status, toggle_search_option,
-        CopyForm, ListRefreshViewContext, RefreshViewContext,
+        copy_path, copy_paths, copy_selection, query_or_search_status, CopyForm,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_list::CommitListState,
@@ -88,14 +88,7 @@ impl<'a> LocalChangesView<'a> {
             return;
         }
         if self.local_changes_state.is_typing_query() {
-            let kind = self.local_changes_state.query_kind();
-            let toggled = toggle_search_option(&self.ctx, &key, kind);
-            let options = self.ctx.search_options.get();
-            if toggled {
-                self.local_changes_state.reapply_query(options);
-            } else {
-                self.local_changes_state.handle_query_key(key, options);
-            }
+            self.local_changes_state.type_query_key(key);
             self.update_query_status();
             return;
         }
@@ -124,26 +117,6 @@ impl<'a> LocalChangesView<'a> {
                 return;
             }
         }
-        // the keys of the file list do nothing in the commit section, the focus stays there
-        if self.local_changes_state.is_commit_focused()
-            && matches!(
-                event,
-                UserEvent::Search
-                    | UserEvent::GoToNext
-                    | UserEvent::GoToPrevious
-                    | UserEvent::ToggleSelect
-                    | UserEvent::NextFile
-                    | UserEvent::PreviousFile
-                    | UserEvent::NextFolder
-                    | UserEvent::PreviousFolder
-                    | UserEvent::Discard
-                    | UserEvent::NavigateLeft
-                    | UserEvent::NavigateRight
-            )
-        {
-            return;
-        }
-
         let options = self.ctx.search_options.get();
         match event {
             UserEvent::Cancel => {
@@ -224,8 +197,9 @@ impl<'a> LocalChangesView<'a> {
                 let result = self.local_changes_state.select();
                 self.after_action(result);
             }
-            UserEvent::IncreaseDiffContext => self.local_changes_state.adjust_diff_context(true),
-            UserEvent::DecreaseDiffContext => self.local_changes_state.adjust_diff_context(false),
+            UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
+                self.local_changes_state.adjust_diff_context(event)
+            }
             UserEvent::Discard => {
                 if let Err(err) = self.local_changes_state.request_discard() {
                     self.tx.send(AppEvent::NotifyError(err));
@@ -271,9 +245,7 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.scroll(event);
             }
             // y and Y copy the path of the selected file
-            UserEvent::ShortCopy | UserEvent::FullCopy
-                if !self.local_changes_state.is_commit_focused() =>
-            {
+            UserEvent::ShortCopy | UserEvent::FullCopy => {
                 let form = CopyForm::of(event);
                 let picked = self.local_changes_state.picked_paths();
                 let repository = self.local_changes_state.repository();
@@ -287,13 +259,11 @@ impl<'a> LocalChangesView<'a> {
                     self.tx.send(copy_path(repository, row, form));
                 }
             }
-            UserEvent::Ignore if self.local_changes_state.is_files_focused() => {
-                match self.local_changes_state.ignore_selected() {
-                    Ok(message) if message.is_empty() => {}
-                    Ok(message) => self.tx.send(AppEvent::NotifySuccess(message)),
-                    Err(err) => self.tx.send(AppEvent::NotifyError(err)),
-                }
-            }
+            UserEvent::Ignore => match self.local_changes_state.ignore_selected() {
+                Ok(message) if message.is_empty() => {}
+                Ok(message) => self.tx.send(AppEvent::NotifySuccess(message)),
+                Err(err) => self.tx.send(AppEvent::NotifyError(err)),
+            },
             _ => {}
         }
     }
@@ -374,11 +344,8 @@ impl<'a> LocalChangesView<'a> {
     // Shows the search or filter being typed in the status line, else how the search went.
     fn update_query_status(&self) {
         let state = &self.local_changes_state;
-        let kind = state.query_kind();
-        let event = match state.is_typing_query() {
-            true => query_status(&self.ctx, state.active_query(), kind),
-            false => search_status(kind, self.ctx.search_options.get(), state.search_outcome()),
-        };
+        let (query, kind) = (state.active_query(), state.query_kind());
+        let event = query_or_search_status(&self.ctx, query, kind, || state.search_outcome());
         self.tx.send(event);
     }
 

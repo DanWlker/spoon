@@ -26,18 +26,31 @@ pub struct DiffSelection {
     line: usize,
 }
 
+// What the pane has of its diff.
+#[derive(Debug, Default)]
+enum DiffState {
+    // loaded lazily, nothing until then
+    #[default]
+    Nothing,
+    // the one selected, which the keys act on
+    Shown(ParsedDiff),
+    // no longer the one selected: drawn until the next one is shown, where it was scrolled; no
+    // key acts on it
+    Outdated(ParsedDiff),
+    // loading in the background, shown once loaded, see `load_in_background`; the diff before
+    // drawn meanwhile, and what to select once it is shown, see `restore` and `enter`
+    Loading {
+        job: Job<String>,
+        previous: Option<ParsedDiff>,
+        pending: Option<DiffSelection>,
+    },
+}
+
 // A diff beside what picks it: moving into it selects hunks, then lines, to copy, link to, apply or
 // stage; the changes tab, the timeline and the local changes.
 #[derive(Debug, Default)]
 pub struct DiffPane {
-    // loaded lazily, None until then
-    diff: Option<ParsedDiff>,
-    // the diff loading in the background, shown once loaded, see `load_in_background`
-    loading: Option<Job<String>>,
-    // what to select in the diff loading once it is shown, see `restore` and `enter`
-    pending: Option<DiffSelection>,
-    // the diff shown before the one loading, drawn meanwhile; no key acts on it
-    previous: Option<ParsedDiff>,
+    state: DiffState,
     // the hunks or the lines while the diff has the focus, None while what is beside it does (the
     // files of the changes tab, the commits of the timeline)
     focus: Option<DiffPart>,
@@ -47,9 +60,7 @@ pub struct DiffPane {
 impl DiffPane {
     // Shows another diff, from the top, the focus beside it.
     pub fn set_diff(&mut self, diff: Option<ParsedDiff>) {
-        self.loading = None;
-        self.previous = None;
-        self.diff = diff;
+        self.state = diff.map_or(DiffState::Nothing, DiffState::Shown);
         self.focus = None;
         self.cursor.reset();
     }
@@ -58,14 +69,26 @@ impl DiffPane {
     // scrolled, the focus beside it so no key acts on it. The one loading is of what was selected
     // too, so it is dropped.
     pub fn outdate(&mut self) {
-        self.previous = self.diff.take().or(self.previous.take());
-        self.loading = None;
-        self.pending = None;
+        self.state = match std::mem::take(&mut self.state) {
+            DiffState::Shown(diff) | DiffState::Outdated(diff) => DiffState::Outdated(diff),
+            DiffState::Loading { previous, .. } => {
+                previous.map_or(DiffState::Nothing, DiffState::Outdated)
+            }
+            DiffState::Nothing => DiffState::Nothing,
+        };
         self.focus = None;
     }
 
     pub fn diff(&self) -> Option<&ParsedDiff> {
-        self.diff.as_ref()
+        shown(&self.state)
+    }
+
+    // What to select in the diff loading, once it is shown.
+    fn pending(&self) -> Option<DiffSelection> {
+        match &self.state {
+            DiffState::Loading { pending, .. } => *pending,
+            _ => None,
+        }
     }
 
     // Loads another diff with `work`, the git command giving it, on another thread, the focus
@@ -77,12 +100,23 @@ impl DiffPane {
         work: impl FnOnce() -> String + Send + 'static,
     ) {
         self.outdate();
-        self.loading = Some(Job::spawn(tx, work));
+        let previous = match std::mem::take(&mut self.state) {
+            DiffState::Outdated(diff) => Some(diff),
+            _ => None,
+        };
+        self.state = DiffState::Loading {
+            job: Job::spawn(tx, work),
+            previous,
+            pending: None,
+        };
     }
 
     // Shows the diff loading in the background once it is loaded; returns whether it was.
     pub fn poll_loading(&mut self, repository: &Repository) -> bool {
-        let Some(raw) = self.loading.as_ref().and_then(Job::try_take) else {
+        let DiffState::Loading { job, .. } = &self.state else {
+            return false;
+        };
+        let Some(raw) = job.try_take() else {
             return false;
         };
         self.show_loaded(&raw, repository);
@@ -91,33 +125,41 @@ impl DiffPane {
 
     // Shows the diff loading in the background, waiting for it, before a key acts on it.
     pub fn wait_loading(&mut self, repository: &Repository) {
-        if let Some(job) = self.loading.take() {
-            self.show_loaded(&job.wait(), repository);
+        if !matches!(self.state, DiffState::Loading { .. }) {
+            return;
+        }
+        if let DiffState::Loading { job, pending, .. } = std::mem::take(&mut self.state) {
+            self.show(&job.wait(), repository, pending);
         }
     }
 
-    // Shows the diff `raw`, the output of the git command giving it.
+    // Shows the diff `raw`, the output of the git command giving it, in place of the one loading.
     pub fn show_loaded(&mut self, raw: &str, repository: &Repository) {
+        self.show(raw, repository, self.pending());
+    }
+
+    // Shows the diff `raw`, selecting `pending` in it, see `restore`.
+    fn show(&mut self, raw: &str, repository: &Repository, pending: Option<DiffSelection>) {
         let mut diff = parse_diff(raw);
         diff.drop_converted(repository);
         self.set_diff(Some(diff));
-        if let Some(selection) = self.pending.take() {
+        if let Some(selection) = pending {
             self.restore(selection);
         }
     }
 
     // When its diff started loading in the background, None when it isn't.
     pub fn loading_since(&self) -> Option<Instant> {
-        self.loading.as_ref().map(Job::started)
+        match &self.state {
+            DiffState::Loading { job, .. } => Some(job.started()),
+            _ => None,
+        }
     }
 
     // Whether the diff is of one file, which shows more or less context around its changes.
     // Of the diff drawn while another loads too, the keys being those of the diff reloading.
     pub fn is_single_file(&self) -> bool {
-        self.diff
-            .as_ref()
-            .or(self.previous.as_ref())
-            .is_some_and(ParsedDiff::is_single_file)
+        drawn(&self.state).is_some_and(ParsedDiff::is_single_file)
     }
 
     // What is selected, to select it again in the diff reloaded, see `restore`.
@@ -134,11 +176,11 @@ impl DiffPane {
     // became context. Stays out of the diff when it has no hunk left.
     // While the diff loads in the background, once it is shown.
     pub fn restore(&mut self, selection: DiffSelection) {
-        if self.loading.is_some() {
-            self.pending = Some(selection);
+        if let DiffState::Loading { pending, .. } = &mut self.state {
+            *pending = Some(selection);
             return;
         }
-        let Some(diff) = &self.diff else {
+        let Some(diff) = shown(&self.state) else {
             return;
         };
         if selection.focus.is_none() || !self.cursor.select_hunk(diff, selection.hunk) {
@@ -163,19 +205,28 @@ impl DiffPane {
     }
 
     // Scrolls the diff by the scroll keys, or moves the selected hunk or line half a page or a
-    // page; returns whether `event` was one.
+    // page, or along when it would leave the window; returns whether `event` was one.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
-        let jumped = match (&self.diff, self.focus) {
-            (Some(diff), Some(part)) => self.cursor.jump_page(diff, event, part),
-            _ => false,
-        };
-        jumped || self.cursor.scroll.handle_scroll(event)
+        let focused = shown(&self.state).zip(self.focus);
+        if let Some((diff, part)) = focused {
+            if self.cursor.jump_page(diff, event, part) {
+                return true;
+            }
+        }
+        if !self.cursor.scroll.handle_scroll(event) {
+            return false;
+        }
+        // ctrl-e and ctrl-y, see `keep_in_view`
+        if let Some((diff, part)) = focused {
+            self.cursor.keep_in_view(diff, part);
+        }
+        true
     }
 
     // The part with the focus, or that will have it once the diff loading is shown (see
     // `restore`): the keys of the diff are taken meanwhile, each waiting for it before it acts.
     fn focused_part(&self) -> Option<DiffPart> {
-        self.focus.or(self.pending.and_then(|p| p.focus))
+        self.focus.or(self.pending().and_then(|p| p.focus))
     }
 
     pub fn is_focused(&self) -> bool {
@@ -194,7 +245,7 @@ impl DiffPane {
     // The lines of the selected hunk or line in the file at the commit; None outside the diff, or
     // for lines only removed.
     pub fn selected_lines(&self) -> Option<RangeInclusive<usize>> {
-        let diff = self.diff.as_ref().filter(|_| self.is_focused())?;
+        let diff = self.diff().filter(|_| self.is_focused())?;
         let rows = self.cursor.highlighted(diff, self.selected_part());
         let mut lines = diff
             .rows
@@ -209,16 +260,16 @@ impl DiffPane {
     // selected hunk. Returns false when the diff has no hunk.
     // While the diff loads in the background, its first hunk once it is shown.
     pub fn enter(&mut self) -> bool {
-        if self.loading.is_some() {
+        if let DiffState::Loading { pending, .. } = &mut self.state {
             let first = DiffSelection {
                 focus: Some(DiffPart::Hunk),
                 hunk: 0,
                 line: 0,
             };
-            self.pending = Some(first);
+            *pending = Some(first);
             return true;
         }
-        let Some(diff) = &self.diff else {
+        let Some(diff) = shown(&self.state) else {
             return false;
         };
         match self.focus {
@@ -241,7 +292,7 @@ impl DiffPane {
             Some(DiffPart::Hunk) => self.focus = None,
             Some(DiffPart::Line) => {
                 self.focus = Some(DiffPart::Hunk);
-                if let Some(diff) = &self.diff {
+                if let Some(diff) = shown(&self.state) {
                     self.cursor.leave_lines(diff);
                 }
             }
@@ -276,7 +327,7 @@ impl DiffPane {
 
     // Moves the selected hunk or line.
     pub fn step(&mut self, step: Step) {
-        let Some(diff) = &self.diff else {
+        let Some(diff) = shown(&self.state) else {
             return;
         };
         match self.focus {
@@ -288,7 +339,7 @@ impl DiffPane {
 
     // The patch of the selected hunk or line, to apply in `direction`.
     pub fn selected_patch(&self, direction: PatchDirection) -> Option<String> {
-        let diff = self.diff.as_ref()?;
+        let diff = self.diff()?;
         match self.focus {
             None => None,
             Some(DiffPart::Hunk) => self.cursor.selected_hunk(diff).map(DiffHunk::patch),
@@ -298,7 +349,7 @@ impl DiffPane {
 
     // The selected line as in the file, or the selected hunk as a diff, to copy.
     pub fn selected_text(&self) -> Option<String> {
-        let diff = self.diff.as_ref().filter(|_| self.is_focused())?;
+        let diff = self.diff().filter(|_| self.is_focused())?;
         self.cursor.selected_text(diff, self.selected_part())
     }
 
@@ -311,7 +362,7 @@ impl DiffPane {
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
-        let Some(diff) = &self.diff else {
+        let Some(diff) = shown(&self.state) else {
             return false;
         };
         let found = self.cursor.search(diff, query, from, direction, options);
@@ -328,15 +379,9 @@ impl DiffPane {
 
     // How the search for `query` went over the rows of the diff, None without one.
     pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
-        let diff = self.diff.as_ref()?;
-        let matched = (0..diff.rows.len())
-            .map(|row| row_matches(diff, row, query, options))
-            .collect::<Vec<_>>();
-        Some(SearchOutcome::of(
-            query,
-            self.selected_row(),
-            matched.into_iter(),
-        ))
+        let diff = self.diff()?;
+        let matched = (0..diff.rows.len()).map(|row| row_matches(diff, row, query, options));
+        Some(SearchOutcome::of(query, self.selected_row(), matched))
     }
 
     // Draws the diff in a panel titled `title`, like the timeline and the local changes do: the
@@ -370,7 +415,7 @@ impl DiffPane {
         let theme = &ctx.color_theme;
         let wrap = ctx.wrap.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
-        let Some(diff) = self.diff.as_ref().or(self.previous.as_ref()) else {
+        let Some(diff) = drawn(&self.state) else {
             return;
         };
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
@@ -415,6 +460,23 @@ impl DiffPane {
     }
 }
 
+// The diff shown, which the keys act on.
+fn shown(state: &DiffState) -> Option<&ParsedDiff> {
+    match state {
+        DiffState::Shown(diff) => Some(diff),
+        _ => None,
+    }
+}
+
+// The diff drawn: the one shown, else the one before while the next loads.
+fn drawn(state: &DiffState) -> Option<&ParsedDiff> {
+    match state {
+        DiffState::Shown(diff) | DiffState::Outdated(diff) => Some(diff),
+        DiffState::Loading { previous, .. } => previous.as_ref(),
+        DiffState::Nothing => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +498,57 @@ mod tests {
         let scrollbar = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
         pane.render(area, scrollbar, &mut buf, ctx, false, None);
         buf
+    }
+
+    // What to select once the diff loading is shown goes with it: a diff set meanwhile used to
+    // leave the pane focused, with no diff to act on.
+    #[test]
+    fn test_diff_set_while_loading_drops_what_was_to_be_selected() {
+        let ec = crate::event::EventController::without_terminal();
+        let mut pane = DiffPane::default();
+        pane.load_in_background(ec.sender(), String::new);
+        assert!(pane.enter());
+        assert!(pane.is_focused());
+        pane.set_diff(None);
+        assert!(!pane.is_focused());
+    }
+
+    // ctrl-e and ctrl-y scroll the diff like vim: the selected line comes along once it would
+    // leave the window, the selected hunk once it left it whole. They used to scroll it alone.
+    #[test]
+    fn test_scroll_keys_pull_the_selection_along() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 30, 4);
+        // three hunks of a header and two changed lines, rows 0-2, 3-5 and 6-8
+        let hunk = |n: usize| format!("@@ -{n},2 +{n},2 @@\n-old{n}\n+new{n}\n");
+        let raw = format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n{}{}{}",
+            hunk(1),
+            hunk(10),
+            hunk(20)
+        );
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(parse_diff(&raw)));
+        draw(&mut pane, &ctx, area);
+        assert!(pane.enter());
+        let hunk_of = |pane: &DiffPane| pane.cursor.hunk;
+
+        // the first hunk stays while any of it is in view
+        pane.scroll(UserEvent::ScrollDown);
+        pane.scroll(UserEvent::ScrollDown);
+        assert_eq!(hunk_of(&pane), 0);
+        // gone whole: the nearest hunk in view
+        pane.scroll(UserEvent::ScrollDown);
+        assert_eq!(hunk_of(&pane), 1);
+        assert_eq!(pane.cursor.scroll.offset, 3);
+
+        // the lines: the selected one comes along to the nearest changed line in view
+        assert!(pane.enter());
+        let line = pane.cursor.line;
+        pane.scroll(UserEvent::ScrollDown);
+        pane.scroll(UserEvent::ScrollDown);
+        assert!(pane.cursor.line > line);
+        assert!(pane.cursor.line >= pane.cursor.scroll.offset);
     }
 
     #[test]

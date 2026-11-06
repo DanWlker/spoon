@@ -7,7 +7,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::background::joined;
 
-use super::{git_output, git_output_bytes, parse_iso_date, CommitHash, Repository};
+use super::{git_output, git_output_bytes, parse_iso_date, pathspecs, CommitHash, Repository};
 
 impl Repository {
     // The contents of a file at a commit, as work to run on another thread.
@@ -184,6 +184,7 @@ fn blame_at(
 fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHistoryResult {
     let walk = |name: &str| {
         let format = "--format=%H%x00%aI%x00%s";
+        let name = &pathspecs(&[name])[0];
         let args = [
             "log",
             "--follow",
@@ -239,6 +240,7 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
             .map(|[_, _, new]| new.to_string())
     };
     // walked as the history is, which leaves out merges
+    let spec = &pathspecs(&[path])[0];
     let last_args = [
         "log",
         "-1",
@@ -246,7 +248,7 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
         "--format=%H",
         start.as_str(),
         "--",
-        path,
+        spec,
     ];
     let (renamed, history, last) = std::thread::scope(|scope| {
         let last = scope.spawn(|| git_output(repository, &last_args));
@@ -308,6 +310,30 @@ mod tests {
         let (history, index) = repository.file_history(&head, "f").unwrap();
         assert!(!history.is_empty());
         assert!(index < history.len());
+    }
+
+    // A name with pattern characters used to be a pattern: the history of `[ab].txt` had the
+    // commits of `a.txt`.
+    #[test]
+    fn test_file_history_of_a_name_with_pattern_characters() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("[ab].txt"), "x\n").unwrap();
+        repo.add(&["[ab].txt"]);
+        repo.commit("literal", "2024-01-01");
+        std::fs::write(path.join("a.txt"), "x\n").unwrap();
+        repo.add(&["a.txt"]);
+        repo.commit("pattern match", "2024-01-02");
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let (history, _) = repository.file_history(&head, "[ab].txt").unwrap();
+        let subjects: Vec<&str> = history.iter().map(|r| r.subject.as_str()).collect();
+        assert_eq!(subjects, ["literal"]);
     }
 
     #[test]

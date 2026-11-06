@@ -354,7 +354,7 @@ pub fn handle_search_event(
             state.select_next_match(Toward::of(event, UserEvent::GoToNext));
             update_matched_message(state, tx);
         }
-        // an applied search is cleared before the picked commits
+        // after the picked commits, which the callers clear first
         UserEvent::Cancel if applied => {
             state.cancel_search();
             tx.send(AppEvent::ClearStatusLine);

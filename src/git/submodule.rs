@@ -110,7 +110,13 @@ impl Repository {
     ) -> impl FnOnce() -> std::result::Result<Option<Repository>, String> + Send + 'static {
         let submodule = self.path.join(path);
         let range = format!("{from}..{to}");
-        move || Repository::load_graph(&submodule, &[range]).map_err(|err| err.to_string())
+        move || {
+            // without a `.git` of its own git would load the superproject above
+            if !submodule.join(".git").exists() {
+                return Err("submodule not checked out".into());
+            }
+            Repository::load_graph(&submodule, &[range]).map_err(|err| err.to_string())
+        }
     }
 
     // Keeps the submodule's repository of `from..to` loaded on another thread, see

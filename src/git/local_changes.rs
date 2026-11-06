@@ -6,7 +6,10 @@ use std::{
     time::Instant,
 };
 
-use super::{git_output, git_output_bytes, lock, pathspecs, GitArgs, GitCommand, Repository};
+use super::{
+    git_bytes, git_output, git_output_bytes, lock, pathspecs, text_from_git, work_path, GitArgs,
+    GitCommand, Repository,
+};
 
 impl Repository {
     pub fn local_changes(&self) -> LocalChanges {
@@ -26,18 +29,27 @@ impl Repository {
         match (loaded.as_ref(), taken) {
             (Some(changes), _) => changes.count(),
             (None, Some(count)) => count,
-            (None, None) => loaded.insert(self.local_changes()).count(),
+            (None, None) => {
+                *lock(&self.local_changes_started) = Instant::now();
+                loaded.insert(self.local_changes()).count()
+            }
         }
     }
 
     // The local changes as they were when the repository was loaded the first time it is called,
     // so the sidebar and the page share one `git status`, and as they are now after that.
     // The local changes loaded again after the working tree changed, for the local changes page to
-    // show them; returns how many there are.
-    pub fn set_local_changes(&self, changes: LocalChanges) -> usize {
-        let count = changes.count();
-        *lock(&self.loaded_local_changes) = Some(changes);
-        count
+    // show them; dropped when they started loading before those it has, which a reload after a
+    // command of the app can load meanwhile.
+    pub fn set_local_changes(&self, files: FilesSnapshot) {
+        {
+            let mut started = lock(&self.local_changes_started);
+            if files.started < *started {
+                return;
+            }
+            *started = files.started;
+        }
+        *lock(&self.loaded_local_changes) = Some(files.changes);
     }
 
     // See `files_stamp`.
@@ -47,7 +59,10 @@ impl Repository {
 
     pub fn take_loaded_local_changes(&self) -> LocalChanges {
         let loaded = lock(&self.loaded_local_changes).take();
-        let changes = loaded.unwrap_or_else(|| self.local_changes());
+        let changes = loaded.unwrap_or_else(|| {
+            *lock(&self.local_changes_started) = Instant::now();
+            self.local_changes()
+        });
         *lock(&self.taken_count) = Some(changes.count());
         changes
     }
@@ -140,22 +155,48 @@ impl Repository {
         Ok(commands)
     }
 
+    // Adds the files and directories to the .gitignore, see `ignore_path`, stopping at the first
+    // that fails; what to tell of them.
+    pub fn ignore_entries(&self, entries: &[Entry]) -> std::result::Result<String, String> {
+        let messages = entries
+            .iter()
+            .map(|&entry| self.ignore_path(entry))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(messages.join("; "))
+    }
+
     // Adds the file or directory to the .gitignore at the top of the working tree, anchored
     // there. Returns what to tell: a tracked path stays tracked, ignoring only keeps untracked
     // files out.
     pub fn ignore_path(&self, entry: Entry) -> std::result::Result<String, String> {
         let pattern = gitignore_pattern(entry);
         let file = self.path.join(".gitignore");
-        let content = std::fs::read_to_string(&file).unwrap_or_default();
-        if content.lines().any(|line| line == pattern) {
+        // a repository may come with a .gitignore linking to a file outside of it
+        if file.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+            return Err(".gitignore is a symbolic link, which spoon doesn't write through".into());
+        }
+        // as bytes, which any of its lines may be; it used to be emptied when they weren't UTF-8
+        let content = match std::fs::read(&file) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("failed to read .gitignore: {e}")),
+        };
+        let line = git_bytes(&pattern);
+        if content.split(|&b| b == b'\n').any(|l| l == &line[..]) {
             return Ok(format!("{pattern} is already in .gitignore"));
         }
-        let separator = if content.is_empty() || content.ends_with('\n') {
-            ""
-        } else {
-            "\n"
-        };
-        std::fs::write(&file, format!("{content}{separator}{pattern}\n"))
+        let mut added = Vec::new();
+        if !content.is_empty() && !content.ends_with(b"\n") {
+            added.push(b'\n');
+        }
+        added.extend_from_slice(&line);
+        added.push(b'\n');
+        // added at its end, the rest left as it is
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&file)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &added))
             .map_err(|e| format!("failed to write .gitignore: {e}"))?;
         let specs = pathspecs(&[entry.path()]);
         let tracked =
@@ -175,7 +216,7 @@ impl Repository {
         files
             .iter()
             .map(|file| {
-                let path = self.path.join(file);
+                let path = work_path(&self.path, file);
                 match path.exists() {
                     true => Ok(path),
                     false => Err(format!("{file} does not exist in the working tree")),
@@ -200,9 +241,13 @@ impl<'a> Entry<'a> {
     }
 }
 
-// A message git prepared, without its comment lines; None when nothing is left.
-pub(super) fn without_comments(content: &str) -> Option<String> {
-    let message: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
+// A message git prepared, without its comment lines, those starting with one of `starts`; None
+// when nothing is left. See `Repository::comment_starts`.
+pub(super) fn without_comments(content: &str, starts: &[String]) -> Option<String> {
+    let message: Vec<&str> = content
+        .lines()
+        .filter(|l| !starts.iter().any(|s| l.starts_with(s.as_str())))
+        .collect();
     Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
 }
 
@@ -321,14 +366,12 @@ fn parse_status_porcelain(bytes: &[u8]) -> LocalChanges {
             continue;
         }
         let (x, y) = (entry[0], entry[1]);
-        let path = String::from_utf8_lossy(&entry[3..]).into_owned();
+        let path = text_from_git(&entry[3..]);
         // renames and copies, staged or in the working tree (of files added with
         // `git add --intent-to-add`), are followed by the original path
         let is_rename = |c: u8| c == b'R' || c == b'C';
         let orig_path = if is_rename(x) || is_rename(y) {
-            entries
-                .next()
-                .map(|p| String::from_utf8_lossy(p).into_owned())
+            entries.next().map(text_from_git)
         } else {
             None
         };
@@ -374,7 +417,7 @@ pub(super) fn parse_name_status(bytes: &[u8]) -> Vec<LocalChangeFile> {
     let mut tokens = bytes
         .split(|b| *b == b'\0')
         .filter(|t| !t.is_empty())
-        .map(|t| String::from_utf8_lossy(t).into_owned());
+        .map(text_from_git);
 
     while let Some(status) = tokens.next() {
         let Some(status) = LocalChangeStatus::from_status_char(status.as_bytes()[0]) else {
@@ -436,7 +479,7 @@ pub fn files_stamp(work_tree: &Path, git_dir: &Path, changes: &LocalChanges) -> 
     };
     stat(&git_dir.join("index"));
     for file in changes.unstaged.iter().chain(&changes.staged) {
-        stat(&work_tree.join(&file.path));
+        stat(&work_path(work_tree, &file.path));
     }
     changes.unstaged.hash(&mut hasher);
     changes.staged.hash(&mut hasher);
@@ -622,6 +665,27 @@ mod tests {
         let status = git_output(path, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert_eq!(status, "?? .gitignore\n?? keep.txt\n");
         assert_eq!(gitignore_pattern(Entry::File("#x ")), "/\\#x\\ ");
+    }
+
+    // A .gitignore linking outside of the repository used to have the pattern written there.
+    #[test]
+    fn test_ignore_through_a_linked_gitignore_is_refused() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repo");
+        std::fs::create_dir(&path).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, "kept\n").unwrap();
+        std::os::unix::fs::symlink(&outside, path.join(".gitignore")).unwrap();
+        let repo = GitRepository::new(&path);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        std::fs::write(path.join("a.txt"), "x").unwrap();
+        let repository = Repository::load(&path, SortCommit::Chronological, None, false).unwrap();
+
+        assert!(repository.ignore_path(Entry::File("a.txt")).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept\n");
     }
 
     #[test]

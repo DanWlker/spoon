@@ -37,12 +37,15 @@ pub enum GraphImageWidthMode {
 
 #[derive(Debug)]
 pub struct GraphImageManager<'a> {
-    // each with the row image it was prepared from
-    prepared_image_map: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
+    // each with the fingerprint of the row image it was prepared from, see `fingerprint`
+    prepared_image_map: FxHashMap<CommitHash, (u64, PreparedImage)>,
     // those of the manager before it, not checked against this graph yet, see `with_images`
-    previous: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
+    previous: FxHashMap<CommitHash, (u64, PreparedImage)>,
     image_ids: ImageIds,
     pending_uploads: Vec<String>,
+    // the images of commits no longer shown, deleted with the next frame, see `with_images`;
+    // deleted when the manager is dropped before it
+    deleting: Vec<u32>,
 
     graph: Graph<'a>,
     cell_width_type: CellWidthType,
@@ -110,6 +113,7 @@ impl<'a> GraphImageManager<'a> {
             previous: FxHashMap::default(),
             image_ids: ImageIds::new(),
             pending_uploads: Vec::default(),
+            deleting: Vec::default(),
             graph,
             cell_width_type,
             graph_style,
@@ -129,12 +133,14 @@ impl<'a> GraphImageManager<'a> {
             mut images,
             mut image_ids,
             mut pending_uploads,
+            mut deleting,
         } = images;
         images.retain(|commit_hash, _| {
             let shown = self.graph.commit_pos_map.contains_key(commit_hash);
             if !shown {
                 if let Some(image_id) = image_ids.remove(commit_hash) {
                     pending_uploads.extend(self.image_protocol.delete_image(image_id));
+                    deleting.push(image_id);
                 }
             }
             shown
@@ -142,6 +148,7 @@ impl<'a> GraphImageManager<'a> {
         self.previous = images;
         self.image_ids = image_ids;
         self.pending_uploads = pending_uploads;
+        self.deleting = deleting;
         self
     }
 
@@ -153,6 +160,7 @@ impl<'a> GraphImageManager<'a> {
             images,
             image_ids: std::mem::replace(&mut self.image_ids, ImageIds::new()),
             pending_uploads: std::mem::take(&mut self.pending_uploads),
+            deleting: std::mem::take(&mut self.deleting),
         }
     }
 
@@ -173,6 +181,7 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn drain_pending_uploads(&mut self) -> Vec<String> {
+        self.deleting.clear();
         std::mem::take(&mut self.pending_uploads)
     }
 
@@ -188,8 +197,9 @@ impl<'a> GraphImageManager<'a> {
             self.image_width_mode,
             commit_hash,
         );
+        let drawn = fingerprint(&graph_row_image.bytes);
         let image = match self.previous.remove(commit_hash) {
-            Some((previous, image)) if previous.bytes == graph_row_image.bytes => image,
+            Some((previous, image)) if previous == drawn => image,
             // the same id, so a changed image replaces the one in the terminal
             _ => {
                 let image_id = self.image_ids.of(commit_hash);
@@ -202,24 +212,35 @@ impl<'a> GraphImageManager<'a> {
             }
         };
         self.prepared_image_map
-            .insert(commit_hash.clone(), (graph_row_image, image));
+            .insert(commit_hash.clone(), (drawn, image));
     }
+}
+
+// What tells a row image from the one drawn before it of the same commit, kept in place of its
+// PNG, a kilobyte a row: a hash of it, its length included.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 // The images a graph image manager left in the terminal, for the one drawing the graph laid out
 // or loaded again, see `GraphImageManager::with_images`.
 #[derive(Debug)]
 pub struct GraphImages {
-    images: FxHashMap<CommitHash, (GraphRowImage, PreparedImage)>,
+    images: FxHashMap<CommitHash, (u64, PreparedImage)>,
     image_ids: ImageIds,
     pending_uploads: Vec<String>,
+    deleting: Vec<u32>,
 }
 
 // The manager owns the images it uploaded: deleting them when it is dropped keeps a page switch or
 // a replaced submodule panel from leaving them in the terminal until the app quits.
 impl Drop for GraphImageManager<'_> {
     fn drop(&mut self) {
-        let _ = self.image_protocol.delete_images(&self.image_ids.all());
+        let mut ids = self.image_ids.all();
+        ids.append(&mut self.deleting);
+        let _ = self.image_protocol.delete_images(&ids);
     }
 }
 
@@ -321,7 +342,8 @@ impl ImageParams {
     // Makes a row image as tall, for its width, as the terminal's cells: (width, height) in pixels.
     // Terminals placing images by unicode placeholders (kitty in tmux) keep their proportions,
     // leaving gaps between the rows of a taller cell; the others stretch them to their cells.
-    // shortcut: taken once at start, changing the font size meanwhile brings the gaps back.
+    // shortcut: taken when the graph is laid out (at start, on each reload and for a submodule's),
+    // changing the font size between brings the gaps back.
     pub fn fit_cell(mut self, cell_pixels: Option<(u16, u16)>) -> Self {
         if let Some((cell_width, cell_height)) = cell_pixels.filter(|&(w, h)| w > 0 && h > 0) {
             // a cell is 25 pixels wide in either width type
@@ -515,11 +537,11 @@ impl DrawingPixels {
                 .then(|| antialias::Masks::new(image_params)),
             circle,
             circle_edge,
-            merge_disk: cell_pixels(image_params, |p| merge_disk_contains(p, image_params)),
+            merge_disk: shape_pixels(image_params, |p| merge_disk_contains(p, image_params)),
             merge_marks: Chevron::ALL
                 .into_iter()
                 .map(|chevron| {
-                    let marks = cell_pixels(image_params, |p| {
+                    let marks = shape_pixels(image_params, |p| {
                         merge_mark_contains(p, image_params, chevron)
                     });
                     (chevron, marks)
@@ -577,7 +599,7 @@ fn calc_circle_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
 }
 
 // The pixels of a cell whose center is in a shape.
-fn cell_pixels(image_params: &ImageParams, contains: impl Fn(Point) -> bool) -> Pixels {
+fn shape_pixels(image_params: &ImageParams, contains: impl Fn(Point) -> bool) -> Pixels {
     let (width, height) = (image_params.width as i32, image_params.height as i32);
     (0..height)
         .flat_map(|y| (0..width).map(move |x| (x, y)))
