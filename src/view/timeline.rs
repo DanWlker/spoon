@@ -305,9 +305,8 @@ impl TimelineView {
         let matched = self
             .history
             .iter()
-            .map(|revision| revision_matches(&self.ctx, revision, query, options))
-            .collect::<Vec<_>>();
-        Some(SearchOutcome::of(query, selected, matched.into_iter()))
+            .map(|revision| revision_matches(&self.ctx, revision, query, options));
+        Some(SearchOutcome::of(query, selected, matched))
     }
 
     fn update_query_status(&self) {

@@ -312,7 +312,7 @@ impl FileTreeState {
 
     // Moves by every key scrolling the tree: the movement keys, ctrl-d and ctrl-u, and the page
     // and line keys; returns whether `event` was one of them.
-    pub fn navigate(&mut self, event: UserEvent) -> bool {
+    pub fn navigate(&self, event: UserEvent) -> bool {
         let total = self.rows.len();
         let mut cursor = self.cursor.get();
         let handled = cursor.navigate(event, total);

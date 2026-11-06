@@ -108,8 +108,9 @@ pub struct CommitListState<'a> {
     query: TreeQuery,
     // the app's, see `AppContext::search_options`
     search_options: Rc<Cell<SearchOptions>>,
-    // the commits the search matches
+    // the commits the search matches, and the query and options they were found with
     search_matches: Vec<bool>,
+    searched: Option<(String, SearchOptions)>,
 
     // commits picked for commands on several commits
     picked: Picks<CommitHash>,
@@ -141,6 +142,7 @@ impl<'a> CommitListState<'a> {
             query: TreeQuery::default(),
             search_options,
             search_matches,
+            searched: None,
             picked: Picks::default(),
             filter_note: None,
             head: Head::None,
@@ -428,7 +430,7 @@ impl<'a> CommitListState<'a> {
         self.search_options.get()
     }
 
-    pub fn restore_search_options(&mut self, options: SearchOptions) {
+    pub fn restore_search_options(&self, options: SearchOptions) {
         self.search_options.set(options);
     }
 
@@ -532,12 +534,26 @@ impl<'a> CommitListState<'a> {
         ))
     }
 
+    // Finds the commits the search matches. A query typed on from the one before, with the same
+    // options, matches only commits that one did (a longer substring, or subsequence when fuzzy,
+    // and a stricter case), so only those are looked at again: a key costs as many commits as
+    // still match, not all of them.
     fn update_search_matches(&mut self) {
         let options = self.search_options.get();
         let query = self.query.search();
+        let narrowing = match (&self.searched, query) {
+            (Some((before, before_options)), Some(query)) => {
+                *before_options == options && query.starts_with(before.as_str())
+            }
+            _ => false,
+        };
         for (matched, commit_info) in self.search_matches.iter_mut().zip(&self.commits) {
+            if narrowing && !*matched {
+                continue;
+            }
             *matched = query.is_some_and(|query| commit_matches(commit_info, query, options));
         }
+        self.searched = query.map(|query| (query.to_string(), options));
     }
 
     fn prepared_image(&self, commit_info: &'a CommitInfo) -> &PreparedImage {
@@ -1741,6 +1757,47 @@ mod tests {
                 matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
+        });
+    }
+
+    // A query typed on looks again only at the commits the one before matched; its matches are
+    // those a search from scratch finds, matching as it is or fuzzy, ignoring case or not.
+    #[test]
+    fn test_search_typed_on_matches_as_from_scratch() {
+        let subjects = [
+            "Fix parser",
+            "fix graph",
+            "FIX tests",
+            "feature x",
+            "fixup! parser",
+            "refix",
+            "fx",
+            "",
+        ];
+        with_commit_list_state(&subjects, |state| {
+            for fuzzy in [false, true] {
+                if state.search_options().fuzzy != fuzzy {
+                    state.toggle_fuzzy();
+                }
+                for query in ["fix p", "FIx", "fx", "fixup", "parser"] {
+                    state.cancel_search();
+                    state.start_search();
+                    for c in query.chars() {
+                        type_key(state, KeyEvent::from(KeyCode::Char(c)));
+                        let typed = state.search_matches.clone();
+                        // from scratch
+                        state.searched = None;
+                        state.update_search_matches();
+                        assert_eq!(typed, state.search_matches, "{query:?} fuzzy {fuzzy}");
+                    }
+                    // a key deleted: looked at in all commits again
+                    type_key(state, KeyEvent::from(KeyCode::Backspace));
+                    let typed = state.search_matches.clone();
+                    state.searched = None;
+                    state.update_search_matches();
+                    assert_eq!(typed, state.search_matches, "{query:?} backspace");
+                }
+            }
         });
     }
 

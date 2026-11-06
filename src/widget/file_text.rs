@@ -304,7 +304,7 @@ impl FileText {
             }
         };
         let width = self.lines.len().to_string().len();
-        let lines = rows.clone().map(|row| {
+        let lines = rows.map(|row| {
             let mut line = Line::from(vec![
                 Span::raw(format!("{:>width$} ", row + 1)).fg(theme.muted_fg),
                 Span::raw(tabs_shown(&self.lines[row]).into_owned()),

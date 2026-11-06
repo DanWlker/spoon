@@ -109,7 +109,7 @@ impl<'a> DetailView<'a> {
             commit_list_state,
             commit_detail_state: ScrollState::default(),
             tab: DetailTab::default(),
-            changes_state: CommitChangesState::new(repository, ctx.clone(), hash.clone(), &changes),
+            changes_state: CommitChangesState::new(repository, ctx.clone(), hash, &changes),
             files_state: CommitFilesState::new(repository, &commit, &changes),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
@@ -1474,7 +1474,7 @@ impl<'a> DetailView<'a> {
         let commit = repository.commit(&selected).unwrap().clone();
         let refs = repository.refs(&selected).into_iter().cloned().collect();
         self.changes_state =
-            CommitChangesState::new(repository, self.ctx.clone(), selected.clone(), &changes);
+            CommitChangesState::new(repository, self.ctx.clone(), selected, &changes);
         self.files_state.set_commit(&commit, &changes);
         self.commit = commit;
         self.changes = changes;

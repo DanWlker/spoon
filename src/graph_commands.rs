@@ -128,8 +128,8 @@ pub fn graph_command(
             dialog_commit(repository, &selected),
         )),
         UserEvent::DropCommit => drop_commits(repository, &branch_label, targets),
-        UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Commit(selected.clone()))),
-        UserEvent::CreateBranch => Ok(GitDialog::create_branch_at(selected.clone())),
+        UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Commit(selected))),
+        UserEvent::CreateBranch => Ok(GitDialog::create_branch_at(selected)),
         _ => return None,
     };
     Some(dialog.map(|dialog| GraphCommand::Dialog(Box::new(dialog))))

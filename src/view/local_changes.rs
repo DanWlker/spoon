@@ -321,7 +321,7 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // Runs the editor or merge tool the state asked for, in place of the app.
-    fn run_external(&mut self, request: ExternalRequest) {
+    fn run_external(&self, request: ExternalRequest) {
         let command = match request {
             ExternalRequest::Editor(paths) => editor_command(&paths),
             ExternalRequest::MergeTool(path) => {
@@ -349,7 +349,7 @@ impl<'a> LocalChangesView<'a> {
         self.tx.send(event);
     }
 
-    fn after_action(&mut self, result: Result<(), String>) {
+    fn after_action(&self, result: Result<(), String>) {
         if let Err(err) = result {
             self.tx.send(AppEvent::NotifyError(err));
         }

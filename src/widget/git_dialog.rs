@@ -868,7 +868,7 @@ impl GitDialog {
         let mut form = Form::default();
         let (title, verb, trigger, kind) = match action {
             RemoteAction::Fetch => {
-                let remote = form.pick("Remote", info.remotes.clone(), &default_remote);
+                let remote = form.pick("Remote", info.remotes, &default_remote);
                 let kind = DialogKind::Fetch { remote };
                 (" Fetch ", "fetch", UserEvent::Fetch, kind)
             }

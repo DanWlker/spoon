@@ -1461,7 +1461,7 @@ impl App<'_> {
         self.shell.app_status.view_area = view_area;
     }
 
-    fn clear_view_image_area(&self, terminal: &mut DefaultTerminal) -> Result<(), std::io::Error> {
+    fn clear_view_image_area(&self, terminal: &DefaultTerminal) -> Result<(), std::io::Error> {
         if let Some(area) = self.view.image_clear_area(self.shell.app_status.view_area) {
             let area = area.intersection(terminal.size()?.into());
             for y in area.top()..area.bottom() {
@@ -2444,7 +2444,7 @@ impl App<'_> {
 
     // Moves the border beside the focused panel with alt-left and alt-right (the sidebar, or the
     // files beside a diff), the one above or under it with alt-up and alt-down.
-    fn move_border(&mut self, direction: Direction) {
+    fn move_border(&self, direction: Direction) {
         let (size, step) = match direction {
             Direction::Left => (Size::Width, -2),
             Direction::Right => (Size::Width, 2),
@@ -2849,7 +2849,7 @@ impl App<'_> {
     }
 
     // Opens each of `targets` in the browser, or copies all their links, one per line.
-    fn handle_links(&mut self, targets: &[LinkTarget], action: LinkAction) {
+    fn handle_links(&self, targets: &[LinkTarget], action: LinkAction) {
         let services = &self.ctx.core_config.browser.services;
         if action == LinkAction::Open {
             // one dialog per target would replace the one before it, so several files open their

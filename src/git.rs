@@ -35,8 +35,10 @@ pub use task::{
 };
 use task::{git_output, git_output_bytes, git_output_with_status, lock, run_logged};
 
+// One allocation for all the copies of a hash, which the maps of parents, children and the graph's
+// layout hold for each commit: a `String` each took about 80 bytes a copy.
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CommitHash(String);
+pub struct CommitHash(std::sync::Arc<str>);
 
 impl CommitHash {
     pub fn as_short_hash(&self) -> &str {
@@ -50,7 +52,7 @@ impl CommitHash {
 
 impl From<&str> for CommitHash {
     fn from(s: &str) -> Self {
-        Self(s.to_string())
+        Self(s.into())
     }
 }
 

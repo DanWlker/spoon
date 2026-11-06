@@ -217,7 +217,7 @@ impl EventController {
         let rx = Receiver { rx };
 
         let controller = EventController {
-            tx: tx.clone(),
+            tx,
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
