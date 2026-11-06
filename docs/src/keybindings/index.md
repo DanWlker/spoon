@@ -218,7 +218,7 @@ Everything the app shows, its keys included, is the repository as last loaded. A
 #### Picking files
 
 On the local changes page, <kbd>v</kbd> starts selecting files and directories: moving extends the selection (highlighted, with the count in the panel title), and <kbd>v</kbd> again ends it, keeping them picked. Another selection adds to them; <kbd>Esc</kbd> clears them.
-A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file. The same goes for the hunks of a file that isn't UTF-8, whose bytes are shown as `�`.
+A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file. File names and lines that aren't UTF-8 show `�` for those bytes, and are staged, discarded and stashed as they are.
 
 Ignoring (no key: run it from the keys list, <kbd>?</kbd>) adds the selected files and directories to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
 

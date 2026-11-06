@@ -508,7 +508,8 @@ pub(super) fn run_logged(
         use std::io::Write;
         // closed once written, so git can finish
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        match stdin.write_all(input.as_bytes()) {
+        // a patch or a message from git with its bytes as they were, see `text_from_git`
+        match stdin.write_all(&git_bytes(input)) {
             // git stopped before reading it, like on a failing hook: its output says why
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
             result => result.map_err(command_error)?,
@@ -697,12 +698,12 @@ pub(super) fn git_output_with_status(
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    let out = String::from_utf8_lossy(&output.stdout).into_owned();
-    Some((output.status.code(), out))
+    Some((output.status.code(), text_from_git(&output.stdout)))
 }
 
 pub(super) fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
-    git_output_bytes(path, args).map(|out| String::from_utf8_lossy(&out).into_owned())
+    // a file name or a diff's line can be any bytes, see `text_from_git`
+    git_output_bytes(path, args).map(|out| text_from_git(&out))
 }
 
 pub(super) fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Result<Vec<u8>, String> {

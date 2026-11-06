@@ -336,6 +336,34 @@ mod tests {
         assert_eq!(subjects, ["literal"]);
     }
 
+    // The history and blame of a file named with bytes that aren't UTF-8 find it: its name went to
+    // git with U+FFFD in place of them, matching nothing.
+    #[test]
+    fn test_history_and_blame_of_a_name_not_in_utf8() {
+        use crate::test_support::git::GitRepository;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let file = path.join(std::ffi::OsStr::from_bytes(b"\xe9.txt"));
+        for (text, date) in [("one\n", "2024-01-01"), ("one\ntwo\n", "2024-01-02")] {
+            std::fs::write(&file, text).unwrap();
+            git_output(path, &["add", "-A"]).unwrap();
+            repo.commit(text.trim(), date);
+        }
+        let name = crate::git::text_from_git(b"\xe9.txt");
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let (history, _) = repository.file_history(&head, &name).unwrap();
+        assert_eq!(history.len(), 2);
+        assert!(history.iter().all(|r| r.path == name));
+        let blame = repository.blame_work(&head, &name)().unwrap();
+        assert_eq!(blame.lines.len(), 2);
+    }
+
     #[test]
     fn test_file_history_from_before_a_rename() {
         use crate::test_support::git::{git, GitRepository};

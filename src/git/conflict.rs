@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::{
     git_arg, git_command, git_output, git_output_bytes, git_output_with_status, pathspecs,
-    run_logged, work_path, CommitHash, LocalChangeStatus, LocalChanges, Repository,
+    run_logged, text_from_git, work_path, CommitHash, LocalChangeStatus, LocalChanges, Repository,
 };
 
 impl Repository {
@@ -60,7 +60,7 @@ impl Repository {
         };
         let blob = || {
             git_output_bytes(&self.path, &["cat-file", "blob", &object])
-                .map(|blob| String::from_utf8_lossy(&blob).into_owned())
+                .map(|blob| text_from_git(&blob))
                 .unwrap_or_default()
         };
         match mode.as_str() {

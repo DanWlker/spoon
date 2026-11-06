@@ -3752,6 +3752,65 @@ mod tests {
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), "2\n");
     }
 
+    // A force push replaces the branch on the remote with the one rewritten here, but only as it
+    // was last fetched: a commit pushed from elsewhere since is kept, the push refused.
+    #[test]
+    fn test_force_push_keeps_commits_pushed_elsewhere() {
+        let dir = test_repo();
+        let path = dir.path();
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let remote_arg = remote.to_str().unwrap();
+        git(
+            root.path(),
+            &["init", "-q", "--bare", "-b", "main", remote_arg],
+        );
+        git(path, &["remote", "add", "origin", remote_arg]);
+        git(path, &["push", "-q", "-u", "origin", "main"]);
+        let remote_head = || git(&remote, &["rev-parse", "main"]).trim().to_string();
+        let force_push = || {
+            let repository = crate::git::Repository::load(
+                path,
+                crate::git::SortCommit::Chronological,
+                None,
+                false,
+            )
+            .unwrap();
+            let mut dialog =
+                GitDialog::remote(RemoteAction::Push, repository.remote_info()).unwrap();
+            // the branch, the remote, the branch on it, the tags, then force
+            for _ in 0..4 {
+                press(&mut dialog, UserEvent::NavigateDown);
+            }
+            press(&mut dialog, UserEvent::Select);
+            let task = dialog.command().unwrap().unwrap();
+            assert!(task.commands[0]
+                .args
+                .contains(&"--force-with-lease".to_string()));
+            crate::git::run_task(path, &task)
+        };
+
+        // the last commit rewritten: pushed over the one on the remote
+        git(path, &["commit", "-q", "--amend", "-m", "c4 again"]);
+        force_push().unwrap();
+        assert_eq!(remote_head(), git(path, &["rev-parse", "HEAD"]).trim());
+
+        // a commit pushed from another clone, not fetched here: kept
+        let other = root.path().join("other");
+        git(
+            root.path(),
+            &["clone", "-q", remote_arg, other.to_str().unwrap()],
+        );
+        git(&other, &["config", "user.name", "o"]);
+        git(&other, &["config", "user.email", "o@o"]);
+        git(&other, &["commit", "-q", "--allow-empty", "-m", "theirs"]);
+        git(&other, &["push", "-q", "origin", "main"]);
+        let theirs = remote_head();
+        git(path, &["commit", "-q", "--amend", "-m", "c4 once more"]);
+        assert!(force_push().is_err());
+        assert_eq!(remote_head(), theirs);
+    }
+
     #[test]
     fn test_checkout_stashes_and_reapplies() {
         let dir = test_repo();

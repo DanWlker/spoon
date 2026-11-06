@@ -18,6 +18,7 @@ use super::{
     git_command, git_output, load_local_changes, load_submodules, Commit, CommitHash, CommitMap,
     CommitsMap, Head, Operation, Ref, RefMap, Repository, SharedTask, SortCommit, Tracking,
 };
+use crate::git::text_from_git;
 
 impl Repository {
     #[cfg(test)]
@@ -301,7 +302,7 @@ fn load_all_commits(
     // each field ends with a NUL, which git keeps out of them, see `load_commits_format`
     for bytes in reader.split(b'\0') {
         let bytes = bytes.map_err(|e| format!("failed to read git log: {e}"))?;
-        fields.push(String::from_utf8_lossy(&bytes).into_owned());
+        fields.push(text_from_git(&bytes));
         if fields.len() == COMMIT_FIELDS {
             commits.push(parse_commit(&fields));
             fields.clear();

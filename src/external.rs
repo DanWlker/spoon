@@ -13,6 +13,11 @@ thread_local! {
 }
 
 pub fn copy_to_clipboard(value: String, config: &ClipboardConfig) -> Result<(), String> {
+    // a byte that isn't UTF-8, kept from git, copied as U+FFFD, see `text_from_git`
+    let value = match value.chars().any(crate::git::is_kept_byte) {
+        true => String::from_utf8_lossy(&crate::git::git_bytes(&value)).into_owned(),
+        false => value,
+    };
     match config {
         ClipboardConfig::Auto => copy_to_clipboard_auto(value),
         ClipboardConfig::Custom { commands } => copy_to_clipboard_custom(value, commands),
@@ -150,6 +155,18 @@ mod tests {
         assert!(copy_to_clipboard_custom("x".into(), &sh("cat >/dev/null")).is_ok());
         let err = copy_to_clipboard_custom("x".into(), &sh("cat >/dev/null; exit 1")).unwrap_err();
         assert!(err.contains("failed"), "{err}");
+    }
+
+    // A byte that isn't UTF-8, kept from git, is copied as U+FFFD, not as the character keeping it.
+    #[test]
+    fn test_copy_of_bytes_not_in_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("copied");
+        let script = format!("cat > '{}'", out.display());
+        let commands = ["sh", "-c", &script].map(String::from).to_vec();
+        let config = ClipboardConfig::Custom { commands };
+        copy_to_clipboard(crate::git::text_from_git(b"caf\xe9"), &config).unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "caf\u{FFFD}");
     }
 
     #[test]

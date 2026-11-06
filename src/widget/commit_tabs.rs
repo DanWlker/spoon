@@ -906,7 +906,7 @@ impl<'a> CommitFilesState<'a> {
             Ok(bytes) if bytes.iter().take(8000).any(|b| *b == 0) => FilePreview::Binary,
             // as in the file, to copy; tabs are expanded when shown
             Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
+                let text = crate::git::text_from_git(&bytes);
                 self.text
                     .set_lines(text.lines().map(String::from).collect());
                 FilePreview::Text
