@@ -14,7 +14,7 @@ use crate::{
         git_bytes, work_path, AfterTask, CommitHash, FileRevision, GitCommand, GitTask,
         PatchDirection, Repository,
     },
-    graph_commands::{single_commit_command, Compare},
+    graph_commands::{moves_head, single_commit_command, Compare},
     keybind::UserEvent,
     keys::{Availability, Keys},
     search::{SearchKind, SearchOptions, SearchOutcome},
@@ -108,7 +108,7 @@ pub fn register_graph_commands<T: ?Sized>(
             _ => &[event],
         };
         k.add_where(events, short, long, move |view| {
-            let refused = (single && picked(view)) || (event.moves_head() && operation_waits(view));
+            let refused = (single && picked(view)) || (moves_head(event) && operation_waits(view));
             match availability(view, event) {
                 Availability::Works if refused => Availability::Warns,
                 availability => availability,

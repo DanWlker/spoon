@@ -5,7 +5,7 @@
 use rustc_hash::FxHashMap;
 
 use crate::{
-    git::{CommitHash, ConflictWork, NamedRef, Ref, RemoteBranch, Repository, Rev},
+    git::{CommitHash, ConflictWork, GitCommand, NamedRef, Ref, RemoteBranch, Repository, Rev},
     keybind::UserEvent,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
@@ -31,6 +31,25 @@ impl Compare {
     pub fn title(&self) -> String {
         format!("Diff {} → {}", self.base.shown(), self.target.shown())
     }
+}
+
+// Whether the command of `event` moves or rewrites HEAD, refused while an operation waits to be
+// finished; the commands themselves decide, see `GitTask::moves_head`.
+pub fn moves_head(event: UserEvent) -> bool {
+    // the git command each runs: squashing, dropping and amending an older commit rebase
+    let command = match event {
+        UserEvent::Rebase | UserEvent::Squash | UserEvent::DropCommit | UserEvent::AmendCommit => {
+            GitCommand::Rebase
+        }
+        UserEvent::Merge => GitCommand::Merge,
+        UserEvent::Checkout => GitCommand::Checkout,
+        UserEvent::CherryPick => GitCommand::CherryPick,
+        UserEvent::Revert => GitCommand::Revert,
+        UserEvent::Reset => GitCommand::Reset,
+        UserEvent::Pull => GitCommand::Pull,
+        _ => return false,
+    };
+    command.moves_head()
 }
 
 // The name of the command of `event` when it works on the selected commit alone, which picked

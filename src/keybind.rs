@@ -500,27 +500,6 @@ impl UserEvent {
         )
     }
 
-    // Whether its command moves or rewrites HEAD, refused while an operation waits to be finished;
-    // the commands themselves decide, see `GitTask::moves_head`.
-    pub fn moves_head(self) -> bool {
-        use crate::git::GitCommand;
-        // the git command each runs: squashing, dropping and amending an older commit rebase
-        let command = match self {
-            UserEvent::Rebase
-            | UserEvent::Squash
-            | UserEvent::DropCommit
-            | UserEvent::AmendCommit => GitCommand::Rebase,
-            UserEvent::Merge => GitCommand::Merge,
-            UserEvent::Checkout => GitCommand::Checkout,
-            UserEvent::CherryPick => GitCommand::CherryPick,
-            UserEvent::Revert => GitCommand::Revert,
-            UserEvent::Reset => GitCommand::Reset,
-            UserEvent::Pull => GitCommand::Pull,
-            _ => return false,
-        };
-        command.moves_head()
-    }
-
     // The scope a key of the event is bound in, when the keybind doesn't say: the keys of most
     // events work everywhere, those of the commands of a part of the app in that part only, so
     // the same key can do something else elsewhere. See `Scope`.

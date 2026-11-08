@@ -35,7 +35,7 @@ use crate::{
         LoadOptions, Loaded, NamedRef, Ref, Repository, Rev, RunningTask, SharedTask,
     },
     graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
-    graph_commands::{graph_command, ref_graph_command, Compare, GraphCommand},
+    graph_commands::{graph_command, moves_head, ref_graph_command, Compare, GraphCommand},
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, Size},
@@ -1471,7 +1471,7 @@ impl App<'_> {
             k.add_where(&[event], short, long, move |app| {
                 let runs = !app.repository.remotes().is_empty()
                     && (event != Pull || app.repository.current_branch().is_some())
-                    && !(event.moves_head() && app.repository.operation_in_progress().is_some());
+                    && !(moves_head(event) && app.repository.operation_in_progress().is_some());
                 match (page(app), runs) {
                     (false, _) => Availability::Off,
                     (true, false) => Availability::Warns,
