@@ -11,8 +11,8 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
-    event::UserEvent,
     git::{command_log, LoggedCommand},
+    keybind::UserEvent,
     keys::Keys,
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,

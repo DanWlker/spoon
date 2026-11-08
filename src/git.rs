@@ -25,7 +25,7 @@ pub use diff::{DiffOf, FileChange, PatchDirection, DEFAULT_DIFF_CONTEXT};
 pub use history::{Blame, CommitTree, FileBlameResult, FileHistoryResult, FileRevision};
 use load::parse_iso_date;
 pub use load::{read_head_commit, read_operation, refs_snapshot, LoadOptions, Loaded};
-use local_changes::{load_local_changes, parse_name_status, without_comments};
+use local_changes::{load_local_changes, parse_name_status};
 pub use local_changes::{Entry, FilesSnapshot, LocalChangeFile, LocalChangeStatus, LocalChanges};
 use submodule::{load_submodules, SubmoduleRepositories};
 pub use task::{

@@ -9,8 +9,10 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     color::ColorTheme,
-    event::UserEvent,
-    search::{case_insensitive, SearchOptions},
+    context::AppContext,
+    keybind::{Scope, UserEvent},
+    keys::{KeyList, Keys},
+    search::{case_insensitive, SearchKind, SearchOptions},
     widget::style::tabs_shown,
 };
 
@@ -386,6 +388,70 @@ pub fn match_ranges(
         }
     }
     ranges
+}
+
+// The keys while typing a search or filter, of what `kind` is searched.
+pub fn register_typing_keys(k: &mut Keys<SearchKind>) {
+    use UserEvent::*;
+    k.add(
+        &[SearchTargetToggle],
+        "target",
+        "Toggle what the search of the commit list looks in",
+    )
+    .when(|kind| kind.has_target());
+    k.add(
+        &[SmartCaseToggle],
+        "smart case",
+        "Toggle smart case or case-sensitive, for every search",
+    );
+    k.add(
+        &[FuzzyToggle],
+        "fuzzy",
+        "Toggle fuzzy match, for every search but of text",
+    )
+    .when(|kind| kind.has_fuzzy());
+    k.add(&[Confirm], "apply", "Keep the query");
+    k.add(&[Cancel], "cancel", "Clear the query");
+}
+
+pub fn typing_keys(kind: SearchKind) -> KeyList {
+    let mut keys = Keys::of(&kind);
+    register_typing_keys(&mut keys);
+    keys.list()
+}
+
+// The options toggled while typing a search: smart case, and fuzzy matching and what the commit
+// list's looks in where they apply (see `SearchKind`); returns whether `key` toggled one, the
+// search to be applied again then.
+pub fn toggle_search_option(ctx: &AppContext, key: &KeyEvent, kind: SearchKind) -> bool {
+    let mut options = ctx.search_options.get();
+    match ctx.keybind.event_in(Scope::Global, key) {
+        Some(UserEvent::SmartCaseToggle) => options.smart_case = !options.smart_case,
+        Some(UserEvent::FuzzyToggle) if kind.has_fuzzy() => options.fuzzy = !options.fuzzy,
+        Some(UserEvent::SearchTargetToggle) if kind.has_target() => {
+            options.target = options.target.next()
+        }
+        _ => return false,
+    }
+    ctx.search_options.set(options);
+    true
+}
+
+// A key typed into a search or filter: toggling an option applies it again, other keys edit it.
+// Returns what to apply: nothing for the keys of a paste but its last, so a long query pasted
+// over a big list is searched once, see `App::paste`.
+pub fn type_query(
+    ctx: &AppContext,
+    query: &mut TreeQuery,
+    key: KeyEvent,
+    kind: SearchKind,
+) -> Option<QueryKind> {
+    let change = if toggle_search_option(ctx, &key, kind) {
+        query.editing_change()
+    } else {
+        query.handle_key(key)
+    };
+    change.filter(|_| !ctx.pasting.get())
 }
 
 #[cfg(test)]

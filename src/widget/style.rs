@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::{background::shows_loading, color::ColorTheme, event::UserEvent, git::is_kept_byte};
+use crate::{background::shows_loading, color::ColorTheme, git::is_kept_byte, keybind::UserEvent};
 
 // How often the spinner of a running task turns, see `spinner`.
 pub const SPINNER_RATE: Duration = Duration::from_millis(180);

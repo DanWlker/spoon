@@ -3,10 +3,12 @@ use std::{ops::RangeInclusive, time::Instant};
 use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use crate::{
-    app::AppContext,
     background::Job,
-    event::{Sender, UserEvent},
+    context::AppContext,
+    event::Sender,
     git::{PatchDirection, Repository},
+    keybind::UserEvent,
+    keys::Keys,
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
@@ -475,6 +477,56 @@ fn drawn(state: &DiffState) -> Option<&ParsedDiff> {
         DiffState::Loading { previous, .. } => previous.as_ref(),
         DiffState::Nothing => None,
     }
+}
+
+// The keys of a diff, alike on every page, where `pane` gives it while it has the focus: into the
+// lines of the selected hunk, and copying the hunk or line.
+pub fn register_diff_keys<T: ?Sized>(
+    k: &mut Keys<T>,
+    pane: fn(&T) -> Option<&DiffPane>,
+    context: fn(&T) -> usize,
+) {
+    use UserEvent::*;
+    k.add(
+        &[Confirm],
+        "select lines",
+        "Select the hunks of the diff, then their lines",
+    )
+    .when(|v| pane(v).is_some_and(|p| !p.is_selecting_lines()));
+    k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
+        .when(|v| pane(v).is_some())
+        .short(|v| {
+            let name = pane(v).map_or(DiffPart::Hunk.name(), DiffPane::selected_name);
+            format!("copy {name}")
+        });
+    // like the lines of a file preview
+    k.add(
+        &[ToggleSelect],
+        "select lines",
+        "Select the lines from the selected one to where it moves, in its hunk; another selection adds to them, Esc clears them",
+    )
+    .when(|v| pane(v).is_some_and(DiffPane::is_selecting_lines))
+    .short(|v| {
+        match pane(v).is_some_and(DiffPane::is_visual) {
+            true => "end select",
+            false => "select lines",
+        }
+        .into()
+    });
+    // a diff of several files has no one file to show more or less context of
+    let single_file = |v: &T| pane(v).is_some_and(DiffPane::is_single_file);
+    k.add(
+        &[IncreaseDiffContext],
+        "more context",
+        "Show more lines around the changes",
+    )
+    .when(single_file);
+    k.add(
+        &[DecreaseDiffContext],
+        "less context",
+        "Show fewer lines around the changes",
+    )
+    .when(move |v| single_file(v) && context(v) > 1);
 }
 
 #[cfg(test)]

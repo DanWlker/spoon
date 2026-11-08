@@ -4,11 +4,11 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
-    event::{AppEvent, Sender, UserEvent},
+    context::AppContext,
+    event::{AppEvent, Sender},
     external::{editor_command, merge_tool_command},
     git::FilesSnapshot,
-    keybind::Scope,
+    keybind::{Scope, UserEvent},
     keys::KeyList,
     layout::{Direction, Panel},
     view::{

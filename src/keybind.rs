@@ -4,8 +4,6 @@ use rustc_hash::FxHashMap;
 use serde::{de::Deserializer, Deserialize};
 use std::sync::LazyLock;
 
-use crate::event::UserEvent;
-
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
 // Where keys are bound: the parts of the app that can have the focus, nested. A key is looked up
@@ -371,6 +369,197 @@ fn key_name(key: String) -> String {
         key.to_lowercase()
     } else {
         key
+    }
+}
+
+// A hint in the status bar: the events of a key, and what it does.
+pub type KeyHint = (Vec<UserEvent>, String);
+
+// The event triggered by user's key input
+// Named in the keybind config like `go_to_top`; `focus_panel_1` is parsed by `parse_user_event`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserEvent {
+    ForceQuit,
+    Quit,
+    HelpToggle,
+    Cancel,
+    NavigateUp,
+    NavigateDown,
+    NavigateRight,
+    NavigateLeft,
+    SelectUp,
+    SelectDown,
+    GoToTop,
+    GoToBottom,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    HalfPageUp,
+    HalfPageDown,
+    GoToNext,
+    GoToPrevious,
+    Confirm,
+    RefList,
+    Search,
+    #[serde(skip)]
+    FocusPanel(usize),
+    ResizeLeft,
+    ResizeRight,
+    ResizeUp,
+    ResizeDown,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
+    KeysToggle,
+    // the main action on what is selected, like lazygit's: staging a file, checking a branch
+    // out, applying a stash, toggling a field; each part says which, see `KeyList::meaning`
+    Select,
+    ToggleSelect,
+    IncreaseDiffContext,
+    DecreaseDiffContext,
+    NextFile,
+    PreviousFile,
+    NextFolder,
+    PreviousFolder,
+    NextTab,
+    PreviousTab,
+    Stash,
+    Commit,
+    Continue,
+    Abort,
+    Skip,
+    Edit,
+    ToggleAmend,
+    Discard,
+    DialogEdit,
+    Fetch,
+    FetchAll,
+    Pull,
+    Push,
+    Diff,
+    Rebase,
+    Merge,
+    Checkout,
+    CherryPick,
+    Squash,
+    Revert,
+    Reset,
+    AmendCommit,
+    DropCommit,
+    CreateTag,
+    CreateBranch,
+    BranchOnly,
+    CreateRef,
+    DeleteRef,
+    EditRef,
+    DismissNotifications,
+    ToggleWrap,
+    OpenInBrowser,
+    CopyLink,
+    NextSection,
+    PreviousSection,
+    ResetFile,
+    SearchTargetToggle,
+    SmartCaseToggle,
+    FuzzyToggle,
+    Refresh,
+    ShortCopy,
+    FullCopy,
+    Ignore,
+    CommandLog,
+    Blame,
+    Timeline,
+    OlderCommit,
+    NewerCommit,
+    // a key bound to no event, handed on with it for the part to type it, like a search
+    #[serde(skip)]
+    Unknown,
+}
+
+impl UserEvent {
+    // Whether it only moves a selection, like the cursor of the files: what the selection shows
+    // may load in the background meanwhile, while the other keys may act on it, so wait for it.
+    pub fn moves_selection(self) -> bool {
+        matches!(
+            self,
+            UserEvent::NavigateDown
+                | UserEvent::NavigateUp
+                | UserEvent::SelectDown
+                | UserEvent::SelectUp
+                | UserEvent::GoToTop
+                | UserEvent::GoToBottom
+                | UserEvent::PageDown
+                | UserEvent::PageUp
+                | UserEvent::HalfPageDown
+                | UserEvent::HalfPageUp
+                | UserEvent::ScrollDown
+                | UserEvent::ScrollUp
+        )
+    }
+
+    // Whether its command moves or rewrites HEAD, refused while an operation waits to be finished;
+    // the commands themselves decide, see `GitTask::moves_head`.
+    pub fn moves_head(self) -> bool {
+        use crate::git::GitCommand;
+        // the git command each runs: squashing, dropping and amending an older commit rebase
+        let command = match self {
+            UserEvent::Rebase
+            | UserEvent::Squash
+            | UserEvent::DropCommit
+            | UserEvent::AmendCommit => GitCommand::Rebase,
+            UserEvent::Merge => GitCommand::Merge,
+            UserEvent::Checkout => GitCommand::Checkout,
+            UserEvent::CherryPick => GitCommand::CherryPick,
+            UserEvent::Revert => GitCommand::Revert,
+            UserEvent::Reset => GitCommand::Reset,
+            UserEvent::Pull => GitCommand::Pull,
+            _ => return false,
+        };
+        command.moves_head()
+    }
+
+    // The scope a key of the event is bound in, when the keybind doesn't say: the keys of most
+    // events work everywhere, those of the commands of a part of the app in that part only, so
+    // the same key can do something else elsewhere. See `Scope`.
+    pub fn home_scope(&self) -> Scope {
+        match self {
+            UserEvent::Diff
+            | UserEvent::Rebase
+            | UserEvent::Merge
+            | UserEvent::Checkout
+            | UserEvent::CherryPick
+            | UserEvent::Squash
+            | UserEvent::Revert
+            | UserEvent::Reset
+            | UserEvent::AmendCommit
+            | UserEvent::DropCommit
+            | UserEvent::CreateTag
+            | UserEvent::CreateBranch
+            | UserEvent::BranchOnly => Scope::Graph,
+            UserEvent::CreateRef
+            | UserEvent::DeleteRef
+            | UserEvent::EditRef
+            | UserEvent::NextSection
+            | UserEvent::PreviousSection => Scope::Sidebar,
+            UserEvent::NextTab | UserEvent::PreviousTab | UserEvent::ResetFile => Scope::Details,
+            UserEvent::OlderCommit | UserEvent::NewerCommit => Scope::FileHistory,
+            UserEvent::Stash
+            | UserEvent::Commit
+            | UserEvent::NextFile
+            | UserEvent::PreviousFile
+            | UserEvent::NextFolder
+            | UserEvent::PreviousFolder
+            | UserEvent::Continue
+            | UserEvent::Abort
+            | UserEvent::Skip
+            | UserEvent::ToggleAmend
+            | UserEvent::Discard => Scope::LocalChanges,
+            UserEvent::DialogEdit => Scope::Dialog,
+            _ => Scope::Global,
+        }
     }
 }
 

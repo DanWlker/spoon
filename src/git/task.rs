@@ -13,7 +13,7 @@ use std::{
 
 use chrono::{DateTime, Local};
 
-use super::{without_comments, CommitHash, Operation, Repository};
+use super::{CommitHash, Operation, Repository};
 
 impl Repository {
     // The message of the commit at HEAD, of which git leaves out the name: `log -1 --format=%B`.
@@ -787,6 +787,16 @@ fn hide_password(arg: &str) -> String {
         Some(at) => format!("{}***{}", &arg[..scheme_end], &arg[scheme_end + at..]),
         None => arg.to_string(),
     }
+}
+
+// A message git prepared, without its comment lines, those starting with one of `starts`; None
+// when nothing is left. See `Repository::comment_starts`.
+fn without_comments(content: &str, starts: &[String]) -> Option<String> {
+    let message: Vec<&str> = content
+        .lines()
+        .filter(|l| !starts.iter().any(|s| l.starts_with(s.as_str())))
+        .collect();
+    Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
 }
 
 #[cfg(test)]

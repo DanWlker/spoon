@@ -11,9 +11,9 @@ use ratatui::{
 };
 
 use crate::{
-    app::AppContext,
     color::ColorTheme,
     config::{CoreConfig, UiConfig},
+    context::AppContext,
     keybind::KeyBind,
     protocol::ImageProtocol,
 };

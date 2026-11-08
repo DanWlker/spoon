@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use clap::ValueEnum;
 use garde::Validate;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
@@ -12,10 +13,10 @@ use umbra::optional;
 use crate::{
     browse::Forge,
     color::{ColorTheme, OptionalColorTheme},
+    error::Result,
     graph::GraphImageWidthMode,
     keybind::KeyBind,
     search::SearchTarget,
-    CommitOrderType, GraphStyle, GraphWidthType, ImageProtocolType, InitialSelection, Result,
 };
 
 const XDG_CONFIG_HOME_ENV_NAME: &str = "XDG_CONFIG_HOME";
@@ -324,6 +325,45 @@ fn valid_date_format(format: &str, _: &()) -> garde::Result {
         ))),
         false => Ok(()),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageProtocolType {
+    Auto,
+    Iterm,
+    Kitty,
+    KittyUnicode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitOrderType {
+    Chrono,
+    Topo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphWidthType {
+    Auto,
+    Double,
+    Single,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphStyle {
+    Rounded,
+    Angular,
+    Curved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InitialSelection {
+    Latest,
+    Head,
 }
 
 #[cfg(test)]

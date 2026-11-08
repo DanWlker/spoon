@@ -1,5 +1,4 @@
 use std::{
-    cell::{Cell, RefCell},
     io::{self, Write},
     rc::Rc,
     sync::{mpsc::RecvTimeoutError, Arc},
@@ -25,29 +24,26 @@ use crate::widget::tree_query::Toward;
 use crate::{
     background::{shows_loading, Job},
     browse::{self, LinkAction, LinkTarget},
-    color::{ColorTheme, GraphColorSet},
-    config::{CoreConfig, CursorType, GraphColorConfig, UiConfig},
-    event::{AppEvent, EventController, KeyHint, Sender, UserEvent},
+    config::CursorType,
+    config::InitialSelection,
+    context::AppContext,
+    event::{AppEvent, EventController, Sender},
     external::{copy_to_clipboard, exec_interactive},
     git::{
         read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, Commit, CommitHash,
         FileBlameResult, FileChange, FileHistoryResult, FilesSnapshot, GitCommand, GitTask, Head,
         LoadOptions, Loaded, NamedRef, Ref, Repository, Rev, RunningTask, SharedTask,
     },
-    graph::{
-        merges_hiding, CellWidthType, Fold, Graph, GraphImageManager, GraphImageWidthMode,
-        GraphImages, GraphLayout, GraphStyle,
-    },
-    graph_commands::{graph_command, ref_graph_command, GraphCommand},
-    keybind::{keys_to_string, KeyBind, Scope, SequenceMatch},
+    graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
+    graph_commands::{graph_command, ref_graph_command, Compare, GraphCommand},
+    keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel, PanelLayout, Size},
-    protocol::ImageProtocol,
+    layout::{fit_size, Direction, Edge, Panel, Size},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::{SearchOptions, SearchOutcome},
     view::{
-        register_graph_commands, BlameView, Compare, DetailFocus, HelpView,
-        LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
+        register_graph_commands, BlameView, DetailFocus, HelpView, LocalChangesRefreshViewContext,
+        RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -60,7 +56,6 @@ use crate::{
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
         style::{badge, key_hints, spinner, KeyLabel, SPINNER_RATE},
     },
-    InitialSelection,
 };
 
 #[derive(Debug, Default)]
@@ -125,55 +120,6 @@ pub enum Ret {
     },
 }
 
-#[derive(Debug)]
-pub struct AppContext {
-    pub keybind: KeyBind,
-    pub core_config: CoreConfig,
-    pub ui_config: UiConfig,
-    pub color_theme: ColorTheme,
-    pub image_protocol: ImageProtocol,
-    // the graph images are drawn with, shared by the main graph and the submodule graphs the
-    // pages build beside it, see `graph_image_manager`
-    pub graph: RefCell<GraphRender>,
-    // the git command running in the background, kept across refreshes, shared with the repository
-    pub running_task: SharedTask,
-    // the keys of the hints in the status bar, see `short_keys`
-    pub key_names: RefCell<FxHashMap<(Scope, Vec<UserEvent>), String>>,
-    // the sizes of the panels, set by the user, kept across refreshes
-    pub layout: RefCell<PanelLayout>,
-    // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
-    pub wrap: Cell<bool>,
-    // the lines shown around each change in a diff, see `AppContext::adjust_diff_context`
-    pub diff_context: Cell<usize>,
-    // the options of every search, toggled while typing any of them, shared with the commit list
-    pub search_options: Rc<Cell<SearchOptions>>,
-    // typing the keys of a paste but its last, which a search applies once, see `App::paste`
-    pub pasting: Cell<bool>,
-}
-
-// What a commit graph image is drawn with. The color set, style and antialias come from the
-// config; the cell width is decided once for the main graph and reused by the submodule graphs.
-#[derive(Debug, Clone)]
-pub struct GraphRender {
-    pub color_set: GraphColorSet,
-    pub style: GraphStyle,
-    pub antialias: bool,
-    pub image_width_mode: GraphImageWidthMode,
-    pub cell_width_type: CellWidthType,
-}
-
-impl Default for GraphRender {
-    fn default() -> Self {
-        Self {
-            color_set: GraphColorSet::new(&GraphColorConfig::default()),
-            style: GraphStyle::Rounded,
-            antialias: true,
-            image_width_mode: GraphImageWidthMode::Compact,
-            cell_width_type: CellWidthType::Double,
-        }
-    }
-}
-
 mod status_bar;
 
 // Loads the repository of `options` with the history of `revisions` (None: all of it), and lays
@@ -188,56 +134,6 @@ pub fn load_laid_out(
     let (Loaded::Repository(repository) | Loaded::RefsGone(repository)) = &loaded;
     let layout = GraphLayout::calc(repository, options.primary_branch.as_deref(), folded);
     Ok((loaded, layout))
-}
-
-impl AppContext {
-    // Shows a line more or fewer around the changes of every diff, by `event`, at least one: git
-    // applies no hunk staged without any. Returns whether it changed.
-    pub fn adjust_diff_context(&self, event: UserEvent) -> bool {
-        let context = self.diff_context.get();
-        let adjusted = match event {
-            UserEvent::IncreaseDiffContext => context.saturating_add(1),
-            _ => context.saturating_sub(1).max(1),
-        };
-        self.diff_context.set(adjusted);
-        adjusted != context
-    }
-
-    // The image manager of a graph built beside the main one, drawn with the same settings.
-    pub fn graph_image_manager<'a>(&self, graph: Graph<'a>) -> GraphImageManager<'a> {
-        let render = self.graph.borrow();
-        let image_params = crate::graph::ImageParams::new(
-            &render.color_set,
-            render.cell_width_type,
-            render.antialias,
-        )
-        .fit_cell(crate::protocol::cell_pixels());
-        GraphImageManager::new(
-            graph,
-            image_params,
-            render.cell_width_type,
-            render.style,
-            render.image_width_mode,
-            self.image_protocol,
-        )
-    }
-
-    // The keys of the events for a hint, see `KeyBind::short_keys`, found once for each.
-    pub fn short_keys(&self, scope: Scope, events: &[UserEvent]) -> String {
-        let mut names = self.key_names.borrow_mut();
-        names
-            .entry((scope, events.to_vec()))
-            .or_insert_with(|| self.keybind.short_keys(scope, events))
-            .clone()
-    }
-
-    // Why the repository can't be changed now: a git command is running in the background.
-    pub fn busy_message(&self) -> Option<String> {
-        self.running_task
-            .lock()
-            .as_ref()
-            .map(RunningTask::busy_message)
-    }
 }
 
 // The longest the events waiting are handled for before drawing, see `App::run`.

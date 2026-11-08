@@ -12,11 +12,12 @@ use ratatui::{
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
     background::Job,
     color::ColorTheme,
-    event::{Sender, UserEvent},
+    context::AppContext,
+    event::Sender,
     git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
+    keybind::UserEvent,
     layout::{fit_size, Edge, Panel},
     search::{SearchOptions, SearchOutcome},
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},

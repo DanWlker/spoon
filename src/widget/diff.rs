@@ -19,8 +19,8 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
-    event::UserEvent,
     git::{PatchDirection, Repository},
+    keybind::UserEvent,
     search::SearchOptions,
     widget::{
         style::{

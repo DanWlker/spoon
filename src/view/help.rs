@@ -11,15 +11,14 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, AppContext},
-    event::{AppEvent, Sender, UserEvent},
-    keybind::{KeyBind, Scope},
+    app::App,
+    context::AppContext,
+    event::{AppEvent, Sender},
+    keybind::{KeyBind, Scope, UserEvent},
     keys::{KeyList, Keys},
     search::SearchKind,
-    view::{
-        detail::DetailView, list::ListView, query_status, register_typing_keys, type_query,
-        typing_keys, BlameView, TimelineView,
-    },
+    view::{detail::DetailView, list::ListView, query_status, BlameView, TimelineView},
+    widget::tree_query::{register_typing_keys, type_query, typing_keys},
     widget::{
         command_log::CommandLogState,
         git_dialog::GitDialog,

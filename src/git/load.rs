@@ -12,7 +12,7 @@ use std::{
 use chrono::{DateTime, FixedOffset};
 use rustc_hash::FxHashMap;
 
-use crate::{background::joined, Result};
+use crate::{background::joined, error::Result};
 
 use super::{
     git_command, git_output, load_local_changes, load_submodules, Commit, CommitHash, CommitMap,

@@ -4,16 +4,18 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
-    event::{AppEvent, Sender, UserEvent},
+    context::AppContext,
+    event::{AppEvent, Sender},
     git::{CommitHash, Repository},
+    keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
     search::SearchKind,
     view::{
         commit_event, copy_hashes, query_status, register_commit_link_keys,
-        register_graph_commands, search_status, type_query, typing_keys, CopyForm,
-        ListRefreshViewContext, RefreshViewContext, Reselect,
+        register_graph_commands, search_status, CopyForm, ListRefreshViewContext,
+        RefreshViewContext, Reselect,
     },
+    widget::tree_query::{type_query, typing_keys},
     widget::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::DetailTab,

@@ -12,12 +12,13 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
-    event::{AppEvent, UserEvent},
+    context::AppContext,
+    event::AppEvent,
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
     graph::{Fold, GraphImageManager, GraphImages},
+    keybind::UserEvent,
     protocol::PreparedImage,
     search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{

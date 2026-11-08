@@ -11,7 +11,7 @@ use ratatui::{
 use rustc_hash::FxHashMap;
 
 use crate::{
-    app::AppContext,
+    context::AppContext,
     git::{Commit, FileChange, Head, Ref, Tracking},
     widget::{
         commit_list::{refs_spans, CommitInfo},

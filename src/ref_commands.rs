@@ -2,9 +2,8 @@
 // and dropping stashes. Each opens a popup confirming it.
 
 use crate::{
-    event::UserEvent,
     git::{NamedRef, Ref, RemoteBranch, Repository, Stash},
-    keybind::Scope,
+    keybind::{Scope, UserEvent},
     widget::{
         git_dialog::GitDialog,
         ref_list::{RefPicks, RefSection, RefSelection},

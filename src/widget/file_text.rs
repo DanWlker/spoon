@@ -11,8 +11,8 @@ use ratatui::{
 };
 
 use crate::{
-    app::AppContext,
-    event::UserEvent,
+    context::AppContext,
+    keybind::UserEvent,
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},

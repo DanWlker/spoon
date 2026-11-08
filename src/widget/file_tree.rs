@@ -14,9 +14,9 @@ use ratatui::{
 
 pub use crate::git::Entry;
 use crate::{
-    app::AppContext,
     color::ColorTheme,
-    event::UserEvent,
+    context::AppContext,
+    keybind::UserEvent,
     search::SearchOptions,
     widget::{
         picks::Picks,

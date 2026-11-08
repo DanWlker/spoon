@@ -21,10 +21,10 @@ use super::{
 use crate::{
     color::GraphColorSet,
     config::GraphColorConfig,
-    event::{EventController, KeyHint},
+    event::EventController,
     git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
     graph::{CellWidthType, GraphImageWidthMode, GraphLayout, GraphStyle},
-    keybind::parse_key_event,
+    keybind::{parse_key_event, KeyHint},
     layout::Panel,
     protocol::ImageProtocol,
     search::SearchOutcome,
@@ -1139,7 +1139,7 @@ fn test_operation_started_outside_reloads_on_the_refs_check() {
         page: StartPage::LocalChanges,
         ..launch()
     };
-    let aborts = |app: &App| app.view.keys().takes(crate::event::UserEvent::Abort);
+    let aborts = |app: &App| app.view.keys().takes(crate::keybind::UserEvent::Abort);
     let mut harness = Harness::new(&path, launch);
     harness.run(vec![
         check(move |app| assert!(!aborts(app))),
@@ -2993,7 +2993,7 @@ fn test_edit_opens_the_files_of_the_details() {
     let edits = |expected: bool| {
         check(move |app| {
             assert_eq!(
-                app.view.keys().takes(crate::event::UserEvent::Edit),
+                app.view.keys().takes(crate::keybind::UserEvent::Edit),
                 expected
             )
         })

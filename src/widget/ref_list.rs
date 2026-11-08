@@ -12,9 +12,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
-    event::UserEvent,
+    context::AppContext,
     git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, Tracking},
+    keybind::UserEvent,
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         picks::Picks,

@@ -1,33 +1,32 @@
-// What the pages share: the key hints of the commit graph and of typing, the status line, copying,
+// What the pages share: the key hints of the commit graph, the status line, copying,
 // and what each page keeps across a reload of the repository.
 
 use std::ops::RangeInclusive;
 
-use ratatui::{crossterm::event::KeyEvent, style::Style, text::Span};
+use ratatui::{style::Style, text::Span};
 
 use crate::{
-    app::AppContext,
     browse::{LinkAction, LinkTarget},
-    event::{AppEvent, UserEvent},
+    context::AppContext,
+    event::AppEvent,
     external::editor_command,
     git::{
         git_bytes, work_path, AfterTask, CommitHash, FileRevision, GitCommand, GitTask,
-        PatchDirection, Repository, Rev,
+        PatchDirection, Repository,
     },
-    graph_commands::single_commit_command,
-    keybind::Scope,
-    keys::{Availability, KeyList, Keys},
+    graph_commands::{single_commit_command, Compare},
+    keybind::UserEvent,
+    keys::{Availability, Keys},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::detail::DetailFocus,
     widget::{
         commit_list::format_date,
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
-        diff::DiffPart,
         diff_pane::DiffPane,
         file_tree::{Entry, FileTreeRow, ROOT_PATH},
         style::ListCursor,
-        tree_query::{highlighted_text, name_matches, QueryKind, TreeQuery},
+        tree_query::{highlighted_text, name_matches, TreeQuery},
     },
 };
 
@@ -116,36 +115,6 @@ pub fn register_graph_commands<T: ?Sized>(
             }
         });
     }
-}
-
-// The keys while typing a search or filter, of what `kind` is searched.
-pub fn register_typing_keys(k: &mut Keys<SearchKind>) {
-    use UserEvent::*;
-    k.add(
-        &[SearchTargetToggle],
-        "target",
-        "Toggle what the search of the commit list looks in",
-    )
-    .when(|kind| kind.has_target());
-    k.add(
-        &[SmartCaseToggle],
-        "smart case",
-        "Toggle smart case or case-sensitive, for every search",
-    );
-    k.add(
-        &[FuzzyToggle],
-        "fuzzy",
-        "Toggle fuzzy match, for every search but of text",
-    )
-    .when(|kind| kind.has_fuzzy());
-    k.add(&[Confirm], "apply", "Keep the query");
-    k.add(&[Cancel], "cancel", "Clear the query");
-}
-
-pub fn typing_keys(kind: SearchKind) -> KeyList {
-    let mut keys = Keys::of(&kind);
-    register_typing_keys(&mut keys);
-    keys.list()
 }
 
 // What y and Y copy: a short form, like a relative path, or the full one.
@@ -237,56 +206,6 @@ pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
         .when(applies);
 }
 
-// The keys of a diff, alike on every page, where `pane` gives it while it has the focus: into the
-// lines of the selected hunk, and copying the hunk or line.
-pub fn register_diff_keys<T: ?Sized>(
-    k: &mut Keys<T>,
-    pane: fn(&T) -> Option<&DiffPane>,
-    context: fn(&T) -> usize,
-) {
-    use UserEvent::*;
-    k.add(
-        &[Confirm],
-        "select lines",
-        "Select the hunks of the diff, then their lines",
-    )
-    .when(|v| pane(v).is_some_and(|p| !p.is_selecting_lines()));
-    k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
-        .when(|v| pane(v).is_some())
-        .short(|v| {
-            let name = pane(v).map_or(DiffPart::Hunk.name(), DiffPane::selected_name);
-            format!("copy {name}")
-        });
-    // like the lines of a file preview
-    k.add(
-        &[ToggleSelect],
-        "select lines",
-        "Select the lines from the selected one to where it moves, in its hunk; another selection adds to them, Esc clears them",
-    )
-    .when(|v| pane(v).is_some_and(DiffPane::is_selecting_lines))
-    .short(|v| {
-        match pane(v).is_some_and(DiffPane::is_visual) {
-            true => "end select",
-            false => "select lines",
-        }
-        .into()
-    });
-    // a diff of several files has no one file to show more or less context of
-    let single_file = |v: &T| pane(v).is_some_and(DiffPane::is_single_file);
-    k.add(
-        &[IncreaseDiffContext],
-        "more context",
-        "Show more lines around the changes",
-    )
-    .when(single_file);
-    k.add(
-        &[DecreaseDiffContext],
-        "less context",
-        "Show fewer lines around the changes",
-    )
-    .when(move |v| single_file(v) && context(v) > 1);
-}
-
 // Space on the diff of a commit, where `pane` is: applying the selected hunk or lines to the
 // working tree, see `apply_selection`.
 pub fn register_apply_key<T: ?Sized>(k: &mut Keys<T>, pane: fn(&T) -> Option<&DiffPane>) {
@@ -363,40 +282,6 @@ pub fn edit_files(repository: &Repository, files: &[&str]) -> AppEvent {
         Ok(paths) => AppEvent::RunExternal(editor_command(&paths)),
         Err(err) => AppEvent::NotifyError(err),
     }
-}
-
-// The options toggled while typing a search: smart case, and fuzzy matching and what the commit
-// list's looks in where they apply (see `SearchKind`); returns whether `key` toggled one, the
-// search to be applied again then.
-pub fn toggle_search_option(ctx: &AppContext, key: &KeyEvent, kind: SearchKind) -> bool {
-    let mut options = ctx.search_options.get();
-    match ctx.keybind.event_in(Scope::Global, key) {
-        Some(UserEvent::SmartCaseToggle) => options.smart_case = !options.smart_case,
-        Some(UserEvent::FuzzyToggle) if kind.has_fuzzy() => options.fuzzy = !options.fuzzy,
-        Some(UserEvent::SearchTargetToggle) if kind.has_target() => {
-            options.target = options.target.next()
-        }
-        _ => return false,
-    }
-    ctx.search_options.set(options);
-    true
-}
-
-// A key typed into a search or filter: toggling an option applies it again, other keys edit it.
-// Returns what to apply: nothing for the keys of a paste but its last, so a long query pasted
-// over a big list is searched once, see `App::paste`.
-pub fn type_query(
-    ctx: &AppContext,
-    query: &mut TreeQuery,
-    key: KeyEvent,
-    kind: SearchKind,
-) -> Option<QueryKind> {
-    let change = if toggle_search_option(ctx, &key, kind) {
-        query.editing_change()
-    } else {
-        query.handle_key(key)
-    };
-    change.filter(|_| !ctx.pasting.get())
 }
 
 // The hash of a commit is cut to this many characters in the blame and the timeline.
@@ -543,20 +428,6 @@ pub fn copy_paths<'a>(
         .map(|path| path_value(repository, path, form))
         .collect();
     AppEvent::copy(name, value.join("\n"))
-}
-
-// Two revisions compared in the details: commits, or refs diffed from the sidebar, which are
-// resolved again once reloaded.
-#[derive(Debug, Clone)]
-pub struct Compare {
-    pub base: Rev,
-    pub target: Rev,
-}
-
-impl Compare {
-    pub fn title(&self) -> String {
-        format!("Diff {} → {}", self.base.shown(), self.target.shown())
-    }
 }
 
 #[derive(Debug, Clone)]

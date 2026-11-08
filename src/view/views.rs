@@ -3,9 +3,10 @@ use std::rc::Rc;
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
-    app::AppContext,
-    event::{Sender, UserEvent},
+    context::AppContext,
+    event::Sender,
     git::{Commit, CommitHash, FileChange, Ref, Repository},
+    keybind::UserEvent,
     keys::KeyList,
     layout::{Direction, Panel, Size},
     view::{

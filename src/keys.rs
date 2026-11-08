@@ -2,7 +2,7 @@
 // keys popup and the help page all list them from there, and the app hands a part only the events
 // of the keys it registered as working where the focus is, so no key works without being listed.
 
-use crate::event::{KeyHint, UserEvent};
+use crate::keybind::{KeyHint, UserEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Key {

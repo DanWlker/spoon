@@ -10,16 +10,17 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
     background::Job,
     browse::{LinkAction, PageLink},
     color::ColorTheme,
-    event::{AppEvent, Sender, UserEvent},
+    context::AppContext,
+    event::{AppEvent, Sender},
     git::{
         parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
         Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask, LocalChangeFile,
         NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
+    keybind::UserEvent,
     keys::{KeyList, Keys},
     widget::style::{
         change_span, choice_arrows, focused_title, no_choice_arrows, render_popup, tabs_shown,

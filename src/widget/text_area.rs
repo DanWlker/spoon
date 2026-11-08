@@ -5,7 +5,7 @@ use ratatui::{
 };
 use ratatui_textarea::{CursorMove, WrapMode};
 
-use crate::{event::UserEvent, widget::style::ScrollState};
+use crate::{keybind::UserEvent, widget::style::ScrollState};
 
 // Whether the text shows the caret, while it is typed into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

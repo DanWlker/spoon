@@ -9,8 +9,8 @@ use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
 use crate::{
-    event::UserEvent,
     git::{CommitHash, RemoteBranch, Repository},
+    keybind::UserEvent,
 };
 
 // What a link is for: opened in the browser (o), or copied (O).

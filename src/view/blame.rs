@@ -12,18 +12,19 @@ use rustc_hash::FxHashMap;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::AppContext,
     background::Job,
-    event::{AppEvent, Sender, UserEvent},
+    context::AppContext,
+    event::{AppEvent, Sender},
     git::{Blame, CommitHash, FileRevision, Repository},
+    keybind::UserEvent,
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
         commit_event, copy_selection, edit_files, file_link, query_or_search_status,
-        register_commit_keys, register_moving_keys, revision_spans, type_query, typing_keys,
-        SHORT_HASH_WIDTH,
+        register_commit_keys, register_moving_keys, revision_spans, SHORT_HASH_WIDTH,
     },
+    widget::tree_query::{type_query, typing_keys},
     widget::{
         commit_list::{format_date, ELLIPSIS},
         diff::Step,

@@ -13,18 +13,20 @@ use rustc_hash::FxHashSet;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
     background::Job,
     color::ColorTheme,
-    event::{Sender, UserEvent},
+    context::AppContext,
+    event::Sender,
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
     },
+    keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOptions, SearchOutcome},
-    view::{register_diff_keys, type_query},
+    widget::diff_pane::register_diff_keys,
+    widget::tree_query::type_query,
     widget::{
         conflict::{side_names, ConflictView, RowKind},
         diff::{Step, CONVERTED_DIFF},
@@ -886,7 +888,7 @@ impl<'a> LocalChangesState<'a> {
     // The keys of what has the focus, for the status bar; not the ones moving around.
     pub fn keys(&self) -> KeyList {
         if self.is_typing_query() {
-            return crate::view::typing_keys(self.query_kind());
+            return crate::widget::tree_query::typing_keys(self.query_kind());
         }
         let mut keys = Keys::of(self);
         if self.is_editing() {

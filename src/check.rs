@@ -1,6 +1,7 @@
 use crate::{
+    config::GraphWidthType,
+    error::Result,
     graph::{CellWidthType, Graph},
-    GraphWidthType, Result,
 };
 
 // `size` is the terminal's (columns, rows), which the graph must fit; `page` the columns of the

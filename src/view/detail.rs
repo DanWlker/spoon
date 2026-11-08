@@ -8,23 +8,24 @@ use ratatui::{
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    app::AppContext,
     background::Job,
     browse::{LinkAction, LinkTarget},
-    event::{AppEvent, Sender, UserEvent},
+    context::AppContext,
+    event::{AppEvent, Sender},
     git::{Commit, CommitHash, FileChange, Ref, Repository},
-    graph_commands::dialog_commit,
-    keybind::Scope,
+    graph_commands::{dialog_commit, Compare},
+    keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_hashes, copy_path, copy_paths, copy_selection,
         edit_files, file_link, handle_search_event, query_or_search_status, register_apply_key,
-        register_commit_link_keys, register_commit_list_keys, register_diff_keys,
-        type_commit_search, type_query, typing_keys, Compare, CopyForm, ListFacts,
-        ListRefreshViewContext, RefreshViewContext,
+        register_commit_link_keys, register_commit_list_keys, type_commit_search, CopyForm,
+        ListFacts, ListRefreshViewContext, RefreshViewContext,
     },
+    widget::diff_pane::register_diff_keys,
+    widget::tree_query::{type_query, typing_keys},
     widget::{
         commit_detail::CommitDetail,
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},

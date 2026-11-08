@@ -9,11 +9,12 @@ use ratatui::{
 };
 
 use crate::{
-    app::AppContext,
     background::{shows_loading, Job},
-    event::{Sender, UserEvent},
+    context::AppContext,
+    event::Sender,
     git::Repository,
     graph,
+    keybind::UserEvent,
     widget::{
         commit_list::{mark_commit_list_bar, submodule_commit_list, CommitList, CommitListState},
         diff::Step,

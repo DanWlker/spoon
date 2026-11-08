@@ -4,6 +4,8 @@ mod browse;
 mod check;
 mod color;
 mod config;
+mod context;
+mod error;
 mod event;
 mod external;
 mod git;
@@ -28,12 +30,13 @@ mod test_support;
 
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use ratatui::style::Stylize;
-use serde::Deserialize;
 
 use crate::{
     app::{App, Ret},
+    config::{CommitOrderType, GraphStyle, GraphWidthType, ImageProtocolType, InitialSelection},
+    error::Result,
     graph::GraphImageManager,
 };
 
@@ -94,15 +97,6 @@ impl Args {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum ImageProtocolType {
-    Auto,
-    Iterm,
-    Kitty,
-    KittyUnicode,
-}
-
 impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
     fn from(protocol: Option<ImageProtocolType>) -> Self {
         match protocol {
@@ -117,13 +111,6 @@ impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum CommitOrderType {
-    Chrono,
-    Topo,
-}
-
 impl From<Option<CommitOrderType>> for git::SortCommit {
     fn from(order: Option<CommitOrderType>) -> Self {
         match order {
@@ -132,22 +119,6 @@ impl From<Option<CommitOrderType>> for git::SortCommit {
             None => git::SortCommit::Chronological,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum GraphWidthType {
-    Auto,
-    Double,
-    Single,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum GraphStyle {
-    Rounded,
-    Angular,
-    Curved,
 }
 
 impl From<Option<GraphStyle>> for graph::GraphStyle {
@@ -160,15 +131,6 @@ impl From<Option<GraphStyle>> for graph::GraphStyle {
         }
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum InitialSelection {
-    Latest,
-    Head,
-}
-
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 // How often the branches, HEAD and the operation in progress are checked for changes made outside
 // the app: each check runs 3-4 git processes, so shorter costs CPU, longer leaves another terminal's checkout unseen.
@@ -234,13 +196,13 @@ fn run() -> Result<()> {
         launch,
     };
 
-    let ctx = Rc::new(app::AppContext {
+    let ctx = Rc::new(context::AppContext {
         keybind,
         core_config,
         ui_config,
         color_theme,
         image_protocol,
-        graph: RefCell::new(app::GraphRender {
+        graph: RefCell::new(context::GraphRender {
             color_set: graph_color_set,
             style: graph_style,
             antialias: graph_antialias,
@@ -379,7 +341,7 @@ impl Loader {
     // `shows_loading`), blank before; None when quit before.
     fn load_showing(
         &self,
-        ctx: &app::AppContext,
+        ctx: &context::AppContext,
         ec: &event::EventController,
         terminal: &mut ratatui::DefaultTerminal,
     ) -> Result<Option<(git::Repository, graph::GraphLayout)>> {
@@ -403,7 +365,7 @@ impl Loader {
             if let event::AppEvent::Key(key) = ec.recv() {
                 let quits = matches!(
                     ctx.keybind.event_in(keybind::Scope::Global, &key),
-                    Some(event::UserEvent::Quit | event::UserEvent::ForceQuit)
+                    Some(keybind::UserEvent::Quit | keybind::UserEvent::ForceQuit)
                 );
                 if quits {
                     return Ok(None);
@@ -418,7 +380,7 @@ impl Loader {
         &self,
         repository: &Arc<git::Repository>,
         size: (u16, u16),
-        ctx: &Rc<app::AppContext>,
+        ctx: &Rc<context::AppContext>,
         ec: &event::EventController,
         restart: Restart,
         run: impl FnOnce(App) -> R,

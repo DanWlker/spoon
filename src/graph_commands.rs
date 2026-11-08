@@ -5,9 +5,8 @@
 use rustc_hash::FxHashMap;
 
 use crate::{
-    event::UserEvent,
     git::{CommitHash, ConflictWork, NamedRef, Ref, RemoteBranch, Repository, Rev},
-    view::Compare,
+    keybind::UserEvent,
     widget::git_dialog::{CheckoutTarget, DialogCommit, GitDialog, StartPoint},
 };
 
@@ -18,6 +17,20 @@ pub enum GraphCommand {
     AmendHead,
     // the changes from one commit to another, shown in the details
     Compare(Compare),
+}
+
+// Two revisions compared in the details: commits, or refs diffed from the sidebar, which are
+// resolved again once reloaded.
+#[derive(Debug, Clone)]
+pub struct Compare {
+    pub base: Rev,
+    pub target: Rev,
+}
+
+impl Compare {
+    pub fn title(&self) -> String {
+        format!("Diff {} → {}", self.base.shown(), self.target.shown())
+    }
 }
 
 // The name of the command of `event` when it works on the selected commit alone, which picked

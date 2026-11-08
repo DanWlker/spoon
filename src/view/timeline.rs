@@ -9,17 +9,20 @@ use ratatui::{
 };
 
 use crate::{
-    app::AppContext,
-    event::{AppEvent, Sender, UserEvent},
+    context::AppContext,
+    event::{AppEvent, Sender},
     git::{FileRevision, Repository},
+    keybind::UserEvent,
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_selection, edit_files, file_link,
-        query_or_search_status, register_apply_key, register_commit_keys, register_diff_keys,
-        register_moving_keys, revision_matches, revision_spans, type_query, typing_keys,
+        query_or_search_status, register_apply_key, register_commit_keys, register_moving_keys,
+        revision_matches, revision_spans,
     },
+    widget::diff_pane::register_diff_keys,
+    widget::tree_query::{type_query, typing_keys},
     widget::{
         diff::Step,
         diff_pane::DiffPane,

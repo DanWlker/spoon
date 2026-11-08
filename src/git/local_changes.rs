@@ -241,16 +241,6 @@ impl<'a> Entry<'a> {
     }
 }
 
-// A message git prepared, without its comment lines, those starting with one of `starts`; None
-// when nothing is left. See `Repository::comment_starts`.
-pub(super) fn without_comments(content: &str, starts: &[String]) -> Option<String> {
-    let message: Vec<&str> = content
-        .lines()
-        .filter(|l| !starts.iter().any(|s| l.starts_with(s.as_str())))
-        .collect();
-    Some(message.join("\n").trim().to_string()).filter(|m| !m.is_empty())
-}
-
 // The .gitignore line matching only `path` from the top: the characters git reads as a pattern
 // escaped, and a directory ending with "/".
 fn gitignore_pattern(entry: Entry) -> String {
