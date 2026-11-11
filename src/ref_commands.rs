@@ -2,7 +2,7 @@
 // and dropping stashes. Each opens a popup confirming it.
 
 use crate::{
-    git::{NamedRef, Ref, RemoteBranch, Repository, Stash},
+    git::{Head, NamedRef, Ref, RemoteBranch, Repository, Stash},
     keybind::{Scope, UserEvent},
     widget::{
         git_dialog::GitDialog,
@@ -26,8 +26,11 @@ pub fn ref_command_applies(
     // a detached HEAD is no ref to delete, rename, pick, copy or diff, only a commit to work on
     let detached = *selection == RefSelection::DetachedHead;
     match event {
-        // on the whole graph, wherever
-        UserEvent::BranchOnly => true,
+        // on the whole graph, wherever; the current branch's needs a commit on it
+        UserEvent::BranchOnly => {
+            matches!(selection, RefSelection::Ref(NamedRef::Branch(_)))
+                || !matches!(repository.head(), Head::Unborn { .. })
+        }
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
         UserEvent::ToggleSelect => {
             matches!(selection, RefSelection::Ref(_) | RefSelection::Stash(_))
@@ -641,6 +644,17 @@ mod tests {
         assert!(applies(UserEvent::CreateBranch, head(), &none));
         for event in [UserEvent::Diff, UserEvent::ShortCopy, UserEvent::DeleteRef] {
             assert!(!applies(event, head(), &none), "{event:?}");
+        }
+        // a branch without commits has no commit to work on either
+        for event in [
+            UserEvent::Checkout,
+            UserEvent::CreateBranch,
+            UserEvent::EditRef,
+            UserEvent::DeleteRef,
+            UserEvent::ShortCopy,
+            UserEvent::OpenInBrowser,
+        ] {
+            assert!(!applies(event, RefSelection::Unborn, &none), "{event:?}");
         }
         assert!(applies(
             UserEvent::NavigateDown,

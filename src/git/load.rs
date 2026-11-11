@@ -112,10 +112,6 @@ impl Repository {
         // a graph of some refs leaves the stashes out, they stay in the sidebar
         let stashes = if revisions.is_some() { vec![] } else { stashes };
         let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, revisions)?;
-        if commits.is_empty() {
-            return Err("no commits in the repository".into());
-        }
-
         let commits = merge_stashes_to_commits(commits, stashes);
         merge_ref_maps(&mut ref_map, stash_ref_map);
         Ok(Self::new(
@@ -495,6 +491,9 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
     ref_map.values_mut().for_each(|refs| refs.sort());
 
+    if let (Head::None, Some(name)) = (&head, get_current_branch(path)) {
+        head = Head::Unborn { name };
+    }
     (ref_map, head)
 }
 

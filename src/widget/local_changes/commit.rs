@@ -171,10 +171,7 @@ impl LocalChangesState<'_> {
     // Asks to confirm the commit, showing what it will be: the branch, the message and the files.
     pub(super) fn request_commit(&mut self) -> Result<(), String> {
         self.check_commit()?;
-        let branch = match self.repository.head() {
-            Head::Branch { name, .. } => Some(name.clone()),
-            _ => None,
-        };
+        let branch = self.repository.current_branch();
         let kind = match (&self.draft.amend, self.repository.operation_in_progress()) {
             // HEAD is the commit being edited, on no branch while rebasing
             (Some(amend), _) if amend.of == AmendOf::EditStop => CommitKind::AmendEditStop {

@@ -212,7 +212,6 @@ impl<'a> CommitListState<'a> {
         self.commits.len()
     }
 
-    #[expect(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.commits.is_empty()
     }
@@ -390,6 +389,11 @@ impl<'a> CommitListState<'a> {
 
     pub fn set_filter_note(&mut self, note: Option<String>) {
         self.filter_note = note;
+    }
+
+    // Whether the graph shows only some of the history, see `set_filter_note`.
+    pub fn is_filtered(&self) -> bool {
+        self.filter_note.is_some()
     }
 
     pub fn set_head(&mut self, head: Head) {

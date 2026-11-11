@@ -6,7 +6,7 @@ use crate::widget::tree_query::Toward;
 use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
-    git::{CommitHash, Repository},
+    git::{CommitHash, Head, Repository},
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
     search::SearchKind,
@@ -107,7 +107,11 @@ impl<'a> ListView<'a> {
         register_commit_list_keys(
             k,
             |v| ListFacts::of(v.as_list_state(), v.repository),
-            |_, _| Availability::Works,
+            // a new repository has no commits yet, nothing to select
+            |v, _| match v.as_list_state().is_empty() {
+                true => Availability::Off,
+                false => Availability::Works,
+            },
         );
     }
 
@@ -208,6 +212,9 @@ pub struct ListFacts {
     // a rebase, merge, cherry-pick or revert waits to be finished: the commands moving HEAD are
     // refused meanwhile, see `App::blocked_by_operation`
     pub operation_waits: bool,
+    // HEAD has no commits and the graph shows all of them: showing the current branch only would
+    // show nothing, git failing on the branch without commits
+    pub head_history_empty: bool,
 }
 
 impl ListFacts {
@@ -217,6 +224,8 @@ impl ListFacts {
             picked: state.picked_commit_hashes().len(),
             search_applied: state.search_applied(),
             visual: state.is_visual(),
+            head_history_empty: matches!(repository.head(), Head::Unborn { .. })
+                && !state.is_filtered(),
         }
     }
 }
@@ -229,6 +238,10 @@ pub fn register_commit_list_keys<T: ?Sized>(
     availability: impl Fn(&T, UserEvent) -> Availability + Copy,
 ) {
     use UserEvent::*;
+    let availability = move |v: &T, event| match event {
+        BranchOnly if facts(v).head_history_empty => Availability::Off,
+        _ => availability(v, event),
+    };
     let works = move |event| move |v: &T| availability(v, event) == Availability::Works;
     k.add(&[Confirm], "details", "Show the details of the commit")
         .when(works(Confirm));

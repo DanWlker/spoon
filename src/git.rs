@@ -230,6 +230,8 @@ pub enum Head {
     // `target` is the commit checked out
     Branch { name: String, target: CommitHash },
     Detached { target: CommitHash },
+    // a branch with no commits yet, as in a new repository
+    Unborn { name: String },
     None,
 }
 
@@ -342,7 +344,7 @@ impl Repository {
                 _ => None,
             }),
             Head::Detached { target } => Some(target),
-            Head::None => None,
+            Head::Unborn { .. } | Head::None => None,
         };
         let mut history = rustc_hash::FxHashSet::default();
         let mut pending: Vec<&CommitHash> = tip.into_iter().collect();
@@ -363,7 +365,7 @@ impl Repository {
     // The branch checked out, None when HEAD is detached.
     pub fn current_branch(&self) -> Option<String> {
         match &self.head {
-            Head::Branch { name, .. } => Some(name.clone()),
+            Head::Branch { name, .. } | Head::Unborn { name } => Some(name.clone()),
             _ => None,
         }
     }
@@ -377,7 +379,7 @@ impl Repository {
     pub fn head_commit(&self) -> Option<CommitHash> {
         match &self.head {
             Head::Branch { target, .. } | Head::Detached { target } => Some(target.clone()),
-            Head::None => None,
+            Head::Unborn { .. } | Head::None => None,
         }
     }
 

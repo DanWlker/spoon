@@ -1274,6 +1274,28 @@ fn test_compare_gives_the_branch_only_graph_back() {
 }
 
 #[test]
+fn test_no_branch_only_of_a_branch_without_commits() {
+    use crate::keybind::UserEvent::BranchOnly;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(&path, &["checkout", "-q", "--orphan", "fresh"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        check(|app| assert!(!app.view.keys().takes(BranchOnly))),
+        // fresh, first in the branches, then feat
+        keys("1 j"),
+        check(|app| assert!(!app.sidebar_keys().takes(BranchOnly))),
+        keys("j shift-l"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
+        // back to all of them from the graph
+        keys("2"),
+        check(|app| assert!(app.view.keys().takes(BranchOnly))),
+        keys("shift-l"),
+        check(|app| assert_eq!(graph_note(app), None)),
+    ]);
+}
+
+#[test]
 fn test_branch_only_of_the_sidebar_branch() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -2614,6 +2636,29 @@ fn test_stage_while_the_index_is_locked() {
         keys("space"),
         check(|app| assert_notice(app, "index.lock': File exists")),
     ]);
+}
+
+#[test]
+fn test_new_repository_opens_and_makes_its_first_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("work");
+    std::fs::create_dir(&path).unwrap();
+    git(&path, &["init", "-q", "-b", "master"]);
+    git(&path, &["config", "user.name", "t"]);
+    git(&path, &["config", "user.email", "t@t"]);
+    git(&path, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(path.join("f.txt"), "a\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // no commit to show the details of
+        keys("enter j y"),
+        keys("tab space 3"),
+        typing("first"),
+        keys("esc c"),
+        screen(|screen| assert!(screen.contains("Commit to master"), "{screen}")),
+        keys("enter"),
+    ]);
+    assert_eq!(git(&path, &["log", "--format=%s"]), "first\n");
 }
 
 #[test]

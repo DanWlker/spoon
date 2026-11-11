@@ -540,7 +540,7 @@ impl<'a> App<'a> {
                 Head::Detached { target } => {
                     commit_list_state.select_commit_hash(target);
                 }
-                Head::None => {}
+                Head::Unborn { .. } | Head::None => {}
             }
         }
         let view = View::of_list(commit_list_state, repository, ctx.clone(), ec.sender());

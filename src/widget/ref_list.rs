@@ -25,12 +25,14 @@ use crate::{
     },
 };
 
-// What a row of the tree is: a section, the detached HEAD (see `RefListState::set_head`), or a
-// folder or ref by its full name, like "origin", "feature" or "origin/main".
+// What a row of the tree is: a section, the detached HEAD or the branch without commits checked
+// out (see `RefListState::set_head`), or a folder or ref by its full name, like "origin",
+// "feature" or "origin/main".
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum NodeId {
     Section(RefSection),
     DetachedHead,
+    Unborn,
     Name(String),
 }
 
@@ -177,6 +179,8 @@ pub enum RefSelection {
     Stash(String),
     // the detached HEAD, in the branches
     DetachedHead,
+    // the branch checked out without commits yet, in the branches: no ref to work on
+    Unborn,
 }
 
 #[derive(Debug)]
@@ -231,25 +235,30 @@ impl RefListState {
         self.tracking = tracking;
     }
 
-    // Marks the checked-out branch; a detached HEAD gets a row of its own, first in the branches.
+    // Marks the checked-out branch; a detached HEAD, or a branch git doesn't list as it has no
+    // commits yet, gets a row of its own, first in the branches, like lazygit.
     pub fn set_head(&mut self, head: &Head) {
-        self.head = match head {
-            Head::Branch { name, .. } => Some(NodeId::Name(name.clone())),
-            Head::Detached { target } => {
-                let name = format!("HEAD (detached at {})", target.as_short_hash());
-                let node = RefTreeNode::new(NodeId::DetachedHead, name, Vec::new());
-                if let Some(branches) = self
-                    .roots
-                    .iter_mut()
-                    .find(|r| r.identifier == NodeId::Section(RefSection::Branches))
-                {
-                    branches.children.insert(0, node);
-                }
-                self.rebuild_visible_rows();
-                Some(NodeId::DetachedHead)
-            }
-            Head::None => None,
+        let (id, row) = match head {
+            Head::Branch { name, .. } => (Some(NodeId::Name(name.clone())), None),
+            Head::Detached { target } => (
+                Some(NodeId::DetachedHead),
+                Some(format!("HEAD (detached at {})", target.as_short_hash())),
+            ),
+            Head::Unborn { name } => (Some(NodeId::Unborn), Some(name.clone())),
+            Head::None => (None, None),
         };
+        if let (Some(id), Some(row)) = (&id, row) {
+            let node = RefTreeNode::new(id.clone(), row, Vec::new());
+            if let Some(branches) = self
+                .roots
+                .iter_mut()
+                .find(|r| r.identifier == NodeId::Section(RefSection::Branches))
+            {
+                branches.children.insert(0, node);
+            }
+            self.rebuild_visible_rows();
+        }
+        self.head = id;
         // the checked-out branch's dot takes a column of the lines
         self.rebuild_guides();
     }
@@ -405,7 +414,7 @@ impl RefListState {
             RefSelection::Ref(named) => Some(named.full_name()),
             RefSelection::Stash(name) => Some(name),
             RefSelection::DetachedHead => Some("HEAD".into()),
-            RefSelection::Section(_) | RefSelection::Folder(..) => None,
+            RefSelection::Section(_) | RefSelection::Folder(..) | RefSelection::Unborn => None,
         }
     }
 
@@ -444,6 +453,7 @@ impl RefListState {
                 .any(|row| row.identifier == self.selected && row.kind == RowKind::Ref);
         match self.selected.last() {
             Some(NodeId::DetachedHead) => RefSelection::DetachedHead,
+            Some(NodeId::Unborn) => RefSelection::Unborn,
             Some(NodeId::Name(name)) if is_ref => match section.named(name.clone()) {
                 Some(named) => RefSelection::Ref(named),
                 None => RefSelection::Stash(name.clone()),
@@ -1104,6 +1114,29 @@ mod tests {
         state.toggle_visual().unwrap();
         state.toggle_visual().unwrap();
         assert_eq!(state.picked().section(), Some(RefSection::Tags));
+    }
+
+    #[test]
+    fn test_unborn_branch_row() {
+        let main = Ref::Branch {
+            name: "main".into(),
+            target: "a".repeat(40).as_str().into(),
+        };
+        let mut state = RefListState::new(&[&main], &[]);
+        // an orphan branch: git lists main alone, the checked-out one goes first and is marked
+        let head = Head::Unborn {
+            name: "fresh".into(),
+        };
+        state.set_head(&head);
+        let names: Vec<&str> = state.visible_rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names[..3], ["Branches", "fresh", "main"]);
+        assert_eq!(state.head, Some(NodeId::Unborn));
+        state.handle_move(UserEvent::NavigateDown);
+        assert_eq!(state.selection(), RefSelection::Unborn);
+        assert_eq!(state.selected_git_name(), None);
+        // and stays selected through a reload
+        state.set_refs(&[&main], &[], &head);
+        assert_eq!(state.selection(), RefSelection::Unborn);
     }
 
     #[test]

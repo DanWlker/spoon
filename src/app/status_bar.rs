@@ -102,7 +102,7 @@ impl App<'_> {
                         left.push(Span::raw(format!("󰉋 {path}")).fg(theme.status_bar_fg));
                         // the checked-out branch, as the sidebar is on the graph only
                         let head = match self.repository.head() {
-                            Head::Branch { name, .. } => Some(name.clone()),
+                            Head::Branch { name, .. } | Head::Unborn { name } => Some(name.clone()),
                             Head::Detached { target } => {
                                 Some(format!("detached at {}", target.as_short_hash()))
                             }

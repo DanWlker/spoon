@@ -18,7 +18,7 @@ use crate::{
     context::AppContext,
     event::Sender,
     git::{
-        AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask, Head,
+        AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
     },
     keybind::UserEvent,
