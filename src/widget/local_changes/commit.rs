@@ -442,6 +442,17 @@ impl LocalChangesPanel<'_> {
         }
         let text_area = render_panel(buf, area, Line::from(title), focused, theme);
         self.render_message(state, text_area, buf);
+        // for the mouse, as the commit key; dimmed with nothing to commit
+        let style = if state.can_commit() {
+            Style::default().fg(theme.accent_fg).bold()
+        } else {
+            Style::default().fg(theme.muted_fg)
+        };
+        let button = render_border_buttons(buf, area, &[("[Commit]", style)], theme);
+        let mut layout = self.ctx.layout.borrow_mut();
+        for at in button {
+            layout.record(Target::CommitButton, at, RowMap::One);
+        }
     }
 
     // The summary, a line, then the description, each with its placeholder while empty; the bar

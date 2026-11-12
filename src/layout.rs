@@ -46,8 +46,20 @@ pub enum Target {
     Menu,
     // a part of the popup, see `DialogHit`
     Dialog(DialogHit),
+    // the [x] of what it closes, and the button committing below the commit message
+    Close(Closes),
+    CommitButton,
     // drawn over the panels, a notice or the keys popup: a click on it does nothing
     Covered,
+}
+
+// What an [x] closes, see `render_close_button`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closes {
+    Details,
+    // the window over the pages: the blame, the timeline, the command log or the keys list
+    Window,
+    KeysPopup,
 }
 
 // The rows of a panel on the lines of its area: none, one (a button), from the row shown first

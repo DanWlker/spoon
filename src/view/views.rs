@@ -211,6 +211,11 @@ impl<'a> View<'a> {
         matches!(self, View::LocalChanges(view) if view.is_typing_message())
     }
 
+    // Whether the local changes have something to commit.
+    pub fn can_commit(&self) -> bool {
+        matches!(self, View::LocalChanges(view) if view.can_commit())
+    }
+
     pub fn of_list(
         commit_list_state: CommitListState<'a>,
         repository: &'a Repository,

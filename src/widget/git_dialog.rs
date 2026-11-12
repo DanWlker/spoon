@@ -26,9 +26,17 @@ use crate::{
     keys::{KeyList, Keys},
     layout::{PanelLayout, RowMap, Target},
     widget::style::{
-        change_span, choice_arrows, focused_title, no_choice_arrows, render_popup, tabs_shown,
+        change_span, choice_arrows, focused_title, no_choice_arrows, render_border_buttons,
+        render_close_button, render_popup, tabs_shown,
     },
 };
+
+// What a fetch or push popup is set to from the sidebar: the remote to fetch, the branch to push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteFrom {
+    Remote(String),
+    Branch(String),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteAction {
@@ -950,6 +958,28 @@ impl GitDialog {
         dialog.update_pull_branch(None);
         dialog.update_push_remote();
         Ok(dialog)
+    }
+
+    // Sets a fetch to the remote `from`, a push to the branch, else leaves it as it is.
+    pub fn set_to(mut self, from: &RemoteFrom) -> Self {
+        let choose = |dialog: &mut Self, pick: Pick, value: &str| {
+            if let Field::Choice { options, index } = &mut dialog.fields[pick.0].1 {
+                *index = options.iter().position(|o| o == value).unwrap_or(*index);
+            }
+        };
+        match (&self.kind, from) {
+            (DialogKind::Fetch { remote }, RemoteFrom::Remote(name)) => {
+                let remote = *remote;
+                choose(&mut self, remote, name);
+            }
+            (DialogKind::Push { fields, .. }, RemoteFrom::Branch(name)) => {
+                let branch = fields.local_branch;
+                choose(&mut self, branch, name);
+                self.update_push_remote();
+            }
+            _ => {}
+        }
+        self
     }
 
     fn fetch_command(&self, remote: Pick) -> Result<GitTask, String> {
@@ -2944,33 +2974,23 @@ impl Widget for GitDialogWidget<'_> {
             );
             layout.record(Target::Dialog(hit), at.intersection(inner), RowMap::One);
         }
-        // the buttons, for the mouse only, on the bottom border at the right before its last "─╯"
+        // the buttons and the [x], for the mouse only
         let confirm = if dialog.can_run() {
             Style::default().fg(theme.accent_fg).bold()
         } else {
             Style::default().fg(theme.muted_fg)
         };
         let buttons = [
-            (DialogHit::Cancel, "[Cancel]", Style::default().fg(theme.fg)),
-            (DialogHit::Confirm, "[Confirm]", confirm),
+            ("[Cancel]", Style::default().fg(theme.fg)),
+            ("[Confirm]", confirm),
         ];
-        let width = buttons
-            .iter()
-            .map(|(_, text, _)| text.len() + 1)
-            .sum::<usize>()
-            + 1;
-        if popup.height >= 2 && popup.width as usize >= width + 3 {
-            let y = popup.bottom() - 1;
-            let mut x = popup.right() - 2 - width as u16;
-            for (hit, text, style) in buttons {
-                buf.set_string(x, y, " ", Style::default().fg(theme.fg));
-                x += 1;
-                buf.set_string(x, y, text, style);
-                let at = Rect::new(x, y, text.len() as u16, 1);
-                layout.record(Target::Dialog(hit), at, RowMap::One);
-                x += text.len() as u16;
-            }
-            buf.set_string(x, y, " ", Style::default().fg(theme.fg));
+        let areas = render_border_buttons(buf, popup, &buttons, theme);
+        let close = render_close_button(buf, popup, theme);
+        let hits = [DialogHit::Cancel, DialogHit::Confirm]
+            .into_iter()
+            .zip(areas);
+        for (hit, at) in hits.chain(close.map(|at| (DialogHit::Cancel, at))) {
+            layout.record(Target::Dialog(hit), at, RowMap::One);
         }
         drop(layout);
 
@@ -3514,6 +3534,26 @@ mod tests {
         dialog.handle_key(None, key(KeyCode::Home));
         dialog.handle_key(None, key(KeyCode::Delete));
         assert_eq!(args(&dialog), "tag d refs/tags/v1");
+    }
+
+    // From the sidebar: the remote fetched, the branch pushed with its remote following.
+    #[test]
+    fn test_set_to_the_remote_or_branch_of_the_sidebar() {
+        let fork = RemoteFrom::Remote("fork".into());
+        let dialog = GitDialog::remote(RemoteAction::Fetch, info())
+            .unwrap()
+            .set_to(&fork);
+        assert_eq!(args(&dialog), "fetch fork");
+        let topic = RemoteFrom::Branch("topic".into());
+        let dialog = GitDialog::remote(RemoteAction::Push, info())
+            .unwrap()
+            .set_to(&topic);
+        assert!(args(&dialog).contains("topic"), "{}", args(&dialog));
+        // a branch to a fetch, a remote to a push: left as they were
+        let dialog = GitDialog::remote(RemoteAction::Fetch, info())
+            .unwrap()
+            .set_to(&topic);
+        assert_eq!(args(&dialog), "fetch origin");
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::{
     graph_commands::{dialog_commit, Compare},
     keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
+    layout::{fit_size, Closes, Direction, Edge, Panel, RowMap, Target},
     pointer::OnPicks,
     ref_commands::lone_stash,
     search::{SearchKind, SearchOutcome},
@@ -38,7 +38,7 @@ use crate::{
         diff::{Step, CONVERTED_DIFF},
         file_tree::{path_contains, Entry, FileTreeRow, FileTreeState},
         git_dialog::GitDialog,
-        style::{loading_note, panel_block, ScrollState},
+        style::{loading_note, panel_block, render_close_button, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -900,6 +900,11 @@ impl<'a> DetailView<'a> {
         let panel_area = detail_area;
         let detail_area = block.inner(panel_area);
         f.render_widget(block, panel_area);
+        let close = render_close_button(f.buffer_mut(), panel_area, &self.ctx.color_theme);
+        if let Some(at) = close {
+            let mut layout = self.ctx.layout.borrow_mut();
+            layout.record(Target::Close(Closes::Details), at, RowMap::One);
+        }
         self.ctx
             .layout
             .borrow_mut()

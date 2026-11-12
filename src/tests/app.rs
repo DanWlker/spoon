@@ -24,7 +24,7 @@ use crate::{
     event::EventController,
     git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
     graph::{CellWidthType, GraphImageWidthMode, GraphLayout, GraphStyle},
-    keybind::{parse_key_event, KeyHint, Scope},
+    keybind::{parse_key_event, KeyHint, Scope, UserEvent},
     layout::Panel,
     protocol::ImageProtocol,
     search::SearchOutcome,
@@ -2756,6 +2756,74 @@ fn test_popup_click_on_fields() {
     ]);
 }
 
+fn menu_events(app: &App) -> Vec<UserEvent> {
+    let menu = app.shell.menu.as_ref().expect("a menu");
+    (0..).map_while(|row| menu.event(row)).collect()
+}
+
+// The menu of a branch in the sidebar fetches and pushes it, pulls into the checked-out one only;
+// a remote branch or a remote fetches its remote. Each opens its popup set to them.
+#[test]
+fn test_sidebar_menu_fetch_pull_push() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let has = |events: &'static [UserEvent], not: &'static [UserEvent]| {
+        check(move |app| {
+            let menu = menu_events(app);
+            assert!(events.iter().all(|e| menu.contains(e)), "{menu:?}");
+            assert!(!not.iter().any(|e| menu.contains(e)), "{menu:?}");
+        })
+    };
+    use UserEvent::{Fetch, Pull, Push};
+    harness.run(vec![
+        // feat, then master, checked out
+        mouse_at("Branches", (2, 1), TestGesture::RightClick),
+        has(&[Fetch, Push], &[Pull]),
+        keys("esc"),
+        mouse_at("Branches", (2, 2), TestGesture::RightClick),
+        has(&[Fetch, Pull, Push], &[]),
+        keys("esc"),
+        mouse_on("Tags", TestGesture::RightClick),
+        has(&[], &[Fetch, Pull, Push]),
+        keys("esc"),
+        // pushing feat from its menu
+        mouse_at("Branches", (2, 1), TestGesture::RightClick),
+        mouse_on("push", TestGesture::Click),
+        draw(),
+        screen(|s| assert!(s.contains("‹ feat ›"), "{s}")),
+        keys("esc"),
+        mouse_on("Remotes", TestGesture::Click),
+        mouse_on("origin", TestGesture::RightClick),
+        has(&[Fetch], &[Pull, Push]),
+    ]);
+}
+
+// [x] at the top right of the details, the keys popup, a window or a popup closes it.
+#[test]
+fn test_close_buttons() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter"),
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+        mouse_on("[x]", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        keys("shift-h"),
+        check(|app| assert!(app.shell.keys_popup)),
+        mouse_on("[x]", TestGesture::Click),
+        check(|app| assert!(!app.shell.keys_popup)),
+        keys("?"),
+        check(|app| assert!(app.shell.overlay.is_some())),
+        mouse_on("[x]", TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_none())),
+        keys("b"),
+        mouse_on("[x]", TestGesture::Click),
+        check(|app| assert!(app.shell.dialog.is_none())),
+    ]);
+}
+
 #[test]
 fn test_click_below_the_last_row_only_focuses() {
     let dir = tempfile::tempdir().unwrap();
@@ -3136,6 +3204,25 @@ fn test_drag_and_ctrl_click_pick_files() {
         // the same cell: the diff's title is b.txt now
         vec![Step::Mouse(TestGesture::CtrlClick)],
         picked("2 picked"),
+    ]);
+}
+
+// [Commit] on the border of the commit message commits as the key does, while typing too; with
+// nothing to commit it is dimmed and does nothing.
+#[test]
+fn test_commit_button() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    harness.run(vec![
+        mouse_on("[Commit]", TestGesture::Click),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        check(|app| assert!(!app.is_typing())),
+        check(|app| assert!(notices(app).is_empty(), "{:?}", notices(app))),
+        double_click("b.txt"),
+        mouse_on("Summary", TestGesture::Click),
+        typing("msg"),
+        mouse_on("[Commit]", TestGesture::Click),
+        check(|app| assert!(app.shell.dialog.is_some())),
     ]);
 }
 

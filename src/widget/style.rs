@@ -164,6 +164,54 @@ pub fn render_popup(
     (popup, inner)
 }
 
+// Buttons for the mouse on the bottom border of `area`, at the right before its last "─╯", a
+// space around each: their areas, none when the border is too narrow for them.
+pub fn render_border_buttons(
+    buf: &mut Buffer,
+    area: Rect,
+    buttons: &[(&str, Style)],
+    theme: &ColorTheme,
+) -> Vec<Rect> {
+    let width = buttons
+        .iter()
+        .map(|(text, _)| text.len() + 1)
+        .sum::<usize>()
+        + 1;
+    if area.height < 2 || (area.width as usize) < width + 3 {
+        return vec![];
+    }
+    let y = area.bottom() - 1;
+    let mut x = area.right() - 2 - width as u16;
+    let space = Style::default().fg(theme.fg);
+    let mut areas = vec![];
+    for (text, style) in buttons {
+        buf.set_string(x, y, " ", space);
+        x += 1;
+        buf.set_string(x, y, text, *style);
+        areas.push(Rect::new(x, y, text.len() as u16, 1));
+        x += text.len() as u16;
+    }
+    buf.set_string(x, y, " ", space);
+    areas
+}
+
+// The [x] closing a panel or popup, on the top border of `area` right before its corner: its area,
+// none when the border is too narrow for it.
+pub fn render_close_button(buf: &mut Buffer, area: Rect, theme: &ColorTheme) -> Option<Rect> {
+    const CLOSE: &str = "[x]";
+    if area.height < 2 || area.width < 12 {
+        return None;
+    }
+    let at = Rect::new(
+        area.right() - 1 - CLOSE.len() as u16,
+        area.y,
+        CLOSE.len() as u16,
+        1,
+    );
+    buf.set_string(at.x, at.y, CLOSE, Style::default().fg(theme.fg));
+    Some(at)
+}
+
 // The color of a file's change, by its letter like git's: "A" added, "?" untracked, "D" deleted,
 // "U" conflicted, "R" renamed, "C" copied, else modified.
 pub fn change_color(symbol: &str, theme: &ColorTheme) -> Color {

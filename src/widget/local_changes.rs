@@ -39,7 +39,7 @@ use crate::{
         git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
             badge, divider, loading_note, mark_selected_bar, panel_title, placeholder,
-            render_panel, render_panel_scrollbar, tree_panel_width,
+            render_border_buttons, render_panel, render_panel_scrollbar, tree_panel_width,
         },
         submodule::{submodule_key, SubmodulePanel},
         text_area::{Caret, Lines, TextArea},
@@ -627,6 +627,13 @@ impl<'a> LocalChangesState<'a> {
         Ok(())
     }
 
+    // Whether there is something to commit: staged changes, amending, or an operation to conclude.
+    pub fn can_commit(&self) -> bool {
+        !self.changes.staged.is_empty()
+            || self.draft.amend.is_some()
+            || self.repository.operation_in_progress().is_some()
+    }
+
     // The keys of the local changes page, see `Keys`.
     pub fn register_keys(k: &mut Keys<Self>) {
         use UserEvent::*;
@@ -642,12 +649,7 @@ impl<'a> LocalChangesState<'a> {
         let file = |v: &Self| v.focus() == Focus::Files && v.selected_file().is_some();
         // a file or directory, not the root row standing for all of them
         let path = |v: &Self| row(v) && !v.selected_row().is_some_and(FileTreeRow::is_root);
-        // something to commit: staged changes, amending, or an operation to conclude
-        let committable = |v: &Self| {
-            !v.changes.staged.is_empty()
-                || v.draft.amend.is_some()
-                || v.repository.operation_in_progress().is_some()
-        };
+        let committable = |v: &Self| v.can_commit();
         let stage = |v: &Self| if unstaged(v) { "stage" } else { "unstage" };
         let what = |v: &Self| v.pane.selected_name();
         // committing, or amending

@@ -32,13 +32,14 @@ use crate::{
     git::{
         read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, Commit, CommitHash,
         FileBlameResult, FileChange, FileHistoryResult, FilesSnapshot, GitCommand, GitTask, Head,
-        LoadOptions, Loaded, NamedRef, Ref, Repository, Rev, RunningTask, SharedTask,
+        LoadOptions, Loaded, NamedRef, Ref, RemoteBranch, RemoteInfo, Repository, Rev, RunningTask,
+        SharedTask,
     },
     graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
     graph_commands::{graph_command, moves_head, ref_graph_command, Compare, GraphCommand},
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Hit, Panel, RowMap, Size, Target},
+    layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target},
     pointer::{Cell, Gesture, OnPicks, Pointer},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::{SearchKind, SearchOptions, SearchOutcome},
@@ -51,12 +52,12 @@ use crate::{
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
-        git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction},
+        git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction, RemoteFrom},
         keys_popup::KeysPopup,
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
-        style::{badge, key_hints, spinner, KeyLabel, SPINNER_RATE},
+        style::{badge, key_hints, render_close_button, spinner, KeyLabel, SPINNER_RATE},
         tree_query::{type_query, typing_keys, QueryKind, SearchDirection},
     },
 };
@@ -1297,6 +1298,9 @@ impl App<'_> {
             Some(Overlay::File(window)) => window.render(f, app_area),
             _ => {}
         }
+        if let Some(Overlay::Help(_) | Overlay::File(_)) = self.shell.overlay {
+            self.render_close(f, app_area, Closes::Window);
+        }
         if let Some(dialog) = self.visible_dialog() {
             f.render_widget(GitDialogWidget::new(dialog, &self.ctx), app_area);
         }
@@ -1311,14 +1315,22 @@ impl App<'_> {
             for (target, area, rows) in drawn {
                 layout.record(target, area, rows);
             }
+            drop(layout);
+            self.render_close(f, app_area, Closes::Window);
         }
         // over the command log too, which takes the keys it lists
         if !keys.is_empty() {
             let popup = KeysPopup::new(keys, &self.ctx.color_theme);
             let area = popup.area(app_area);
             f.render_widget(popup, app_area);
-            let mut layout = self.ctx.layout.borrow_mut();
-            layout.record(Target::Covered, area, RowMap::None);
+            self.ctx
+                .layout
+                .borrow_mut()
+                .record(Target::Covered, area, RowMap::None);
+            // the keys finishing a sequence go once it ends
+            if self.shell.app_status.pending_keys.is_empty() {
+                self.render_close(f, area, Closes::KeysPopup);
+            }
         }
         if let Some(menu) = self.shell.menu.as_mut() {
             let screen = f.area();
@@ -1347,6 +1359,14 @@ impl App<'_> {
 }
 
 impl App<'_> {
+    // The [x] of what is drawn in `area`, closing it.
+    fn render_close(&self, f: &mut Frame, area: Rect, closes: Closes) {
+        if let Some(at) = render_close_button(f.buffer_mut(), area, &self.ctx.color_theme) {
+            let mut layout = self.ctx.layout.borrow_mut();
+            layout.record(Target::Close(closes), at, RowMap::One);
+        }
+    }
+
     // The sidebar is on the graph only, beside the commits or their details.
     fn sidebar_shown(&self) -> bool {
         !matches!(self.view, View::LocalChanges(_))
@@ -2093,6 +2113,70 @@ impl App<'_> {
         self.ec.send(AppEvent::copy(name, value));
     }
 
+    // What a fetch or push is set to from the focused sidebar: fetching the remote of the branch,
+    // remote branch or remote selected, pushing the branch; None elsewhere, where it starts from
+    // the checked-out branch.
+    fn sidebar_remote_from(&self, action: RemoteAction, info: &RemoteInfo) -> Option<RemoteFrom> {
+        if !self.shell.sidebar_focused() {
+            return None;
+        }
+        let remote = match self.shell.sidebar.selection() {
+            RefSelection::Ref(NamedRef::Branch(branch)) if action == RemoteAction::Push => {
+                return Some(RemoteFrom::Branch(branch));
+            }
+            RefSelection::Ref(NamedRef::Branch(branch)) => {
+                info.default_remote(Some(&branch)).cloned()
+            }
+            RefSelection::Ref(NamedRef::RemoteBranch(name)) => {
+                RemoteBranch::parse(&info.remotes, &name).map(|branch| branch.remote)
+            }
+            RefSelection::Folder(RefSection::Remotes, name) => Some(name),
+            _ => None,
+        };
+        remote
+            .filter(|_| action == RemoteAction::Fetch)
+            .map(RemoteFrom::Remote)
+    }
+
+    // The fetch, pull and push in the menu of the sidebar row, where they work: fetch on a branch,
+    // remote branch or remote, push on a branch, pull on the checked-out one.
+    fn sidebar_remote_entries(&self, scope: Scope) -> Vec<MenuEntry> {
+        if !self.shell.sidebar_focused() {
+            return vec![];
+        }
+        let info = self.repository.remote_info();
+        let current = matches!(
+            self.shell.sidebar.selection(),
+            RefSelection::Ref(NamedRef::Branch(branch)) if info.current_branch.as_ref() == Some(&branch)
+        );
+        let applies = |event| match event {
+            UserEvent::Fetch => self
+                .sidebar_remote_from(RemoteAction::Fetch, &info)
+                .is_some(),
+            UserEvent::Push => self
+                .sidebar_remote_from(RemoteAction::Push, &info)
+                .is_some(),
+            UserEvent::Pull => current,
+            _ => false,
+        };
+        let app_keys = self.app_keys();
+        [UserEvent::Fetch, UserEvent::Pull, UserEvent::Push]
+            .into_iter()
+            .filter(|event| applies(*event))
+            .filter_map(|event| {
+                let (_, action) = app_keys
+                    .hints()
+                    .into_iter()
+                    .find(|(events, _)| events.contains(&event))?;
+                let keys = self.ctx.short_keys(scope, &[event]);
+                Some(MenuEntry {
+                    event,
+                    label: KeyLabel::new(keys, action),
+                })
+            })
+            .collect()
+    }
+
     // Opens the fetch, pull or push popup, or fetches all remotes, for the event bound to them.
     // Returns whether the event was one of them.
     fn handle_remote_event(&mut self, event: UserEvent) -> bool {
@@ -2106,7 +2190,13 @@ impl App<'_> {
             }
             _ => return false,
         };
-        self.open_dialog(GitDialog::remote(action, self.repository.remote_info()));
+        let info = self.repository.remote_info();
+        let from = self.sidebar_remote_from(action, &info);
+        let dialog = GitDialog::remote(action, info);
+        self.open_dialog(dialog.map(|dialog| match &from {
+            Some(from) => dialog.set_to(from),
+            None => dialog,
+        }));
         // pressing the key again quickly runs the command without showing the popup
         if let Some(popup) = self.shell.dialog.as_mut() {
             popup.reveal = Some(Instant::now() + QUICK_RUN_DELAY);
@@ -2640,9 +2730,14 @@ impl App<'_> {
             return;
         }
         if self.is_typing() {
-            // in the commit message, a click on a box types there
+            // in the commit message, a click on a box types there, on the button commits
             if let Gesture::Click(at) | Gesture::DoubleClick(at) = gesture {
                 if self.view.is_typing_message() && self.click_message(at) {
+                    return;
+                }
+                if self.view.is_typing_message() && self.hit_is(at, Target::CommitButton) {
+                    self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    self.click_button(at);
                     return;
                 }
             }
@@ -2661,7 +2756,8 @@ impl App<'_> {
         // on empty space a click only focuses; on nothing, it is no first click of a double click
         let on_row = |hit: Option<Hit>| hit.is_some_and(|hit| hit.row.is_some());
         match gesture {
-            Gesture::Click(at) | Gesture::DoubleClick(at) if self.click_message(at) => {}
+            Gesture::Click(at) | Gesture::DoubleClick(at)
+                if self.click_message(at) || self.click_button(at) => {}
             Gesture::Click(at) => {
                 let hit = self.point(at, OnPicks::Keep);
                 if hit.is_none() {
@@ -2724,6 +2820,29 @@ impl App<'_> {
         }
     }
 
+    fn hit_is(&self, at: Cell, target: Target) -> bool {
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        hit.is_some_and(|hit| hit.target == target)
+    }
+
+    // Runs the button at `at`: an [x] closes what it is on, [Commit] commits as its key, unless
+    // there is nothing to; returns whether a button is there.
+    fn click_button(&mut self, at: Cell) -> bool {
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        match hit.map(|hit| hit.target) {
+            Some(Target::Close(Closes::Details)) => self.ec.send(AppEvent::CloseDetail),
+            Some(Target::Close(Closes::Window)) => self.shell.overlay = None,
+            Some(Target::Close(Closes::KeysPopup)) => self.shell.keys_popup = false,
+            Some(Target::CommitButton) => {
+                if self.view.can_commit() {
+                    self.run_event(UserEvent::Commit);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     // Types in the box of the commit message at `at`, as space does there; returns whether one
     // is there.
     fn click_message(&mut self, at: Cell) -> bool {
@@ -2751,6 +2870,7 @@ impl App<'_> {
                 label: KeyLabel::new(self.ctx.short_keys(scope, &events), action),
             })
             .filter(|entry| !entry.label.keys.is_empty())
+            .chain(self.sidebar_remote_entries(scope))
             .collect();
         self.shell.menu = ActionMenu::new(entries, at);
         self.ec.set_hover(self.shell.menu.is_some());
@@ -2765,6 +2885,10 @@ impl App<'_> {
         self.ec.set_hover(false);
         if let MenuOutcome::Run(event) = outcome {
             self.run_event(event);
+            // no second press of its key to wait for
+            if let Some(popup) = self.shell.dialog.as_mut() {
+                popup.reveal = None;
+            }
         }
     }
 

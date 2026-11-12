@@ -348,6 +348,10 @@ impl<'a> LocalChangesView<'a> {
         self.local_changes_state.is_editing()
     }
 
+    pub fn can_commit(&self) -> bool {
+        self.local_changes_state.can_commit()
+    }
+
     pub fn is_capturing_keys(&self) -> bool {
         let state = &self.local_changes_state;
         state.is_editing() || state.is_typing_query()
