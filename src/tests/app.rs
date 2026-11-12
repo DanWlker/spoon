@@ -592,7 +592,8 @@ fn test_sidebar_only_beside_the_graph() {
         focused(false),
         keys("1 ctrl-h"),
         focused(false),
-        keys("tab 1"),
+        // back on the graph, the sidebar has it
+        keys("tab"),
         focused(true),
     ]);
 }
@@ -1357,6 +1358,111 @@ fn test_space_in_the_sidebar_checks_out_and_applies() {
         check(move |app| assert_eq!(command(app), "stash apply stash@{0}")),
         keys("space"),
         check(move |app| assert_eq!(command(app), "stash apply --index stash@{0}")),
+    ]);
+}
+
+#[test]
+fn test_space_on_a_stash_in_the_graph_applies_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "stashed\n").unwrap();
+    git(&path, &["stash", "push", "-q", "-m", "wip"]);
+    let mut harness = Harness::new(&path, launch());
+    let command = |app: &App| {
+        let popup = app.shell.dialog.as_ref().expect("no popup");
+        popup.dialog.command().unwrap().unwrap().commands[0].to_string()
+    };
+    // space listed once, under what it does
+    let space = |short: &'static str| {
+        check(move |app| {
+            let hints = app.view.keys().hints();
+            let with_space: Vec<&str> = hints
+                .iter()
+                .filter(|(events, _)| events.contains(&crate::keybind::UserEvent::Select))
+                .map(|(_, s)| s.as_str())
+                .collect();
+            assert_eq!(with_space, [short]);
+        })
+    };
+    harness.run(vec![
+        // the stash, the newest commit
+        keys("g g"),
+        space("apply"),
+        keys("space"),
+        check(move |app| assert_eq!(command(app), "stash apply stash@{0}")),
+        keys("esc"),
+        // the same from the commit list over the details
+        keys("enter 2 space"),
+        check(move |app| assert_eq!(command(app), "stash apply stash@{0}")),
+        keys("esc esc"),
+        // other commits are checked out
+        keys("j"),
+        space("checkout"),
+    ]);
+}
+
+#[test]
+fn test_graph_page_opens_on_the_sidebar() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("tab tab"),
+        check(|app| assert!(app.shell.sidebar_focused())),
+        // shrunk out of the way, it stays so
+        keys("1 tab tab"),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+    ]);
+}
+
+#[test]
+fn test_sidebar_search_opens_folders_and_steps_through_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(&path, &["branch", "fix/deep"]);
+    git(&path, &["tag", "deep-tag"]);
+    let mut harness = Harness::new(&path, launch());
+    let selected = |expected: RefSelection| {
+        check(move |app| assert_eq!(app.shell.sidebar.selection(), expected))
+    };
+    let branch = |name: &str| RefSelection::Ref(NamedRef::Branch(name.into()));
+    let tag = |name: &str| RefSelection::Ref(NamedRef::Tag(name.into()));
+    harness.run(vec![
+        // in the closed fix folder: opened to select it
+        keys("1 /"),
+        typing("deep"),
+        selected(branch("fix/deep")),
+        keys("enter"),
+        check(|app| {
+            let said = &app.shell.app_status.status_line;
+            assert!(
+                matches!(
+                    said,
+                    StatusLine::SearchResult {
+                        outcome: SearchOutcome::Found {
+                            index: 1,
+                            total: 2,
+                            ..
+                        },
+                        ..
+                    }
+                ),
+                "{said:?}"
+            );
+        }),
+        // the tag, in the closed tags section, and round to the branch
+        keys("n"),
+        selected(tag("deep-tag")),
+        keys("n"),
+        selected(branch("fix/deep")),
+        keys("shift-n"),
+        selected(tag("deep-tag")),
+        // esc clears the search first, then leaves the sidebar
+        keys("esc"),
+        check(|app| assert!(app.shell.sidebar.query().search().is_none())),
+        check(|app| assert!(app.shell.sidebar_focused())),
+        keys("esc"),
+        check(|app| assert!(!app.shell.sidebar_focused())),
     ]);
 }
 
@@ -2331,6 +2437,8 @@ fn test_no_match_said_alike_on_every_page() {
         ("5 shift-b l", StartPage::Graph),
         ("5 shift-t", StartPage::Graph),
         ("enter", StartPage::LocalChanges),
+        // the refs sidebar
+        ("1", StartPage::Graph),
     ];
     for (to_search, page) in pages {
         let dir = tempfile::tempdir().unwrap();
@@ -3141,6 +3249,8 @@ fn test_clearing_a_search_clears_its_status_line() {
         ("5 shift-b l", StartPage::Graph),
         ("5 shift-t", StartPage::Graph),
         ("enter", StartPage::LocalChanges),
+        // the refs sidebar
+        ("1", StartPage::Graph),
     ];
     for (to_search, page) in pages {
         let dir = tempfile::tempdir().unwrap();

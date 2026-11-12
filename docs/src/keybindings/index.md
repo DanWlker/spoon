@@ -69,7 +69,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
-| <kbd>Space</kbd>                     | Check out the selected branch or commit            | `select` (`checkout`, no key)                |
+| <kbd>Space</kbd>                     | Check out the selected branch or commit; apply a stash | `select` (`checkout`, no key)            |
 | <kbd>C</kbd>                         | Cherry-pick the picked commits, or the selected one | `cherry_pick`                               |
 | <kbd>s</kbd>                         | Squash the picked commits, or the selected one, into their parents | `squash`                     |
 | <kbd>u</kbd>                         | Revert the picked commits, or the selected one     | `revert`                                     |
@@ -102,7 +102,7 @@ The other commands ask first, in a popup showing what they do and the git comman
 
 - <kbd>r</kbd> rebase: the current branch onto the selected commit, named by its hash (not a branch or tag at it), stashing and reapplying local changes (checked by `rebase.autoStash`, or by default when it is not set).
 - <kbd>m</kbd> merge: the selected commit, named by its hash (not a branch or tag at it), into the current branch: fast-forward if possible, always a merge commit, fast-forward only, squash, or don't commit (`merge.ff` picks the default: `false` a merge commit, `only` fast-forward only). Squashing and not committing leave the changes on the local changes page, with the message git prepared.
-- <kbd>Space</kbd> checkout: a branch at the selected commit (a remote branch becomes a new local branch tracking it) or the commit itself (detached). The local changes are kept (git refuses when they conflict), stashed and reapplied, or discarded (untracked files are kept).
+- <kbd>Space</kbd> checkout: a branch at the selected commit (a remote branch becomes a new local branch tracking it) or the commit itself (detached). The local changes are kept (git refuses when they conflict), stashed and reapplied, or discarded (untracked files are kept). On a stash with no branch or tag at it, <kbd>Space</kbd> applies the stash instead, as in the sidebar.
 - <kbd>C</kbd> cherry-pick: the picked commits (oldest first), or the selected one, committing them or leaving the changes on the local changes page, optionally appending "(cherry picked from commit …)" to the messages. Merge commits are refused.
 - <kbd>s</kbd> squash: each picked commit, or the selected one, into its parent, combining their messages or keeping the parent's (fixup), with an interactive rebase from there, stashing and reapplying local changes like rebase. The commits must be on the current branch, with no merge commits after them.
 - <kbd>d</kbd> drop: removes the picked commits, or the selected one, and their changes, with an interactive rebase; the commits after them are rebuilt on top, stashing and reapplying local changes like rebase.
@@ -230,7 +230,9 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 
 | Key                                                  | Description      | Corresponding keybind            |
 | ---------------------------------------------------- | ---------------- | -------------------------------- |
-| <kbd>Esc</kbd>                  | Back to the page | `cancel`                 |
+| <kbd>Esc</kbd>                  | Clear the picked refs, then the search, else back to the page | `cancel` |
+| <kbd>/</kbd>                                       | Search the refs by the name shown (a stash by its message), in closed folders and sections too, opening them; <kbd>Ctrl-g</kbd> and <kbd>Ctrl-x</kbd> toggle smart case and fuzzy while typing | `search` |
+| <kbd>n/N</kbd>                                     | Go to the next/previous match | `go_to_next` `go_to_previous` |
 | <kbd>Enter</kbd>                                     | Open/Close node, else back to the page at the selected ref, unfolding the folded merges that brought its commit in | `confirm` |
 | <kbd>2</kbd> - <kbd>5</kbd>                          | Focus a panel of the page | `focus_panel_2` ... `focus_panel_5` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
@@ -269,7 +271,7 @@ The commands on the refs ask first, in a popup:
 
 The refs are always shown on the left. <kbd>1</kbd> focuses them, and the page shows what is selected:
 `Local Changes` shows the local changes page, a branch, remote branch, tag or stash shows the commit graph at it, as the sidebar moves with `ui.refs.follow` on, else when <kbd>Enter</kbd> leaves the sidebar.
-<kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file). The bar at the top shows the page open and the count of local changes; the sidebar is on the commit graph only.
+<kbd>Tab</kbd> switches between the local changes page and the commit graph, from anywhere, keeping the local changes page as it was (the commit message being written, the selected file). The bar at the top shows the page open and the count of local changes; the sidebar is on the commit graph only, and has the focus when switching to it, unless shrunk.
 
 In the commit graph, <kbd>2</kbd> focuses the commit list and <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> open the details of the selected commit on the info / changes / files tab.
 Coming back to the commit graph from the local changes page (<kbd>Tab</kbd>), the details open again as they were, with the focus on the commit list.

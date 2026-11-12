@@ -4,6 +4,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},
+    text::Line,
     widgets::StatefulWidget,
 };
 use rustc_hash::FxHashMap;
@@ -15,12 +16,16 @@ use crate::{
     context::AppContext,
     git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, Tracking},
     keybind::UserEvent,
+    search::{SearchOptions, SearchOutcome},
     widget::{
         file_tree::{keep_guide_color, tree_guides},
         picks::Picks,
         style::{
             fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
             render_panel, render_panel_scrollbar, spinner, tabs_shown, ListCursor,
+        },
+        tree_query::{
+            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
         },
     },
 };
@@ -202,6 +207,7 @@ pub struct RefListState {
     head: Option<NodeId>,
     // the commits of the stashes by name, their names change as stashes come and go
     stash_targets: FxHashMap<String, CommitHash>,
+    query: TreeQuery,
 }
 
 impl RefListState {
@@ -225,6 +231,7 @@ impl RefListState {
                 .filter(|r| matches!(r, Ref::Stash { .. }))
                 .map(|r| (r.name().to_string(), r.target().clone()))
                 .collect(),
+            query: TreeQuery::default(),
         };
         state.rebuild_visible_rows();
         state
@@ -469,6 +476,7 @@ impl RefListState {
         let (selected, opened) = self.current_tree_status();
         let mut cursor = self.cursor;
         let mut picked = std::mem::take(&mut self.picked);
+        let query = std::mem::take(&mut self.query);
         // a picked stash by its commit, as stash@{0} names another once one is stashed
         if picked.section() == Some(RefSection::Stashes) {
             let targets: Vec<_> = picked
@@ -503,6 +511,69 @@ impl RefListState {
             })
         });
         self.picked = picked;
+        self.query = query;
+    }
+
+    pub fn query(&self) -> &TreeQuery {
+        &self.query
+    }
+
+    pub fn query_mut(&mut self) -> &mut TreeQuery {
+        &mut self.query
+    }
+
+    // Starts typing a search, which goes from the selected row.
+    pub fn start_search(&mut self) {
+        let from = self.all_rows_index();
+        self.query.start(QueryKind::Search, from);
+    }
+
+    // Selects the row matching the search in `direction`, in closed folders too, opening them.
+    pub fn search(&mut self, direction: SearchDirection, options: SearchOptions) {
+        let Some(query) = self.query.search() else {
+            return;
+        };
+        let rows = self.all_rows();
+        let from = self.query.step_from(self.all_rows_index());
+        let found = find_around(rows.len(), from, direction, |i| {
+            row_matches(&rows[i], query, options)
+        });
+        let Some(found) = found else {
+            return;
+        };
+        let identifier = rows[found].identifier.clone();
+        for n in 1..identifier.len() {
+            self.opened.insert(identifier[..n].to_vec());
+        }
+        self.selected = identifier;
+        self.rebuild_visible_rows();
+        self.sync_cursor();
+        self.sync_visual_picks();
+    }
+
+    // How the search went, over every row, in closed folders too; None without one.
+    pub fn search_outcome(&self, options: SearchOptions) -> Option<SearchOutcome> {
+        let query = self.query.search()?;
+        let matched = self
+            .all_rows()
+            .into_iter()
+            .map(|row| row_matches(&row, query, options));
+        Some(SearchOutcome::of(query, self.all_rows_index(), matched))
+    }
+
+    // Every row, as if every node were open.
+    fn all_rows(&self) -> Vec<VisibleRefRow> {
+        let mut rows = Vec::new();
+        collect_visible_rows(&self.roots, None, &[], &mut rows);
+        rows
+    }
+
+    // The selected row among `all_rows`.
+    fn all_rows_index(&self) -> usize {
+        self.all_rows()
+            .iter()
+            .position(|row| row.identifier == self.selected)
+            .unwrap_or(0)
     }
 
     fn current_tree_status(&self) -> (Vec<NodeId>, Vec<Vec<NodeId>>) {
@@ -547,7 +618,7 @@ impl RefListState {
 
     fn rebuild_visible_rows(&mut self) {
         self.visible_rows.clear();
-        collect_visible_rows(&self.roots, &self.opened, &[], &mut self.visible_rows);
+        collect_visible_rows(&self.roots, Some(&self.opened), &[], &mut self.visible_rows);
         self.rebuild_guides();
     }
 
@@ -570,6 +641,13 @@ fn is_head(row: &VisibleRefRow, head: &Option<NodeId>) -> bool {
         && head.as_ref() == row.identifier.last()
 }
 
+// Whether a search matches the row by the text it shows: a branch, remote branch, tag, folder,
+// remote or stash (by its message), not a section or the detached HEAD.
+fn row_matches(row: &VisibleRefRow, query: &str, options: SearchOptions) -> bool {
+    row.identifier.last().and_then(NodeId::name).is_some()
+        && name_matches(&row.name, query, options)
+}
+
 #[derive(Debug)]
 struct VisibleRefRow {
     identifier: Vec<NodeId>,
@@ -586,9 +664,10 @@ enum RowKind {
     EmptyFolder,
 }
 
+// The rows of `nodes` shown with the `opened` nodes; with None, all of them.
 fn collect_visible_rows(
     nodes: &[RefTreeNode],
-    opened: &HashSet<Vec<NodeId>>,
+    opened: Option<&HashSet<Vec<NodeId>>>,
     parent: &[NodeId],
     rows: &mut Vec<VisibleRefRow>,
 ) {
@@ -605,7 +684,7 @@ fn collect_visible_rows(
                 (false, true) => RowKind::Ref,
             },
         });
-        if opened.contains(&identifier) {
+        if opened.is_none_or(|opened| opened.contains(&identifier)) {
             collect_visible_rows(&node.children, opened, &identifier, rows);
         }
     }
@@ -667,6 +746,7 @@ impl StatefulWidget for RefList {
         let root_style = item_style.add_modifier(Modifier::BOLD);
 
         let branches = NodeId::Section(RefSection::Branches);
+        let options = self.ctx.search_options.get();
         // what runs on a branch, like lazygit's "Pushing |", in place of its counts
         let task = self.ctx.running_task.lock();
         let branch_status = task
@@ -752,7 +832,12 @@ impl StatefulWidget for RefList {
             }
             let counts_width: usize = counts.iter().map(|(c, _)| c.width() + 1).sum();
             let name_width = (remaining as usize).saturating_sub(counts_width);
-            let (mut x, _) = buf.set_stringn(text_x, y, &name, name_width, style);
+            let search = state
+                .query
+                .search()
+                .filter(|_| row.identifier.last().and_then(NodeId::name).is_some());
+            let text = highlighted_text(&row.name, row.name.len(), style, search, options, theme);
+            let (mut x, _) = buf.set_line(text_x, y, &Line::from(text), name_width as u16);
             for (count, fg) in counts {
                 let width = inner.right().saturating_sub(x + 1) as usize;
                 (x, _) = buf.set_stringn(x + 1, y, count, width, Style::default().fg(fg));

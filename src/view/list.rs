@@ -9,6 +9,7 @@ use crate::{
     git::{CommitHash, Head, Repository},
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
+    ref_commands::lone_stash,
     search::SearchKind,
     view::{
         commit_event, copy_hashes, query_status, register_commit_link_keys,
@@ -88,6 +89,13 @@ impl<'a> ListView<'a> {
             }
             UserEvent::ToggleSelect => {
                 self.as_mut_list_state().toggle_visual();
+            }
+            // on a stash, see `lone_stash`
+            UserEvent::Select => {
+                let commit = self.as_list_state().selected_commit_hash();
+                if let Some(dialog) = lone_stash(self.repository, commit) {
+                    self.tx.send(AppEvent::OpenDialog(Box::new(dialog)));
+                }
             }
             UserEvent::Confirm => {
                 self.tx.send(AppEvent::OpenDetail(DetailTab::Info));
@@ -215,6 +223,8 @@ pub struct ListFacts {
     // HEAD has no commits and the graph shows all of them: showing the current branch only would
     // show nothing, git failing on the branch without commits
     pub head_history_empty: bool,
+    // the selected commit is a stash, which space applies, see `lone_stash`
+    pub stash: bool,
 }
 
 impl ListFacts {
@@ -226,6 +236,8 @@ impl ListFacts {
             visual: state.is_visual(),
             head_history_empty: matches!(repository.head(), Head::Unborn { .. })
                 && !state.is_filtered(),
+            stash: !state.is_empty()
+                && lone_stash(repository, state.selected_commit_hash()).is_some(),
         }
     }
 }
@@ -271,6 +283,9 @@ pub fn register_commit_list_keys<T: ?Sized>(
         }
         .into()
     });
+    // before checking out, which space does on the other commits, see `Keys::meaning`
+    k.add(&[Select], "apply", "Apply the stash")
+        .when(move |v| works(Select)(v) && facts(v).stash);
     register_graph_commands(
         k,
         availability,

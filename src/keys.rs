@@ -117,13 +117,22 @@ impl KeyList {
     }
 
     // The keys working and shown, for the status bar and the keys popup; those with the same text
-    // together, like [ ] and h l stepping through commits.
+    // together, like [ ] and h l stepping through commits. An event is listed under the first key
+    // working with it, which it means, see `meaning`.
     pub fn hints(&self) -> Vec<KeyHint> {
         let mut hints: Vec<KeyHint> = vec![];
-        for key in self.0.iter().filter(|k| k.active && !k.short.is_empty()) {
+        let active: Vec<&Key> = self.0.iter().filter(|k| k.active).collect();
+        for (i, key) in active
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| !k.short.is_empty())
+        {
+            let taken = |event: &UserEvent| active[..i].iter().any(|k| k.events.contains(event));
+            let events: Vec<UserEvent> = key.events.iter().copied().filter(|e| !taken(e)).collect();
             match hints.iter_mut().find(|(_, short)| *short == key.short) {
-                Some((events, _)) => events.extend(key.events.iter().copied()),
-                None => hints.push((key.events.clone(), key.short.clone())),
+                Some((listed, _)) => listed.extend(events),
+                None if !events.is_empty() => hints.push((events, key.short.clone())),
+                None => {}
             }
         }
         hints

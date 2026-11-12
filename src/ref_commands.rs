@@ -2,7 +2,7 @@
 // and dropping stashes. Each opens a popup confirming it.
 
 use crate::{
-    git::{Head, NamedRef, Ref, RemoteBranch, Repository, Stash},
+    git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Repository, Stash},
     keybind::{Scope, UserEvent},
     widget::{
         git_dialog::GitDialog,
@@ -220,6 +220,15 @@ fn delete_refs(
                 .collect();
             Ok(GitDialog::drop_stashes(stashes))
         }
+    }
+}
+
+// The popup applying the stash at a commit with no branch, remote branch or tag at it: space
+// applies it on the graph, as in the sidebar, instead of checking the commit out.
+pub fn lone_stash(repository: &Repository, hash: &CommitHash) -> Option<GitDialog> {
+    match repository.refs(hash).as_slice() {
+        [Ref::Stash { name, message, .. }] => Some(GitDialog::apply_stash(name, message)),
+        _ => None,
     }
 }
 

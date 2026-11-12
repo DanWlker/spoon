@@ -17,6 +17,7 @@ use crate::{
     keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel},
+    ref_commands::lone_stash,
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_hashes, copy_path, copy_paths, copy_selection,
@@ -1139,7 +1140,7 @@ impl<'a> DetailView<'a> {
     // returns whether the event was handled.
     fn handle_list_event(&mut self, event: UserEvent) -> bool {
         let (comparing, shows_compare) = (self.is_comparing(), self.shows_compare());
-        let tx = self.tx.clone();
+        let (tx, repository) = (self.tx.clone(), self.repository);
         let state = self.as_mut_list_state();
         let before = state.selected_commit_hash().clone();
         match event {
@@ -1156,6 +1157,13 @@ impl<'a> DetailView<'a> {
                 return true;
             }
             UserEvent::ToggleSelect => state.toggle_visual(),
+            // on a stash, see `lone_stash`
+            UserEvent::Select => {
+                if let Some(dialog) = lone_stash(repository, state.selected_commit_hash()) {
+                    tx.send(AppEvent::OpenDialog(Box::new(dialog)));
+                }
+                return true;
+            }
             UserEvent::ShortCopy | UserEvent::FullCopy
                 if !state.picked_commit_hashes().is_empty() =>
             {

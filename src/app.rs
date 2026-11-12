@@ -40,10 +40,10 @@ use crate::{
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, Size},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
-    search::{SearchOptions, SearchOutcome},
+    search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
-        register_graph_commands, BlameView, DetailFocus, HelpView, LocalChangesRefreshViewContext,
-        RefreshViewContext, Reselect, TimelineView, View, ViewKind,
+        query_or_search_status, register_graph_commands, BlameView, DetailFocus, HelpView,
+        LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
         command_log::{CommandLog, CommandLogState},
@@ -55,6 +55,7 @@ use crate::{
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
         style::{badge, key_hints, spinner, KeyLabel, SPINNER_RATE},
+        tree_query::{type_query, typing_keys, QueryKind, SearchDirection},
     },
 };
 
@@ -1631,8 +1632,20 @@ impl App<'_> {
             UserEvent::Cancel if !self.shell.sidebar.picked().is_empty() => {
                 self.shell.sidebar.clear_picks();
             }
+            UserEvent::Cancel if self.shell.sidebar.query().search().is_some() => {
+                self.shell.sidebar.query_mut().clear();
+                self.ec.send(AppEvent::ClearStatusLine);
+            }
             UserEvent::Cancel => {
                 self.blur_sidebar();
+            }
+            UserEvent::Search => {
+                self.shell.sidebar.start_search();
+                self.send_sidebar_search_status();
+            }
+            UserEvent::GoToNext | UserEvent::GoToPrevious => {
+                let toward = Toward::of(event, UserEvent::GoToNext);
+                self.search_sidebar(SearchDirection::from(toward));
             }
             // on a ref, see `ref_command_applies`
             UserEvent::ToggleSelect => {
@@ -1703,6 +1716,7 @@ impl App<'_> {
         use UserEvent::*;
         let applies = |event| move |app: &Self| app.sidebar_command_applies(event);
         let picks = |app: &Self| !app.shell.sidebar.picked().is_empty();
+        let searched = |app: &Self| app.shell.sidebar.query().search().is_some();
         let on_stash = |app: &Self| {
             app.shell.sidebar.picked().section() == Some(Stashes)
                 || matches!(app.shell.sidebar.selection(), RefSelection::Stash(_))
@@ -1710,7 +1724,7 @@ impl App<'_> {
         k.add(
             &[Cancel],
             "clear picks",
-            "Clear the picked refs, else back to the page",
+            "Clear the picked refs, then the search, else back to the page",
         )
         .when(picks);
         k.add(
@@ -1783,10 +1797,19 @@ impl App<'_> {
         );
         k.add(
             &[Cancel],
-            "back",
-            "Clear the picked refs, else back to the page",
+            "clear search",
+            "Clear the picked refs, then the search, else back to the page",
         )
-        .when(|app| !picks(app));
+        .when(move |app| !picks(app) && searched(app));
+        k.add(
+            &[Cancel],
+            "back",
+            "Clear the picked refs, then the search, else back to the page",
+        )
+        .when(move |app| !picks(app) && !searched(app));
+        k.add(&[Search], "search", "Search the refs");
+        k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
+            .when(searched);
         k.quiet(
             &[NavigateDown, SelectDown, NavigateUp, SelectUp],
             "Move down/up",
@@ -1807,9 +1830,33 @@ impl App<'_> {
     }
 
     fn sidebar_keys(&self) -> KeyList {
+        if self.shell.sidebar.query().is_editing() {
+            return typing_keys(SearchKind::Names);
+        }
         let mut keys = Keys::of(self);
         Self::register_sidebar_keys(&mut keys);
         keys.list()
+    }
+
+    // Goes to the match of the sidebar's search in `direction`, telling how it went.
+    fn search_sidebar(&mut self, direction: SearchDirection) {
+        self.shell
+            .sidebar
+            .search(direction, self.ctx.search_options.get());
+        if let Some(message) = self.shell.sidebar.visual_outside_section() {
+            self.ec.send(AppEvent::NotifyWarn(message));
+        }
+        self.show_sidebar_selection();
+        self.send_sidebar_search_status();
+    }
+
+    fn send_sidebar_search_status(&self) {
+        let sidebar = &self.shell.sidebar;
+        let options = self.ctx.search_options.get();
+        let status = query_or_search_status(&self.ctx, sidebar.query(), SearchKind::Names, || {
+            sidebar.search_outcome(options)
+        });
+        self.ec.send(status);
     }
 
     // Whether the event does something on the selected row of the sidebar, see
@@ -1902,12 +1949,16 @@ impl App<'_> {
 
     // Tab: between the local changes page and the graph, focusing the page.
     fn switch_page(&mut self) {
+        // the graph page opens on the sidebar, [1], unless it was shrunk out of the way
         if matches!(self.view, View::LocalChanges(_)) {
             self.show_graph_page();
+            if !self.shell.sidebar_collapsed() {
+                self.focus_sidebar();
+            }
         } else {
             self.show_local_changes_page();
+            self.blur_sidebar();
         }
-        self.blur_sidebar();
     }
 
     // Shows the commit list alone, from a view showing it; returns whether it did.
@@ -2047,7 +2098,9 @@ impl App<'_> {
             (None, Some(Overlay::File(window))) => window.is_typing(),
             (None, Some(Overlay::Help(help))) => help.is_typing(),
             (None, Some(Overlay::CommandLog(_))) => false,
-            (None, None) => self.view.is_capturing_keys(),
+            (None, None) => {
+                self.shell.sidebar.query().is_editing() || self.view.is_capturing_keys()
+            }
         }
     }
 
@@ -2060,6 +2113,15 @@ impl App<'_> {
             }
             (None, Some(Overlay::Help(help))) => help.type_key(key),
             (None, Some(Overlay::CommandLog(_))) => {}
+            (None, None) if self.shell.sidebar.query().is_editing() => {
+                let ctx = self.ctx.clone();
+                let query = self.shell.sidebar.query_mut();
+                if type_query(&ctx, query, key, SearchKind::Names) == Some(QueryKind::Search) {
+                    self.search_sidebar(SearchDirection::Current);
+                } else {
+                    self.send_sidebar_search_status();
+                }
+            }
             (None, None) => self.view.handle_event(UserEvent::Unknown, key),
         }
     }
