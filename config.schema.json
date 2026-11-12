@@ -721,7 +721,7 @@
         "confirm": {
           "$ref": "#/definitions/keybindArray"
         },
-        "ref_list": {
+        "switch_page": {
           "$ref": "#/definitions/keybindArray"
         },
         "search": {
@@ -1058,7 +1058,7 @@
         "confirm": {
           "$ref": "#/definitions/keybindArray"
         },
-        "ref_list": {
+        "switch_page": {
           "$ref": "#/definitions/keybindArray"
         },
         "search": {

@@ -1055,6 +1055,22 @@ fn test_ctrl_c_quits() {
     }
 }
 
+// q quits from the menu and the popups too: it is only ever the key quitting the app.
+#[test]
+fn test_q_quits_from_the_menu_and_popups() {
+    for open in ["menu", "popup"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        let mut harness = Harness::new(&path, launch());
+        let opening = match open {
+            "menu" => mouse_on("c2", TestGesture::RightClick),
+            _ => keys("b esc"),
+        };
+        harness.run(vec![opening, keys("q")]);
+        assert!(harness.quit, "{open}");
+    }
+}
+
 // Comparing refs diffed from the sidebar, and commits diffed in the graph
 
 // Diffs feat with HEAD from the sidebar.
@@ -3039,6 +3055,48 @@ fn test_local_changes_menus_leave_out_the_page_commands() {
     ]);
 }
 
+// In the diffs too, y starts copying: y the hunk or lines, f the file's absolute path, l the link,
+// as in the lists.
+#[test]
+fn test_copy_keys_alike_in_the_diffs() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    let next = |expected: &'static [(&'static str, &'static str)]| {
+        check(move |app| {
+            assert_eq!(app.shell.app_status.pending_keys.len(), 1);
+            let next: Vec<(String, String)> = app
+                .keys_popup_keys()
+                .into_iter()
+                .map(|k| (k.keys, k.action))
+                .collect();
+            let expected: Vec<(String, String)> = expected
+                .iter()
+                .map(|(k, a)| (k.to_string(), a.to_string()))
+                .collect();
+            assert_eq!(next, expected);
+        })
+    };
+    harness.run(vec![
+        // the diff of the commit's file
+        keys("enter 4 j enter"),
+        keys("y"),
+        next(&[
+            ("f", "copy full path"),
+            ("l", "copy link"),
+            ("y", "copy hunk"),
+        ]),
+        keys("esc esc esc esc"),
+        // the diff of a local change
+        keys("tab"),
+        mouse_on("f.txt", TestGesture::Click),
+        keys("y"),
+        // no link: the change isn't on the web host
+        next(&[("f", "copy full path"), ("y", "copy hunk")]),
+    ]);
+}
+
 // [x] at the top right of the details, the keys popup, a window or a popup closes it.
 #[test]
 fn test_close_buttons() {
@@ -3568,7 +3626,11 @@ fn test_clicks_in_the_blame() {
         mouse_on("MASTER", TestGesture::RightClick),
         check(|app| assert!(app.shell.menu.is_some())),
         keys("esc"),
-        // the commit of a line, beside it: shown, as enter does
+        // the commit of a line, beside it: selected only, the window stays
+        mouse_at("MASTER", (-6, 0), TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_some())),
+        local_scope(Scope::FileHistory),
+        // a double click shows it, as enter does
         mouse_at("MASTER", (-6, 0), TestGesture::Click),
         check(|app| assert!(app.shell.overlay.is_none())),
         check(|app| assert_eq!(selected_subject(app), "c2")),
@@ -3585,21 +3647,30 @@ fn test_click_in_the_timeline_selects_a_commit() {
         // a line of the diff of the selected commit, c2
         mouse_on("MASTER", TestGesture::Click),
         local_scope(Scope::FileHistoryPane),
-        // the older commit: shown, as enter does
+        // the older commit: selected only, the window stays
         mouse_on("c1", TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_some())),
+        // later, a double click shows it, as enter does
+        sleep(500),
+        double_click("c1"),
         check(|app| assert!(app.shell.overlay.is_none())),
         check(|app| assert_eq!(selected_subject(app), "c1")),
     ]);
 }
 
 #[test]
-fn test_click_on_an_action_in_the_keys_list_runs_it() {
+fn test_double_click_on_an_action_in_the_keys_list_runs_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         keys("?"),
+        // a click selects it only
         mouse_on("Search the commits", TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_some())),
+        check(|app| assert!(!app.is_typing())),
+        sleep(500),
+        double_click("Search the commits"),
         check(|app| assert!(app.shell.overlay.is_none())),
         check(|app| assert!(app.is_typing())),
     ]);
@@ -3911,7 +3982,7 @@ fn test_diff_keys_alike_on_every_page() {
         ("5 shift-t l", StartPage::Graph),
         ("enter", StartPage::LocalChanges),
     ];
-    // what the keys popup names enter and y
+    // what the keys popup names enter and y y
     let named = |enter: Option<&'static str>, copy: &'static str, to: &'static str| {
         check(move |app| {
             let keys = app.keys_popup_keys();
@@ -3920,7 +3991,7 @@ fn test_diff_keys_alike_on_every_page() {
                 label.map(|k| k.action.as_str())
             };
             assert_eq!(
-                (action("enter"), action("y")),
+                (action("enter"), action("yy")),
                 (enter, Some(copy)),
                 "{to:?}"
             );

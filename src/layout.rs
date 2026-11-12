@@ -53,6 +53,21 @@ pub enum Target {
     Covered,
 }
 
+impl Target {
+    // Rows whose Enter leaves the window they are in: the commits of the blame and the timeline
+    // (shown on the graph) and the actions of the keys list (run). A click there only selects, so
+    // it doesn't leave by accident, and a double click does Enter.
+    pub fn enter_leaves(self) -> bool {
+        matches!(
+            self,
+            Target::BlameRevision
+                | Target::BlameCommits
+                | Target::TimelineCommits
+                | Target::KeysList
+        )
+    }
+}
+
 // What an [x] closes, see `render_close_button`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Closes {

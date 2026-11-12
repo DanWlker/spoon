@@ -304,7 +304,7 @@ impl<'a> DetailView<'a> {
             "copy full path",
             "Copy the absolute path of the file",
         )
-        .when(entry);
+        .when(move |v| entry(v) || (pane(v) && path(v)));
         k.add(
             &[Ignore],
             "ignore",
@@ -772,6 +772,14 @@ impl<'a> DetailView<'a> {
         // the diff or preview beside the files gets only its own keys and those of the whole app
         // (see `Scope::DetailsPane`), which go on below
         if self.is_pane_focused() {
+            // the file beside it, as from the files
+            if event == UserEvent::FullCopy {
+                if let Some(row) = self.selected_row() {
+                    self.tx
+                        .send(copy_path(self.repository, row, CopyForm::Full));
+                }
+                return;
+            }
             self.handle_pane_event(event);
             return;
         }

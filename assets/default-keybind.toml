@@ -25,7 +25,7 @@ go_to_next = ["n"]
 go_to_previous = ["shift-n"]
 confirm = ["enter"]
 # switch between the local changes page and the commit graph
-ref_list = ["tab"]
+switch_page = ["tab"]
 # search; in file trees, filter the files
 search = ["/"]
 search_target_toggle = ["ctrl-t"]
@@ -144,9 +144,9 @@ pull = ["p"]
 # push a branch to a remote, chosen in a popup
 push = ["shift-p"]
 
-# copy: y then y the short form (a short hash, a relative path, a name), f the full one, l the link of
-# the page on the web host of its remote; in a diff or the lines of a file, y copies the selected
-# lines at once (see the tables at the end)
+# copy: y then y the short form (a short hash, a relative path, a name; in a diff or the lines of a
+# file, the selected lines), f the full one (in a diff, the file's absolute path), l the link of the
+# page on the web host of its remote
 short_copy = ["y y"]
 full_copy = ["y f"]
 copy_link = ["y l"]
@@ -165,17 +165,3 @@ timeline = ["shift-t"]
 # in these windows, the older/newer commit changing the file
 older_commit = ["["]
 newer_commit = ["]"]
-
-# keys of a part of the app overriding the outer ones: in the diffs and the lines of the blame, y
-# copies the selected lines at once, and Y copies their link
-[details_pane]
-short_copy = ["y"]
-copy_link = ["shift-y"]
-
-[local_changes_diff]
-short_copy = ["y"]
-copy_link = ["shift-y"]
-
-[file_history_pane]
-short_copy = ["y"]
-copy_link = ["shift-y"]

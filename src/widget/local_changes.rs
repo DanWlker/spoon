@@ -821,7 +821,7 @@ impl<'a> LocalChangesState<'a> {
             "copy full path",
             "Copy the absolute path of the file",
         )
-        .when(row);
+        .when(move |v| row(v) || (diff(v) && v.selected_file().is_some()));
         k.add(
             &[Ignore],
             "ignore",

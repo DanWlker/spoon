@@ -19,6 +19,9 @@ use crate::{
     widget::style::{key_span, mark_selected_row, render_panel, KeyLabel, ListCursor},
 };
 
+// Between an action and its keys.
+const GAP: &str = "   ";
+
 // An action of the menu: the event it runs, with its keys and short text.
 #[derive(Debug, Clone)]
 pub struct MenuEntry {
@@ -31,6 +34,8 @@ pub enum MenuOutcome {
     Stay,
     Close,
     Run(UserEvent),
+    // q, which quits the app from anywhere
+    Quit,
 }
 
 #[derive(Debug)]
@@ -99,6 +104,7 @@ impl ActionMenu {
         match event {
             UserEvent::Confirm => MenuOutcome::Run(self.entries[self.selected()].event),
             UserEvent::Cancel => MenuOutcome::Close,
+            UserEvent::Quit => MenuOutcome::Quit,
             event => {
                 self.cursor.navigate(event, self.entries.len());
                 MenuOutcome::Stay
@@ -111,6 +117,7 @@ impl ActionMenu {
         let mut k = Keys::of(&());
         k.add(&[Confirm], "run", "Run the selected action");
         k.add(&[Cancel], "close", "Close the menu");
+        k.quiet(&[Quit], "Quit app");
         k.quiet(
             &[NavigateDown, SelectDown, NavigateUp, SelectUp],
             "Move down/up",
@@ -119,18 +126,22 @@ impl ActionMenu {
         k.list()
     }
 
-    // The width of the keys, the column of the short texts after them.
-    fn keys_width(&self) -> usize {
-        let keys = self.entries.iter().map(|e| e.label.keys.width());
-        keys.max().unwrap_or(0)
+    // The widths of the actions and of their keys, a column each: the action first, its keys
+    // after it.
+    fn widths(&self) -> (usize, usize) {
+        let width = |of: fn(&KeyLabel) -> &str| {
+            let widths = self.entries.iter().map(|e| of(&e.label).width());
+            widths.max().unwrap_or(0)
+        };
+        (width(|l| &l.action), width(|l| &l.keys))
     }
 
     // Beside the pointer on the `screen`: below and right of it, else above or left where it
     // would leave the screen; at most as large as the screen.
     pub fn area(&self, screen: Rect) -> Rect {
-        let text = self.entries.iter().map(|e| e.label.action.width()).max();
-        // the borders and the padding around the keys, a space and the text
-        let width = (self.keys_width() + 1 + text.unwrap_or(0) + 4).min(screen.width as usize);
+        let (action, keys) = self.widths();
+        // the borders and the padding around the action, the gap and the keys
+        let width = (action + GAP.len() + keys + 4).min(screen.width as usize);
         let height = (self.entries.len() + 2).min(screen.height as usize);
         let (width, height) = (width as u16, height as u16);
         let place = |at: u16, size: u16, start: u16, end: u16| {
@@ -162,12 +173,12 @@ impl ActionMenu {
             count: self.entries.len(),
         };
         ctx.layout.borrow_mut().record(Target::Menu, inner, rows);
-        let keys_width = self.keys_width();
+        let (action_width, _) = self.widths();
         for (y, entry) in (inner.top()..inner.bottom()).zip(self.entries.iter().skip(offset)) {
-            let keys = format!("{:<keys_width$}", entry.label.keys);
+            let action = format!("{:<action_width$}{GAP}", entry.label.action);
             let line = Line::from(vec![
-                key_span(keys, theme),
-                Span::raw(format!(" {}", entry.label.action)).fg(theme.fg),
+                Span::raw(action).fg(theme.fg),
+                key_span(entry.label.keys.clone(), theme),
             ]);
             buf.set_line(inner.x, y, &line, inner.width);
         }
@@ -243,6 +254,30 @@ mod tests {
         assert_eq!(menu.handle_key(UserEvent::Cancel), MenuOutcome::Close);
         menu.select(0);
         assert_eq!(menu.selected(), 0);
+    }
+
+    // A row names the action first, its keys after it, in a column at the right.
+    #[test]
+    fn test_action_before_its_keys() {
+        let ctx = test_ctx();
+        let screen = Rect::new(0, 0, 40, 10);
+        let entries = vec![
+            MenuEntry {
+                event: UserEvent::Merge,
+                label: KeyLabel::new("m", "merge"),
+            },
+            MenuEntry {
+                event: UserEvent::Checkout,
+                label: KeyLabel::new("space", "checkout"),
+            },
+        ];
+        let mut menu = ActionMenu::new(entries, Cell { x: 0, y: 0 }).unwrap();
+        let mut buf = Buffer::empty(screen);
+        menu.render(&mut buf, screen, &ctx);
+        let row = |y: u16| -> String { (0..40).map(|x| buf[(x, y)].symbol()).collect() };
+        let (merge, checkout) = (row(2), row(3));
+        assert!(merge.contains("merge      m "), "{merge:?}");
+        assert!(checkout.contains("checkout   space "), "{checkout:?}");
     }
 
     #[test]

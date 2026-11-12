@@ -104,7 +104,5 @@ quit = ["q"]
 short_copy = ["x"]
 ```
 
-The defaults use such tables for copying: <kbd>y</kbd> <kbd>y</kbd> copies a short hash, path or name, <kbd>y</kbd> <kbd>f</kbd> the full one and <kbd>y</kbd> <kbd>l</kbd> a link, but in `details_pane`, `local_changes_diff` and `file_history_pane` (the diffs and the lines of the blame) <kbd>y</kbd> copies the selected lines at once and <kbd>Y</kbd> their link.
-
 A key bound in your config replaces what that key did by default in its scope and in the scopes inside it.
 A key of an inner scope may also start a key sequence around it: there it acts right away, elsewhere it starts the sequence. For example <kbd>]</kbd> shows the next tab of the details, while <kbd>]</kbd> <kbd>f</kbd> goes to the next file in local changes.

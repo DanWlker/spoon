@@ -1558,7 +1558,7 @@ impl App<'_> {
             });
         }
         k.add(
-            &[RefList],
+            &[SwitchPage],
             "switch page",
             "Switch between local changes and the commit graph",
         )
@@ -1662,7 +1662,7 @@ impl App<'_> {
                     self.focus_sidebar();
                 }
             }
-            UserEvent::RefList => self.switch_page(),
+            UserEvent::SwitchPage => self.switch_page(),
             _ => {}
         }
     }
@@ -2849,13 +2849,15 @@ impl App<'_> {
                 if hit.is_none() {
                     self.shell.pointer.cancel();
                 }
-                if on_row(hit) {
+                if on_row(hit) && !hit.is_some_and(|hit| hit.target.enter_leaves()) {
                     self.run_event(Confirm);
                 }
             }
             Gesture::DoubleClick(at) => {
-                if on_row(self.point(at, OnPicks::ClearUnlessPicked)) {
-                    self.run_event(Select);
+                let hit = self.point(at, OnPicks::ClearUnlessPicked);
+                if on_row(hit) {
+                    let leaves = hit.is_some_and(|hit| hit.target.enter_leaves());
+                    self.run_event(if leaves { Confirm } else { Select });
                 }
             }
             // v v on the row, which toggles its pick
@@ -2982,6 +2984,9 @@ impl App<'_> {
         }
         self.shell.menu = None;
         self.ec.set_hover(false);
+        if outcome == MenuOutcome::Quit {
+            self.ec.send(AppEvent::Quit);
+        }
         if let MenuOutcome::Run(event) = outcome {
             match event {
                 UserEvent::BranchOnly if !self.shell.sidebar_focused() => {
@@ -3057,7 +3062,7 @@ impl App<'_> {
             if local_changes == matches!(self.view, View::LocalChanges(_)) {
                 return true;
             }
-            self.run_event(UserEvent::RefList);
+            self.run_event(UserEvent::SwitchPage);
             return true;
         }
         // a window over the page takes the clicks on it

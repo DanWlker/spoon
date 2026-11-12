@@ -406,7 +406,7 @@ pub enum UserEvent {
     GoToNext,
     GoToPrevious,
     Confirm,
-    RefList,
+    SwitchPage,
     Search,
     #[serde(skip)]
     FocusPanel(usize),
@@ -620,6 +620,13 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty())
+    }
+
+    // Tab's event is named for what it does; the old name is gone, not kept alongside.
+    #[test]
+    fn test_switch_page_is_named_so() {
+        assert_eq!(parse_user_event("switch_page"), Ok(UserEvent::SwitchPage));
+        assert!(parse_user_event("ref_list").is_err());
     }
 
     #[test]
@@ -837,14 +844,17 @@ mod tests {
     fn test_keys_named_and_finished_where_the_focus_is() {
         use UserEvent::*;
         let keybind = KeyBind::new(None);
-        // y starts copying in the lists; in a diff it copies the lines at once, Y their link
+        // y starts copying everywhere, in a diff too
         assert_eq!(keybind.keys_for_event(Scope::CommitList, ShortCopy), ["yy"]);
-        assert_eq!(keybind.keys_for_event(Scope::DetailsPane, ShortCopy), ["y"]);
+        assert_eq!(
+            keybind.keys_for_event(Scope::DetailsPane, ShortCopy),
+            ["yy"]
+        );
         assert_eq!(keybind.keys_for_event(Scope::CommitList, CopyLink), ["yl"]);
-        assert_eq!(keybind.keys_for_event(Scope::DetailsPane, CopyLink), ["Y"]);
+        assert_eq!(keybind.keys_for_event(Scope::DetailsPane, CopyLink), ["yl"]);
         assert_eq!(
             keybind.short_keys(Scope::FileHistoryPane, &[ShortCopy]),
-            "y"
+            "yy"
         );
         // the keys finishing a sequence, in their order
         let next = |scope, first| keybind.continuations(scope, &[key(first)]);
