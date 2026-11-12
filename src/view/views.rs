@@ -8,7 +8,8 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Ref, Repository},
     keybind::UserEvent,
     keys::KeyList,
-    layout::{Direction, Panel, Size},
+    layout::{Direction, Panel, Size, Target},
+    pointer::OnPicks,
     view::{
         detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
     },
@@ -50,6 +51,17 @@ macro_rules! on_page {
 impl<'a> View<'a> {
     pub fn handle_event(&mut self, event: UserEvent, key_event: KeyEvent) {
         on_page!(self, view => view.handle_event(event, key_event), {})
+    }
+
+    // Focuses the panel of `target` the mouse points at and selects its `row` there, see
+    // `OnPicks`; false when the page has no such panel.
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
+        on_page!(self, view => view.point(target, row, picks), false)
+    }
+
+    // Whether the focused list is picking from where a visual selection started.
+    pub fn is_visual(&self) -> bool {
+        on_page!(self, view => view.is_visual(), false)
     }
 
     // `focused` is false while another panel, like the refs sidebar, has the focus;

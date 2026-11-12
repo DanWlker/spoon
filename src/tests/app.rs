@@ -10,7 +10,7 @@ use std::{
 };
 
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
     layout::Rect,
 };
 
@@ -24,12 +24,13 @@ use crate::{
     event::EventController,
     git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
     graph::{CellWidthType, GraphImageWidthMode, GraphLayout, GraphStyle},
-    keybind::{parse_key_event, KeyHint},
+    keybind::{parse_key_event, KeyHint, Scope},
     layout::Panel,
     protocol::ImageProtocol,
     search::SearchOutcome,
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
+    widget::commit_tabs::DetailTab,
     widget::ref_list::RefSelection,
     Loader, Restart,
 };
@@ -61,6 +62,79 @@ enum Step {
     Check(Box<dyn FnOnce(&App)>),
     // acts on the app right away, before what it starts in the background is done
     Act(Box<dyn FnOnce(&mut App)>),
+    // a frame drawn, and the cell of the text in it (moved by the offset) kept for `Mouse`
+    Locate(&'static str, (i32, i32)),
+    // the mouse at the cell located last, in the frame drawn then
+    Mouse(TestGesture),
+}
+
+// What the mouse does in a test, at the cell located last, see `mouse_on`.
+#[derive(Debug, Clone, Copy)]
+enum TestGesture {
+    Click,
+    CtrlClick,
+    RightClick,
+    // pressed there, dragged through the cells of these texts in the same frame, released
+    Drag(&'static [&'static str]),
+    // pressed there, dragged by so many cells, released
+    DragBy(i32, i32),
+    WheelDown,
+    Hover,
+}
+
+// A frame drawn, cell by cell.
+type Cells = Vec<Vec<String>>;
+
+thread_local! {
+    // the frame drawn by the last `Step::Locate`, and the cell it located
+    static LOCATED: RefCell<(Cells, (u16, u16))> = RefCell::default();
+}
+
+// `gesture` on the first `text` drawn, standing alone (not inside a word or a hash).
+fn mouse_on(text: &'static str, gesture: TestGesture) -> Vec<Step> {
+    mouse_at(text, (0, 0), gesture)
+}
+
+// `gesture` on the cell `offset` from the first `text` drawn.
+fn mouse_at(text: &'static str, offset: (i32, i32), gesture: TestGesture) -> Vec<Step> {
+    vec![Step::Locate(text, offset), Step::Mouse(gesture)]
+}
+
+// A double click on `text`: a click, the frame drawn again as between two real clicks, a click on
+// the same cell, whatever it shows then.
+fn double_click(text: &'static str) -> Vec<Step> {
+    let mut steps = mouse_on(text, TestGesture::Click);
+    steps.extend(draw());
+    steps.push(Step::Mouse(TestGesture::Click));
+    steps
+}
+
+// The cell where `text` is drawn first in `cells`, standing alone.
+fn find_cell(cells: &[Vec<String>], text: &str) -> (u16, u16) {
+    let chars: Vec<String> = text.chars().map(String::from).collect();
+    let alone = |cell: Option<&String>| {
+        cell.is_none_or(|c| !c.chars().all(|c| c.is_alphanumeric()) || c.is_empty())
+    };
+    for (y, row) in cells.iter().enumerate() {
+        for x in 0..row.len().saturating_sub(chars.len() - 1) {
+            let at = row[x..x + chars.len()] == chars[..];
+            let before = x.checked_sub(1).and_then(|b| row.get(b));
+            if at && alone(before) && alone(row.get(x + chars.len())) {
+                return (x as u16, y as u16);
+            }
+        }
+    }
+    let screen: Vec<String> = cells.iter().map(|row| row.concat()).collect();
+    panic!("{text:?} not drawn in\n{}", screen.join("\n"));
+}
+
+fn mouse_event(kind: MouseEventKind, (x, y): (u16, u16), modifiers: KeyModifiers) -> AppEvent {
+    AppEvent::Mouse(MouseEvent {
+        kind,
+        column: x,
+        row: y,
+        modifiers,
+    })
 }
 
 // The keys of `keys`, separated by spaces.
@@ -284,6 +358,57 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
         }
         Step::Check(f) => f(app),
         Step::Act(f) => f(app),
+        Step::Locate(text, (dx, dy)) => {
+            let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let keys = app.keys_popup_keys();
+            let frame = terminal.draw(|f| app.render(f, &keys)).unwrap();
+            let cells: Vec<Vec<String>> = frame
+                .buffer
+                .content
+                .chunks(SIZE.0 as usize)
+                .map(|row| row.iter().map(|c| c.symbol().to_string()).collect())
+                .collect();
+            let (x, y) = find_cell(&cells, text);
+            let at = ((x as i32 + dx) as u16, (y as i32 + dy) as u16);
+            LOCATED.with(|located| *located.borrow_mut() = (cells, at));
+        }
+        Step::Mouse(gesture) => {
+            let (cells, at) = LOCATED.with(|located| located.borrow().clone());
+            let none = KeyModifiers::NONE;
+            let left = MouseButton::Left;
+            let press = |at, modifiers| {
+                ec.send(mouse_event(MouseEventKind::Down(left), at, modifiers));
+                ec.send(mouse_event(MouseEventKind::Up(left), at, modifiers));
+            };
+            let drag = |through: Vec<(u16, u16)>| {
+                ec.send(mouse_event(MouseEventKind::Down(left), at, none));
+                for cell in &through {
+                    ec.send(mouse_event(MouseEventKind::Drag(left), *cell, none));
+                }
+                let end = through.last().copied().unwrap_or(at);
+                ec.send(mouse_event(MouseEventKind::Up(left), end, none));
+            };
+            match gesture {
+                TestGesture::Click => press(at, none),
+                TestGesture::CtrlClick => press(at, KeyModifiers::CONTROL),
+                TestGesture::RightClick => ec.send(mouse_event(
+                    MouseEventKind::Down(MouseButton::Right),
+                    at,
+                    none,
+                )),
+                TestGesture::Drag(texts) => {
+                    drag(texts.iter().map(|text| find_cell(&cells, text)).collect())
+                }
+                TestGesture::DragBy(dx, dy) => {
+                    drag(vec![((at.0 as i32 + dx) as u16, (at.1 as i32 + dy) as u16)])
+                }
+                TestGesture::WheelDown => {
+                    ec.send(mouse_event(MouseEventKind::ScrollDown, at, none))
+                }
+                TestGesture::Hover => ec.send(mouse_event(MouseEventKind::Moved, at, none)),
+            }
+        }
     }
 }
 
@@ -2392,6 +2517,794 @@ fn test_esc_clears_the_picks_before_the_search_beside_the_details() {
     ]);
 }
 
+// The subject of the commit selected in the commit list.
+fn selected_subject(app: &App) -> String {
+    let hash = app.view.as_list_state().unwrap().selected_commit_hash();
+    app.repository.commit(hash).unwrap().subject.clone()
+}
+
+fn commits_picked(count: usize) -> Vec<Step> {
+    check(move |app| {
+        let state = app.view.as_list_state().unwrap();
+        assert_eq!(state.picked_commit_hashes().len(), count);
+    })
+}
+
+// The command of the popup open.
+fn popup_command(app: &App) -> String {
+    let popup = app.shell.dialog.as_ref().expect("no popup");
+    popup.dialog.command().unwrap().unwrap().commands[0].to_string()
+}
+
+#[test]
+fn test_click_on_a_commit_opens_its_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("1"),
+        mouse_on("c1", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+    ]);
+}
+
+#[test]
+fn test_double_click_on_a_commit_checks_it_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // the first click opens the details, the second acts on what is drawn there then
+        double_click("feat1"),
+        check(|app| assert_eq!(selected_subject(app), "feat1")),
+        check(|app| assert_eq!(popup_command(app), "checkout feat")),
+    ]);
+}
+
+#[test]
+fn test_ctrl_click_toggles_one_pick() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("c1", TestGesture::CtrlClick),
+        commits_picked(1),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        mouse_on("c1", TestGesture::CtrlClick),
+        commits_picked(0),
+    ]);
+}
+
+#[test]
+fn test_drag_picks_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // on through the sidebar, which picks nothing more
+        mouse_on("c2", TestGesture::Drag(&["c1", "Branches"])),
+        commits_picked(3),
+        check(|app| assert!(!app.view.as_list_state().unwrap().is_visual())),
+        check(|app| assert!(app.shell.sidebar.picked().is_empty())),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+    ]);
+}
+
+#[test]
+fn test_double_click_on_an_unpicked_row_clears_the_picks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("v v"),
+        commits_picked(1),
+        double_click("c1"),
+        commits_picked(0),
+        check(|app| assert!(popup_command(app).starts_with("checkout"))),
+    ]);
+}
+
+#[test]
+fn test_clicks_in_the_sidebar() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // a branch: back to the graph at its commit, as enter
+        mouse_on("feat", TestGesture::Click),
+        check(|app| {
+            let feat = RefSelection::Ref(NamedRef::Branch("feat".into()));
+            assert_eq!(app.shell.sidebar.selection(), feat);
+            assert!(!app.shell.sidebar_focused());
+            assert_eq!(selected_subject(app), "feat1");
+        }),
+        double_click("feat"),
+        check(|app| assert_eq!(popup_command(app), "checkout feat")),
+        keys("esc"),
+        // a section closes, the sidebar keeping the focus, which enter leaves where it doesn't
+        mouse_on("Branches", TestGesture::Click),
+        check(|app| assert!(app.shell.sidebar_focused())),
+        check(|app| {
+            let branches = RefSelection::Section(crate::widget::ref_list::RefSection::Branches);
+            assert_eq!(app.shell.sidebar.selection(), branches);
+        }),
+    ]);
+}
+
+#[test]
+fn test_click_while_typing_only_dismisses() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("/"),
+        typing("c"),
+        mouse_on("c1", TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+        check(|app| assert!(!app.view.as_list_state().unwrap().search_applied())),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        // the next click acts, a click and not the second of a double click
+        mouse_on("c1", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+        check(|app| assert!(app.shell.dialog.is_none())),
+    ]);
+}
+
+#[test]
+fn test_click_with_a_popup_open_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("space"),
+        check(|app| assert!(app.shell.dialog.is_some())),
+        mouse_on("c1", TestGesture::Click),
+        mouse_on("c1", TestGesture::RightClick),
+        mouse_on("c1", TestGesture::WheelDown),
+        check(|app| assert!(app.shell.dialog.is_some())),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        check(|app| assert_eq!(selected_subject(app), "c2")),
+    ]);
+}
+
+#[test]
+fn test_click_below_the_last_row_only_focuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("1"),
+        mouse_at("c1", (0, 10), TestGesture::Click),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        check(|app| assert_eq!(selected_subject(app), "c2")),
+    ]);
+    // a new repository, no commit to click
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("work");
+    std::fs::create_dir(&path).unwrap();
+    git(&path, &["init", "-q", "-b", "master"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_at("Commits", (0, 3), TestGesture::Click),
+        mouse_at("Commits", (0, 3), TestGesture::CtrlClick),
+        mouse_at("Commits", (0, 3), TestGesture::DragBy(0, 2)),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+    ]);
+}
+
+#[test]
+fn test_border_press_still_resizes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let width = |app: &App| app.ctx.layout.borrow().size(Panel::Sidebar, 0);
+    harness.run(vec![
+        // the right border of the sidebar, its corner at the top
+        mouse_at("╮", (0, 5), TestGesture::DragBy(6, 0)),
+        draw(),
+        check(move |app| assert!(width(app) > 0)),
+        commits_picked(0),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+    ]);
+}
+
+#[test]
+fn test_wheel_scrolls_the_panel_under_the_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("Branches", TestGesture::WheelDown),
+        check(|app| assert!(app.shell.sidebar_focused())),
+        check(|app| {
+            let branches = RefSelection::Section(crate::widget::ref_list::RefSection::Branches);
+            assert_ne!(app.shell.sidebar.selection(), branches);
+        }),
+        // the commit list keeps its selection
+        check(|app| assert_eq!(selected_subject(app), "c2")),
+    ]);
+}
+
+#[test]
+fn test_click_after_a_reload_uses_the_drawn_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![Step::Locate("c1", (0, 0))],
+        // reloaded after the frame: what it showed may have moved
+        keys("ctrl-r"),
+        vec![Step::Mouse(TestGesture::Click)],
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        // drawn again, a click acts
+        mouse_on("c1", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+    ]);
+}
+
+// The menu open drawn with `shown` in it, and none of `left_out`; nothing else on the screen
+// shows those words, the status bar showing the keys of the menu.
+fn menu_shows(shown: &'static [&'static str], left_out: &'static [&'static str]) -> Vec<Step> {
+    let mut steps = check(|app| assert!(app.shell.menu.is_some()));
+    steps.extend(screen(move |screen| {
+        for text in shown {
+            assert!(screen.contains(text), "{text:?} not in\n{screen}");
+        }
+        for text in left_out {
+            assert!(!screen.contains(text), "{text:?} in\n{screen}");
+        }
+    }));
+    steps
+}
+
+#[test]
+fn test_right_click_menu_on_a_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("c1", TestGesture::RightClick),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+        // the keys of the page, not those of the whole app, nor the moves
+        menu_shows(&["checkout", "merge"], &["push", "move"]),
+        // the status line lists the keys of the menu, which takes them all
+        screen(|screen| {
+            let status = screen.lines().last().unwrap();
+            assert!(
+                status.contains("run") && !status.contains("fetch"),
+                "{status}"
+            );
+        }),
+        // a click on an entry runs it, as its key
+        mouse_on("merge", TestGesture::Click),
+        check(|app| assert!(app.shell.menu.is_none())),
+        check(|app| assert!(popup_command(app).starts_with("merge"))),
+        keys("esc"),
+        // the keys move in it and run the selected entry
+        mouse_on("c1", TestGesture::RightClick),
+        keys("j"),
+        check(|app| assert_eq!(app.shell.menu.as_ref().unwrap().selected(), 1)),
+        keys("esc"),
+        check(|app| assert!(app.shell.menu.is_none())),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        // hovering selects an entry, enter runs it
+        mouse_on("c1", TestGesture::RightClick),
+        mouse_on("merge", TestGesture::Hover),
+        keys("enter"),
+        check(|app| assert!(popup_command(app).starts_with("merge"))),
+        keys("esc"),
+        // a click outside only closes it
+        mouse_on("c1", TestGesture::RightClick),
+        mouse_on("c2", TestGesture::Click),
+        check(|app| assert!(app.shell.menu.is_none())),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+    ]);
+}
+
+#[test]
+fn test_right_click_on_an_unpicked_row_clears_the_picks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("v v"),
+        commits_picked(1),
+        mouse_on("c1", TestGesture::RightClick),
+        commits_picked(0),
+        check(|app| assert!(app.shell.menu.is_some())),
+    ]);
+}
+
+#[test]
+fn test_right_click_on_a_picked_row_keeps_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("v j v"),
+        commits_picked(2),
+        mouse_on("feat1", TestGesture::RightClick),
+        commits_picked(2),
+        menu_shows(&["cherry-pick"], &[]),
+    ]);
+}
+
+// Where the focus is in the details, on their tab.
+fn detail_focus(focus: DetailFocus, tab: DetailTab) -> Vec<Step> {
+    check(move |app| {
+        let View::Detail(view) = &app.view else {
+            panic!("no details");
+        };
+        assert_eq!((view.focus(), view.tab()), (focus, tab));
+    })
+}
+
+#[test]
+fn test_click_on_a_detail_tab_switches_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("c1", TestGesture::Click),
+        detail_focus(DetailFocus::Info, DetailTab::Info),
+        // the top bar says Local Changes too
+        mouse_on("[4]", TestGesture::Click),
+        detail_focus(DetailFocus::Files, DetailTab::Changes),
+        mouse_on("Files", TestGesture::Click),
+        detail_focus(DetailFocus::Files, DetailTab::Files),
+        mouse_on("Info", TestGesture::Click),
+        detail_focus(DetailFocus::Info, DetailTab::Info),
+    ]);
+}
+
+#[test]
+fn test_click_on_a_file_opens_its_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter 4"),
+        detail_focus(DetailFocus::Files, DetailTab::Changes),
+        mouse_on("f.txt", TestGesture::Click),
+        detail_focus(DetailFocus::Pane, DetailTab::Changes),
+        // the preview of the files tab
+        keys("5"),
+        mouse_on("f.txt", TestGesture::Click),
+        detail_focus(DetailFocus::Pane, DetailTab::Files),
+        // a line of the preview, the focus staying in it
+        mouse_on("MASTER", TestGesture::Click),
+        detail_focus(DetailFocus::Pane, DetailTab::Files),
+    ]);
+}
+
+#[test]
+fn test_click_in_the_commit_list_over_the_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter 4"),
+        // as enter on the list: that commit's details, the focus in them
+        mouse_on("c1", TestGesture::Click),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+        detail_focus(DetailFocus::Files, DetailTab::Changes),
+    ]);
+}
+
+#[test]
+fn test_double_click_on_a_diff_line_applies_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // on feat, a new file of two lines, which the working tree on master doesn't have
+    git(&path, &["checkout", "-q", "feat"]);
+    std::fs::write(path.join("h.txt"), "one\ntwo\n").unwrap();
+    git(&path, &["add", "h.txt"]);
+    git(&path, &["commit", "-q", "-m", "feat2"]);
+    git(&path, &["checkout", "-q", "master"]);
+    let mut harness = Harness::new(&path, launch());
+    let applied = path.join("h.txt");
+    harness.run(vec![
+        mouse_on("feat2", TestGesture::Click),
+        keys("4"),
+        // the line clicked, not its hunk
+        double_click("two"),
+        check(move |_| assert_eq!(std::fs::read_to_string(&applied).unwrap(), "two\n")),
+    ]);
+}
+
+#[test]
+fn test_click_on_a_diff_line_selects_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(&path, &["checkout", "-q", "feat"]);
+    std::fs::write(path.join("h.txt"), "one\ntwo\n").unwrap();
+    git(&path, &["add", "h.txt"]);
+    git(&path, &["commit", "-q", "-m", "feat2"]);
+    git(&path, &["checkout", "-q", "master"]);
+    let mut harness = Harness::new(&path, launch());
+    let applied = path.join("h.txt");
+    harness.run(vec![
+        mouse_on("feat2", TestGesture::Click),
+        keys("4"),
+        // into the lines of its hunk, on the line clicked rather than the first
+        mouse_on("two", TestGesture::Click),
+        keys("space"),
+        check(move |_| assert_eq!(std::fs::read_to_string(&applied).unwrap(), "two\n")),
+    ]);
+}
+
+#[test]
+fn test_drag_in_a_hunk_diff_picks_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("feat1", TestGesture::Click),
+        keys("4"),
+        // from FEAT up to the b it replaces, the diff in its hunks
+        mouse_at("FEAT", (0, 0), TestGesture::DragBy(0, -1)),
+        detail_focus(DetailFocus::Pane, DetailTab::Changes),
+        keys("space"),
+        check(|app| assert_notice(app, "The lines doesn't apply")),
+    ]);
+}
+
+// `repository` with three changed files: a.txt, b.txt and f.txt, on the local changes page; the
+// diff's title is the selected row, /, so the files are drawn only in their tree.
+fn local_changes_harness(dir: &Path) -> (PathBuf, Harness) {
+    let path = repository(dir);
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    std::fs::write(path.join("a.txt"), "a\n").unwrap();
+    std::fs::write(path.join("b.txt"), "b\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let harness = Harness::new(&path, launch);
+    (path, harness)
+}
+
+fn staged(path: &Path) -> String {
+    git(path, &["diff", "--cached", "--name-only"])
+}
+
+fn local_scope(scope: Scope) -> Vec<Step> {
+    check(move |app| assert_eq!(app.current_scope(), scope))
+}
+
+#[test]
+fn test_double_click_stages_and_unstages_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut harness) = local_changes_harness(dir.path());
+    let (once, twice) = (path.clone(), path.clone());
+    harness.run(vec![
+        double_click("f.txt"),
+        check(move |_| assert_eq!(staged(&once).trim(), "f.txt")),
+        // now in the staged files
+        double_click("f.txt"),
+        check(move |_| assert_eq!(staged(&twice).trim(), "")),
+    ]);
+}
+
+#[test]
+fn test_click_on_a_changed_file_opens_its_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    harness.run(vec![
+        mouse_on("b.txt", TestGesture::Click),
+        local_scope(Scope::LocalChangesDiff),
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some("b.txt"))),
+    ]);
+}
+
+#[test]
+fn test_drag_and_ctrl_click_pick_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    let picked = |shown: &'static str| {
+        screen(move |screen| assert!(screen.contains(shown), "{shown:?} not in\n{screen}"))
+    };
+    harness.run(vec![
+        mouse_on("b.txt", TestGesture::Drag(&["f.txt"])),
+        picked("2 picked"),
+        local_scope(Scope::LocalChanges),
+        mouse_on("b.txt", TestGesture::CtrlClick),
+        picked("1 picked"),
+        // the same cell: the diff's title is b.txt now
+        vec![Step::Mouse(TestGesture::CtrlClick)],
+        picked("2 picked"),
+    ]);
+}
+
+#[test]
+fn test_click_on_the_message_box_focuses_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    harness.run(vec![
+        mouse_on("Description", TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+        check(|app| assert_ne!(local_change_path(app).as_deref(), Some("b.txt"))),
+        // focused there, space types in it
+        keys("space"),
+        check(|app| assert!(app.is_typing())),
+    ]);
+}
+
+#[test]
+fn test_click_while_typing_the_message_stops_typing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    harness.run(vec![
+        keys("3"),
+        typing("abc"),
+        check(|app| assert!(app.is_typing())),
+        mouse_on("b.txt", TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+        check(|app| assert_eq!(draft(app), "abc")),
+        check(|app| assert_ne!(local_change_path(app).as_deref(), Some("b.txt"))),
+    ]);
+}
+
+#[test]
+fn test_double_click_in_a_conflict_keeps_a_side() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let merge = crate::git::git_command()
+        .args(["merge", "-q", "feat"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let kept = path.clone();
+    harness.run(vec![
+        // the conflicted file, under the root row, its conflict panel in place of the diff (whose
+        // first line names f.txt too)
+        mouse_at("Unstaged", (0, 2), TestGesture::Click),
+        double_click("Current"),
+        check(move |_| {
+            assert_eq!(git(&kept, &["ls-files", "-u"]), "");
+            assert_eq!(
+                std::fs::read_to_string(kept.join("f.txt")).unwrap(),
+                "a\nMASTER\nc\n"
+            );
+        }),
+    ]);
+}
+
+#[test]
+fn test_click_on_the_page_bar_switches_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("Local", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::LocalChanges(_)))),
+        // the top bar comes first, before the commit section of the page
+        mouse_on("Commit", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        // as tab: the sidebar has the focus
+        check(|app| assert!(app.shell.sidebar_focused())),
+        // the page shown: nothing to switch
+        mouse_on("Commit", TestGesture::Click),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+    ]);
+}
+
+#[test]
+fn test_clicks_in_the_blame() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter 5 shift-b"),
+        // a line's text, the commit shown at the top
+        mouse_on("MASTER", TestGesture::Click),
+        local_scope(Scope::FileHistoryPane),
+        mouse_on("[1]", TestGesture::Click),
+        local_scope(Scope::FileHistory),
+        // a right click shows the keys of the blame
+        mouse_on("MASTER", TestGesture::RightClick),
+        check(|app| assert!(app.shell.menu.is_some())),
+        keys("esc"),
+        // the commit of a line, beside it: shown, as enter does
+        mouse_at("MASTER", (-6, 0), TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_none())),
+        check(|app| assert_eq!(selected_subject(app), "c2")),
+    ]);
+}
+
+#[test]
+fn test_click_in_the_timeline_selects_a_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter 5 shift-t"),
+        // a line of the diff of the selected commit, c2
+        mouse_on("MASTER", TestGesture::Click),
+        local_scope(Scope::FileHistoryPane),
+        // the older commit: shown, as enter does
+        mouse_on("c1", TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_none())),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+    ]);
+}
+
+#[test]
+fn test_click_on_an_action_in_the_keys_list_runs_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("?"),
+        mouse_on("Search the commits", TestGesture::Click),
+        check(|app| assert!(app.shell.overlay.is_none())),
+        check(|app| assert!(app.is_typing())),
+    ]);
+}
+
+#[test]
+fn test_clicks_in_the_command_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let focus = |focus| {
+        check(move |app| {
+            let Some(super::Overlay::CommandLog(state)) = &app.shell.overlay else {
+                panic!("no command log");
+            };
+            assert_eq!(state.focus(), focus);
+        })
+    };
+    harness.run(vec![
+        // a command logged: feat checked out
+        keys("j space enter"),
+        keys("@"),
+        mouse_on("Output", TestGesture::Click),
+        focus(crate::widget::command_log::CommandLogFocus::Output),
+        mouse_on("checkout", TestGesture::Click),
+        focus(crate::widget::command_log::CommandLogFocus::Commands),
+    ]);
+}
+
+#[test]
+fn test_right_click_menu_in_every_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "new\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    let menu = || {
+        let mut steps = check(|app| assert!(app.shell.menu.is_some()));
+        steps.extend(keys("esc"));
+        steps
+    };
+    let right_click = |text| mouse_on(text, TestGesture::RightClick);
+    harness.run(vec![
+        // c2, whose diff and blame have MASTER
+        right_click("c2"),
+        menu(),
+        right_click("Branches"),
+        menu(),
+        // the details: the files and the diff of the changes tab, the preview of the files tab
+        keys("esc enter 4"),
+        right_click("f.txt"),
+        menu(),
+        right_click("MASTER"),
+        menu(),
+        keys("5"),
+        right_click("f.txt"),
+        menu(),
+        // the windows: the blame, the keys list, the command log
+        keys("shift-b"),
+        right_click("MASTER"),
+        menu(),
+        // the first action listed, under the name of the window in the bar at the top
+        keys("esc esc ?"),
+        mouse_at("Keys", (0, 2), TestGesture::RightClick),
+        menu(),
+        keys("esc @"),
+        right_click("Output"),
+        menu(),
+        // the local changes
+        keys("esc tab"),
+        right_click("g.txt"),
+        menu(),
+    ]);
+}
+
+#[test]
+fn test_click_after_the_files_reload_in_place_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    harness.run(vec![
+        vec![Step::Locate("b.txt", (0, 0))],
+        // a file added before b.txt, the rows moving under the frame drawn
+        outside(|path| std::fs::write(path.join("a0.txt"), "x\n").unwrap()),
+        tick(),
+        vec![Step::Mouse(TestGesture::Click)],
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some(":/"))),
+        // drawn again, a click acts
+        mouse_on("b.txt", TestGesture::Click),
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some("b.txt"))),
+    ]);
+}
+
+#[test]
+fn test_wheel_over_the_bars_switches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        mouse_on("Local", TestGesture::WheelDown),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        keys("enter"),
+        mouse_on("[4]", TestGesture::WheelDown),
+        detail_focus(DetailFocus::Info, DetailTab::Info),
+    ]);
+}
+
+#[test]
+fn test_click_on_a_notice_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![Step::Event(Box::new(AppEvent::NotifyWarn("warned".into())))],
+        // over the commit list
+        mouse_on("warned", TestGesture::Click),
+        mouse_on("warned", TestGesture::RightClick),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        check(|app| assert!(app.shell.menu.is_none())),
+    ]);
+}
+
+#[test]
+fn test_v_v_toggles_the_pick_of_a_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    std::fs::write(path.join("g.txt"), "new\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    let commits = |count: usize| {
+        check(move |app| {
+            let state = app.view.as_list_state().unwrap();
+            assert_eq!(state.picked_commit_hashes().len(), count);
+        })
+    };
+    let refs = |count: usize| check(move |app| assert_eq!(app.shell.sidebar.picked().len(), count));
+    let files = |shown: &'static str| {
+        screen(move |screen| assert!(screen.contains(shown), "{shown:?} not in\n{screen}"))
+    };
+    harness.run(vec![
+        keys("v v"),
+        commits(1),
+        keys("v v"),
+        commits(0),
+        // a range picks all it covers, the picked one too
+        keys("v v v j v"),
+        commits(2),
+        // the refs sidebar
+        keys("esc 1 j v v"),
+        refs(1),
+        keys("v v"),
+        refs(0),
+        // the files of the local changes
+        keys("esc tab 1 v v"),
+        files("1 picked"),
+        keys("v v"),
+        screen(|screen| assert!(!screen.contains("picked"), "{screen}")),
+    ]);
+}
+
 #[test]
 fn test_visual_selects_the_commits_from_the_first_to_the_last_moved_to() {
     let dir = tempfile::tempdir().unwrap();
@@ -2420,8 +3333,9 @@ fn test_visual_selects_the_commits_from_the_first_to_the_last_moved_to() {
         // a new visual selection keeps them too
         keys("g v"),
         picked(3),
+        // ended where it started, on a picked commit: v v unpicks it
         keys("v"),
-        picked(3),
+        picked(2),
         keys("esc"),
         picked(0),
     ]);

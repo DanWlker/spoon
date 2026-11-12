@@ -16,6 +16,7 @@ use crate::{
     event::{AppEvent, Sender},
     keybind::{KeyBind, Scope, UserEvent},
     keys::{KeyList, Keys},
+    layout::{RowMap, Target},
     search::SearchKind,
     view::{detail::DetailView, list::ListView, query_status, BlameView, TimelineView},
     widget::tree_query::{register_typing_keys, type_query, typing_keys},
@@ -144,6 +145,17 @@ impl HelpView {
         }
     }
 
+    // Selects the action the mouse points at, see `View::point`.
+    pub fn point(&mut self, target: Target, row: Option<usize>) -> bool {
+        if target != Target::KeysList {
+            return false;
+        }
+        if let Some(row) = row {
+            self.cursor.select(row, self.shown.len());
+        }
+        true
+    }
+
     // The event the selected row runs, None on an action of another panel.
     fn selected_event(&self) -> Option<UserEvent> {
         let row = &self.rows[*self.shown.get(self.cursor.selected())?];
@@ -180,6 +192,13 @@ impl HelpView {
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let offset = self.cursor.fit(height, total, scrolloff);
         render_panel_scrollbar(f.buffer_mut(), panel, total, offset, true, theme);
+        let shown = RowMap::Rows {
+            first: offset,
+            count: total,
+        };
+        ctx.layout
+            .borrow_mut()
+            .record(Target::KeysList, inner, shown);
 
         // at most a third of the width, for the text
         let key_width = self

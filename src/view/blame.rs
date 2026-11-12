@@ -18,7 +18,7 @@ use crate::{
     git::{Blame, CommitHash, FileRevision, Repository},
     keybind::UserEvent,
     keys::{KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel},
+    layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
         commit_event, copy_selection, edit_files, file_link, query_or_search_status,
@@ -529,6 +529,24 @@ impl BlameView {
         .when(on(Revision));
     }
 
+    // Focuses what the mouse points at and selects its line, see `View::point`.
+    pub fn point(&mut self, target: Target, row: Option<usize>) -> bool {
+        self.focus = match target {
+            Target::BlameRevision => BlameFocus::Revision,
+            Target::BlameCommits => BlameFocus::Commit,
+            Target::BlameText => BlameFocus::Text,
+            _ => return false,
+        };
+        if let Some(row) = row {
+            self.text.select_line(row);
+        }
+        true
+    }
+
+    pub fn is_visual(&self) -> bool {
+        self.text.is_visual()
+    }
+
     pub fn keys(&self) -> KeyList {
         if self.query.is_editing() {
             return typing_keys(self.query_kind());
@@ -563,6 +581,10 @@ impl BlameView {
         let inner = block.inner(top);
         block.render(top, buf);
         line.render(inner, buf);
+        let mut layout = ctx.layout.borrow_mut();
+        // the whole panel, its title too: the commit shown has no rows to select
+        layout.record(Target::BlameRevision, top, RowMap::None);
+        drop(layout);
 
         // the lines, each run of lines of a commit headed by it
         let focused = !focused;
@@ -605,6 +627,7 @@ impl BlameView {
         let search = search_in(BlameFocus::Commit);
         let rows = self.text.render(
             text_area,
+            Target::BlameText,
             buf,
             &ctx,
             focused,
@@ -612,6 +635,10 @@ impl BlameView {
             text_search,
         );
 
+        let lines = RowMap::Lines(rows.iter().map(|&row| Some(row)).collect());
+        ctx.layout
+            .borrow_mut()
+            .record(Target::BlameCommits, gutter, lines);
         let selected = self.text.selected_line();
         let selected_style = Style::default().bg(theme.list_selected_bg);
         let mut previous = None;

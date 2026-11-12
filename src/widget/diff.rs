@@ -484,11 +484,17 @@ impl DiffCursor {
         self.scroll_to(row..row + 1);
     }
 
-    // Selects the first change of the selected hunk; false when it has none.
+    // Selects the change of the selected hunk the cursor is on (a click puts it there, see
+    // `DiffPane::point`), else its first change; false when it has none.
     pub fn enter_lines(&mut self, diff: &ParsedDiff) -> bool {
         let Some(hunk) = diff.hunks.get(self.hunk) else {
             return false;
         };
+        let on_change = hunk.rows.contains(&self.line) && diff.rows[self.line].is_change();
+        if on_change {
+            self.select_line(diff, self.line);
+            return true;
+        }
         match hunk.rows.clone().find(|&r| diff.rows[r].is_change()) {
             Some(row) => {
                 self.select_line(diff, row);

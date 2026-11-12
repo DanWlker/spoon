@@ -19,6 +19,8 @@ use crate::{
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
     graph::{Fold, GraphImageManager, GraphImages},
     keybind::UserEvent,
+    layout::{RowMap, Target},
+    pointer::OnPicks,
     protocol::PreparedImage,
     search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{
@@ -178,7 +180,7 @@ impl<'a> CommitListState<'a> {
         self.cursor.toggle_visual();
         match self.cursor.is_visual() {
             true => self.picked.start_visual(),
-            false => self.picked.end_visual(),
+            false => self.picked.finish_visual(),
         }
         self.sync_visual_picks();
     }
@@ -195,6 +197,18 @@ impl<'a> CommitListState<'a> {
     pub fn clear_picks(&mut self) {
         self.cursor.cancel_visual();
         self.picked.clear();
+    }
+
+    // Selects the commit at `row`, as the mouse does, see `OnPicks`.
+    pub fn point(&mut self, row: usize, picks: OnPicks) {
+        let Some(commit) = self.commits.get(row) else {
+            return;
+        };
+        if picks == OnPicks::ClearUnlessPicked && !self.is_picked(&commit.commit.commit_hash) {
+            self.clear_picks();
+        }
+        self.select_in_view(row);
+        self.sync_visual_picks();
     }
 
     pub fn restore_picked_commit_hashes(&mut self, picked_commit_hashes: Vec<CommitHash>) {
@@ -609,6 +623,11 @@ pub fn render_commit_list_panel<'a>(
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
+    let rows = RowMap::Rows {
+        first: state.cursor.offset(),
+        count: state.commits.len(),
+    };
+    ctx.layout.borrow_mut().record(Target::Commits, inner, rows);
     mark_commit_list_bar(f.buffer_mut(), inner, state, focused, &ctx.color_theme);
     let theme = &ctx.color_theme;
     render_panel_scrollbar(

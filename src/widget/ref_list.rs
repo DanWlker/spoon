@@ -16,6 +16,8 @@ use crate::{
     context::AppContext,
     git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, Tracking},
     keybind::UserEvent,
+    layout::{RowMap, Target},
+    pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::{
         file_tree::{keep_guide_color, tree_guides},
@@ -162,6 +164,16 @@ impl RefPicks {
         }
     }
 
+    // The visual selection ended with `v`, see `Picks::finish_visual`.
+    fn finish_visual(&mut self) {
+        if let Some((_, picks)) = &mut self.0 {
+            picks.finish_visual();
+        }
+        if self.is_empty() {
+            self.0 = None;
+        }
+    }
+
     // Those picked before the visual selection, and `names`, the refs from its start to the
     // cursor, see `Picks::sync_visual`.
     fn sync_visual(&mut self, names: &[String]) {
@@ -285,7 +297,7 @@ impl RefListState {
         if self.cursor.is_visual() {
             self.cursor.cancel_visual();
             self.visual_section = None;
-            self.picked.end_visual();
+            self.picked.finish_visual();
             return Ok(());
         }
         let Some(row) = self.visible_rows.get(self.cursor.selected()) else {
@@ -350,6 +362,30 @@ impl RefListState {
         self.cursor.cancel_visual();
         self.visual_section = None;
         self.picked = RefPicks::default();
+    }
+
+    // Selects the row at `row` of those shown, as the mouse does, see `OnPicks`.
+    pub fn point(&mut self, row: usize, picks: OnPicks) {
+        let Some(shown) = self.visible_rows.get(row) else {
+            return;
+        };
+        if picks == OnPicks::ClearUnlessPicked && !self.is_picked(shown) {
+            self.clear_picks();
+        }
+        self.select_visible_index(row);
+        self.sync_visual_picks();
+    }
+
+    // Whether the row is a picked ref or stash.
+    fn is_picked(&self, row: &VisibleRefRow) -> bool {
+        row.kind == RowKind::Ref
+            && row.identifier.len() > 1
+            && RefSection::of_root(&row.identifier[0]).is_some_and(|section| {
+                row.identifier
+                    .last()
+                    .and_then(NodeId::name)
+                    .is_some_and(|name| self.picked.contains(section, name))
+            })
     }
 
     // Fits the rows in `area`, the sidebar inside its borders, as laid out before the keys are
@@ -740,6 +776,14 @@ impl StatefulWidget for RefList {
         let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
         let offset = state.cursor.fit(height, total, scrolloff);
         render_panel_scrollbar(buf, area, total, offset, focused, theme);
+        let rows = RowMap::Rows {
+            first: offset,
+            count: total,
+        };
+        self.ctx
+            .layout
+            .borrow_mut()
+            .record(Target::Sidebar, inner, rows);
 
         let item_style = Style::default().fg(theme.fg);
         // the sections stand out from the refs in them
@@ -785,14 +829,7 @@ impl StatefulWidget for RefList {
             let room = inner.right().saturating_sub(guide_x) as usize;
             let (text_x, _) = buf.set_stringn(guide_x, y, symbol, room, symbol_style);
             let remaining = inner.width.saturating_sub(text_x - inner.x);
-            let picked = row.kind == RowKind::Ref
-                && row.identifier.len() > 1
-                && RefSection::of_root(&row.identifier[0]).is_some_and(|section| {
-                    row.identifier
-                        .last()
-                        .and_then(NodeId::name)
-                        .is_some_and(|name| state.picked.contains(section, name))
-                });
+            let picked = state.is_picked(row);
             let style = if row.depth == 0 {
                 root_style
             } else if head {
@@ -1174,18 +1211,18 @@ mod tests {
         state.handle_move(UserEvent::NavigateDown);
         state.toggle_visual().unwrap();
         assert_eq!(state.picked().names(), ["a", "b"]);
-        // a new visual selection keeps the refs picked before it
+        // v v on a picked ref unpicks it, keeping the others
         select(&mut state, "a");
         state.toggle_visual().unwrap();
         state.toggle_visual().unwrap();
-        assert_eq!(state.picked().names(), ["a", "b"]);
+        assert_eq!(state.picked().names(), ["b"]);
 
         // it stops at the next section, keeping the refs picked in this one
         state.toggle_visual().unwrap();
         state.select_section(Toward::Next);
         assert!(state.visual_outside_section().is_some());
         assert!(!state.is_visual());
-        assert_eq!(state.picked().names(), ["a", "b"]);
+        assert_eq!(state.picked().names(), ["b", "a"]);
         // a tag can't be picked with branches
         state.reset_tree_status(
             vec![NodeId::Section(RefSection::Tags), NodeId::Name("v1".into())],

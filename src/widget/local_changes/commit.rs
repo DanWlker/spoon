@@ -474,6 +474,9 @@ impl LocalChangesPanel<'_> {
             ),
         ];
         for (field, text, empty, box_area) in boxes {
+            let mut layout = self.ctx.layout.borrow_mut();
+            layout.record(Target::Commit(field), box_area, RowMap::None);
+            drop(layout);
             let typing = editing && selected == Some(field);
             if text.is_empty() && !typing {
                 placeholder(empty, theme).render(box_area, buf);

@@ -14,6 +14,7 @@ use crate::{
     git::{command_log, LoggedCommand},
     keybind::UserEvent,
     keys::Keys,
+    layout::{RowMap, Target},
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
         tabs_shown, ListCursor, ScrollState,
@@ -49,6 +50,22 @@ impl CommandLogState {
     }
 
     // Focuses the commands or the output, by the panel number.
+    // Focuses what the mouse points at and selects its command, see `View::point`.
+    pub fn point(&mut self, target: Target, row: Option<usize>) -> bool {
+        self.focus = match target {
+            Target::LogCommands => CommandLogFocus::Commands,
+            Target::LogOutput => CommandLogFocus::Output,
+            _ => return false,
+        };
+        if let Some(row) = row.filter(|_| self.focus == CommandLogFocus::Commands) {
+            if row != self.cursor.selected() {
+                self.cursor.select(row, self.entries.len());
+                self.output.offset = 0;
+            }
+        }
+        true
+    }
+
     pub fn focus_panel(&mut self, panel: usize) {
         self.focus = match panel {
             1 => CommandLogFocus::Commands,
@@ -129,7 +146,13 @@ impl<'a> CommandLog<'a> {
         CommandLog { theme, scrolloff }
     }
 
-    pub fn render(self, area: Rect, buf: &mut Buffer, state: &mut CommandLogState) {
+    // Returns where the commands and the output were drawn, for the clicks.
+    pub fn render(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut CommandLogState,
+    ) -> [(Target, Rect, RowMap); 2] {
         let theme = self.theme;
         Clear.render(area, buf);
         Block::default().bg(theme.bg).render(area, buf);
@@ -153,6 +176,14 @@ impl<'a> CommandLog<'a> {
         let total = state.entries.len();
         let offset = state.cursor.fit(height, total, self.scrolloff);
         render_panel_scrollbar(buf, list_area, total, offset, commands_focused, theme);
+        let commands = (
+            Target::LogCommands,
+            inner,
+            RowMap::Rows {
+                first: offset,
+                count: total,
+            },
+        );
         for (row, entry) in state.entries.iter().enumerate().skip(offset).take(height) {
             let y = inner.y + (row - offset) as u16;
             let (mark, color) = if entry.ok {
@@ -184,13 +215,15 @@ impl<'a> CommandLog<'a> {
             !commands_focused,
             theme,
         );
+        // the whole panel, its title too: the output has no rows to select
+        let drawn = [commands, (Target::LogOutput, output_area, RowMap::None)];
         let output = state
             .entries
             .get(state.cursor.selected())
             .map_or("", |entry| entry.output.as_str());
         if output.is_empty() && !state.entries.is_empty() {
             placeholder("No output", theme).render(inner, buf);
-            return;
+            return drawn;
         }
         // only the rows shown are made, the output can be long
         let total = output.lines().count();
@@ -210,6 +243,7 @@ impl<'a> CommandLog<'a> {
             .map(|l| Line::raw(tabs_shown(l).into_owned()).fg(theme.fg))
             .collect();
         Paragraph::new(lines).render(inner, buf);
+        drawn
     }
 }
 

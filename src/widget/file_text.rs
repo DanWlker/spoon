@@ -13,6 +13,7 @@ use ratatui::{
 use crate::{
     context::AppContext,
     keybind::UserEvent,
+    layout::{RowMap, Target},
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
@@ -259,9 +260,11 @@ impl FileText {
     // Draws the lines with their numbers, the selected one highlighted with `cursor`, and the
     // scrollbar on the column right of `area`; returns the line shown on each row of `area`, which
     // differ from the rows when long lines are wrapped.
+    #[expect(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         area: Rect,
+        target: Target,
         buf: &mut Buffer,
         ctx: &AppContext,
         focused: bool,
@@ -284,6 +287,12 @@ impl FileText {
             .fit(total, area.height as usize, scrolloff);
         let border = Rect::new(area.right(), area.y, 1, area.height);
         render_scrollbar(buf, border, total, screen.start, focused, theme);
+        let lines = (screen.start..screen.start + area.height as usize)
+            .map(|row| (row < total).then(|| self.wrap.logical_at(row)))
+            .collect();
+        ctx.layout
+            .borrow_mut()
+            .record(target, area, RowMap::Lines(lines));
         // only the lines the screen range overlaps are built
         let rows = self.wrap.logical_rows(screen.clone());
         let skip = screen.start - self.wrap.visual_start(rows.start);
@@ -396,6 +405,7 @@ mod tests {
         // draw once, to give the scroll the height it moves by
         text.render(
             area,
+            Target::DetailPane,
             &mut Buffer::empty(area),
             &ctx,
             true,
@@ -425,6 +435,7 @@ mod tests {
         text.set_lines(vec!["x".repeat(200)]);
         let rows = text.render(
             area,
+            Target::DetailPane,
             &mut Buffer::empty(area),
             &ctx,
             true,
@@ -454,6 +465,7 @@ mod tests {
         text.set_lines(lines);
         text.render(
             area,
+            Target::DetailPane,
             &mut Buffer::empty(area),
             &ctx,
             true,
@@ -533,6 +545,7 @@ mod tests {
         text.set_lines(lines);
         text.render(
             area,
+            Target::DetailPane,
             &mut Buffer::empty(area),
             &ctx,
             true,
@@ -557,7 +570,15 @@ mod tests {
         text.toggle_visual();
         text.step(Step::Next);
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
-        text.render(area, &mut buf, &ctx, true, LineCursor::Shown, None);
+        text.render(
+            area,
+            Target::DetailPane,
+            &mut buf,
+            &ctx,
+            true,
+            LineCursor::Shown,
+            None,
+        );
 
         // while selecting, the cursor is picked like the line it extends, its text too
         for x in area.left()..area.right() {
@@ -571,7 +592,15 @@ mod tests {
         text.toggle_visual();
         text.step(Step::Next);
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
-        text.render(area, &mut buf, &ctx, true, LineCursor::Shown, None);
+        text.render(
+            area,
+            Target::DetailPane,
+            &mut buf,
+            &ctx,
+            true,
+            LineCursor::Shown,
+            None,
+        );
         for x in area.left()..area.right() {
             assert_eq!(buf[(x, 0)].bg, ctx.color_theme.list_picked_bg);
             assert_eq!(buf[(x, 1)].bg, ctx.color_theme.list_picked_bg);
@@ -588,7 +617,15 @@ mod tests {
         text.set_lines(vec!["abc".into()]);
         text.toggle_visual();
         let mut buf = Buffer::empty(area);
-        text.render(area, &mut buf, &ctx, true, LineCursor::Shown, Some("a"));
+        text.render(
+            area,
+            Target::DetailPane,
+            &mut buf,
+            &ctx,
+            true,
+            LineCursor::Shown,
+            Some("a"),
+        );
         let (x, y) = (area.left()..area.right())
             .zip(std::iter::repeat(area.top()))
             .find(|(x, y)| buf[(*x, *y)].symbol() == "a")

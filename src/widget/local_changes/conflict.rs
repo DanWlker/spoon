@@ -5,7 +5,7 @@ use super::*;
 
 // The choices of the conflict panel: a side to keep, or a tool to resolve the conflicts with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ConflictItem {
+pub enum ConflictItem {
     Existing,
     Incoming,
     MergeTool,
@@ -160,6 +160,10 @@ impl LocalChangesPanel<'_> {
             let note = (!label.is_empty()).then(|| label.clone());
             let title = panel_title(name, note, is_focused, theme);
             let content_area = render_panel(buf, *side_area, title, is_focused, theme);
+            if let Some(item) = item {
+                let mut layout = self.ctx.layout.borrow_mut();
+                layout.record(Target::Conflict(item), *side_area, RowMap::One);
+            }
             height = content_area.height as usize;
             let range = state.pane.scroll_state().fit(longest, height, scrolloff);
             render_panel_scrollbar(buf, *side_area, longest, range.start, is_focused, theme);
@@ -235,6 +239,9 @@ impl LocalChangesPanel<'_> {
             if tool_area.y >= tools_area.bottom() {
                 break;
             }
+            let mut layout = self.ctx.layout.borrow_mut();
+            layout.record(Target::Conflict(item), tool_area, RowMap::One);
+            drop(layout);
             // buttons, the focused one filled
             let style = if focused(item) {
                 Style::default()

@@ -9,6 +9,8 @@ use crate::{
     git::{CommitHash, Head, Repository},
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
+    layout::Target,
+    pointer::OnPicks,
     ref_commands::lone_stash,
     search::SearchKind,
     view::{
@@ -121,6 +123,21 @@ impl<'a> ListView<'a> {
                 false => Availability::Works,
             },
         );
+    }
+
+    pub fn is_visual(&self) -> bool {
+        self.as_list_state().is_visual()
+    }
+
+    // Selects the commit at `row` the mouse points at, see `View::point`.
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
+        if target != Target::Commits {
+            return false;
+        }
+        if let Some(row) = row {
+            self.as_mut_list_state().point(row, picks);
+        }
+        true
     }
 
     pub fn keys(&self) -> KeyList {

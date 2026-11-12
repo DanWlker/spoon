@@ -67,13 +67,15 @@ pub fn push_notice(notices: &mut Vec<Notice>, notice: Notice) {
 }
 
 // Draws the notices in the top right of `area`, the newest on top; `dismiss` is the key hiding them.
+// Returns where each notice was drawn, for the clicks.
 pub fn render_notices(
     notices: &[Notice],
     dismiss: &str,
     area: Rect,
     buf: &mut Buffer,
     theme: &ColorTheme,
-) {
+) -> Vec<Rect> {
+    let mut drawn = vec![];
     let width = (area.width / 3).clamp(30, 60).min(area.width);
     let text_width = width.saturating_sub(4) as usize;
     let mut y = area.y;
@@ -118,8 +120,10 @@ pub fn render_notices(
             .block(block.padding(ratatui::widgets::Padding::horizontal(1)))
             .bg(theme.bg)
             .render(rect, buf);
+        drawn.push(rect);
         y += height;
     }
+    drawn
 }
 
 #[cfg(test)]

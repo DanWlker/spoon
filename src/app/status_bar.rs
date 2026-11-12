@@ -17,11 +17,13 @@ impl App<'_> {
                 format!("Local Changes ({count})"),
                 on_local_changes,
                 theme.status_success_fg,
+                Target::LocalChangesPage,
             ),
             (
                 "Commit Graph".to_string(),
                 !on_local_changes,
                 theme.accent_fg,
+                Target::GraphPage,
             ),
         ];
         // a window over them, like the help, after them, with its file
@@ -34,14 +36,21 @@ impl App<'_> {
             ]
         };
         let mut spans = vec![Span::raw(" ")];
-        for (name, shown, color) in pages {
+        let width = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>() as u16;
+        let mut layout = self.ctx.layout.borrow_mut();
+        for (name, shown, color, target) in pages {
+            let start = width(&spans);
             if shown && window.is_none() {
                 spans.extend(pill(name, color));
             } else {
                 spans.push(Span::raw(format!(" {name} ")).fg(theme.muted_fg));
             }
+            let x = area.x.saturating_add(start);
+            let tab = Rect::new(x, area.y, width(&spans) - start, 1).intersection(area);
+            layout.record(target, tab, RowMap::None);
             spans.push(Span::raw("  "));
         }
+        drop(layout);
         if let Some((name, path)) = window {
             spans.extend(pill(name.into(), theme.accent_fg));
             if let Some(path) = path {

@@ -17,6 +17,8 @@ use crate::{
     color::ColorTheme,
     context::AppContext,
     keybind::UserEvent,
+    layout::{RowMap, Target},
+    pointer::OnPicks,
     search::SearchOptions,
     widget::{
         picks::Picks,
@@ -458,13 +460,24 @@ impl TreeSelection {
         self.picked.retain(|path| keep(path));
     }
 
+    // Before the mouse selects `row` of the tree, see `OnPicks`.
+    pub fn prepare_point(&mut self, tree: &mut FileTreeState, row: usize, picks: OnPicks) {
+        let unpicked = tree
+            .rows()
+            .get(row)
+            .is_some_and(|row| !self.contains(&row.path));
+        if picks == OnPicks::ClearUnlessPicked && unpicked {
+            self.clear(tree);
+        }
+    }
+
     // Starts or ends a visual selection, picking the rows from where it started to the selected
     // one and keeping those picked before, see `Picks`.
     pub fn toggle_visual(&mut self, tree: &mut FileTreeState) {
         tree.toggle_visual();
         match tree.visual_range().is_some() {
             true => self.picked.start_visual(),
-            false => self.picked.end_visual(),
+            false => self.picked.finish_visual(),
         }
         self.sync_visual(tree);
     }
@@ -716,6 +729,7 @@ pub enum TreeCursor {
 pub fn render_tree(
     buf: &mut Buffer,
     area: Rect,
+    target: Target,
     tree: &FileTreeState,
     symbol: impl Fn(usize) -> Option<&'static str>,
     search: Option<&str>,
@@ -734,6 +748,7 @@ pub fn render_tree(
     let rows = tree.rows();
     if rows.is_empty() {
         Paragraph::new(placeholder(empty, theme)).render(area, buf);
+        ctx.layout.borrow_mut().record(target, area, RowMap::None);
         return 0;
     }
     let height = area.height as usize;
@@ -742,6 +757,11 @@ pub fn render_tree(
         return 0;
     }
     let offset = tree.scroll(height, ctx.ui_config.common.scrolloff as usize);
+    let shown = RowMap::Rows {
+        first: offset,
+        count: rows.len(),
+    };
+    ctx.layout.borrow_mut().record(target, area, shown);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -1016,6 +1036,7 @@ mod tests {
         render_tree(
             &mut buf,
             Rect::new(0, 0, 20, 1),
+            Target::DetailFiles,
             &tree,
             |_| None,
             Some("ab"),
@@ -1069,7 +1090,16 @@ mod tests {
         let symbol = |_| Some("M");
         let is_picked = |path: &str| path == picked;
         render_tree(
-            &mut buf, area, tree, symbol, None, is_picked, cursor, "", &ctx,
+            &mut buf,
+            area,
+            Target::DetailFiles,
+            tree,
+            symbol,
+            None,
+            is_picked,
+            cursor,
+            "",
+            &ctx,
         );
         buf
     }
@@ -1125,6 +1155,7 @@ mod tests {
                 let offset = render_tree(
                     &mut buf,
                     area,
+                    Target::DetailFiles,
                     &tree,
                     |_| None,
                     None,

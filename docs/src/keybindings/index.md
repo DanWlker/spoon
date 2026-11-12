@@ -34,6 +34,19 @@ The default key bindings can be overridden.
 
 The command log (<kbd>@</kbd>) lists the git commands the app ran that changed the repository, the newest first: whether each succeeded, when it ran, how long it took, and the command. The output of the selected one (its last 200 lines) is under them, the full story of an error shown at the top right. <kbd>1</kbd> and <kbd>2</kbd> focus the commands and the output. With the commands focused, every scroll key (<kbd>j/k</kbd>, <kbd>Ctrl-d/u</kbd>, the page and line keys, <kbd>g/G</kbd>) moves between them, the output shown from the top; with the output focused, they scroll it. <kbd>y</kbd> <kbd>y</kbd> copies the command and its output, <kbd>Esc</kbd> or <kbd>@</kbd> closes it. Reading commands, like those of the refresh every few seconds, aren't logged; the last 500 commands are kept until the app quits, and a password in a URL is shown as `***`.
 
+#### Mouse
+
+The mouse acts as the keys do, on the row under it, in the panel it focuses first:
+
+- A click selects the row and does what <kbd>Enter</kbd> does there: a commit opens its details, a folder of the sidebar opens or closes, a ref goes back to the graph at its commit. On empty space under the rows, a click only focuses the panel.
+- A double click does what <kbd>Space</kbd> does on the row then under the pointer (the first click may have moved the rows, opening the details); on a row not picked, it clears the picked ones first, so it acts on that row.
+- Dragging over rows picks them, as <kbd>v</kbd> on the first, moving to the last, and <kbd>v</kbd> again (in a diff, going into its lines first; a drag picks only in the panel it started in); <kbd>Ctrl</kbd>+click picks or unpicks one row, as <kbd>v</kbd> <kbd>v</kbd>. Some terminals take <kbd>Ctrl</kbd>+click for opening links; the keys still pick there.
+- A right click selects the row (clearing the picked ones when it isn't one of them) and opens a menu beside the pointer with the actions working on it, as the status bar lists them: <kbd>j/k</kbd> or the pointer select one, <kbd>Enter</kbd> or a click runs it as its key, <kbd>Esc</kbd> or a click outside closes the menu. On empty space it shows the actions on the panel's selection.
+- A click on a tab of the details, or on <kbd>Local Changes</kbd> or <kbd>Commit Graph</kbd> in the bar at the top, switches to it.
+- In the local changes, a double click stages or unstages a file (or a hunk or line in its diff); on a side of a conflict, it keeps that side. A click on the commit message focuses its box without typing, and on a submodule's commits focuses them, which the keys then move through.
+- The wheel focuses the panel under the pointer and moves its selection, as <kbd>j/k</kbd>.
+- While a popup asks to confirm, the mouse does nothing; while typing a search or the commit message, a click only ends it, as <kbd>Esc</kbd>.
+
 The borders between the panels can also be dragged with the mouse. The sizes are kept until the app quits.
 With the mouse captured, the terminal selects text while Shift is held.
 
@@ -65,7 +78,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show commit details on the info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
-| <kbd>v</kbd>                         | Select a range of commits, from the first to the selected one; move to extend it (moving back unpicks what it went over), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them | `toggle_select` |
+| <kbd>v</kbd>                         | Select a range of commits, from the first to the selected one; move to extend it (moving back unpicks what it went over; <kbd>v</kbd> <kbd>v</kbd> on a picked one unpicks it), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                         | Diff the checked out commit with the selected (or picked) one, or the two picked ones | `diff` |
 | <kbd>r</kbd>                         | Rebase the current branch onto the selected commit | `rebase`                                     |
 | <kbd>m</kbd>                         | Merge the selected commit into the current branch  | `merge`                                      |
@@ -134,7 +147,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                         | `refresh`                       |
-| <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one (moving back unpicks what it went over); another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
+| <kbd>v</kbd>                         | Select the files of the changes/files tree from the first to the selected one (moving back unpicks what it went over; <kbd>v</kbd> <kbd>v</kbd> on a picked one unpicks it); another selection adds, <kbd>Esc</kbd> clears | `toggle_select` |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the picked commits' short/full hashes, or the current one; in the changes and files tabs, the relative/absolute paths of the selected files, one per line | `short_copy` `full_copy` |
 | <kbd>i</kbd>                         | Add the selected files and directories to `.gitignore`, in the changes and files tabs | `ignore` |
 | <kbd>2</kbd>                         | Focus the commit list: moving the selection shows the details of each commit, <kbd>Enter</kbd> goes back to the details | `focus_panel_2` |
@@ -217,7 +230,7 @@ Everything the app shows, its keys included, is the repository as last loaded. A
 
 #### Picking files
 
-On the local changes page, <kbd>v</kbd> starts selecting files and directories: moving extends the selection (highlighted, with the count in the panel title), and <kbd>v</kbd> again ends it, keeping them picked. Another selection adds to them; <kbd>Esc</kbd> clears them.
+On the local changes page, <kbd>v</kbd> starts selecting files and directories: moving extends the selection (highlighted, with the count in the panel title), and <kbd>v</kbd> again ends it, keeping them picked (<kbd>v</kbd> <kbd>v</kbd> on a picked row unpicks it). Another selection adds to them; <kbd>Esc</kbd> clears them.
 A file git diffs as text converted from it (a `textconv` diff driver in `.gitattributes`, like for `.docx`) shows that text, but its hunks and lines can't be selected, since the text isn't in the file: stage, discard or stash the whole file. File names and lines that aren't UTF-8 show `�` for those bytes, and are staged, discarded and stashed as they are.
 
 Ignoring (<kbd>i</kbd>) adds the selected files and directories to the `.gitignore` at the top of the repository, anchored there (`/build/`, `/notes.txt`), with the characters git reads as a pattern escaped. It works here and in the changes and files tabs of the commit details. A file git already tracks stays tracked; ignoring only keeps untracked files out, which the message says.
@@ -252,7 +265,7 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>d</kbd>                                       | Delete the branch or tag, drop the stash; remove the remote | `delete_ref` |
 | <kbd>e</kbd>                                       | Rename the branch or change its upstream; edit the remote | `edit_ref`   |
 | <kbd>Space</kbd>                                   | Apply the stash; on a branch, remote branch or tag, check it out | `select` |
-| <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together; moving back unpicks what it went over); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
+| <kbd>v</kbd>                                       | Select refs from the first to the selected one (only refs of one kind together; moving back unpicks what it went over; <kbd>v</kbd> <kbd>v</kbd> on a picked one unpicks it); another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>D</kbd>                                       | Diff the two picked refs, or the current branch with the picked or selected one | `diff` |
 | <kbd>L</kbd>                                       | Show only the commits of the selected local branch (else the current one), or all | `branch_only` |
 
@@ -292,7 +305,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>m</kbd> <kbd>a</kbd>            | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
 | <kbd>m</kbd> <kbd>s</kbd>            | Skip the commit the rebase, cherry-pick or revert stopped at (asks first) | `skip`             |
 | <kbd>Space</kbd>                     | Stage/Unstage file, directory, hunk, line or selected lines (or the picked files)<br>Resolve a conflicted file, like <kbd>Enter</kbd><br>Type the message, in the commit section | `select` |
-| <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it (moving back unpicks what it went over), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
+| <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it (moving back unpicks what it went over; <kbd>v</kbd> <kbd>v</kbd> on a picked one unpicks it), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>]f</kbd> <kbd>[f</kbd>          | Go to next/previous file, staying in the diff                | `next_file` `previous_file`     |
 | <kbd>]F</kbd> <kbd>[F</kbd>          | Go to the next/previous folder at the same depth, or a level up when none is left there (closed folders stay closed); from the root row, the first/last folder at the top; from the diff, on in the diff of the folder's first file | `next_folder` `previous_folder` |
 | <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |

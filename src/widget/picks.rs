@@ -14,6 +14,17 @@ pub struct Picks<K> {
     set: FxHashSet<K>,
     // those picked before the visual selection running, see `sync_visual`
     before_visual: Option<(Vec<K>, FxHashSet<K>)>,
+    // what the visual selection running covered, see `finish_visual`
+    span: Span<K>,
+}
+
+// The rows a visual selection covered: one only since it started, which ending it on toggles,
+// else a range, which picks even once back on one row.
+#[derive(Debug, Clone)]
+enum Span<K> {
+    None,
+    One(K),
+    Range,
 }
 
 impl<K> Default for Picks<K> {
@@ -22,6 +33,7 @@ impl<K> Default for Picks<K> {
             order: Vec::new(),
             set: FxHashSet::default(),
             before_visual: None,
+            span: Span::None,
         }
     }
 }
@@ -66,16 +78,31 @@ impl<K: Clone + Eq + Hash> Picks<K> {
         self.order.retain(|key| keep(key));
         self.set.retain(|key| keep(key));
         self.before_visual = None;
+        self.span = Span::None;
     }
 
     // A visual selection starts: what it picks adds to those picked now.
     pub fn start_visual(&mut self) {
         self.before_visual = Some((self.order.clone(), self.set.clone()));
+        self.span = Span::None;
     }
 
-    // The visual selection ended, or was cancelled: what it picked stays.
+    // The visual selection was cancelled or stopped: what it picked stays.
     pub fn end_visual(&mut self) {
         self.before_visual = None;
+        self.span = Span::None;
+    }
+
+    // The visual selection ended with `v`: one row picked before it, `v v` on it, is unpicked;
+    // a range picks all it covers.
+    pub fn finish_visual(&mut self) {
+        if let (Span::One(key), Some((_, before))) = (&self.span, &self.before_visual) {
+            if before.contains(key) {
+                self.set.remove(key);
+                self.order.retain(|k| k != key);
+            }
+        }
+        self.end_visual();
     }
 
     // Those picked before the visual selection, and `keys`, those of the rows from its start to
@@ -88,7 +115,15 @@ impl<K: Clone + Eq + Hash> Picks<K> {
             return;
         };
         (self.order, self.set) = (order.clone(), set.clone());
-        for key in keys {
+        let mut keys = keys.into_iter().peekable();
+        let first = keys.next();
+        self.span = match (&self.span, first) {
+            (Span::None | Span::One(_), Some(key)) if keys.peek().is_none() => {
+                Span::One(key.clone())
+            }
+            _ => Span::Range,
+        };
+        for key in first.into_iter().chain(keys) {
             self.insert(key);
         }
     }
@@ -117,5 +152,37 @@ mod tests {
         // each picked once
         picks.insert(&"a");
         assert_eq!(picks.len(), 3);
+    }
+
+    #[test]
+    fn test_v_v_on_a_picked_key_unpicks_it() {
+        let mut picks = Picks::default();
+        picks.insert(&"a");
+        // v v on the picked a: unpicked
+        picks.start_visual();
+        picks.sync_visual(&["a"]);
+        picks.finish_visual();
+        assert!(!picks.contains("a"));
+        // v v on the unpicked b: picked
+        picks.start_visual();
+        picks.sync_visual(&["b"]);
+        picks.finish_visual();
+        assert!(picks.contains("b"));
+        // a range always picks, even over the picked b
+        picks.start_visual();
+        picks.sync_visual(&["a", "b", "c"]);
+        picks.finish_visual();
+        assert_eq!(picks.as_slice(), ["b", "a", "c"]);
+        // moved away and back, it is a range, which picks
+        picks.start_visual();
+        picks.sync_visual(&["b", "c"]);
+        picks.sync_visual(&["b"]);
+        picks.finish_visual();
+        assert!(picks.contains("b"));
+        // cancelled, a single row picked before stays
+        picks.start_visual();
+        picks.sync_visual(&["a"]);
+        picks.end_visual();
+        assert!(picks.contains("a"));
     }
 }

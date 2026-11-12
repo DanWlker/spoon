@@ -8,7 +8,7 @@ use std::{
 use ratatui::{
     backend::Backend,
     crossterm::{
-        event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind},
+        event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
         SynchronizedUpdate,
     },
     layout::{Constraint, Layout, Rect},
@@ -38,7 +38,8 @@ use crate::{
     graph_commands::{graph_command, moves_head, ref_graph_command, Compare, GraphCommand},
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel, Size},
+    layout::{fit_size, Direction, Edge, Hit, Panel, RowMap, Size, Target},
+    pointer::{Cell, Gesture, OnPicks, Pointer},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
@@ -46,6 +47,7 @@ use crate::{
         LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
+        action_menu::{only_moves, ActionMenu, MenuEntry, MenuOutcome},
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState},
         commit_tabs::DetailTab,
@@ -209,6 +211,12 @@ pub struct AppShell {
     // the commit to select once the graph laid out with merges unfolded to show it lands, see
     // `App::reveal_sidebar_selection`
     reveal: Option<CommitHash>,
+    // what the mouse does, from its events, see `Pointer`
+    pointer: Pointer,
+    // the panel a drag picks rows in, see `App::handle_gesture`
+    drag: Option<Target>,
+    // the actions a right click shows, over everything but the notices
+    menu: Option<ActionMenu>,
 }
 
 // What the app shows again once the repository reloaded in the background lands.
@@ -310,6 +318,27 @@ impl FileWindow {
         match self {
             FileWindow::Blame(blame) => blame.handle_event(event, key, repository),
             FileWindow::Timeline(timeline) => timeline.handle_event(event, key, repository),
+        }
+    }
+
+    // See `View::point`.
+    fn point(
+        &mut self,
+        target: Target,
+        row: Option<usize>,
+        picks: OnPicks,
+        repository: &Repository,
+    ) -> bool {
+        match self {
+            FileWindow::Blame(blame) => blame.point(target, row),
+            FileWindow::Timeline(timeline) => timeline.point(target, row, picks, repository),
+        }
+    }
+
+    fn is_visual(&self) -> bool {
+        match self {
+            FileWindow::Blame(blame) => blame.is_visual(),
+            FileWindow::Timeline(timeline) => timeline.is_visual(),
         }
     }
 
@@ -477,6 +506,8 @@ impl<'a> App<'a> {
         // the shell and view of the app before the repository was reloaded
         refresh: Option<(AppShell, Box<RefreshViewContext>)>,
     ) -> Self {
+        // what the app before the reload drew is not what this one shows
+        ctx.layout.borrow_mut().clear_hits();
         let (shell, refresh_view_context) = match refresh {
             Some((shell, context)) => (Some(shell), Some(*context)),
             None => (None, None),
@@ -580,6 +611,9 @@ impl<'a> App<'a> {
                 opening: None,
                 regraphs: Vec::new(),
                 reveal: None,
+                pointer: Pointer::default(),
+                drag: None,
+                menu: None,
             },
         };
         // gone, like after a rebase
@@ -628,6 +662,8 @@ impl<'a> App<'a> {
     // closed, the graph shows the history it showed before again.
     fn replace_view(&mut self, view: View<'a>) {
         self.view = view;
+        // a click acts on what was drawn, not on the rows of the new view in its place
+        self.ctx.layout.borrow_mut().clear_hits();
         self.end_stale_ref_compare();
     }
 
@@ -700,6 +736,11 @@ impl App<'_> {
     }
 
     fn handle(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
+        // anything but the mouse may change what is shown, like files reloaded in place: a click
+        // before the next frame acts on nothing rather than on a row that moved
+        if !matches!(event, AppEvent::Mouse(_)) {
+            self.ctx.layout.borrow_mut().clear_hits();
+        }
         match event {
             AppEvent::Key(key) => {
                 match self.shell.app_status.status_line {
@@ -770,34 +811,7 @@ impl App<'_> {
                     None => {}
                 }
             }
-            // the wheel moves the selection of what has the focus like j and k, whatever keys they
-            // are bound to; over a popup, or while typing, it does nothing
-            AppEvent::Mouse(mouse)
-                if matches!(
-                    mouse.kind,
-                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
-                ) =>
-            {
-                let (event, code) = match mouse.kind {
-                    MouseEventKind::ScrollDown => (UserEvent::NavigateDown, KeyCode::Down),
-                    _ => (UserEvent::NavigateUp, KeyCode::Up),
-                };
-                if self.shell.dialog.is_none() && !self.is_typing() {
-                    self.dispatch(event, KeyEvent::new(code, KeyModifiers::NONE));
-                }
-            }
-            AppEvent::Mouse(mouse) => {
-                let mut layout = self.ctx.layout.borrow_mut();
-                match mouse.kind {
-                    MouseEventKind::Down(_) => {
-                        layout.press(mouse.column, mouse.row);
-                    }
-                    MouseEventKind::Drag(_) => {
-                        layout.drag_to(mouse.column, mouse.row);
-                    }
-                    _ => layout.release(),
-                }
-            }
+            AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
             AppEvent::Quit => {
                 // quitting would kill the git command half done (a stash never popped), so it
                 // waits; asking again quits right away
@@ -1094,6 +1108,8 @@ impl App<'_> {
     fn local_hints(&self) -> Vec<KeyHint> {
         if let Some(dialog) = self.visible_dialog() {
             dialog.keys().hints()
+        } else if self.shell.menu.is_some() {
+            ActionMenu::keys().hints()
         } else if let Some(mut keys) = self.overlay_keys() {
             // and the keys of the app working over it
             keys.extend(self.app_keys());
@@ -1111,13 +1127,21 @@ impl App<'_> {
         if let Some(Popup { dialog, .. }) = &self.shell.dialog {
             return dialog.keys();
         }
-        let mut keys = match self.overlay_keys() {
+        if self.shell.menu.is_some() {
+            return ActionMenu::keys();
+        }
+        let mut keys = self.panel_keys();
+        keys.extend(self.app_keys());
+        keys
+    }
+
+    // The keys of the window over the page, the sidebar or the page, where the focus is.
+    fn panel_keys(&self) -> KeyList {
+        match self.overlay_keys() {
             Some(overlay) => overlay,
             None if self.shell.sidebar_focused() => self.sidebar_keys(),
             None => self.view.keys(),
-        };
-        keys.extend(self.app_keys());
-        keys
+        }
     }
 
     // The keys finishing the sequence started, which work where the focus is, and what they do.
@@ -1164,7 +1188,10 @@ impl App<'_> {
     // Whether the keys go to a popup, typed text or the help, which take only their own: then
     // these are in the status bar, else those of the whole app, the others in the keys popup.
     fn keys_are_local(&self) -> bool {
-        self.visible_dialog().is_some() || self.shell.overlay.is_some() || self.is_typing()
+        self.visible_dialog().is_some()
+            || self.shell.menu.is_some()
+            || self.shell.overlay.is_some()
+            || self.is_typing()
     }
 
     // The keys of the focused panel and what they do, for the keys popup; empty when it is
@@ -1236,10 +1263,14 @@ impl App<'_> {
         f.render_widget(base.clone(), f.area());
 
         let [page_bar_area, app_area, status_line_area] = split_app_areas(f.area());
+        // the panels place their borders to drag, and what a click finds, as they are drawn
+        {
+            let mut layout = self.ctx.layout.borrow_mut();
+            layout.clear_borders();
+            layout.clear_hits();
+        }
         self.render_page_bar(f, page_bar_area);
         let [sidebar_area, view_area] = self.split_sidebar(app_area);
-        // the panels place their borders to drag as they are drawn
-        self.ctx.layout.borrow_mut().clear_borders();
         if self.sidebar_shown() && !self.shell.sidebar_collapsed() {
             self.ctx
                 .layout
@@ -1271,28 +1302,44 @@ impl App<'_> {
         }
         if let Some(Overlay::CommandLog(state)) = self.shell.overlay.as_mut() {
             let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
-            CommandLog::new(&self.ctx.color_theme, scrolloff).render(
+            let drawn = CommandLog::new(&self.ctx.color_theme, scrolloff).render(
                 app_area,
                 f.buffer_mut(),
                 state,
             );
+            let mut layout = self.ctx.layout.borrow_mut();
+            for (target, area, rows) in drawn {
+                layout.record(target, area, rows);
+            }
         }
         // over the command log too, which takes the keys it lists
         if !keys.is_empty() {
             let popup = KeysPopup::new(keys, &self.ctx.color_theme);
+            let area = popup.area(app_area);
             f.render_widget(popup, app_area);
+            let mut layout = self.ctx.layout.borrow_mut();
+            layout.record(Target::Covered, area, RowMap::None);
+        }
+        if let Some(menu) = self.shell.menu.as_mut() {
+            let screen = f.area();
+            menu.render(f.buffer_mut(), screen, &self.ctx);
         }
         let dismiss = self
             .ctx
             .short_keys(Scope::Global, &[UserEvent::DismissNotifications]);
         let theme = &self.ctx.color_theme;
-        render_notices(
+        let notices = render_notices(
             &self.shell.notices,
             &dismiss,
             app_area,
             f.buffer_mut(),
             theme,
         );
+        let mut layout = self.ctx.layout.borrow_mut();
+        for area in notices {
+            layout.record(Target::Covered, area, RowMap::None);
+        }
+        drop(layout);
         self.render_status_line(f, status_line_area);
         // the graph images stop where a popup covers them
         self.shell.app_status.images = crate::protocol::crop_covered_images(f.buffer_mut());
@@ -1414,6 +1461,11 @@ impl App<'_> {
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
         if self.shell.dialog.is_some() {
             self.handle_dialog_event(Some(event), key);
+            return;
+        }
+        if let Some(menu) = self.shell.menu.as_mut() {
+            let outcome = menu.handle_key(event);
+            self.end_menu(outcome);
             return;
         }
         if self.app_keys().takes(event) {
@@ -1691,6 +1743,9 @@ impl App<'_> {
     fn current_scope(&self) -> Scope {
         if self.shell.dialog.is_some() {
             return Scope::Dialog;
+        }
+        if self.shell.menu.is_some() {
+            return Scope::Global;
         }
         match &self.shell.overlay {
             Some(Overlay::File(window)) => return window.scope(),
@@ -2523,6 +2578,266 @@ impl App<'_> {
             // the changes of the comparison have it, like one opened from the graph
             focus: DetailFocus::Files,
         }));
+    }
+
+    // The mouse: a border pressed is dragged, as drawn in the last frame; else what it does, see
+    // `handle_gesture`.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let (x, y) = (mouse.column, mouse.row);
+        let mut layout = self.ctx.layout.borrow_mut();
+        // what is drawn on a border, like the tabs of the details, takes the click
+        let border = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                layout.hit(x, y).is_none() && layout.press(x, y)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => layout.drag_to(x, y),
+            MouseEventKind::Up(MouseButton::Left) => layout.release(),
+            _ => false,
+        };
+        drop(layout);
+        if border {
+            return;
+        }
+        if let Some(gesture) = self.shell.pointer.gesture(mouse, Instant::now()) {
+            self.handle_gesture(gesture);
+        }
+    }
+
+    // What the mouse does, as the keys would on what it points at, see `Gesture`: nothing over a
+    // popup; while typing, a click only ends it, as esc does.
+    fn handle_gesture(&mut self, gesture: Gesture) {
+        use UserEvent::*;
+        if self.shell.dialog.is_some() {
+            return;
+        }
+        if self.shell.menu.is_some() {
+            self.menu_gesture(gesture);
+            return;
+        }
+        if self.is_typing() {
+            if !matches!(
+                gesture,
+                Gesture::Wheel { .. }
+                    | Gesture::Hover(_)
+                    | Gesture::DragTo(_)
+                    | Gesture::DragEnd(_)
+            ) {
+                self.shell.pointer.cancel();
+                self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            }
+            return;
+        }
+        // on empty space a click only focuses; on nothing, it is no first click of a double click
+        let on_row = |hit: Option<Hit>| hit.is_some_and(|hit| hit.row.is_some());
+        match gesture {
+            Gesture::Click(at) => {
+                let hit = self.point(at, OnPicks::Keep);
+                if hit.is_none() {
+                    self.shell.pointer.cancel();
+                }
+                if on_row(hit) {
+                    self.run_event(Confirm);
+                }
+            }
+            Gesture::DoubleClick(at) => {
+                if on_row(self.point(at, OnPicks::ClearUnlessPicked)) {
+                    self.run_event(Select);
+                }
+            }
+            // v v on the row, which toggles its pick
+            Gesture::CtrlClick(at) => {
+                if on_row(self.point(at, OnPicks::Keep)) {
+                    self.run_event(ToggleSelect);
+                    self.run_event(ToggleSelect);
+                }
+            }
+            Gesture::RightClick(at) => {
+                if self.point(at, OnPicks::ClearUnlessPicked).is_some() {
+                    self.open_menu(at);
+                }
+            }
+            // v where pressed, moving with the pointer, v where released
+            Gesture::DragStart { from, to } => {
+                let hit = self.point(from, OnPicks::StartRange);
+                self.shell.drag = hit.filter(|hit| hit.row.is_some()).map(|hit| hit.target);
+                if self.shell.drag.is_some() && !self.picking() {
+                    self.run_event(ToggleSelect);
+                }
+                self.drag_to(to);
+            }
+            Gesture::DragTo(at) => self.drag_to(at),
+            Gesture::DragEnd(at) => {
+                self.drag_to(at);
+                if self.shell.drag.take().is_some() && self.picking() {
+                    self.run_event(ToggleSelect);
+                }
+            }
+            Gesture::Wheel { at, toward } => {
+                let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+                // the pages and the tabs have no selection to move
+                let bar = |target| {
+                    matches!(
+                        target,
+                        Target::LocalChangesPage | Target::GraphPage | Target::DetailTab(_)
+                    )
+                };
+                let hit = hit.filter(|hit| !bar(hit.target));
+                let hit = hit.map(|hit| Hit { row: None, ..hit });
+                if hit.is_some_and(|hit| self.point_hit(hit, OnPicks::Keep)) {
+                    let next = toward == Toward::Next;
+                    self.run_event(if next { NavigateDown } else { NavigateUp });
+                }
+            }
+            Gesture::Hover(_) => {}
+        }
+    }
+
+    // Opens the menu of the actions of the focused panel at `at`, as the status bar lists them but
+    // the moves; none when nothing works there.
+    fn open_menu(&mut self, at: Cell) {
+        let scope = self.current_scope();
+        let entries = self
+            .panel_keys()
+            .hints()
+            .into_iter()
+            .filter(|(events, _)| !only_moves(events))
+            .map(|(events, action)| MenuEntry {
+                event: events[0],
+                label: KeyLabel::new(self.ctx.short_keys(scope, &events), action),
+            })
+            .filter(|entry| !entry.label.keys.is_empty())
+            .collect();
+        self.shell.menu = ActionMenu::new(entries, at);
+        self.ec.set_hover(self.shell.menu.is_some());
+    }
+
+    // What a key or the mouse did in the menu: closed it, or runs an action where the focus is.
+    fn end_menu(&mut self, outcome: MenuOutcome) {
+        if outcome == MenuOutcome::Stay {
+            return;
+        }
+        self.shell.menu = None;
+        self.ec.set_hover(false);
+        if let MenuOutcome::Run(event) = outcome {
+            self.run_event(event);
+        }
+    }
+
+    // The mouse while the menu is open: hovering selects an entry, a click runs it; a click
+    // outside closes it, and a right click there opens it there.
+    fn menu_gesture(&mut self, gesture: Gesture) {
+        let Some(menu) = self.shell.menu.as_mut() else {
+            return;
+        };
+        let ctx = self.ctx.clone();
+        let row = |at: Cell| {
+            let hit = ctx.layout.borrow().hit(at.x, at.y);
+            hit.filter(|hit| hit.target == Target::Menu)
+                .map(|hit| hit.row)
+        };
+        let outcome = match gesture {
+            Gesture::Hover(at) => {
+                if let Some(Some(row)) = row(at) {
+                    menu.select(row);
+                }
+                MenuOutcome::Stay
+            }
+            Gesture::Wheel { toward, .. } => menu.handle_key(match toward {
+                Toward::Next => UserEvent::NavigateDown,
+                Toward::Previous => UserEvent::NavigateUp,
+            }),
+            Gesture::DragTo(_) | Gesture::DragEnd(_) => MenuOutcome::Stay,
+            Gesture::Click(at) | Gesture::DoubleClick(at) if row(at).is_some() => {
+                match row(at).flatten().and_then(|row| menu.event(row)) {
+                    Some(event) => MenuOutcome::Run(event),
+                    None => MenuOutcome::Stay,
+                }
+            }
+            _ => MenuOutcome::Close,
+        };
+        self.end_menu(outcome);
+        if let Gesture::RightClick(at) = gesture {
+            if row(at).is_none() {
+                self.handle_gesture(gesture);
+            }
+        }
+    }
+
+    // Focuses the panel at `at` as drawn in the last frame and selects its row there; returns
+    // what is there, None where nothing takes a click.
+    fn point(&mut self, at: Cell, picks: OnPicks) -> Option<Hit> {
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y)?;
+        self.point_hit(hit, picks).then_some(hit)
+    }
+
+    fn point_hit(&mut self, hit: Hit, picks: OnPicks) -> bool {
+        if hit.target == Target::Covered {
+            return false;
+        }
+        // the pages, as the key switching them
+        let page = match hit.target {
+            Target::LocalChangesPage => Some(true),
+            Target::GraphPage => Some(false),
+            _ => None,
+        };
+        if let Some(local_changes) = page {
+            if local_changes == matches!(self.view, View::LocalChanges(_)) {
+                return true;
+            }
+            self.run_event(UserEvent::RefList);
+            return true;
+        }
+        // a window over the page takes the clicks on it
+        match self.shell.overlay.as_mut() {
+            Some(Overlay::File(window)) => {
+                return window.point(hit.target, hit.row, picks, self.repository);
+            }
+            Some(Overlay::Help(help)) => return help.point(hit.target, hit.row),
+            Some(Overlay::CommandLog(state)) => return state.point(hit.target, hit.row),
+            None => {}
+        }
+        if hit.target != Target::Sidebar {
+            let pointed = self.view.point(hit.target, hit.row, picks);
+            if pointed {
+                self.blur_sidebar();
+            }
+            return pointed;
+        }
+        self.focus_sidebar();
+        if let Some(row) = hit.row {
+            self.shell.sidebar.point(row, picks);
+            if let Some(message) = self.shell.sidebar.visual_outside_section() {
+                self.ec.send(AppEvent::NotifyWarn(message));
+            }
+            self.show_sidebar_selection();
+        }
+        true
+    }
+
+    // The row of the panel being dragged in at `at`; elsewhere the drag picks nothing more.
+    fn drag_to(&mut self, at: Cell) {
+        let Some(target) = self.shell.drag else {
+            return;
+        };
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        if let Some(hit) = hit.filter(|hit| hit.target == target && hit.row.is_some()) {
+            self.point_hit(hit, OnPicks::Keep);
+        }
+    }
+
+    // Whether the focused list is picking from where a visual selection started.
+    fn picking(&self) -> bool {
+        match &self.shell.overlay {
+            Some(Overlay::File(window)) => window.is_visual(),
+            Some(_) => false,
+            None if self.shell.sidebar_focused() => self.shell.sidebar.is_visual(),
+            None => self.view.is_visual(),
+        }
+    }
+
+    // Runs `event` where the focus is, as its key would.
+    fn run_event(&mut self, event: UserEvent) {
+        self.dispatch(event, KeyEvent::new(KeyCode::Null, KeyModifiers::NONE));
     }
 
     fn run_graph_command(

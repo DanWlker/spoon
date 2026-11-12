@@ -67,6 +67,8 @@ $ spoon
 
 It opens on the commit graph; <kbd>Tab</kbd> switches to the local changes page and back. The bar at the top shows which page is open, and how many local changes there are.
 
+The mouse works too: a click selects a row and opens it, as <kbd>Enter</kbd>; a double click does what <kbd>Space</kbd> does; dragging over rows or <kbd>Ctrl</kbd>+click picks them, as <kbd>v</kbd>; a right click shows the actions on the row.
+
 ### Options
 
 ```

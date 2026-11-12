@@ -9,6 +9,8 @@ use crate::{
     git::{PatchDirection, Repository},
     keybind::UserEvent,
     keys::Keys,
+    layout::{RowMap, Target},
+    pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
@@ -285,6 +287,33 @@ impl DiffPane {
         true
     }
 
+    // Selects what the mouse points at, at `row` of the diff: its hunk, the cursor on the changed
+    // line there, or that line while selecting lines (in the hunk of the lines picked); a drag
+    // starting there goes into the lines, see `OnPicks`.
+    pub fn point(&mut self, row: usize, picks: OnPicks) {
+        let Some(diff) = shown(&self.state) else {
+            return;
+        };
+        let Some(hunk) = diff.hunks.iter().position(|h| h.rows.contains(&row)) else {
+            return;
+        };
+        let change = diff.rows[row].is_change();
+        if self.focus == Some(DiffPart::Line) {
+            if change && (hunk == self.cursor.hunk || !self.cursor.has_range()) {
+                self.cursor.select_line(diff, row);
+            }
+            return;
+        }
+        self.cursor.select_hunk(diff, hunk);
+        if change {
+            self.cursor.line = row;
+        }
+        self.focus = Some(DiffPart::Hunk);
+        if picks == OnPicks::StartRange && self.cursor.enter_lines(diff) {
+            self.focus = Some(DiffPart::Line);
+        }
+    }
+
     // Goes one level back: the lines picked cleared -> hunks -> out of the diff. Returns false
     // when already out.
     pub fn back(&mut self) -> bool {
@@ -388,9 +417,11 @@ impl DiffPane {
 
     // Draws the diff in a panel titled `title`, like the timeline and the local changes do: the
     // selection bar in the padding, the scrollbar on the right border. Returns the area inside.
+    #[expect(clippy::too_many_arguments)]
     pub fn render_panel(
         &mut self,
         area: Rect,
+        target: Target,
         title: Line,
         buf: &mut Buffer,
         ctx: &AppContext,
@@ -399,15 +430,17 @@ impl DiffPane {
     ) -> Rect {
         let inner = render_panel(buf, area, title, focused, &ctx.color_theme);
         let scrollbar = Rect::new(area.right().saturating_sub(1), inner.y, 1, inner.height);
-        self.render(inner, scrollbar, buf, ctx, focused, search);
+        self.render(inner, target, scrollbar, buf, ctx, focused, search);
         inner
     }
 
     // Draws the diff, its selected hunk or line highlighted while it has the focus, and the
     // scrollbar in the `scrollbar` column, on the right border.
+    #[expect(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         area: Rect,
+        target: Target,
         scrollbar: Rect,
         buf: &mut Buffer,
         ctx: &AppContext,
@@ -418,6 +451,7 @@ impl DiffPane {
         let wrap = ctx.wrap.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let Some(diff) = drawn(&self.state) else {
+            ctx.layout.borrow_mut().record(target, area, RowMap::None);
             return;
         };
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
@@ -436,6 +470,12 @@ impl DiffPane {
             .scroll
             .fit(total, area.height as usize, scrolloff);
         render_scrollbar(buf, scrollbar, total, range.start, focused, theme);
+        let lines = (range.start..range.start + area.height as usize)
+            .map(|screen| (screen < total).then(|| self.cursor.wrap().logical_at(screen)))
+            .collect();
+        ctx.layout
+            .borrow_mut()
+            .record(target, area, RowMap::Lines(lines));
         // only the rows the screen range overlaps are built
         let rows = self.cursor.wrap().logical_rows(range.clone());
         let skip = range.start - self.cursor.wrap().visual_start(rows.start);
@@ -548,7 +588,15 @@ mod tests {
     fn draw(pane: &mut DiffPane, ctx: &AppContext, area: Rect) -> Buffer {
         let mut buf = Buffer::empty(area);
         let scrollbar = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
-        pane.render(area, scrollbar, &mut buf, ctx, false, None);
+        pane.render(
+            area,
+            Target::DetailPane,
+            scrollbar,
+            &mut buf,
+            ctx,
+            false,
+            None,
+        );
         buf
     }
 

@@ -23,7 +23,8 @@ use crate::{
     },
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel},
+    layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
+    pointer::OnPicks,
     search::{SearchKind, SearchOptions, SearchOutcome},
     widget::diff_pane::register_diff_keys,
     widget::tree_query::type_query,
@@ -50,7 +51,8 @@ mod commit;
 mod conflict;
 
 pub use commit::CommitDraft;
-use conflict::{ConflictItem, ConflictPanel};
+pub use conflict::ConflictItem;
+use conflict::ConflictPanel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalChangesSection {
@@ -1025,6 +1027,57 @@ impl<'a> LocalChangesState<'a> {
         Ok(true)
     }
 
+    // Focuses the panel the mouse points at and selects its row there, see `View::point`; false
+    // for what isn't on the page.
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
+        match target {
+            Target::Unstaged | Target::Staged => {
+                let section = match target {
+                    Target::Unstaged => LocalChangesSection::Unstaged,
+                    _ => LocalChangesSection::Staged,
+                };
+                self.focus_section(section);
+                if let Some(row) = row {
+                    let current = self.current_mut();
+                    current.picked.prepare_point(&mut current.tree, row, picks);
+                    self.update_tree(|tree| tree.select_index(row));
+                }
+            }
+            Target::ChangesSide => match row {
+                Some(row) => self.pane.point(row, picks),
+                None => {
+                    self.pane.enter();
+                }
+            },
+            Target::Conflict(item) => {
+                if let Some(conflict) = self.conflict_mut() {
+                    conflict.item = item;
+                    self.chosen = Focus::Side;
+                }
+            }
+            Target::Commit(field) => {
+                self.focus_files();
+                self.chosen = Focus::Commit(field);
+            }
+            Target::Submodule => {
+                if self.submodule().is_some() {
+                    self.chosen = Focus::Submodule;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    // Whether the files or the lines of the diff are being picked from where a visual selection
+    // started.
+    pub fn is_picking(&self) -> bool {
+        match self.is_diff_focused() {
+            true => self.pane.is_visual(),
+            false => self.focus() == Focus::Files && self.is_visual(),
+        }
+    }
+
     // Moves the focus to the files, whose diff shows the row under the cursor again.
     pub fn focus_files(&mut self) {
         self.chosen = Focus::Files;
@@ -1859,9 +1912,14 @@ impl LocalChangesPanel<'_> {
         };
         // only the section whose diff is displayed shows its cursor, quieter while another panel,
         // like the refs sidebar, has the focus
+        let target = match section {
+            LocalChangesSection::Unstaged => Target::Unstaged,
+            LocalChangesSection::Staged => Target::Staged,
+        };
         let offset = render_tree(
             buf,
             inner,
+            target,
             tree,
             |i| Some(files[i].status.symbol()),
             // the filter is highlighted in the section it applies to
@@ -1892,9 +1950,15 @@ impl LocalChangesPanel<'_> {
         let notes = notes.chain(loading_note(state.pane.loading_since()));
         let title = panel_title(&title, notes, diff_focused, &self.ctx.color_theme);
         let search = state.diff_query.search();
-        let inner = state
-            .pane
-            .render_panel(area, title, buf, &self.ctx, diff_focused, search);
+        let inner = state.pane.render_panel(
+            area,
+            Target::ChangesSide,
+            title,
+            buf,
+            &self.ctx,
+            diff_focused,
+            search,
+        );
         // with no row, the diff is empty
         if state.selected_row().is_none() {
             let message = if state.count() == 0 {

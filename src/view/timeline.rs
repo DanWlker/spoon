@@ -14,7 +14,8 @@ use crate::{
     git::{FileRevision, Repository},
     keybind::UserEvent,
     keys::{KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel},
+    layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
+    pointer::OnPicks,
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_selection, edit_files, file_link,
@@ -421,6 +422,34 @@ impl TimelineView {
         .when(commits);
     }
 
+    // Focuses what the mouse points at and selects its row there, see `View::point`.
+    pub fn point(
+        &mut self,
+        target: Target,
+        row: Option<usize>,
+        picks: OnPicks,
+        repository: &Repository,
+    ) -> bool {
+        match (target, row) {
+            (Target::TimelineCommits, row) => {
+                while self.pane.back() {}
+                if let Some(row) = row {
+                    self.select(row, repository);
+                }
+            }
+            (Target::TimelineDiff, Some(row)) => self.pane.point(row, picks),
+            (Target::TimelineDiff, None) => {
+                self.pane.enter();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn is_visual(&self) -> bool {
+        self.pane.is_visual()
+    }
+
     pub fn keys(&self) -> KeyList {
         if self.query.is_editing() {
             return typing_keys(self.query_kind());
@@ -459,6 +488,13 @@ impl TimelineView {
         block.render(list_area, buf);
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let offset = self.cursor.fit(inner.height as usize, count, scrolloff);
+        let shown = RowMap::Rows {
+            first: offset,
+            count,
+        };
+        let mut layout = ctx.layout.borrow_mut();
+        layout.record(Target::TimelineCommits, inner, shown);
+        drop(layout);
         let rows = self.history.iter().enumerate().skip(offset);
         for ((i, revision), y) in rows.zip(inner.top()..inner.bottom()) {
             if i == self.cursor.selected() {
@@ -477,8 +513,15 @@ impl TimelineView {
         let notes = notes.chain(loading_note(self.pane.loading_since()));
         let title = panel_title("[2] Diff", notes, !focused, theme);
         let search = self.query.search().filter(|_| !focused);
-        self.pane
-            .render_panel(diff_area, title, buf, &ctx, !focused, search);
+        self.pane.render_panel(
+            diff_area,
+            Target::TimelineDiff,
+            title,
+            buf,
+            &ctx,
+            !focused,
+            search,
+        );
     }
 }
 

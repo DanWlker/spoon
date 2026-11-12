@@ -16,7 +16,8 @@ use crate::{
     graph_commands::{dialog_commit, Compare},
     keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Direction, Edge, Panel},
+    layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
+    pointer::OnPicks,
     ref_commands::lone_stash,
     search::{SearchKind, SearchOutcome},
     view::{
@@ -419,6 +420,76 @@ impl<'a> DetailView<'a> {
 
     pub fn focus_list(&mut self) {
         self.list_focused = true;
+    }
+
+    // Focuses the panel the mouse points at, see `View::point`.
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
+        match target {
+            Target::Commits => {
+                self.list_focused = true;
+                let Some(row) = row else {
+                    return true;
+                };
+                let before = self.as_list_state().selected_commit_hash().clone();
+                self.as_mut_list_state().point(row, picks);
+                if *self.as_list_state().selected_commit_hash() != before {
+                    self.update_selected_commit(|_| {});
+                }
+                true
+            }
+            Target::DetailTab(tab) => {
+                self.show_tab(tab);
+                true
+            }
+            Target::Info => {
+                self.list_focused = false;
+                true
+            }
+            Target::DetailFiles => {
+                self.list_focused = false;
+                let Some(row) = row else {
+                    self.changes_state.pane.leave();
+                    self.files_state.back();
+                    return true;
+                };
+                match self.tab {
+                    DetailTab::Changes => self.changes_state.point(row, picks),
+                    DetailTab::Files => self.files_state.point(row, picks),
+                    DetailTab::Info => {}
+                }
+                true
+            }
+            Target::DetailPane => {
+                self.list_focused = false;
+                match (self.tab, row) {
+                    (DetailTab::Changes, Some(row)) => {
+                        self.changes_state.ensure_loaded();
+                        self.changes_state.pane.point(row, picks);
+                    }
+                    (DetailTab::Files, Some(row)) => self.files_state.point_preview(row),
+                    (DetailTab::Changes, None) => {
+                        self.changes_state.pane.enter();
+                    }
+                    (DetailTab::Files, None) => {
+                        self.files_state.enter();
+                    }
+                    (DetailTab::Info, _) => {}
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_visual(&self) -> bool {
+        match (self.focus(), self.tab) {
+            (DetailFocus::List, _) => self.as_list_state().is_visual(),
+            (DetailFocus::Files, DetailTab::Changes) => self.changes_state.is_tree_visual(),
+            (DetailFocus::Files, DetailTab::Files) => self.files_state.is_tree_visual(),
+            (DetailFocus::Pane, DetailTab::Changes) => self.changes_state.pane.is_visual(),
+            (DetailFocus::Pane, DetailTab::Files) => self.files_state.is_visual(),
+            _ => false,
+        }
     }
 
     // Puts the focus back where it was before the page was reloaded: on the commit list, in the
@@ -847,6 +918,8 @@ impl<'a> DetailView<'a> {
                     self.ctx.clone(),
                 );
                 f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
+                let mut layout = self.ctx.layout.borrow_mut();
+                layout.record(Target::Info, detail_area, RowMap::None);
             }
             DetailTab::Changes => {
                 let search = self.changes_query.filter();
@@ -893,14 +966,20 @@ impl<'a> DetailView<'a> {
                 detail_area,
                 f.buffer_mut(),
             ),
-            _ => render_tab_titles(
-                self.tab,
-                focused,
-                notes,
-                &self.ctx.color_theme,
-                detail_area,
-                f.buffer_mut(),
-            ),
+            _ => {
+                let titles = render_tab_titles(
+                    self.tab,
+                    focused,
+                    notes,
+                    &self.ctx.color_theme,
+                    detail_area,
+                    f.buffer_mut(),
+                );
+                let mut layout = self.ctx.layout.borrow_mut();
+                for (tab, area) in titles {
+                    layout.record(Target::DetailTab(tab), area, RowMap::None);
+                }
+            }
         }
     }
 

@@ -15,6 +15,7 @@ use crate::{
     git::Repository,
     graph,
     keybind::UserEvent,
+    layout::{RowMap, Target},
     widget::{
         commit_list::{mark_commit_list_bar, submodule_commit_list, CommitList, CommitListState},
         diff::Step,
@@ -283,6 +284,10 @@ impl<'a> SubmodulePanel<'a> {
         focused: bool,
     ) -> Option<(usize, usize)> {
         let theme = &ctx.color_theme;
+        // a click focuses the panel, its commits read with the keys
+        let mut layout = ctx.layout.borrow_mut();
+        layout.record(Target::Submodule, inner, RowMap::None);
+        drop(layout);
         // the commits the gitlink moved by, then the files uncommitted inside it
         let count = |n: usize, what: &str| match n {
             1 => format!("1 {what}"),

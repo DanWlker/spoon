@@ -1,8 +1,68 @@
 // The sizes of the panels that can be resized, with alt and the arrow keys or by dragging their
-// borders with the mouse, and the borders drawn in the last frame to drag.
+// borders with the mouse, the borders drawn in the last frame to drag, and where the rows of each
+// panel were drawn, for the clicks to find what is under the pointer.
 
 use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
+
+use crate::widget::{
+    commit_tabs::DetailTab,
+    local_changes::{CommitField, ConflictItem},
+};
+
+// What a click can focus, as drawn in the last frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Sidebar,
+    Commits,
+    // a tab title of the details
+    DetailTab(DetailTab),
+    Info,
+    // the files of the changes or files tab, and the diff or preview beside them
+    DetailFiles,
+    DetailPane,
+    // the file sections of the local changes, and the diff or conflict beside them
+    Unstaged,
+    Staged,
+    ChangesSide,
+    // a choice of the conflict panel in place of the diff, a box of the commit message, the
+    // commits of a submodule in place of its diff
+    Conflict(ConflictItem),
+    Commit(CommitField),
+    Submodule,
+    // the commit shown at the top of the blame, the commits beside its lines, and the lines
+    BlameRevision,
+    BlameCommits,
+    BlameText,
+    TimelineCommits,
+    TimelineDiff,
+    LogCommands,
+    LogOutput,
+    KeysList,
+    // the pages in the bar at the top
+    LocalChangesPage,
+    GraphPage,
+    Menu,
+    // drawn over the panels, a notice or the keys popup: a click on it does nothing
+    Covered,
+}
+
+// The rows of a panel on the lines of its area: none, one (a button), from the row shown first
+// (`count` in all), or line by line for text whose rows wrap over several lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowMap {
+    None,
+    One,
+    Rows { first: usize, count: usize },
+    Lines(Vec<Option<usize>>),
+}
+
+// What is under the pointer: the target, and its row there, None past its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    pub target: Target,
+    pub row: Option<usize>,
+}
 
 // A size that can be changed: a width for the panels side by side, a height for those on top of
 // each other.
@@ -109,6 +169,8 @@ pub struct PanelLayout {
     dragging: Option<Border>,
     // counts the changes of the sizes, for what was drawn at the old ones to be cleared
     version: u64,
+    // where each target was drawn in the last frame, see `hit`
+    hits: Vec<(Target, Rect, RowMap)>,
 }
 
 impl PanelLayout {
@@ -130,6 +192,38 @@ impl PanelLayout {
     // Forgets the borders of the last frame, before drawing the next one.
     pub fn clear_borders(&mut self) {
         self.borders.clear();
+    }
+
+    // `target` drawn in `area`, its rows on its lines as `rows` says.
+    pub fn record(&mut self, target: Target, area: Rect, rows: RowMap) {
+        if !area.is_empty() {
+            self.hits.push((target, area, rows));
+        }
+    }
+
+    // What was drawn last at the cell, the innermost of what is drawn over each other.
+    pub fn hit(&self, x: u16, y: u16) -> Option<Hit> {
+        let (target, area, rows) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, area, _)| area.contains((x, y).into()))?;
+        let line = (y - area.y) as usize;
+        let row = match rows {
+            RowMap::None => None,
+            RowMap::One => Some(0),
+            RowMap::Rows { first, count } => first.checked_add(line).filter(|row| row < count),
+            RowMap::Lines(lines) => lines.get(line).copied().flatten(),
+        };
+        Some(Hit {
+            target: *target,
+            row,
+        })
+    }
+
+    // Forgets what was drawn, once drawn again or once what it showed changed.
+    pub fn clear_hits(&mut self) {
+        self.hits.clear();
     }
 
     // The border of `panel` being drawn in `area`: its right side when `vertical`, else its bottom
@@ -208,8 +302,9 @@ impl PanelLayout {
         true
     }
 
-    pub fn release(&mut self) {
-        self.dragging = None;
+    // Stops dragging a border; returns whether one was.
+    pub fn release(&mut self) -> bool {
+        self.dragging.take().is_some()
     }
 }
 
@@ -252,5 +347,114 @@ mod tests {
         assert!(layout.move_border(Panel::Details, 2));
         assert_eq!(layout.size(Panel::Details, 0), 18);
         assert!(!layout.move_border(Panel::Files, 2));
+    }
+
+    #[test]
+    fn test_hit_maps_screen_lines_to_rows() {
+        let mut layout = PanelLayout::default();
+        let rows = RowMap::Rows {
+            first: 10,
+            count: 12,
+        };
+        layout.record(Target::Commits, Rect::new(2, 5, 20, 4), rows);
+        let hit = |x, y| layout.hit(x, y);
+        assert_eq!(
+            hit(2, 5),
+            Some(Hit {
+                target: Target::Commits,
+                row: Some(10)
+            })
+        );
+        assert_eq!(
+            hit(21, 6),
+            Some(Hit {
+                target: Target::Commits,
+                row: Some(11)
+            })
+        );
+        // past the rows, in the panel: no row
+        assert_eq!(
+            hit(3, 7),
+            Some(Hit {
+                target: Target::Commits,
+                row: None
+            })
+        );
+        assert_eq!(hit(22, 5), None);
+        assert_eq!(hit(2, 9), None);
+        assert_eq!(hit(1, 5), None);
+    }
+
+    #[test]
+    fn test_hit_takes_the_last_drawn() {
+        let mut layout = PanelLayout::default();
+        let no_rows = RowMap::Rows { first: 0, count: 0 };
+        layout.record(Target::Commits, Rect::new(0, 0, 20, 10), no_rows);
+        layout.record(
+            Target::Sidebar,
+            Rect::new(5, 5, 5, 2),
+            RowMap::Rows { first: 0, count: 2 },
+        );
+        assert_eq!(
+            layout.hit(6, 6),
+            Some(Hit {
+                target: Target::Sidebar,
+                row: Some(1)
+            })
+        );
+        assert_eq!(
+            layout.hit(1, 1),
+            Some(Hit {
+                target: Target::Commits,
+                row: None
+            })
+        );
+        layout.clear_hits();
+        assert_eq!(layout.hit(6, 6), None);
+    }
+
+    #[test]
+    fn test_hit_lines_for_wrapped_text() {
+        let mut layout = PanelLayout::default();
+        // row 4 wraps over two lines
+        let lines = RowMap::Lines(vec![Some(3), Some(4), Some(4), None]);
+        layout.record(Target::DetailPane, Rect::new(0, 10, 30, 4), lines);
+        assert_eq!(layout.hit(0, 12).and_then(|h| h.row), Some(4));
+        assert_eq!(layout.hit(0, 13).and_then(|h| h.row), None);
+        layout.record(Target::Info, Rect::new(0, 0, 5, 5), RowMap::None);
+        assert_eq!(
+            layout.hit(1, 1),
+            Some(Hit {
+                target: Target::Info,
+                row: None
+            })
+        );
+    }
+
+    #[test]
+    fn test_hits_at_zero_size() {
+        let mut layout = PanelLayout::default();
+        layout.record(
+            Target::Commits,
+            Rect::new(3, 3, 0, 5),
+            RowMap::Rows { first: 0, count: 9 },
+        );
+        let no_rows = RowMap::Rows { first: 0, count: 0 };
+        layout.record(Target::Sidebar, Rect::new(3, 3, 5, 0), no_rows);
+        assert_eq!(layout.hit(3, 3), None);
+        // near the largest coordinates
+        let edge = Rect::new(u16::MAX - 1, u16::MAX - 1, 1, 1);
+        layout.record(
+            Target::Sidebar,
+            edge,
+            RowMap::Rows {
+                first: usize::MAX,
+                count: usize::MAX,
+            },
+        );
+        assert_eq!(
+            layout.hit(u16::MAX - 1, u16::MAX - 1).map(|h| h.target),
+            Some(Target::Sidebar)
+        );
     }
 }

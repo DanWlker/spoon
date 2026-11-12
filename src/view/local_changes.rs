@@ -10,7 +10,8 @@ use crate::{
     git::FilesSnapshot,
     keybind::{Scope, UserEvent},
     keys::KeyList,
-    layout::{Direction, Panel},
+    layout::{Direction, Panel, Target},
+    pointer::OnPicks,
     view::{
         copy_path, copy_paths, copy_selection, query_or_search_status, CopyForm,
         ListRefreshViewContext, RefreshViewContext,
@@ -266,6 +267,15 @@ impl<'a> LocalChangesView<'a> {
             },
             _ => {}
         }
+    }
+
+    // Focuses the panel the mouse points at, see `View::point`.
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
+        self.local_changes_state.point(target, row, picks)
+    }
+
+    pub fn is_visual(&self) -> bool {
+        self.local_changes_state.is_picking()
     }
 
     pub fn keys(&self) -> KeyList {

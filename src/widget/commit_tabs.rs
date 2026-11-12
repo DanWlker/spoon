@@ -18,7 +18,8 @@ use crate::{
     event::Sender,
     git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
     keybind::UserEvent,
-    layout::{fit_size, Edge, Panel},
+    layout::{fit_size, Edge, Panel, Target},
+    pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
     widget::{
@@ -68,6 +69,7 @@ impl DetailTab {
 // Draws the tab titles over the top border of the detail section.
 // `notes`, like the search and filter of the current tab, are shown after the titles, as a
 // panel's.
+// Returns where each tab title was drawn, for the clicks.
 pub fn render_tab_titles(
     current: DetailTab,
     // false while the commit list has the focus
@@ -76,7 +78,7 @@ pub fn render_tab_titles(
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
-) {
+) -> Vec<(DetailTab, Rect)> {
     let mut spans: Vec<Span> = DetailTab::ALL
         .iter()
         .enumerate()
@@ -95,7 +97,16 @@ pub fn render_tab_titles(
         spans.push(Span::raw(format!(" {} ", notes.join(" · "))).fg(theme.highlight_fg));
     }
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
+    let mut x = area.x;
+    let titles = DetailTab::ALL.iter().zip(&spans).map(|(tab, span)| {
+        let width = span.width() as u16;
+        let title = Rect::new(x, area.y, width, 1).intersection(area);
+        x = x.saturating_add(width);
+        (*tab, title)
+    });
+    let titles = titles.collect();
     Line::from(spans).render(area, buf);
+    titles
 }
 
 // Draws the title of a comparison of two commits over the top border of the detail section.
@@ -422,6 +433,18 @@ impl<'a> CommitChangesState<'a> {
         ))
     }
 
+    // Whether the files are being selected from where the visual selection started.
+    pub fn is_tree_visual(&self) -> bool {
+        self.tree.is_visual()
+    }
+
+    // Selects the file at `row` the mouse points at, out of the diff, see `OnPicks`.
+    pub fn point(&mut self, row: usize, picks: OnPicks) {
+        self.pane.leave();
+        self.picked.prepare_point(&mut self.tree, row, picks);
+        self.update_tree(|tree| tree.select_index(row));
+    }
+
     // Applies a tree operation; the diff of another row selected loads once used, see
     // `ensure_loaded`.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
@@ -570,6 +593,23 @@ impl<'a> CommitFilesState<'a> {
         self.tree
             .as_ref()
             .map_or_else(Vec::new, |tree| self.picked.entries(tree))
+    }
+
+    // Selects the file at `row` the mouse points at, back from the preview, see `OnPicks`.
+    pub fn point(&mut self, row: usize, picks: OnPicks) {
+        self.back();
+        let Self { tree, picked, .. } = self;
+        if let Some(tree) = tree {
+            picked.prepare_point(tree, row, picks);
+        }
+        self.update_tree(|tree| tree.select_index(row));
+    }
+
+    // Selects the line at `row` of the preview the mouse points at, going into it.
+    pub fn point_preview(&mut self, row: usize) {
+        if self.enter() {
+            self.text.select_line(row);
+        }
     }
 
     // Starts or ends a visual selection, selecting the files from where it started to the selected
@@ -993,6 +1033,7 @@ impl CommitTab {
         let offset = render_tree(
             buf,
             tree_area,
+            Target::DetailFiles,
             &state.tree,
             |i| Some(state.files[i].symbol),
             self.search.as_deref(),
@@ -1012,9 +1053,15 @@ impl CommitTab {
 
         let search = self.pane_search.as_deref();
         let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
-        state
-            .pane
-            .render(diff_area, scrollbar, buf, &self.ctx, self.focused, search);
+        state.pane.render(
+            diff_area,
+            Target::DetailPane,
+            scrollbar,
+            buf,
+            &self.ctx,
+            self.focused,
+            search,
+        );
     }
 
     pub fn render_files(self, area: Rect, buf: &mut Buffer, state: &mut CommitFilesState) {
@@ -1033,6 +1080,7 @@ impl CommitTab {
             let offset = render_tree(
                 buf,
                 tree_area,
+                Target::DetailFiles,
                 tree,
                 |_| None,
                 self.search.as_deref(),
@@ -1059,9 +1107,15 @@ impl CommitTab {
                     FilePreview::TextFocused if !loading => LineCursor::Shown,
                     _ => LineCursor::Hidden,
                 };
-                state
-                    .text
-                    .render(preview_area, buf, ctx, self.focused, cursor, search);
+                state.text.render(
+                    preview_area,
+                    Target::DetailPane,
+                    buf,
+                    ctx,
+                    self.focused,
+                    cursor,
+                    search,
+                );
                 return;
             }
             Some(FilePreview::Binary) => dim("Binary file".into()),
