@@ -41,21 +41,35 @@ pub struct ActionMenu {
     cursor: ListCursor,
 }
 
-// Whether the events of a hint only move: the selection, the tab, the commit shown or the match;
-// the menu leaves those out, which are no action on the row.
-pub fn only_moves(events: &[UserEvent]) -> bool {
-    events.iter().all(|event| {
-        event.moves_selection()
-            || matches!(
-                event,
-                UserEvent::NextTab
-                    | UserEvent::PreviousTab
-                    | UserEvent::OlderCommit
-                    | UserEvent::NewerCommit
-                    | UserEvent::GoToNext
-                    | UserEvent::GoToPrevious
-            )
-    })
+// Whether the menu leaves out the hint running `event`, which is no action on the row: moving the
+// selection, the focus, the tab, the commit shown or the match, closing, searching and picking
+// (which dragging does), the commands of the whole page and the context of the diffs. The keys
+// still have them.
+pub fn left_out_of_menu(event: UserEvent) -> bool {
+    use UserEvent::*;
+    event.moves_selection()
+        || matches!(
+            event,
+            NextTab
+                | PreviousTab
+                | OlderCommit
+                | NewerCommit
+                | GoToNext
+                | GoToPrevious
+                | NavigateLeft
+                | NavigateRight
+                | Cancel
+                | HelpToggle
+                | Search
+                | ToggleSelect
+                | Commit
+                | ToggleAmend
+                | Continue
+                | Abort
+                | Skip
+                | IncreaseDiffContext
+                | DecreaseDiffContext
+        )
 }
 
 impl ActionMenu {
@@ -201,12 +215,18 @@ mod tests {
     #[test]
     fn test_moving_hints_are_left_out() {
         use UserEvent::*;
-        assert!(only_moves(&[NavigateDown, NavigateUp]));
-        assert!(only_moves(&[NextTab, PreviousTab]));
-        assert!(only_moves(&[OlderCommit, NewerCommit]));
-        assert!(only_moves(&[GoToNext, GoToPrevious]));
-        assert!(!only_moves(&[Checkout, Select]));
-        assert!(!only_moves(&[Confirm]));
+        for event in [
+            NavigateDown,
+            NextTab,
+            OlderCommit,
+            GoToNext,
+            NavigateLeft,
+            Cancel,
+        ] {
+            assert!(left_out_of_menu(event), "{event:?}");
+        }
+        assert!(!left_out_of_menu(Checkout));
+        assert!(!left_out_of_menu(Confirm));
         assert!(ActionMenu::new(vec![], Cell { x: 0, y: 0 }).is_none());
     }
 

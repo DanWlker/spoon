@@ -22,9 +22,9 @@ use crate::{
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_hashes, copy_path, copy_paths, copy_selection,
-        edit_files, file_link, handle_search_event, query_or_search_status, register_apply_key,
-        register_commit_link_keys, register_commit_list_keys, type_commit_search, CopyForm,
-        ListFacts, ListRefreshViewContext, RefreshViewContext,
+        edit_files, file_link, graph_availability, handle_search_event, query_or_search_status,
+        register_apply_key, register_commit_link_keys, register_commit_list_keys,
+        type_commit_search, CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
     },
     widget::diff_pane::register_diff_keys,
     widget::tree_query::{type_query, typing_keys},
@@ -178,7 +178,7 @@ impl<'a> DetailView<'a> {
                     // no other diff until this one is closed, which clears the picks too
                     ToggleSelect | Diff | BranchOnly if v.is_comparing() => Availability::Warns,
                     Cancel if v.is_comparing() => Availability::Off,
-                    _ => Availability::Works,
+                    _ => graph_availability(v.as_list_state(), v.repository, event),
                 },
             );
         }
@@ -282,7 +282,7 @@ impl<'a> DetailView<'a> {
         .when(pane);
         k.add(&[NextTab, PreviousTab], "tab", "Show the next/previous tab")
             .when(|v| !v.list_focused && !v.shows_compare());
-        register_commit_link_keys(k, on(Info));
+        register_commit_link_keys(k, on(Info), on(Info));
         k.add(
             &[ResetFile],
             "reset files",

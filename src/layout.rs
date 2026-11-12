@@ -60,6 +60,8 @@ pub enum Closes {
     // the window over the pages: the blame, the timeline, the command log or the keys list
     Window,
     KeysPopup,
+    // showing one branch's commits only, back to all of them
+    BranchOnly,
 }
 
 // The rows of a panel on the lines of its area: none, one (a button), from the row shown first

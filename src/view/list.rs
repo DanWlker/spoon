@@ -7,7 +7,8 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     git::{CommitHash, Head, Repository},
-    keybind::UserEvent,
+    graph_commands::commit_command_works,
+    keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
     layout::Target,
     pointer::OnPicks,
@@ -118,9 +119,9 @@ impl<'a> ListView<'a> {
             k,
             |v| ListFacts::of(v.as_list_state(), v.repository),
             // a new repository has no commits yet, nothing to select
-            |v, _| match v.as_list_state().is_empty() {
+            |v, event| match v.as_list_state().is_empty() {
                 true => Availability::Off,
-                false => Availability::Works,
+                false => graph_availability(v.as_list_state(), v.repository, event),
             },
         );
     }
@@ -248,6 +249,24 @@ pub struct ListFacts {
     pub stash: bool,
 }
 
+// Whether the command of the graph `event` works on the picked commits, else the selected one,
+// see `commit_command_works`.
+pub fn list_command_works(
+    state: &CommitListState,
+    repository: &Repository,
+    event: UserEvent,
+) -> bool {
+    if state.is_empty() {
+        return false;
+    }
+    let picked = state.picked_commit_hashes();
+    let targets = match picked.is_empty() {
+        true => std::slice::from_ref(state.selected_commit_hash()),
+        false => picked,
+    };
+    commit_command_works(repository, event, targets)
+}
+
 impl ListFacts {
     pub fn of(state: &CommitListState, repository: &Repository) -> Self {
         ListFacts {
@@ -260,6 +279,20 @@ impl ListFacts {
             stash: !state.is_empty()
                 && lone_stash(repository, state.selected_commit_hash()).is_some(),
         }
+    }
+}
+
+// A command of the graph that would be refused is unlisted, its key saying so when pressed; the
+// other keys work.
+pub fn graph_availability(
+    state: &CommitListState,
+    repository: &Repository,
+    event: UserEvent,
+) -> Availability {
+    let graph = event.home_scope() == Scope::Graph;
+    match graph && !list_command_works(state, repository, event) {
+        true => Availability::Warns,
+        false => Availability::Works,
     }
 }
 
@@ -313,7 +346,8 @@ pub fn register_commit_list_keys<T: ?Sized>(
         move |v| facts(v).picked > 0,
         move |v| facts(v).operation_waits,
     );
-    register_commit_link_keys(k, works(OpenInBrowser));
+    // a stash isn't on the web host
+    register_commit_link_keys(k, works(ShortCopy), move |v| !facts(v).stash);
     k.add(&[Search], "search", "Search the commits")
         .when(works(Search));
     k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")

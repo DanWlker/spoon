@@ -229,20 +229,25 @@ pub fn register_commit_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
     // space checks out, the main action on a commit
     k.add(&[Checkout, Select], "checkout", "Check out the commit")
         .when(applies);
-    register_commit_link_keys(k, applies);
+    register_commit_link_keys(k, applies, applies);
 }
 
-// o, O and y on a commit, where `applies`: its page on the web host, its link and its hash.
-pub fn register_commit_link_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
+// o, O and y on a commit, where `applies`: its page on the web host and its link, where `linked`
+// too, and its hash.
+pub fn register_commit_link_keys<T: ?Sized>(
+    k: &mut Keys<T>,
+    applies: impl Fn(&T) -> bool + Copy,
+    linked: impl Fn(&T) -> bool + Copy,
+) {
     use UserEvent::*;
     k.add(
         &[OpenInBrowser],
         "open in browser",
         "Open the commit on the web host",
     )
-    .when(applies);
+    .when(move |v| applies(v) && linked(v));
     k.add(&[CopyLink], "copy link", "Copy the link of the commit")
-        .when(applies);
+        .when(move |v| applies(v) && linked(v));
     k.add(
         &[ShortCopy],
         "copy hash",

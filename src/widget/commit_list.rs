@@ -19,15 +19,15 @@ use crate::{
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
     graph::{Fold, GraphImageManager, GraphImages},
     keybind::UserEvent,
-    layout::{RowMap, Target},
+    layout::{Closes, RowMap, Target},
     pointer::OnPicks,
     protocol::PreparedImage,
     search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{
         picks::Picks,
         style::{
-            mark_selected_bar, panel_block, panel_title, picked_style, render_panel_scrollbar,
-            shown_width, ListCursor,
+            mark_selected_bar, panel_block, panel_title, picked_style, render_close_button,
+            render_panel_scrollbar, shown_width, ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
@@ -36,6 +36,23 @@ use crate::{
 };
 
 pub const ELLIPSIS: &str = "...";
+
+// What part of the history the graph shows when not all of it, named in the title of the commits.
+#[derive(Debug, Clone)]
+pub enum FilterNote {
+    // one branch's, like "main only", which the [x] of the commits shows all of again
+    BranchOnly(String),
+    // the commits of two refs diffed
+    Compare(String),
+}
+
+impl FilterNote {
+    pub fn text(&self) -> &str {
+        match self {
+            FilterNote::BranchOnly(text) | FilterNote::Compare(text) => text,
+        }
+    }
+}
 
 // before the labels of refs (Nerd Font): a branch whose upstream is on the same commit, a remote
 // branch, a tag and a stash; a plain branch has none
@@ -117,8 +134,8 @@ pub struct CommitListState<'a> {
 
     // commits picked for commands on several commits
     picked: Picks<CommitHash>,
-    // what part of the history is loaded, like "main only", when not all of it
-    filter_note: Option<String>,
+    // what part of the history is loaded, when not all of it
+    filter_note: Option<FilterNote>,
     // the checked-out branch, its label in its own color; a detached HEAD gets a label
     head: Head,
     cursor: ListCursor,
@@ -405,7 +422,7 @@ impl<'a> CommitListState<'a> {
         self.cursor.show_from(offset, self.commits.len());
     }
 
-    pub fn set_filter_note(&mut self, note: Option<String>) {
+    pub fn set_filter_note(&mut self, note: Option<FilterNote>) {
         self.filter_note = note;
     }
 
@@ -625,11 +642,21 @@ pub fn render_commit_list_panel<'a>(
         0 => None,
         n => Some(format!("{n} picked")),
     };
-    let notes = state.filter_note.iter().cloned().chain(picked);
+    let note = state
+        .filter_note
+        .as_ref()
+        .map(|note| note.text().to_string());
+    let notes = note.into_iter().chain(picked);
     let block =
         panel_block(focused, theme).title(panel_title("[2] Commits", notes, focused, theme));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    if let Some(FilterNote::BranchOnly(_)) = state.filter_note {
+        if let Some(at) = render_close_button(f.buffer_mut(), area, theme) {
+            let close = Target::Close(Closes::BranchOnly);
+            ctx.layout.borrow_mut().record(close, at, RowMap::One);
+        }
+    }
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
     let rows = RowMap::Rows {
         first: state.cursor.offset(),

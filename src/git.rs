@@ -287,6 +287,8 @@ pub struct Repository {
     textconv_drivers: Vec<String>,
     // to preserve order of the original commits from `git log`, we store the commit hashes
     commit_hashes: Vec<CommitHash>,
+    // the loaded commits on the history of HEAD, walked once asked for, see `head_history`
+    head_history: std::sync::OnceLock<FxHashSet<CommitHash>>,
 }
 
 impl Repository {
@@ -336,8 +338,12 @@ impl Repository {
         &self.head
     }
 
-    // The loaded commits on the history of HEAD.
-    pub fn head_history(&self) -> rustc_hash::FxHashSet<&CommitHash> {
+    // The loaded commits on the history of HEAD, walked once.
+    pub fn head_history(&self) -> &FxHashSet<CommitHash> {
+        self.head_history.get_or_init(|| self.walk_head_history())
+    }
+
+    fn walk_head_history(&self) -> FxHashSet<CommitHash> {
         let tip = match &self.head {
             Head::Branch { name, .. } => self.ref_map.values().flatten().find_map(|r| match r {
                 Ref::Branch { name: n, target } if n == name => Some(target),
@@ -346,10 +352,10 @@ impl Repository {
             Head::Detached { target } => Some(target),
             Head::Unborn { .. } | Head::None => None,
         };
-        let mut history = rustc_hash::FxHashSet::default();
+        let mut history = FxHashSet::default();
         let mut pending: Vec<&CommitHash> = tip.into_iter().collect();
         while let Some(hash) = pending.pop() {
-            if self.commit_map.contains_key(hash) && history.insert(hash) {
+            if self.commit_map.contains_key(hash) && history.insert(hash.clone()) {
                 pending.extend(self.parents_map.get(hash).into_iter().flatten());
             }
         }

@@ -36,7 +36,9 @@ use crate::{
         SharedTask,
     },
     graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
-    graph_commands::{graph_command, moves_head, ref_graph_command, Compare, GraphCommand},
+    graph_commands::{
+        commit_command_works, graph_command, moves_head, ref_graph_command, Compare, GraphCommand,
+    },
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target},
@@ -48,9 +50,9 @@ use crate::{
         LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
     },
     widget::{
-        action_menu::{only_moves, ActionMenu, MenuEntry, MenuOutcome},
+        action_menu::{left_out_of_menu, ActionMenu, MenuEntry, MenuOutcome},
         command_log::{CommandLog, CommandLogState},
-        commit_list::{CommitInfo, CommitListState},
+        commit_list::{CommitInfo, CommitListState, FilterNote},
         commit_tabs::DetailTab,
         git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction, RemoteFrom},
         keys_popup::KeysPopup,
@@ -422,8 +424,8 @@ fn compare_with_head(compare: &Compare, repository: &Repository) -> bool {
 enum GraphFilter {
     #[default]
     All,
-    // a branch's, the current one for None, see `UserEvent::BranchOnly`
-    BranchOnly(Option<String>),
+    // a branch's or a remote branch's, the current branch's for None, see `UserEvent::BranchOnly`
+    BranchOnly(Option<NamedRef>),
     // that of two refs diffed from the sidebar while their comparison is shown, going back to
     // `before` once it isn't, see `end_stale_ref_compare`
     Compare {
@@ -447,7 +449,7 @@ impl AppShell {
             GraphFilter::All => None,
             GraphFilter::BranchOnly(None) => Some(vec!["HEAD".into()]),
             // not a tag of the same name
-            GraphFilter::BranchOnly(Some(branch)) => Some(vec![format!("refs/heads/{branch}")]),
+            GraphFilter::BranchOnly(Some(branch)) => Some(vec![branch.full_name()]),
             GraphFilter::Compare { refs, .. } => {
                 Some(vec![refs.base.git_name(), refs.target.git_name()])
             }
@@ -455,19 +457,22 @@ impl AppShell {
     }
 
     // What the graph shows, when not all of the history, for the title of the commit list.
-    fn graph_filter_note(&self, repository: &Repository) -> Option<String> {
+    fn graph_filter_note(&self, repository: &Repository) -> Option<FilterNote> {
         match &self.graph_filter {
             GraphFilter::All => None,
-            GraphFilter::BranchOnly(branch) => Some(format!(
+            GraphFilter::BranchOnly(branch) => Some(FilterNote::BranchOnly(format!(
                 "{} only",
                 branch
-                    .clone()
+                    .as_ref()
+                    .map(|branch| branch.name().to_string())
                     .or_else(|| repository.current_branch())
                     .unwrap_or_else(|| "HEAD".into())
-            )),
-            GraphFilter::Compare { refs, .. } => {
-                Some(format!("{} ↔ {}", refs.base.shown(), refs.target.shown()))
-            }
+            ))),
+            GraphFilter::Compare { refs, .. } => Some(FilterNote::Compare(format!(
+                "{} ↔ {}",
+                refs.base.shown(),
+                refs.target.shown()
+            ))),
         }
     }
 
@@ -1818,22 +1823,24 @@ impl App<'_> {
             RefSelection::Folder(..) => "edit remote".into(),
             _ => "rename/upstream".into(),
         });
-        k.add(
+        let availability = |app: &Self, event| match app.sidebar_command_applies(event) {
+            false => Availability::Off,
+            true if !app.sidebar_command_works(event) => Availability::Warns,
+            true => Availability::Works,
+        };
+        k.add_where(
             &[DeleteRef],
             "delete",
             "Delete the branches or tags, drop the stashes; remove the remote",
+            move |app| availability(app, DeleteRef),
         )
-        .when(applies(DeleteRef))
         .short(|app| if on_stash(app) { "drop" } else { "delete" }.into());
         k.add(&[Select], "apply", "Apply the stash")
             .when(|app| on_stash(app) && app.sidebar_command_applies(Select));
         // the picked refs aren't commits, see `ref_command_applies`
         register_graph_commands(
             k,
-            |app: &Self, event| match app.sidebar_command_applies(event) {
-                true => Availability::Works,
-                false => Availability::Off,
-            },
+            availability,
             |_| false,
             |app| app.repository.operation_in_progress().is_some(),
         );
@@ -1936,6 +1943,45 @@ impl App<'_> {
 
     // Whether the event does something on the selected row of the sidebar, see
     // `ref_command_applies`.
+    // Whether a command applying on the sidebar row goes through too, see `ref_command_applies`:
+    // none moving to or deleting the checked-out branch, those of the graph as on the ref's commit
+    // (see `commit_command_works`), checking out a tag or another branch at it still.
+    fn sidebar_command_works(&self, event: UserEvent) -> bool {
+        use UserEvent::*;
+        if !self.shell.sidebar.picked().is_empty() {
+            return true;
+        }
+        let selection = self.shell.sidebar.selection();
+        let current = match &selection {
+            RefSelection::Ref(NamedRef::Branch(name)) => {
+                self.repository.current_branch().as_ref() == Some(name)
+            }
+            _ => false,
+        };
+        match event {
+            Checkout | Merge | Rebase | DeleteRef if current => false,
+            Checkout | DeleteRef => true,
+            event if event.home_scope() == Scope::Graph => self
+                .sidebar_commit()
+                .is_none_or(|commit| commit_command_works(self.repository, event, &[commit])),
+            _ => true,
+        }
+    }
+
+    // The commit of the ref selected in the sidebar, or of the detached HEAD.
+    fn sidebar_commit(&self) -> Option<CommitHash> {
+        match self.shell.sidebar.selection() {
+            RefSelection::Ref(named) => self
+                .repository
+                .all_refs()
+                .into_iter()
+                .find(|r| r.named().as_ref() == Some(&named))
+                .map(|r| r.target().clone()),
+            RefSelection::DetachedHead => self.repository.head_commit(),
+            _ => None,
+        }
+    }
+
     fn sidebar_command_applies(&self, event: UserEvent) -> bool {
         if event == UserEvent::ToggleSelect && self.shell.sidebar.is_visual() {
             return true;
@@ -2487,6 +2533,50 @@ impl App<'_> {
         quit
     }
 
+    // Branch only from the menu of a commit, with the commit pointed at: the history of the branch
+    // at it, or all of it again while it shows; with no branch there, or several, it says so. The
+    // key shows the current branch's, see `handle_graph_event`.
+    fn branch_only_of_commit(&mut self) {
+        if self.refused_while_diffing(UserEvent::BranchOnly) {
+            return;
+        }
+        let Some(state) = self.view.as_list_state() else {
+            return;
+        };
+        // the local branches, else the remote ones
+        let refs = self.repository.refs(state.selected_commit_hash());
+        let named = |remote: bool| -> Vec<NamedRef> {
+            refs.iter()
+                .filter_map(|r| r.named())
+                .filter(|named| match named {
+                    NamedRef::Branch(_) => !remote,
+                    NamedRef::RemoteBranch(_) => remote,
+                    NamedRef::Tag(_) => false,
+                })
+                .collect()
+        };
+        let mut branches = named(false);
+        if branches.is_empty() {
+            branches = named(true);
+        }
+        let branch = match &branches[..] {
+            [branch] => branch.clone(),
+            [] => {
+                let err = "No branch at this commit to show the commits of".into();
+                return self.ec.send(AppEvent::NotifyError(err));
+            }
+            _ => {
+                let err = "Several branches at this commit, choose one in the sidebar".into();
+                return self.ec.send(AppEvent::NotifyError(err));
+            }
+        };
+        self.shell.graph_filter = match &self.shell.graph_filter {
+            GraphFilter::BranchOnly(Some(shown)) if *shown == branch => GraphFilter::All,
+            _ => GraphFilter::BranchOnly(Some(branch)),
+        };
+        self.view.refresh();
+    }
+
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
         if self.refused_while_diffing(event) {
@@ -2519,7 +2609,9 @@ impl App<'_> {
         if event == UserEvent::BranchOnly {
             // the selected branch's history, or the current one's off a branch
             let branch = match self.shell.sidebar.selection() {
-                RefSelection::Ref(NamedRef::Branch(name)) => Some(name),
+                RefSelection::Ref(named @ (NamedRef::Branch(_) | NamedRef::RemoteBranch(_))) => {
+                    Some(named)
+                }
                 _ => None,
             };
             self.shell.graph_filter = match &self.shell.graph_filter {
@@ -2554,13 +2646,7 @@ impl App<'_> {
             }
             _ => return,
         };
-        let target = self
-            .repository
-            .all_refs()
-            .into_iter()
-            .find(|r| r.named().as_ref() == Some(&selected))
-            .map(|r| r.target().clone());
-        let Some(target) = target else {
+        let Some(target) = self.sidebar_commit() else {
             return;
         };
         let command = ref_graph_command(self.repository, event, &selected, target);
@@ -2833,6 +2919,10 @@ impl App<'_> {
             Some(Target::Close(Closes::Details)) => self.ec.send(AppEvent::CloseDetail),
             Some(Target::Close(Closes::Window)) => self.shell.overlay = None,
             Some(Target::Close(Closes::KeysPopup)) => self.shell.keys_popup = false,
+            Some(Target::Close(Closes::BranchOnly)) => {
+                self.shell.graph_filter = GraphFilter::All;
+                self.view.refresh();
+            }
             Some(Target::CommitButton) => {
                 if self.view.can_commit() {
                     self.run_event(UserEvent::Commit);
@@ -2864,7 +2954,16 @@ impl App<'_> {
             .panel_keys()
             .hints()
             .into_iter()
-            .filter(|(events, _)| !only_moves(events))
+            .filter(|(events, _)| !left_out_of_menu(events[0]))
+            // in the sidebar, the branch only of a branch's row
+            .filter(|(events, _)| {
+                events[0] != UserEvent::BranchOnly
+                    || !self.shell.sidebar_focused()
+                    || matches!(
+                        self.shell.sidebar.selection(),
+                        RefSelection::Ref(NamedRef::Branch(_) | NamedRef::RemoteBranch(_))
+                    )
+            })
             .map(|(events, action)| MenuEntry {
                 event: events[0],
                 label: KeyLabel::new(self.ctx.short_keys(scope, &events), action),
@@ -2884,7 +2983,12 @@ impl App<'_> {
         self.shell.menu = None;
         self.ec.set_hover(false);
         if let MenuOutcome::Run(event) = outcome {
-            self.run_event(event);
+            match event {
+                UserEvent::BranchOnly if !self.shell.sidebar_focused() => {
+                    self.branch_only_of_commit();
+                }
+                event => self.run_event(event),
+            }
             // no second press of its key to wait for
             if let Some(popup) = self.shell.dialog.as_mut() {
                 popup.reveal = None;

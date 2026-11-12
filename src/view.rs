@@ -13,5 +13,8 @@ mod list;
 mod local_changes;
 
 pub use common::*;
-pub use list::{handle_search_event, register_commit_list_keys, type_commit_search, ListFacts};
+pub use list::{
+    graph_availability, handle_search_event, register_commit_list_keys, type_commit_search,
+    ListFacts,
+};
 pub use views::*;

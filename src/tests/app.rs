@@ -68,6 +68,8 @@ enum Step {
     Locate(&'static str, (i32, i32)),
     // the mouse at the cell located last, in the frame drawn then
     Mouse(TestGesture),
+    // steps whose events come together, handled before the app draws again
+    Together(Vec<Step>),
 }
 
 // What the mouse does in a test, at the cell located last, see `mouse_on`.
@@ -302,6 +304,8 @@ fn settle(
     ctx: &AppContext,
     loads: &std::cell::Cell<usize>,
 ) -> Option<Ret> {
+    // a frame drawn after the events handled, as the app draws after each batch of them
+    let mut handled = false;
     loop {
         app.expire(Instant::now());
         app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
@@ -310,8 +314,17 @@ fn settle(
             ec.recv_timeout(TIMEOUT)
                 .expect("the git command, the reload or the diff loading to finish")
         } else {
-            ec.try_recv()?
+            match ec.try_recv() {
+                Some(event) => event,
+                None if handled => {
+                    handled = false;
+                    render(app);
+                    continue;
+                }
+                None => return None,
+            }
         };
+        handled = true;
         if let AppEvent::Reloaded { .. } = event {
             loads.set(loads.get() + 1);
         }
@@ -321,8 +334,25 @@ fn settle(
     }
 }
 
+// A frame of the app as it is, its text.
+fn render(app: &mut App) -> Vec<Vec<String>> {
+    let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let keys = app.keys_popup_keys();
+    let frame = terminal.draw(|f| app.render(f, &keys)).unwrap();
+    frame
+        .buffer
+        .content
+        .chunks(SIZE.0 as usize)
+        .map(|row| row.iter().map(|c| c.symbol().to_string()).collect())
+        .collect()
+}
+
 fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
     match step {
+        Step::Together(steps) => steps
+            .into_iter()
+            .for_each(|step| take_step(step, app, path, ec)),
         Step::Key(key) => ec.send(AppEvent::Key(key)),
         Step::KeysAtOnce(keys) => keys.into_iter().for_each(|key| ec.send(AppEvent::Key(key))),
         Step::Event(event) => ec.send(*event),
@@ -507,7 +537,8 @@ fn assert_notice(app: &App, part: &str) {
 
 // What the commit list's title says the graph shows, besides all the history.
 fn graph_note(app: &App) -> Option<String> {
-    app.shell.graph_filter_note(app.repository)
+    let note = app.shell.graph_filter_note(app.repository);
+    note.map(|note| note.text().to_string())
 }
 
 // The files the comparison shows, None without one.
@@ -1242,6 +1273,8 @@ fn test_commands_moving_head_unlisted_while_an_operation_waits() {
     let mut harness = Harness::new(&path, launch());
     let listed = |app: &App, short: &str| app.view.keys().hints().iter().any(|(_, s)| s == short);
     harness.run(vec![
+        // feat1: the commit checked out has nothing to check out
+        keys("j"),
         check(move |app| assert!(listed(app, "checkout"))),
         // a merge stopped, as git leaves it: the keys follow the repository as loaded, which the
         // next check of the refs reloads
@@ -1524,8 +1557,8 @@ fn test_space_on_a_stash_in_the_graph_applies_it() {
         keys("enter 2 space"),
         check(move |app| assert_eq!(command(app), "stash apply stash@{0}")),
         keys("esc esc"),
-        // other commits are checked out
-        keys("j"),
+        // other commits are checked out, feat1 past the one checked out
+        keys("j j"),
         space("checkout"),
     ]);
 }
@@ -2799,6 +2832,213 @@ fn test_sidebar_menu_fetch_pull_push() {
     ]);
 }
 
+fn menu_has(on: &'static [UserEvent], off: &'static [UserEvent]) -> Vec<Step> {
+    check(move |app| {
+        let menu = menu_events(app);
+        assert!(
+            on.iter().all(|e| menu.contains(e)),
+            "{menu:?} lacks one of {on:?}"
+        );
+        assert!(
+            !off.iter().any(|e| menu.contains(e)),
+            "{menu:?} has one of {off:?}"
+        );
+    })
+}
+
+// The menu of a commit lists the commands that work on it: none moving to the commit checked
+// out, none rewriting a commit off its history or picking one on it; on a stash, applying it,
+// diffing and copying only. Moving about, picking and searching are left to the keys.
+#[test]
+fn test_menu_on_commits_lists_what_works() {
+    use UserEvent::*;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("s.txt"), "s\n").unwrap();
+    git(&path, &["add", "s.txt"]);
+    git(&path, &["stash", "-q", "-m", "stashed"]);
+    let mut harness = Harness::new(&path, launch());
+    let moves = &[Cancel, Search, ToggleSelect];
+    harness.run(vec![
+        mouse_on("c2", TestGesture::RightClick),
+        menu_has(
+            &[Squash, DropCommit, AmendCommit, Revert, Reset],
+            &[Checkout, Merge, Rebase, CherryPick],
+        ),
+        menu_has(&[], moves),
+        keys("esc"),
+        mouse_on("feat1", TestGesture::RightClick),
+        menu_has(
+            &[Checkout, Merge, Rebase, CherryPick, Reset],
+            &[Squash, DropCommit, AmendCommit, Revert],
+        ),
+        keys("esc"),
+        mouse_on("stashed", TestGesture::RightClick),
+        menu_has(
+            &[Select, Diff, Confirm, ShortCopy],
+            &[
+                Merge,
+                Rebase,
+                CherryPick,
+                Squash,
+                CreateBranch,
+                CreateTag,
+                BranchOnly,
+                Reset,
+                OpenInBrowser,
+                CopyLink,
+            ],
+        ),
+        keys("esc"),
+        // the keys say so, unlisted
+        mouse_on("feat1", TestGesture::Click),
+        keys("esc"),
+        keys("s"),
+        check(|app| assert_notice(app, "not on master")),
+    ]);
+}
+
+// The menu of the checked-out branch in the sidebar has no checkout, merge, rebase or delete; a
+// ref's commands follow its commit, and branch only is on branches alone.
+#[test]
+fn test_sidebar_menu_lists_what_works() {
+    use UserEvent::*;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(&path, &["tag", "v1", "HEAD~1"]);
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // feat, then master
+        mouse_at("Branches", (2, 1), TestGesture::RightClick),
+        menu_has(
+            &[Checkout, Merge, Rebase, DeleteRef, CherryPick, BranchOnly],
+            &[Squash, AmendCommit, Revert],
+        ),
+        keys("esc"),
+        mouse_at("Branches", (2, 2), TestGesture::RightClick),
+        menu_has(
+            &[Squash, Revert, BranchOnly],
+            &[Checkout, Merge, Rebase, DeleteRef, CherryPick],
+        ),
+        keys("esc"),
+        mouse_on("Branches", TestGesture::RightClick),
+        menu_has(&[], &[BranchOnly, Cancel, Search]),
+        keys("esc"),
+        mouse_on("Tags", TestGesture::Click),
+        mouse_at("Tags", (2, 1), TestGesture::RightClick),
+        menu_has(&[Checkout, Revert], &[BranchOnly, CherryPick]),
+    ]);
+}
+
+// From the menu of a commit, branch only shows the branch at it, or all again; with no branch
+// there or several it says so. The key keeps showing the current branch's.
+#[test]
+fn test_menu_branch_only_of_the_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let filter = |expected: GraphFilter| {
+        check(move |app| {
+            assert_eq!(
+                format!("{:?}", app.shell.graph_filter),
+                format!("{expected:?}")
+            )
+        })
+    };
+    let branch_only = |text: &'static str| {
+        let mut steps = mouse_on(text, TestGesture::RightClick);
+        steps.extend(mouse_on("branch only", TestGesture::Click));
+        steps.extend(draw());
+        steps
+    };
+    harness.run(vec![
+        branch_only("feat1"),
+        filter(GraphFilter::BranchOnly(Some(NamedRef::Branch(
+            "feat".into(),
+        )))),
+        branch_only("feat1"),
+        filter(GraphFilter::All),
+        branch_only("c1"),
+        filter(GraphFilter::All),
+        check(|app| assert_notice(app, "No branch")),
+        outside_git(&["branch", "other"]),
+        keys("ctrl-r"),
+        draw(),
+        branch_only("c2"),
+        filter(GraphFilter::All),
+        check(|app| assert_notice(app, "sidebar")),
+        mouse_on("feat1", TestGesture::Click),
+        keys("esc"),
+        keys("shift-l"),
+        filter(GraphFilter::BranchOnly(None)),
+    ]);
+}
+
+// Branch only of a remote branch: from the menu of a commit with only it, or of its row in the
+// sidebar; the [x] on the commits shows all of them again.
+#[test]
+fn test_branch_only_of_a_remote_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    // feat on origin only
+    git(&path, &["branch", "-q", "-D", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let filter = |expected: &'static str| {
+        check(move |app| assert_eq!(format!("{:?}", app.shell.graph_filter), expected))
+    };
+    let remote_feat = "BranchOnly(Some(RemoteBranch(\"origin/feat\")))";
+    harness.run(vec![
+        mouse_on("feat1", TestGesture::RightClick),
+        mouse_on("branch only", TestGesture::Click),
+        draw(),
+        filter(remote_feat),
+        screen(|s| assert!(s.contains("origin/feat only"), "{s}")),
+        mouse_on("[x]", TestGesture::Click),
+        filter("All"),
+        // the remotes, origin under them, origin/feat first under it
+        mouse_on("Remotes", TestGesture::Click),
+        mouse_at("Remotes", (2, 1), TestGesture::Click),
+        mouse_at("Remotes", (4, 2), TestGesture::RightClick),
+        check(|app| {
+            let feat = RefSelection::Ref(NamedRef::RemoteBranch("origin/feat".into()));
+            assert_eq!(app.shell.sidebar.selection(), feat);
+        }),
+        menu_has(&[UserEvent::BranchOnly], &[]),
+        mouse_on("branch only", TestGesture::Click),
+        filter(remote_feat),
+    ]);
+}
+
+// The menus of the local changes leave out the page's commands and the diff's context.
+#[test]
+fn test_local_changes_menus_leave_out_the_page_commands() {
+    use UserEvent::*;
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    let page = &[
+        Commit,
+        ToggleAmend,
+        Abort,
+        Continue,
+        Cancel,
+        Search,
+        ToggleSelect,
+    ];
+    harness.run(vec![
+        mouse_on("b.txt", TestGesture::RightClick),
+        menu_has(&[Select, Discard], page),
+        keys("esc"),
+        mouse_on("f.txt", TestGesture::Click),
+        draw(),
+        mouse_on("changed", TestGesture::RightClick),
+        menu_has(
+            &[Select],
+            &[IncreaseDiffContext, DecreaseDiffContext, NavigateLeft],
+        ),
+        menu_has(&[], page),
+    ]);
+}
+
 // [x] at the top right of the details, the keys popup, a window or a popup closes it.
 #[test]
 fn test_close_buttons() {
@@ -3016,7 +3256,8 @@ fn test_right_click_on_a_picked_row_keeps_them() {
         commits_picked(2),
         mouse_on("feat1", TestGesture::RightClick),
         commits_picked(2),
-        menu_shows(&["cherry-pick"], &[]),
+        // c2 and feat1: diffing both, not cherry-picking c2 on master already
+        menu_shows(&["diff"], &["cherry-pick"]),
     ]);
 }
 
@@ -3441,8 +3682,11 @@ fn test_click_after_the_files_reload_in_place_does_nothing() {
         vec![Step::Locate("b.txt", (0, 0))],
         // a file added before b.txt, the rows moving under the frame drawn
         outside(|path| std::fs::write(path.join("a0.txt"), "x\n").unwrap()),
-        tick(),
-        vec![Step::Mouse(TestGesture::Click)],
+        // the files checked as the click comes, before the app draws again
+        vec![Step::Together(vec![
+            Step::Tick,
+            Step::Mouse(TestGesture::Click),
+        ])],
         check(|app| assert_eq!(local_change_path(app).as_deref(), Some(":/"))),
         // drawn again, a click acts
         mouse_on("b.txt", TestGesture::Click),

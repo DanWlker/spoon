@@ -167,6 +167,52 @@ pub fn graph_command(
     Some(dialog.map(|dialog| GraphCommand::Dialog(Box::new(dialog))))
 }
 
+// Whether `event`, a command of the graph, works on `targets` (the picked commits, else the
+// selected one) rather than being refused, from what is loaded, so it is listed only then: moving
+// to the commit checked out does nothing, rewriting needs commits on the history of HEAD and no
+// merge commits, cherry-picking commits off it. On a stash, diffing only. Some refusals still
+// need git, like merge commits after the ones rewritten; the command says so then.
+pub fn commit_command_works(
+    repository: &Repository,
+    event: UserEvent,
+    targets: &[CommitHash],
+) -> bool {
+    use UserEvent::*;
+    let head = repository.head_commit();
+    let history = repository.head_history();
+    let stash = |hash: &CommitHash| {
+        let refs = repository.refs(hash);
+        refs.iter().any(|r| matches!(r, Ref::Stash { .. }))
+    };
+    let merge = |hash: &CommitHash| repository.parents_hash(hash).len() > 1;
+    let rewritable = |hash: &CommitHash| history.contains(hash) && !merge(hash);
+    let is_head = |hash: &CommitHash| head.as_ref() == Some(hash);
+    if targets.iter().any(stash) {
+        return event == Diff;
+    }
+    match event {
+        // another branch or tag at the commit checked out is still one to check out
+        Checkout => !targets.iter().all(|hash| {
+            is_head(hash)
+                && repository.refs(hash).iter().all(|r| match r {
+                    Ref::Branch { name, .. } => repository.current_branch().as_ref() == Some(name),
+                    Ref::Tag { .. } | Ref::RemoteBranch { .. } => false,
+                    _ => true,
+                })
+        }),
+        Merge | Rebase => !targets.iter().any(is_head),
+        Squash => targets
+            .iter()
+            .all(|hash| rewritable(hash) && !repository.parents_hash(hash).is_empty()),
+        DropCommit | Revert => targets.iter().all(rewritable),
+        AmendCommit => targets.iter().all(|hash| is_head(hash) || rewritable(hash)),
+        CherryPick => targets
+            .iter()
+            .all(|hash| !history.contains(hash) && !merge(hash)),
+        _ => true,
+    }
+}
+
 // The command of `event` on a branch, remote branch or tag selected in the refs sidebar: rebase
 // and merge name the ref (in full when another has its name, which git could take instead),
 // checkout offers it first; the others work on the commit it points at.

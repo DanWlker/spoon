@@ -154,6 +154,7 @@ impl Repository {
             remotes: Vec::new(),
             textconv_drivers: Vec::new(),
             commit_hashes,
+            head_history: Default::default(),
         }
     }
 }
