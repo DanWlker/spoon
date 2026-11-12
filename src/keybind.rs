@@ -394,6 +394,11 @@ pub enum UserEvent {
     GoToBottom,
     ScrollUp,
     ScrollDown,
+    // the mouse wheel, scrolling the rows shown alone: a list's selection stays, even off them
+    #[serde(skip)]
+    WheelUp,
+    #[serde(skip)]
+    WheelDown,
     PageUp,
     PageDown,
     HalfPageUp,
@@ -480,7 +485,8 @@ pub enum UserEvent {
 }
 
 impl UserEvent {
-    // Whether it only moves a selection, like the cursor of the files: what the selection shows
+    // Whether it only moves a selection, like the cursor of the files, or the rows shown, like the
+    // wheel: what the selection shows
     // may load in the background meanwhile, while the other keys may act on it, so wait for it.
     pub fn moves_selection(self) -> bool {
         matches!(
@@ -497,6 +503,8 @@ impl UserEvent {
                 | UserEvent::HalfPageUp
                 | UserEvent::ScrollDown
                 | UserEvent::ScrollUp
+                | UserEvent::WheelDown
+                | UserEvent::WheelUp
         )
     }
 

@@ -1610,7 +1610,9 @@ fn handle_tree_event(
         | UserEvent::PageDown
         | UserEvent::PageUp
         | UserEvent::ScrollDown
-        | UserEvent::ScrollUp => update(&|tree: &mut FileTreeState| {
+        | UserEvent::ScrollUp
+        | UserEvent::WheelDown
+        | UserEvent::WheelUp => update(&|tree: &mut FileTreeState| {
             tree.navigate(event);
         }),
         UserEvent::NavigateRight => update(&FileTreeState::expand),

@@ -2188,7 +2188,34 @@ impl App<'_> {
         };
         // only its keys working there, while not typing, which takes every key
         let event = event.filter(|event| dialog.is_editing() || dialog.keys().takes(*event));
-        match dialog.handle_key(event, key) {
+        let outcome = dialog.handle_key(event, key);
+        self.end_dialog(outcome);
+        // any other key shows the popup it acts on
+        if let Some(popup) = self.shell.dialog.as_mut() {
+            popup.reveal = None;
+        }
+    }
+
+    // A click on the popup shown, see `GitDialog::click`.
+    fn click_dialog(&mut self, at: Cell) {
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        let Some(Hit {
+            target: Target::Dialog(part),
+            column,
+            ..
+        }) = hit
+        else {
+            return;
+        };
+        if let Some(Popup { dialog, .. }) = self.shell.dialog.as_mut() {
+            let outcome = dialog.click(part, column);
+            self.end_dialog(outcome);
+        }
+    }
+
+    // What the popup leads to: it stays, closes, or closes running its command.
+    fn end_dialog(&mut self, outcome: DialogOutcome) {
+        match outcome {
             DialogOutcome::None => {}
             DialogOutcome::Close => self.close_dialog(),
             DialogOutcome::Quit => self.ec.send(AppEvent::Quit),
@@ -2196,12 +2223,7 @@ impl App<'_> {
             DialogOutcome::Send(event) => {
                 self.close_dialog();
                 self.ec.send(*event);
-                return;
             }
-        }
-        // any other key shows the popup it acts on
-        if let Some(popup) = self.shell.dialog.as_mut() {
-            popup.reveal = None;
         }
     }
 
@@ -2603,11 +2625,14 @@ impl App<'_> {
         }
     }
 
-    // What the mouse does, as the keys would on what it points at, see `Gesture`: nothing over a
-    // popup; while typing, a click only ends it, as esc does.
+    // What the mouse does, as the keys would on what it points at, see `Gesture`: with a popup
+    // open, only a click on it; while typing, a click only ends it, as esc does.
     fn handle_gesture(&mut self, gesture: Gesture) {
         use UserEvent::*;
         if self.shell.dialog.is_some() {
+            if let Gesture::Click(at) | Gesture::DoubleClick(at) = gesture {
+                self.click_dialog(at);
+            }
             return;
         }
         if self.shell.menu.is_some() {
@@ -2615,6 +2640,12 @@ impl App<'_> {
             return;
         }
         if self.is_typing() {
+            // in the commit message, a click on a box types there
+            if let Gesture::Click(at) | Gesture::DoubleClick(at) = gesture {
+                if self.view.is_typing_message() && self.click_message(at) {
+                    return;
+                }
+            }
             if !matches!(
                 gesture,
                 Gesture::Wheel { .. }
@@ -2630,6 +2661,7 @@ impl App<'_> {
         // on empty space a click only focuses; on nothing, it is no first click of a double click
         let on_row = |hit: Option<Hit>| hit.is_some_and(|hit| hit.row.is_some());
         match gesture {
+            Gesture::Click(at) | Gesture::DoubleClick(at) if self.click_message(at) => {}
             Gesture::Click(at) => {
                 let hit = self.point(at, OnPicks::Keep);
                 if hit.is_none() {
@@ -2685,11 +2717,24 @@ impl App<'_> {
                 let hit = hit.map(|hit| Hit { row: None, ..hit });
                 if hit.is_some_and(|hit| self.point_hit(hit, OnPicks::Keep)) {
                     let next = toward == Toward::Next;
-                    self.run_event(if next { NavigateDown } else { NavigateUp });
+                    self.run_event(if next { WheelDown } else { WheelUp });
                 }
             }
             Gesture::Hover(_) => {}
         }
+    }
+
+    // Types in the box of the commit message at `at`, as space does there; returns whether one
+    // is there.
+    fn click_message(&mut self, at: Cell) -> bool {
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        let Some(hit) = hit.filter(|hit| matches!(hit.target, Target::Commit(_))) else {
+            return false;
+        };
+        if self.point_hit(hit, OnPicks::Keep) {
+            self.run_event(UserEvent::Select);
+        }
+        true
     }
 
     // Opens the menu of the actions of the focused panel at `at`, as the status bar lists them but

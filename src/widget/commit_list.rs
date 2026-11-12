@@ -401,6 +401,10 @@ impl<'a> CommitListState<'a> {
         self.cursor.select_at(index, row, self.commits.len());
     }
 
+    pub fn restore_scroll(&mut self, offset: usize) {
+        self.cursor.show_from(offset, self.commits.len());
+    }
+
     pub fn set_filter_note(&mut self, note: Option<String>) {
         self.filter_note = note;
     }
@@ -516,6 +520,10 @@ impl<'a> CommitListState<'a> {
             UserEvent::PageDown => self.scroll_down_page(),
             UserEvent::PageUp => self.scroll_up_page(),
             UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.jump_half_page(event),
+            // the selection stays, so its picks do
+            UserEvent::WheelDown | UserEvent::WheelUp => {
+                self.cursor.navigate(event, self.commits.len());
+            }
             _ => return false,
         }
         true
@@ -649,7 +657,10 @@ pub fn mark_commit_list_bar(
     focused: bool,
     theme: &ColorTheme,
 ) {
-    let y = inner.y + state.cursor.row() as u16;
+    let Some(row) = state.cursor.row() else {
+        return;
+    };
+    let y = inner.y + row as u16;
     if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
         mark_selected_bar(buf, inner.x - 1, y, focused, theme);
     }
@@ -1165,7 +1176,7 @@ mod tests {
     // The row of the selected commit among those shown, the first shown, and how many are.
     fn status(state: &CommitListState) -> (usize, usize, usize) {
         let cursor = state.cursor();
-        (cursor.row(), cursor.offset(), cursor.height())
+        (cursor.row().unwrap(), cursor.offset(), cursor.height())
     }
 
     // The search's message, and whether it found something.

@@ -111,6 +111,12 @@ pub struct KeyList(Vec<Key>);
 impl KeyList {
     // Whether a key of the event works.
     pub fn takes(&self, event: UserEvent) -> bool {
+        // the wheel works where the scroll keys do
+        let event = match event {
+            UserEvent::WheelDown => UserEvent::ScrollDown,
+            UserEvent::WheelUp => UserEvent::ScrollUp,
+            event => event,
+        };
         self.0
             .iter()
             .any(|key| key.active && key.events.contains(&event))

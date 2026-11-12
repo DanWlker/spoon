@@ -220,8 +220,9 @@ impl DiffPane {
         if !self.cursor.scroll.handle_scroll(event) {
             return false;
         }
-        // ctrl-e and ctrl-y, see `keep_in_view`
-        if let Some((diff, part)) = focused {
+        // ctrl-e and ctrl-y, see `keep_in_view`; the wheel leaves the selection, even off the rows
+        let wheel = matches!(event, UserEvent::WheelDown | UserEvent::WheelUp);
+        if let Some((diff, part)) = focused.filter(|_| !wheel) {
             self.cursor.keep_in_view(diff, part);
         }
         true
@@ -649,6 +650,34 @@ mod tests {
         pane.scroll(UserEvent::ScrollDown);
         assert!(pane.cursor.line > line);
         assert!(pane.cursor.line >= pane.cursor.scroll.offset);
+    }
+
+    // The wheel scrolls the diff alone: the selected hunk stays, even off the rows shown.
+    #[test]
+    fn test_wheel_leaves_the_selection() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 30, 4);
+        let hunk = |n: usize| format!("@@ -{n},2 +{n},2 @@\n-old{n}\n+new{n}\n");
+        let raw = format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n{}{}{}",
+            hunk(1),
+            hunk(10),
+            hunk(20)
+        );
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(parse_diff(&raw)));
+        draw(&mut pane, &ctx, area);
+        assert!(pane.enter());
+        for _ in 0..2 {
+            assert!(pane.scroll(UserEvent::WheelDown));
+        }
+        // the first hunk, rows 0-2, is off the rows shown from 4
+        assert_eq!(pane.cursor.hunk, 0);
+        draw(&mut pane, &ctx, area);
+        assert_eq!(
+            pane.cursor.scroll.offset,
+            2 * crate::widget::style::WHEEL_ROWS
+        );
     }
 
     #[test]

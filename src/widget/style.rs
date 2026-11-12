@@ -146,7 +146,7 @@ pub fn render_popup(
     area: Rect,
     buf: &mut Buffer,
     theme: &ColorTheme,
-) -> Rect {
+) -> (Rect, Rect) {
     // text plus padding and borders
     let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
     let width = (text_width.clamp(widths.0, widths.1) as u16 + 4).min(area.width);
@@ -161,7 +161,7 @@ pub fn render_popup(
         .padding(Padding::horizontal(1));
     let inner = block.inner(popup);
     Paragraph::new(lines).block(block).render(popup, buf);
-    inner
+    (popup, inner)
 }
 
 // The color of a file's change, by its letter like git's: "A" added, "?" untracked, "D" deleted,
@@ -284,6 +284,18 @@ pub fn render_scrollbar(
     }
 }
 
+// The rows a notch of the mouse wheel scrolls, as lazygit's.
+pub const WHEEL_ROWS: usize = 2;
+
+// The rows a list shows: around its selection, or where the wheel scrolled them, see
+// `ListCursor::wheel`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    #[default]
+    Selection,
+    Scrolled,
+}
+
 // The scroll of rows shown `height` at a time from `offset`: text, a diff or a file's preview.
 #[derive(Debug, Default, Clone)]
 pub struct ScrollState {
@@ -315,6 +327,8 @@ impl ScrollState {
         let rows = match event {
             UserEvent::ScrollDown => 1,
             UserEvent::ScrollUp => -1,
+            UserEvent::WheelDown => WHEEL_ROWS as isize,
+            UserEvent::WheelUp => -(WHEEL_ROWS as isize),
             UserEvent::PageDown => page,
             UserEvent::PageUp => -page,
             UserEvent::HalfPageDown => page / 2,
@@ -423,6 +437,7 @@ impl VisualSelection {
 pub struct ListCursor {
     selected: usize,
     offset: usize,
+    shown: Shown,
     // as last drawn, 0 before
     height: usize,
     scrolloff: usize,
@@ -442,9 +457,10 @@ impl ListCursor {
         self.height
     }
 
-    // The row of the selection among those shown.
-    pub fn row(&self) -> usize {
-        self.selected - self.offset
+    // The row of the selection among those shown; None when the wheel scrolled it off them.
+    pub fn row(&self) -> Option<usize> {
+        let row = self.selected.checked_sub(self.offset)?;
+        (self.height == 0 || row < self.height).then_some(row)
     }
 
     // Whether the selection is a visual one, which the movement keys extend.
@@ -475,6 +491,7 @@ impl ListCursor {
     // Selects the row at `index` of `total`, or the last one.
     pub fn select(&mut self, index: usize, total: usize) {
         self.selected = index.min(total.saturating_sub(1));
+        self.shown = Shown::Selection;
         // before the first drawing the rows shown are unknown, which `fit` scrolls to then
         if self.height > 0 {
             let (offset, height) = (self.offset, self.height);
@@ -486,6 +503,7 @@ impl ListCursor {
     // as it was, or a match jumped to.
     pub fn select_at(&mut self, index: usize, row: usize, total: usize) {
         self.selected = index.min(total.saturating_sub(1));
+        self.shown = Shown::Selection;
         self.offset = self
             .selected
             .saturating_sub(row.min(self.height.saturating_sub(1)))
@@ -511,6 +529,8 @@ impl ListCursor {
         match event {
             UserEvent::ScrollDown => self.scroll_lines(1, total),
             UserEvent::ScrollUp => self.scroll_lines(-1, total),
+            UserEvent::WheelDown => self.wheel(WHEEL_ROWS as isize, total),
+            UserEvent::WheelUp => self.wheel(-(WHEEL_ROWS as isize), total),
             UserEvent::PageDown => self.scroll_pages(1, total),
             UserEvent::PageUp => self.scroll_pages(-1, total),
             _ => {
@@ -526,6 +546,7 @@ impl ListCursor {
     // Scrolls a row at a time with ctrl-e and ctrl-y, the selection staying put until it would
     // leave the `scrolloff` rows at the edge, then moving along.
     pub fn scroll_lines(&mut self, rows: isize, total: usize) {
+        self.shown = Shown::Selection;
         let margin = self.margin();
         // before the first draw too, the selected row stays at or below the first shown
         let last_offset = total.saturating_sub(self.height.max(1));
@@ -544,6 +565,7 @@ impl ListCursor {
         if self.height == 0 || total == 0 {
             return;
         }
+        self.shown = Shown::Selection;
         let rows = pages * self.height as isize;
         let last_offset = total.saturating_sub(self.height);
         let offset = self.offset.saturating_add_signed(rows);
@@ -560,12 +582,29 @@ impl ListCursor {
         }
     }
 
-    // Shows `total` rows in `height`, keeping the selection in view: the first row shown.
+    // Scrolls the rows shown alone, by the wheel: the selection stays, even off them, until it
+    // moves.
+    fn wheel(&mut self, rows: isize, total: usize) {
+        self.show_from(self.offset.saturating_add_signed(rows), total);
+    }
+
+    // Shows the rows from `offset` whatever is selected, as the wheel left them: a list shown
+    // again so after a reload.
+    pub fn show_from(&mut self, offset: usize, total: usize) {
+        self.shown = Shown::Scrolled;
+        self.offset = offset.min(total.saturating_sub(self.height.max(1)));
+    }
+
+    // Shows `total` rows in `height`, keeping the selection in view unless the wheel scrolled
+    // away from it: the first row shown.
     pub fn fit(&mut self, height: usize, total: usize, scrolloff: usize) -> usize {
         self.height = height;
         self.scrolloff = scrolloff;
         self.selected = self.selected.min(total.saturating_sub(1));
-        self.offset = scroll_to(self.offset, self.row_range(), height, total, scrolloff);
+        self.offset = match self.shown {
+            Shown::Selection => scroll_to(self.offset, self.row_range(), height, total, scrolloff),
+            Shown::Scrolled => self.offset.min(total.saturating_sub(height)),
+        };
         self.offset
     }
 
@@ -715,7 +754,37 @@ mod tests {
         for _ in 0..3 {
             cursor.scroll_lines(1, 3);
         }
-        assert_eq!(cursor.row(), 0);
+        assert_eq!(cursor.row(), Some(0));
+    }
+
+    // The wheel scrolls the rows shown alone: the selection stays, even off them, until it moves,
+    // which shows it again.
+    #[test]
+    fn test_wheel_leaves_the_selection() {
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 30, 2);
+        for _ in 0..5 {
+            assert!(cursor.navigate(UserEvent::WheelDown, 30));
+        }
+        assert_eq!((cursor.selected(), cursor.offset()), (0, 5 * WHEEL_ROWS));
+        assert_eq!(cursor.row(), None);
+        // drawing again keeps the rows scrolled to
+        assert_eq!(cursor.fit(10, 30, 2), 5 * WHEEL_ROWS);
+        // no further than the last row, nor the first
+        for _ in 0..30 {
+            cursor.navigate(UserEvent::WheelDown, 30);
+        }
+        assert_eq!(cursor.offset(), 20);
+        for _ in 0..30 {
+            cursor.navigate(UserEvent::WheelUp, 30);
+        }
+        assert_eq!(cursor.offset(), 0);
+        cursor.navigate(UserEvent::WheelDown, 30);
+        cursor.navigate(UserEvent::WheelDown, 30);
+        // moving the selection shows it again
+        assert!(cursor.navigate(UserEvent::NavigateDown, 30));
+        assert_eq!((cursor.selected(), cursor.offset()), (1, 0));
+        assert_eq!(cursor.row(), Some(1));
     }
 
     #[test]

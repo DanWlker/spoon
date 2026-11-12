@@ -6,6 +6,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::Widget,
 };
+use std::cell::RefCell;
+
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::widget::tree_query::Toward;
@@ -22,6 +24,7 @@ use crate::{
     },
     keybind::UserEvent,
     keys::{KeyList, Keys},
+    layout::{PanelLayout, RowMap, Target},
     widget::style::{
         change_span, choice_arrows, focused_title, no_choice_arrows, render_popup, tabs_shown,
     },
@@ -595,6 +598,18 @@ enum Field {
     Check(bool),
     // a value that can't change, like the commit a branch starts from
     Fixed(String),
+}
+
+// What a click in the popup is on, see `GitDialog::click`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogHit {
+    Field(usize),
+    // a chevron of a field with options
+    Arrow(usize, Toward),
+    // the text of a text field
+    Text(usize),
+    Cancel,
+    Confirm,
 }
 
 #[derive(Debug)]
@@ -2130,6 +2145,42 @@ impl GitDialog {
         }
     }
 
+    // Whether confirming runs the command: no required field is empty and the fields make one.
+    pub fn can_run(&self) -> bool {
+        self.missing_field().is_none() && !matches!(self.command(), Some(Err(_)))
+    }
+
+    // A click on `hit`, `column` cells into it, which stops typing first: the buttons close or
+    // run the popup, Confirm only once it can run. Else it selects the field: a chevron changes it,
+    // a checkbox toggles, and a text field is typed in, the caret at the click on its text.
+    pub fn click(&mut self, hit: DialogHit, column: usize) -> DialogOutcome {
+        self.editing = false;
+        let index = match hit {
+            DialogHit::Cancel => return DialogOutcome::Close,
+            DialogHit::Confirm if self.can_run() => return self.run(),
+            DialogHit::Confirm => return DialogOutcome::None,
+            DialogHit::Field(index) | DialogHit::Arrow(index, _) | DialogHit::Text(index) => index,
+        };
+        if index >= self.fields.len() {
+            return DialogOutcome::None;
+        }
+        self.selected = index;
+        match (hit, &mut self.fields[index].1) {
+            (DialogHit::Arrow(_, toward), _) => self.change(toward),
+            (_, Field::Check(_)) => self.change(Toward::Next),
+            (_, Field::Text { input, .. }) => {
+                let caret = match hit {
+                    DialogHit::Text(_) => char_at(input.value(), column),
+                    _ => input.value().chars().count(),
+                };
+                *input = input.clone().with_cursor(caret);
+                self.editing = true;
+            }
+            _ => {}
+        }
+        DialogOutcome::None
+    }
+
     // The next required text field still empty, after the selected one: a name, a URL, the branch
     // to pull or to push to.
     fn missing_field(&self) -> Option<usize> {
@@ -2675,9 +2726,21 @@ fn shorten_hash(arg: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+// The char of `text` drawn at `column`, else the end.
+fn char_at(text: &str, column: usize) -> usize {
+    let mut width = 0;
+    text.chars()
+        .take_while(|c| {
+            width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+            width <= column
+        })
+        .count()
+}
+
 pub struct GitDialogWidget<'a> {
     dialog: &'a GitDialog,
     theme: &'a ColorTheme,
+    layout: &'a RefCell<PanelLayout>,
 }
 
 impl<'a> GitDialogWidget<'a> {
@@ -2685,6 +2748,7 @@ impl<'a> GitDialogWidget<'a> {
         GitDialogWidget {
             dialog,
             theme: &ctx.color_theme,
+            layout: &ctx.layout,
         }
     }
 }
@@ -2721,6 +2785,8 @@ impl Widget for GitDialogWidget<'_> {
         }
         let mut cursor = None;
         let mut checks_started = false;
+        // the line of each field, for the clicks
+        let mut field_lines = vec![];
         for (i, (label, field)) in dialog.fields.iter().enumerate() {
             let selected = i == dialog.selected;
             // the field being changed has a bar beside it, like huh's forms
@@ -2808,6 +2874,7 @@ impl Widget for GitDialogWidget<'_> {
                     ])
                 }
             };
+            field_lines.push((i, lines.len()));
             lines.push(line);
         }
         if !dialog.fields.is_empty() {
@@ -2846,9 +2913,66 @@ impl Widget for GitDialogWidget<'_> {
             lines.push(Line::raw(""));
         }
 
+        // where the clicks go: the line of a field, then on it its chevrons and its text, drawn
+        // after the bar and the label as `[bar, label, ‹, value, ›, ..]`
+        let mut hits = vec![];
+        for (i, y) in field_lines {
+            hits.push((DialogHit::Field(i), 0, y, usize::MAX));
+            let spans = &lines[y].spans;
+            let left = spans.iter().take(2).map(Span::width).sum::<usize>();
+            let value = left + 2;
+            let width = spans.get(3).map_or(0, Span::width);
+            match &dialog.fields[i].1 {
+                Field::Choice { .. } => {}
+                Field::Text { .. } => hits.push((DialogHit::Text(i), value, y, width)),
+                Field::Check(_) | Field::Fixed(_) => continue,
+            }
+            hits.push((DialogHit::Arrow(i, Toward::Previous), left, y, 2));
+            hits.push((DialogHit::Arrow(i, Toward::Next), value + width, y, 2));
+        }
+
         let title = focused_title(dialog.title, theme);
         let widths = (MIN_CONTENT_WIDTH, MAX_CONTENT_WIDTH);
-        let inner = render_popup(title, theme.accent_fg, lines, widths, area, buf, theme);
+        let (popup, inner) = render_popup(title, theme.accent_fg, lines, widths, area, buf, theme);
+        let mut layout = self.layout.borrow_mut();
+        for (hit, x, y, width) in hits {
+            let at = Rect::new(
+                inner.x.saturating_add(x as u16),
+                inner.y.saturating_add(y as u16),
+                width.min(u16::MAX as usize) as u16,
+                1,
+            );
+            layout.record(Target::Dialog(hit), at.intersection(inner), RowMap::One);
+        }
+        // the buttons, for the mouse only, on the bottom border at the right before its last "─╯"
+        let confirm = if dialog.can_run() {
+            Style::default().fg(theme.accent_fg).bold()
+        } else {
+            Style::default().fg(theme.muted_fg)
+        };
+        let buttons = [
+            (DialogHit::Cancel, "[Cancel]", Style::default().fg(theme.fg)),
+            (DialogHit::Confirm, "[Confirm]", confirm),
+        ];
+        let width = buttons
+            .iter()
+            .map(|(_, text, _)| text.len() + 1)
+            .sum::<usize>()
+            + 1;
+        if popup.height >= 2 && popup.width as usize >= width + 3 {
+            let y = popup.bottom() - 1;
+            let mut x = popup.right() - 2 - width as u16;
+            for (hit, text, style) in buttons {
+                buf.set_string(x, y, " ", Style::default().fg(theme.fg));
+                x += 1;
+                buf.set_string(x, y, text, style);
+                let at = Rect::new(x, y, text.len() as u16, 1);
+                layout.record(Target::Dialog(hit), at, RowMap::One);
+                x += text.len() as u16;
+            }
+            buf.set_string(x, y, " ", Style::default().fg(theme.fg));
+        }
+        drop(layout);
 
         if let Some((x, y)) = cursor {
             let (x, y) = (inner.x + x, inner.y + y);

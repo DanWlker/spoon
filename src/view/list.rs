@@ -219,7 +219,11 @@ impl<'a> ListView<'a> {
             Reselect::Newest => list_state.select_first(),
             Reselect::Commit(hash) => {
                 list_state.select_commit_hash(hash);
-                list_state.restore_selected_row(cursor.row());
+                // the rows the wheel scrolled to stay, else the selection keeps its row
+                match cursor.row() {
+                    Some(row) => list_state.restore_selected_row(row),
+                    None => list_state.restore_scroll(cursor.offset()),
+                }
             }
         }
         if let Some(search_context) = search_context {

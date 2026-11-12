@@ -19,6 +19,7 @@ use crate::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
         style::{
             picked_style, render_scrollbar, scroll_to, tabs_shown, ScrollState, VisualSelection,
+            WHEEL_ROWS,
         },
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
@@ -133,6 +134,22 @@ impl FileText {
             UserEvent::HalfPageUp => -height / 2,
             UserEvent::PageDown => height,
             UserEvent::PageUp => -height,
+            // the wheel scrolls the window alone, the selected line staying even off it
+            UserEvent::WheelDown | UserEvent::WheelUp => {
+                let rows = WHEEL_ROWS as isize;
+                let rows = if event == UserEvent::WheelDown {
+                    rows
+                } else {
+                    -rows
+                };
+                let last = self
+                    .wrap
+                    .total()
+                    .saturating_sub(self.scroll_state.height.max(1));
+                let offset = self.scroll_state.offset.saturating_add_signed(rows);
+                self.scroll_state.offset = offset.min(last);
+                return true;
+            }
             _ => return false,
         };
         // ctrl-e and ctrl-y scroll the window alone
@@ -456,6 +473,35 @@ mod tests {
 
     // Like vim: ctrl-e and ctrl-y scroll the window alone, the selected line staying; ctrl-d and
     // ctrl-u, like ctrl-f and ctrl-b, move it with the window by the same rows.
+    #[test]
+    fn test_wheel_leaves_the_selected_line() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 40, 10);
+        let lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+        let mut text = FileText::default();
+        text.set_lines(lines);
+        let draw = |text: &mut FileText| {
+            text.render(
+                area,
+                Target::DetailPane,
+                &mut Buffer::empty(area),
+                &ctx,
+                true,
+                LineCursor::Shown,
+                None,
+            );
+        };
+        draw(&mut text);
+        for _ in 0..10 {
+            assert!(text.scroll(UserEvent::WheelDown));
+        }
+        draw(&mut text);
+        assert_eq!(text.selected_line(), 0);
+        assert_eq!(text.scroll_state.offset, 10 * WHEEL_ROWS);
+        text.scroll(UserEvent::WheelUp);
+        assert_eq!(text.scroll_state.offset, 9 * WHEEL_ROWS);
+    }
+
     #[test]
     fn test_scroll_alone_and_with_the_selected_line() {
         let ctx = test_ctx();

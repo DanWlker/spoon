@@ -7,6 +7,7 @@ use rustc_hash::FxHashMap;
 
 use crate::widget::{
     commit_tabs::DetailTab,
+    git_dialog::DialogHit,
     local_changes::{CommitField, ConflictItem},
 };
 
@@ -43,6 +44,8 @@ pub enum Target {
     LocalChangesPage,
     GraphPage,
     Menu,
+    // a part of the popup, see `DialogHit`
+    Dialog(DialogHit),
     // drawn over the panels, a notice or the keys popup: a click on it does nothing
     Covered,
 }
@@ -62,6 +65,8 @@ pub enum RowMap {
 pub struct Hit {
     pub target: Target,
     pub row: Option<usize>,
+    // the cells from the left of what is hit, like into the text of a field
+    pub column: usize,
 }
 
 // A size that can be changed: a width for the panels side by side, a height for those on top of
@@ -218,6 +223,7 @@ impl PanelLayout {
         Some(Hit {
             target: *target,
             row,
+            column: (x - area.x) as usize,
         })
     }
 
@@ -362,14 +368,16 @@ mod tests {
             hit(2, 5),
             Some(Hit {
                 target: Target::Commits,
-                row: Some(10)
+                row: Some(10),
+                column: 0
             })
         );
         assert_eq!(
             hit(21, 6),
             Some(Hit {
                 target: Target::Commits,
-                row: Some(11)
+                row: Some(11),
+                column: 19
             })
         );
         // past the rows, in the panel: no row
@@ -377,7 +385,8 @@ mod tests {
             hit(3, 7),
             Some(Hit {
                 target: Target::Commits,
-                row: None
+                row: None,
+                column: 1
             })
         );
         assert_eq!(hit(22, 5), None);
@@ -399,14 +408,16 @@ mod tests {
             layout.hit(6, 6),
             Some(Hit {
                 target: Target::Sidebar,
-                row: Some(1)
+                row: Some(1),
+                column: 1
             })
         );
         assert_eq!(
             layout.hit(1, 1),
             Some(Hit {
                 target: Target::Commits,
-                row: None
+                row: None,
+                column: 1
             })
         );
         layout.clear_hits();
@@ -426,7 +437,8 @@ mod tests {
             layout.hit(1, 1),
             Some(Hit {
                 target: Target::Info,
-                row: None
+                row: None,
+                column: 1
             })
         );
     }

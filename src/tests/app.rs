@@ -31,7 +31,9 @@ use crate::{
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
     widget::commit_tabs::DetailTab,
+    widget::git_dialog::GitDialog,
     widget::ref_list::RefSelection,
+    widget::style::WHEEL_ROWS,
     Loader, Restart,
 };
 
@@ -79,6 +81,7 @@ enum TestGesture {
     // pressed there, dragged by so many cells, released
     DragBy(i32, i32),
     WheelDown,
+    WheelUp,
     Hover,
 }
 
@@ -406,6 +409,7 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
                 TestGesture::WheelDown => {
                     ec.send(mouse_event(MouseEventKind::ScrollDown, at, none))
                 }
+                TestGesture::WheelUp => ec.send(mouse_event(MouseEventKind::ScrollUp, at, none)),
                 TestGesture::Hover => ec.send(mouse_event(MouseEventKind::Moved, at, none)),
             }
         }
@@ -2669,6 +2673,89 @@ fn test_click_with_a_popup_open_does_nothing() {
     ]);
 }
 
+fn popup<'a>(app: &'a App) -> &'a GitDialog {
+    &app.shell.dialog.as_ref().expect("a popup").dialog
+}
+
+// [Cancel] and [Confirm] on the border of a popup close it or run it, Confirm only once it can
+// run: dimmed before, a click on it does nothing.
+#[test]
+fn test_popup_buttons() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let branch = |name: &'static str| {
+        move |path: &Path| git(path, &["branch", "--list", name]).contains(name)
+    };
+    harness.run(vec![
+        keys("b"),
+        check(|app| assert!(popup(app).is_editing())),
+        check(|app| assert!(!popup(app).can_run())),
+        // without a name: typing stops, the popup stays
+        mouse_on("[Confirm]", TestGesture::Click),
+        check(|app| assert!(!popup(app).is_editing())),
+        check(|app| assert!(notices(app).is_empty(), "{:?}", notices(app))),
+        mouse_on("Name", TestGesture::Click),
+        check(|app| assert!(popup(app).is_editing())),
+        typing("x1"),
+        check(|app| assert!(popup(app).can_run())),
+        mouse_on("[Confirm]", TestGesture::Click),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        wait_for(branch("x1")),
+        keys("b"),
+        typing("x2"),
+        mouse_on("[Cancel]", TestGesture::Click),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        check(move |_| assert!(!branch("x2")(&path))),
+    ]);
+}
+
+// A click on a chevron of a choice goes to the next or previous option, quick clicks too.
+#[test]
+fn test_popup_chevrons_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let shows = |text: &'static str| screen(move |s| assert!(s.contains(text), "{s}"));
+    harness.run(vec![
+        keys("shift-u"),
+        shows("Mixed: keep"),
+        mouse_on("›", TestGesture::Click),
+        shows("Soft: keep"),
+        mouse_on("‹", TestGesture::Click),
+        draw(),
+        vec![Step::Mouse(TestGesture::Click)],
+        shows("Hard: discard"),
+        check(|app| assert!(app.shell.dialog.is_some())),
+    ]);
+}
+
+// A click on a field selects it: a checkbox toggles, a text field is typed in where clicked.
+#[test]
+fn test_popup_click_on_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let shows = |text: &'static str| screen(move |s| assert!(s.contains(text), "{s}"));
+    harness.run(vec![
+        keys("b"),
+        typing("abcd"),
+        shows("[•] Check it out"),
+        // while typing, a click on another field acts at once
+        mouse_on("Check it out", TestGesture::Click),
+        check(|app| assert!(!popup(app).is_editing())),
+        shows("[ ] Check it out"),
+        mouse_at("abcd", (2, 0), TestGesture::Click),
+        check(|app| assert!(popup(app).is_editing())),
+        typing("X"),
+        shows("abXcd"),
+        // in the text being typed, a click moves the caret
+        mouse_at("abXcd", (0, 0), TestGesture::Click),
+        typing("Y"),
+        shows("YabXcd"),
+    ]);
+}
+
 #[test]
 fn test_click_below_the_last_row_only_focuses() {
     let dir = tempfile::tempdir().unwrap();
@@ -2716,15 +2803,47 @@ fn test_wheel_scrolls_the_panel_under_the_pointer() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
+    let selection = Rc::new(RefCell::new(None));
+    let before = selection.clone();
     harness.run(vec![
+        keys("1"),
+        check(move |app| *before.borrow_mut() = Some(app.shell.sidebar.selection())),
+        keys("2"),
         mouse_on("Branches", TestGesture::WheelDown),
         check(|app| assert!(app.shell.sidebar_focused())),
-        check(|app| {
-            let branches = RefSelection::Section(crate::widget::ref_list::RefSection::Branches);
-            assert_ne!(app.shell.sidebar.selection(), branches);
-        }),
-        // the commit list keeps its selection
+        // the wheel scrolls the rows shown, not the selection
+        check(move |app| assert_eq!(Some(app.shell.sidebar.selection()), *selection.borrow())),
         check(|app| assert_eq!(selected_subject(app), "c2")),
+    ]);
+}
+
+// The wheel scrolls the graph, the selected commit staying even once off the rows shown; moving
+// the selection shows it again.
+#[test]
+fn test_wheel_scrolls_the_graph_not_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..60 {
+        let message = format!("commit-{i:02}");
+        git(&path, &["commit", "-q", "--allow-empty", "-m", &message]);
+    }
+    let offset = |app: &App| app.view.as_list_state().unwrap().cursor().offset();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        check(|app| assert_eq!(selected_subject(app), "commit-59")),
+        mouse_on("commit-50", TestGesture::WheelDown),
+        mouse_on("commit-50", TestGesture::WheelDown),
+        mouse_on("commit-50", TestGesture::WheelDown),
+        check(|app| assert_eq!(selected_subject(app), "commit-59")),
+        check(move |app| assert_eq!(offset(app), 3 * WHEEL_ROWS)),
+        // drawn again, the rows stay scrolled
+        draw(),
+        check(move |app| assert_eq!(offset(app), 3 * WHEEL_ROWS)),
+        mouse_on("commit-50", TestGesture::WheelUp),
+        check(move |app| assert_eq!(offset(app), 2 * WHEEL_ROWS)),
+        keys("j"),
+        check(|app| assert_eq!(selected_subject(app), "commit-58")),
+        check(move |app| assert!(offset(app) <= 1, "{}", offset(app))),
     ]);
 }
 
@@ -3020,17 +3139,23 @@ fn test_drag_and_ctrl_click_pick_files() {
     ]);
 }
 
+// A click on a box of the commit message types in it; while typing, a click on a box types in the
+// box clicked, and a double click keeps typing.
 #[test]
-fn test_click_on_the_message_box_focuses_it() {
+fn test_click_on_the_message_box_types_in_it() {
     let dir = tempfile::tempdir().unwrap();
     let (_, mut harness) = local_changes_harness(dir.path());
     harness.run(vec![
-        mouse_on("Description", TestGesture::Click),
-        check(|app| assert!(!app.is_typing())),
-        check(|app| assert_ne!(local_change_path(app).as_deref(), Some("b.txt"))),
-        // focused there, space types in it
-        keys("space"),
+        mouse_on("Summary", TestGesture::Click),
         check(|app| assert!(app.is_typing())),
+        typing("title"),
+        mouse_on("Description", TestGesture::Click),
+        check(|app| assert!(app.is_typing())),
+        typing("body"),
+        double_click("title"),
+        check(|app| assert!(app.is_typing())),
+        typing("!"),
+        check(|app| assert_eq!(draft(app), "title!\n\nbody")),
     ]);
 }
 
@@ -3235,6 +3360,27 @@ fn test_click_after_the_files_reload_in_place_does_nothing() {
         // drawn again, a click acts
         mouse_on("b.txt", TestGesture::Click),
         check(|app| assert_eq!(local_change_path(app).as_deref(), Some("b.txt"))),
+    ]);
+}
+
+// Beside the details too, the wheel scrolls the commits and leaves the one shown.
+#[test]
+fn test_wheel_beside_the_details_keeps_the_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..60 {
+        let message = format!("commit-{i:02}");
+        git(&path, &["commit", "-q", "--allow-empty", "-m", &message]);
+    }
+    let offset = |app: &App| app.view.as_list_state().unwrap().cursor().offset();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter"),
+        keys("2"),
+        mouse_on("commit-55", TestGesture::WheelDown),
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+        check(|app| assert_eq!(selected_subject(app), "commit-59")),
+        check(move |app| assert_eq!(offset(app), WHEEL_ROWS)),
     ]);
 }
 
