@@ -456,8 +456,8 @@ pub enum UserEvent {
     DropCommit,
     CreateTag,
     CreateBranch,
-    BranchOnly,
-    BranchOnlyAtCommit,
+    ActiveBranchOnly,
+    ThisBranchOnly,
     CreateRef,
     DeleteRef,
     EditRef,
@@ -526,8 +526,8 @@ impl UserEvent {
             | UserEvent::DropCommit
             | UserEvent::CreateTag
             | UserEvent::CreateBranch
-            | UserEvent::BranchOnly
-            | UserEvent::BranchOnlyAtCommit => Scope::Graph,
+            | UserEvent::ActiveBranchOnly
+            | UserEvent::ThisBranchOnly => Scope::Graph,
             UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
@@ -629,12 +629,12 @@ mod tests {
     fn test_branch_only_at_commit_is_unbound_until_bound() {
         assert!(!KeyBind::new(None)
             .bound_events()
-            .any(|event| event == UserEvent::BranchOnlyAtCommit));
-        let custom: KeyBind = toml::from_str("branch_only_at_commit = [\"g\"]").unwrap();
+            .any(|event| event == UserEvent::ThisBranchOnly));
+        let custom: KeyBind = toml::from_str("this_branch_only = [\"g\"]").unwrap();
         let keybind = KeyBind::new(Some(custom));
         assert_eq!(
             keybind.event_in(Scope::Graph, &key('g')),
-            Some(UserEvent::BranchOnlyAtCommit)
+            Some(UserEvent::ThisBranchOnly)
         );
     }
 

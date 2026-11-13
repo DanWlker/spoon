@@ -213,7 +213,7 @@ pub fn commit_command_works(
     }
 }
 
-// The branches at the commit `hash`, those `UserEvent::BranchOnlyAtCommit` shows: the local ones,
+// The branches at the commit `hash`, those `UserEvent::ThisBranchOnly` shows: the local ones,
 // else the remote ones.
 pub fn branches_at(repository: &Repository, hash: &CommitHash) -> Vec<NamedRef> {
     let refs = repository.refs(hash);

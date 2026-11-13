@@ -239,8 +239,8 @@ impl<'a> ListView<'a> {
 pub struct ListFacts {
     pub picked: usize,
     pub search_applied: bool,
-    // the graph shows a branch's commits only, see `UserEvent::BranchOnly`
-    pub branch_only: bool,
+    // the graph shows a branch's commits only, see `UserEvent::ActiveBranchOnly`
+    pub active_branch_only: bool,
     // the commits are being selected from where the visual selection started
     pub visual: bool,
     // a rebase, merge, cherry-pick or revert waits to be finished: the commands moving HEAD are
@@ -279,7 +279,7 @@ impl ListFacts {
             operation_waits: repository.operation_in_progress().is_some(),
             picked: state.picked_commit_hashes().len(),
             search_applied: state.search_applied(),
-            branch_only: state.is_branch_only(),
+            active_branch_only: state.is_branch_only(),
             visual: state.is_visual(),
             head_history_empty: matches!(repository.head(), Head::Unborn { .. })
                 && !state.is_filtered(),
@@ -316,7 +316,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
 ) {
     use UserEvent::*;
     let availability = move |v: &T, event| match event {
-        BranchOnly if facts(v).head_history_empty => Availability::Off,
+        ActiveBranchOnly if facts(v).head_history_empty => Availability::Off,
         _ => availability(v, event),
     };
     let works = move |event| move |v: &T| availability(v, event) == Availability::Works;
@@ -341,7 +341,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
     )
     .when(move |v| {
         let facts = facts(v);
-        works(Cancel)(v) && facts.branch_only && facts.picked == 0 && !facts.search_applied
+        works(Cancel)(v) && facts.active_branch_only && facts.picked == 0 && !facts.search_applied
     });
     k.add_where(
         &[ToggleSelect],
@@ -368,13 +368,10 @@ pub fn register_commit_list_keys<T: ?Sized>(
     );
     // unbound by default, in the menu of a commit; several branches there say to choose one
     k.add_where(
-        &[BranchOnlyAtCommit],
+        &[ThisBranchOnly],
         "this branch only",
         "Show only the commits of the branch at the selected commit, or all again",
-        move |v| match (
-            availability(v, BranchOnlyAtCommit),
-            facts(v).commit_branches,
-        ) {
+        move |v| match (availability(v, ThisBranchOnly), facts(v).commit_branches) {
             (Availability::Works, 0) => Availability::Off,
             (Availability::Works, 1) => Availability::Works,
             (Availability::Works, _) => Availability::Warns,

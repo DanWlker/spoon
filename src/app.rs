@@ -425,7 +425,7 @@ fn compare_with_head(compare: &Compare, repository: &Repository) -> bool {
 enum GraphFilter {
     #[default]
     All,
-    // a branch's or a remote branch's, the current branch's for None, see `UserEvent::BranchOnly`
+    // a branch's or a remote branch's, the current branch's for None, see `UserEvent::ActiveBranchOnly`
     BranchOnly(Option<NamedRef>),
     // that of two refs diffed from the sidebar while their comparison is shown, going back to
     // `before` once it isn't, see `end_stale_ref_compare`
@@ -1874,6 +1874,12 @@ impl App<'_> {
             }
             .into()
         });
+        k.add(
+            &[ThisBranchOnly],
+            "this branch only",
+            "Show only the commits of the selected branch or remote branch, or all again",
+        )
+        .when(applies(ThisBranchOnly));
         k.add(&[ShortCopy], "copy name", "Copy the name of the ref")
             .when(applies(ShortCopy));
         k.add(
@@ -2567,9 +2573,17 @@ impl App<'_> {
                 return self.ec.send(AppEvent::NotifyError(err));
             }
         };
+        self.toggle_branch_only(Some(branch));
+    }
+
+    // Shows only the commits of `branch`, the current one for None, or all of them again when they
+    // are already shown; L shows all of them again from any branch's.
+    fn toggle_branch_only(&mut self, branch: Option<NamedRef>) {
         self.shell.graph_filter = match &self.shell.graph_filter {
-            GraphFilter::BranchOnly(Some(shown)) if *shown == branch => GraphFilter::All,
-            _ => GraphFilter::BranchOnly(Some(branch)),
+            GraphFilter::BranchOnly(shown) if branch.is_none() || *shown == branch => {
+                GraphFilter::All
+            }
+            _ => GraphFilter::BranchOnly(branch),
         };
         self.view.refresh();
     }
@@ -2578,20 +2592,15 @@ impl App<'_> {
     fn handle_graph_event(&mut self, event: UserEvent) {
         // showing all the commits again keeps the picked ones, and their diff
         let shows_all = matches!(self.shell.graph_filter, GraphFilter::BranchOnly(_));
-        if !(event == UserEvent::BranchOnly && shows_all) && self.refused_while_diffing(event) {
+        if !(event == UserEvent::ActiveBranchOnly && shows_all) && self.refused_while_diffing(event)
+        {
             return;
         }
-        if event == UserEvent::BranchOnlyAtCommit {
+        if event == UserEvent::ThisBranchOnly {
             return self.branch_only_of_commit();
         }
-        if event == UserEvent::BranchOnly {
-            // the commits are loaded again, of the current branch or of all
-            self.shell.graph_filter = match self.shell.graph_filter {
-                GraphFilter::BranchOnly(_) => GraphFilter::All,
-                _ => GraphFilter::BranchOnly(None),
-            };
-            self.view.refresh();
-            return;
+        if event == UserEvent::ActiveBranchOnly {
+            return self.toggle_branch_only(None);
         }
         let Some(state) = self.view.as_list_state() else {
             return;
@@ -2605,22 +2614,18 @@ impl App<'_> {
     // The commands of the commit graph on the branch, remote branch or tag selected in the
     // sidebar, see `ref_graph_command`.
     fn handle_sidebar_graph_event(&mut self, event: UserEvent) {
+        // the current branch's, wherever
+        if event == UserEvent::ActiveBranchOnly {
+            return self.handle_graph_event(event);
+        }
         if self.refused_while_diffing(event) {
             return;
         }
-        if event == UserEvent::BranchOnly {
-            // the selected branch's history, or the current one's off a branch
-            let branch = match self.shell.sidebar.selection() {
-                RefSelection::Ref(named @ (NamedRef::Branch(_) | NamedRef::RemoteBranch(_))) => {
-                    Some(named)
-                }
-                _ => None,
-            };
-            self.shell.graph_filter = match &self.shell.graph_filter {
-                GraphFilter::BranchOnly(shown) if *shown == branch => GraphFilter::All,
-                _ => GraphFilter::BranchOnly(branch),
-            };
-            self.view.refresh();
+        if event == UserEvent::ThisBranchOnly {
+            // a branch or remote branch, see `ref_command_applies`
+            if let RefSelection::Ref(branch) = self.shell.sidebar.selection() {
+                self.toggle_branch_only(Some(branch));
+            }
             return;
         }
         if event == UserEvent::Diff {
@@ -2702,7 +2707,7 @@ impl App<'_> {
     fn refused_while_diffing(&self, event: UserEvent) -> bool {
         let refused = matches!(
             event,
-            UserEvent::Diff | UserEvent::BranchOnly | UserEvent::BranchOnlyAtCommit
+            UserEvent::Diff | UserEvent::ActiveBranchOnly | UserEvent::ThisBranchOnly
         ) && self.is_diffing();
         if refused {
             let msg = "A diff is open, close it first (esc)".to_string();
@@ -2985,14 +2990,9 @@ impl App<'_> {
             .menu_hints()
             .into_iter()
             .filter(|(events, _)| !left_out_of_menu(events[0]))
-            // in the sidebar, the branch only of a branch's row
+            // in the sidebar, this branch only of the row, the current branch's being no row's
             .filter(|(events, _)| {
-                events[0] != UserEvent::BranchOnly
-                    || !self.shell.sidebar_focused()
-                    || matches!(
-                        self.shell.sidebar.selection(),
-                        RefSelection::Ref(NamedRef::Branch(_) | NamedRef::RemoteBranch(_))
-                    )
+                events[0] != UserEvent::ActiveBranchOnly || !self.shell.sidebar_focused()
             })
             .map(|(events, action)| MenuEntry {
                 event: events[0],

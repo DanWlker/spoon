@@ -193,11 +193,9 @@ impl<'a> DetailView<'a> {
                 |v, event| match event {
                     _ if !v.list_focused => Availability::Off,
                     // no other diff until this one is closed, which clears the picks too
-                    ToggleSelect | Diff | BranchOnlyAtCommit if v.is_comparing() => {
-                        Availability::Warns
-                    }
+                    ToggleSelect | Diff | ThisBranchOnly if v.is_comparing() => Availability::Warns,
                     // showing all the commits again keeps the picked ones
-                    BranchOnly if v.is_comparing() && !v.as_list_state().is_branch_only() => {
+                    ActiveBranchOnly if v.is_comparing() && !v.as_list_state().is_branch_only() => {
                         Availability::Warns
                     }
                     Cancel if v.is_comparing() => Availability::Off,

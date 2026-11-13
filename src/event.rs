@@ -35,7 +35,7 @@ pub enum AppEvent {
     // opens the details of the selected commit on a tab
     OpenDetail(DetailTab),
     CloseDetail,
-    // the graph shows all the commits again after showing a branch's only, see `UserEvent::BranchOnly`
+    // the graph shows all the commits again after showing a branch's only, see `UserEvent::ActiveBranchOnly`
     ShowAllCommits,
     // runs an interactive command, like an editor, in place of the app, then refreshes
     RunExternal(Vec<String>),

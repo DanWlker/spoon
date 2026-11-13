@@ -28,10 +28,11 @@ pub fn ref_command_applies(
     let detached = *selection == RefSelection::DetachedHead;
     match event {
         // on the whole graph, wherever; the current branch's needs a commit on it
-        UserEvent::BranchOnly => {
-            matches!(selection, RefSelection::Ref(NamedRef::Branch(_)))
-                || !matches!(repository.head(), Head::Unborn { .. })
-        }
+        UserEvent::ActiveBranchOnly => !matches!(repository.head(), Head::Unborn { .. }),
+        UserEvent::ThisBranchOnly => matches!(
+            selection,
+            RefSelection::Ref(NamedRef::Branch(_) | NamedRef::RemoteBranch(_))
+        ),
         UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
         UserEvent::ToggleSelect => {
             matches!(selection, RefSelection::Ref(_) | RefSelection::Stash(_))

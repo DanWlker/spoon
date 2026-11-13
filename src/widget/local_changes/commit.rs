@@ -454,7 +454,7 @@ impl LocalChangesPanel<'_> {
             layout.record(Target::CommitButton, *at, RowMap::One);
         }
         // at the bottom left, as the amend key; dimmed where it can't toggle
-        const AMEND: &str = "amend";
+        const AMEND: &str = "Amend";
         let width = 4 + AMEND.len() as u16;
         let fits = button
             .first()

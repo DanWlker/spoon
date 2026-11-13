@@ -1454,21 +1454,24 @@ fn test_compare_gives_the_branch_only_graph_back() {
 
 #[test]
 fn test_no_branch_only_of_a_branch_without_commits() {
-    use crate::keybind::UserEvent::BranchOnly;
+    use crate::keybind::UserEvent::{ActiveBranchOnly, ThisBranchOnly};
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     git(&path, &["checkout", "-q", "--orphan", "fresh"]);
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        check(|app| assert!(!app.view.keys().takes(BranchOnly))),
-        // fresh, first in the branches, then feat
+        check(|app| assert!(!app.view.keys().takes(ActiveBranchOnly))),
+        // fresh, first in the branches, then feat: no current branch's, on any row
         keys("1 j"),
-        check(|app| assert!(!app.sidebar_keys().takes(BranchOnly))),
-        keys("j shift-l"),
+        check(|app| assert!(!app.sidebar_keys().takes(ActiveBranchOnly))),
+        keys("j"),
+        check(|app| assert!(!app.sidebar_keys().takes(ActiveBranchOnly))),
+        // feat's own
+        vec![Step::Act(Box::new(|app| app.run_event(ThisBranchOnly)))],
         check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
         // back to all of them from the graph
         keys("2"),
-        check(|app| assert!(app.view.keys().takes(BranchOnly))),
+        check(|app| assert!(app.view.keys().takes(ActiveBranchOnly))),
         keys("shift-l"),
         check(|app| assert_eq!(graph_note(app), None)),
     ]);
@@ -1476,20 +1479,28 @@ fn test_no_branch_only_of_a_branch_without_commits() {
 
 #[test]
 fn test_branch_only_of_the_sidebar_branch() {
+    use crate::keybind::UserEvent::ThisBranchOnly;
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
+    let this = || vec![Step::Act(Box::new(|app| app.run_event(ThisBranchOnly)))];
     harness.run(vec![
-        // feat, under master
+        // feat, above master: L the current branch's, this branch only feat's
         keys("1 j shift-l"),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
+        this(),
         check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
         // another branch shows its commits instead, the same one all of them again
-        keys("k shift-l"),
+        keys("j"),
+        this(),
         check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
-        keys("shift-l"),
+        this(),
         check(|app| assert_eq!(graph_note(app), None)),
-        // a stash or the headers, the current branch's
-        keys("g shift-l"),
+        // none on the headers
+        keys("g"),
+        check(|app| assert!(!app.sidebar_keys().takes(ThisBranchOnly))),
+        // L the current branch's there too
+        keys("shift-l"),
         check(|app| {
             assert!(matches!(
                 app.shell.graph_filter,
@@ -1497,7 +1508,8 @@ fn test_branch_only_of_the_sidebar_branch() {
             ));
             assert_eq!(graph_note(app).as_deref(), Some("master only"));
         }),
-        keys("j shift-l"),
+        keys("j"),
+        this(),
         check(|app| assert_eq!(graph_note(app).as_deref(), Some("feat only"))),
         // its commits only are loaded
         check(|app| {
@@ -2793,7 +2805,7 @@ fn test_double_click_on_a_button_acts_once() {
         check(|app| assert!(matches!(app.view, View::List(_)))),
         check(|app| assert!(app.shell.dialog.is_none())),
         mouse_on("e38", TestGesture::RightClick),
-        double_click("details"),
+        double_click("Details"),
         check(|app| assert!(matches!(app.view, View::Detail(_)))),
         check(|app| assert!(app.shell.dialog.is_none())),
     ]);
@@ -2981,7 +2993,7 @@ fn test_sidebar_menu_fetch_pull_push() {
         check(|app| assert!(app.shell.menu.is_none())),
         // pushing feat from its menu
         mouse_at("Branches", (2, 1), TestGesture::RightClick),
-        mouse_on("push", TestGesture::Click),
+        mouse_on("Push", TestGesture::Click),
         draw(),
         screen(|s| assert!(s.contains("‹ feat ›"), "{s}")),
         keys("esc"),
@@ -3042,7 +3054,7 @@ fn test_menu_on_commits_lists_what_works() {
                 Squash,
                 CreateBranch,
                 CreateTag,
-                BranchOnly,
+                ActiveBranchOnly,
                 Reset,
                 OpenInBrowser,
                 CopyLink,
@@ -3058,7 +3070,8 @@ fn test_menu_on_commits_lists_what_works() {
 }
 
 // The menu of the checked-out branch in the sidebar has no checkout, merge, rebase or delete; a
-// ref's commands follow its commit, and branch only is on branches alone.
+// ref's commands follow its commit, and this branch only is on branches alone, active branch only on
+// no row.
 #[test]
 fn test_sidebar_menu_lists_what_works() {
     use UserEvent::*;
@@ -3071,13 +3084,21 @@ fn test_sidebar_menu_lists_what_works() {
         mouse_at("Branches", (2, 1), TestGesture::RightClick),
         // the commands on a commit are the commit list's, no ref's
         menu_has(
-            &[Checkout, Merge, Rebase, DeleteRef, BranchOnly],
-            &[CherryPick, Squash, AmendCommit, DropCommit, Revert, Reset],
+            &[Checkout, Merge, Rebase, DeleteRef, ThisBranchOnly],
+            &[
+                CherryPick,
+                Squash,
+                AmendCommit,
+                DropCommit,
+                Revert,
+                Reset,
+                ActiveBranchOnly,
+            ],
         ),
         keys("esc"),
         mouse_at("Branches", (2, 2), TestGesture::RightClick),
         menu_has(
-            &[BranchOnly],
+            &[ThisBranchOnly],
             &[Checkout, Merge, Rebase, DeleteRef, Squash, Revert, Reset],
         ),
         keys("esc"),
@@ -3092,7 +3113,10 @@ fn test_sidebar_menu_lists_what_works() {
         check(|app| assert!(app.shell.menu.is_none())),
         mouse_on("Tags", TestGesture::Click),
         mouse_at("Tags", (2, 1), TestGesture::RightClick),
-        menu_has(&[Checkout], &[BranchOnly, CherryPick, Revert, Reset]),
+        menu_has(
+            &[Checkout],
+            &[ActiveBranchOnly, ThisBranchOnly, CherryPick, Revert, Reset],
+        ),
     ]);
 }
 
@@ -3100,7 +3124,7 @@ fn test_sidebar_menu_lists_what_works() {
 // again: listed on a commit with one branch, saying so with several. Branch only does what L does.
 #[test]
 fn test_menu_branch_only_of_the_commit() {
-    use crate::keybind::UserEvent::{BranchOnly, BranchOnlyAtCommit};
+    use crate::keybind::UserEvent::{ActiveBranchOnly, ThisBranchOnly};
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
@@ -3121,34 +3145,34 @@ fn test_menu_branch_only_of_the_commit() {
     let feat = || GraphFilter::BranchOnly(Some(NamedRef::Branch("feat".into())));
     harness.run(vec![
         mouse_on("feat1", TestGesture::RightClick),
-        menu_has(&[BranchOnly, BranchOnlyAtCommit], &[]),
+        menu_has(&[ActiveBranchOnly, ThisBranchOnly], &[]),
         // no key shown for it
         screen(|s| {
-            let after = s.split("this branch only").nth(1).unwrap();
+            let after = s.split("This branch only").nth(1).unwrap();
             assert!(after.trim_start().starts_with('│'), "{s}");
         }),
         keys("esc"),
-        run("feat1", "this branch only"),
+        run("feat1", "This branch only"),
         filter(feat()),
-        run("feat1", "this branch only"),
+        run("feat1", "This branch only"),
         filter(GraphFilter::All),
         // as L: the current branch's
-        run("feat1", "branch only"),
+        run("feat1", "Active branch only"),
         filter(GraphFilter::BranchOnly(None)),
         keys("shift-l"),
         filter(GraphFilter::All),
         // no branch at c1
         mouse_on("c1", TestGesture::RightClick),
-        menu_has(&[BranchOnly], &[BranchOnlyAtCommit]),
+        menu_has(&[ActiveBranchOnly], &[ThisBranchOnly]),
         keys("esc"),
         // two at c2, to choose in the sidebar
         outside_git(&["branch", "other"]),
         keys("ctrl-r"),
         draw(),
         mouse_on("c2", TestGesture::RightClick),
-        menu_has(&[BranchOnly], &[BranchOnlyAtCommit]),
+        menu_has(&[ActiveBranchOnly], &[ThisBranchOnly]),
         keys("esc"),
-        vec![Step::Act(Box::new(|app| app.run_event(BranchOnlyAtCommit)))],
+        vec![Step::Act(Box::new(|app| app.run_event(ThisBranchOnly)))],
         filter(GraphFilter::All),
         check(|app| assert_notice(app, "sidebar")),
     ]);
@@ -3169,7 +3193,7 @@ fn test_branch_only_of_a_remote_branch() {
     let remote_feat = "BranchOnly(Some(RemoteBranch(\"origin/feat\")))";
     harness.run(vec![
         mouse_on("feat1", TestGesture::RightClick),
-        mouse_on("this branch only", TestGesture::Click),
+        mouse_on("This branch only", TestGesture::Click),
         draw(),
         filter(remote_feat),
         screen(|s| assert!(s.contains("origin/feat only"), "{s}")),
@@ -3183,8 +3207,8 @@ fn test_branch_only_of_a_remote_branch() {
             let feat = RefSelection::Ref(NamedRef::RemoteBranch("origin/feat".into()));
             assert_eq!(app.shell.sidebar.selection(), feat);
         }),
-        menu_has(&[UserEvent::BranchOnly], &[]),
-        mouse_on("branch only", TestGesture::Click),
+        menu_has(&[UserEvent::ThisBranchOnly], &[UserEvent::ActiveBranchOnly]),
+        mouse_on("This branch only", TestGesture::Click),
         filter(remote_feat),
     ]);
 }
@@ -3440,7 +3464,7 @@ fn test_right_click_menu_on_a_commit() {
         mouse_on("c1", TestGesture::RightClick),
         check(|app| assert_eq!(selected_subject(app), "c1")),
         // the keys of the page, not those of the whole app, nor the moves
-        menu_shows(&["checkout", "merge"], &["push", "move"]),
+        menu_shows(&["Checkout", "Merge"], &["Push", "Move"]),
         // the status line lists the keys of the menu, which takes them all
         screen(|screen| {
             let status = screen.lines().last().unwrap();
@@ -3450,7 +3474,7 @@ fn test_right_click_menu_on_a_commit() {
             );
         }),
         // a click on an entry runs it, as its key
-        mouse_on("merge", TestGesture::Click),
+        mouse_on("Merge", TestGesture::Click),
         check(|app| assert!(app.shell.menu.is_none())),
         check(|app| assert!(popup_command(app).starts_with("merge"))),
         keys("esc"),
@@ -3463,7 +3487,7 @@ fn test_right_click_menu_on_a_commit() {
         check(|app| assert!(app.shell.dialog.is_none())),
         // hovering selects an entry, enter runs it
         mouse_on("c1", TestGesture::RightClick),
-        mouse_on("merge", TestGesture::Hover),
+        mouse_on("Merge", TestGesture::Hover),
         keys("enter"),
         check(|app| assert!(popup_command(app).starts_with("merge"))),
         keys("esc"),
@@ -3501,7 +3525,7 @@ fn test_right_click_on_a_picked_row_keeps_them() {
         mouse_on("feat1", TestGesture::RightClick),
         commits_picked(2),
         // c2 and feat1: diffing both, not cherry-picking c2 on master already
-        menu_shows(&["diff"], &["cherry-pick"]),
+        menu_shows(&["Diff"], &["Cherry-pick"]),
     ]);
 }
 
@@ -3773,19 +3797,19 @@ fn test_amend_checkbox() {
     let dir = tempfile::tempdir().unwrap();
     let (_, mut harness) = local_changes_harness(dir.path());
     let amending = |on: bool| {
-        let mark = if on { "[•] amend" } else { "[ ] amend" };
+        let mark = if on { "[•] Amend" } else { "[ ] Amend" };
         screen(move |s| assert!(s.contains(mark), "{s}"))
     };
     harness.run(vec![
         draw(),
         amending(false),
-        mouse_on("[ ] amend", TestGesture::Click),
+        mouse_on("[ ] Amend", TestGesture::Click),
         draw(),
         amending(true),
         // typing the summary, now the last commit's
         mouse_at("[3] Commit", (2, 1), TestGesture::Click),
         check(|app| assert!(app.is_typing())),
-        mouse_on("[•] amend", TestGesture::Click),
+        mouse_on("[•] Amend", TestGesture::Click),
         draw(),
         amending(false),
         check(|app| assert!(!app.is_typing())),

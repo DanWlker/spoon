@@ -56,7 +56,7 @@ fn section(event: UserEvent) -> Section {
         | CreateTag | CreateBranch | CreateRef | DeleteRef | EditRef | ResetFile | Ignore => {
             Section::Git
         }
-        BranchOnly | BranchOnlyAtCommit => Section::Filter,
+        ActiveBranchOnly | ThisBranchOnly => Section::Filter,
         ShortCopy | FullCopy | CopyLink | OpenInBrowser => Section::Copy,
         _ => Section::Show,
     }
@@ -107,7 +107,12 @@ impl ActionMenu {
     pub fn new(mut entries: Vec<MenuEntry>, at: Cell) -> Option<Self> {
         entries.sort_by_key(|entry| section(entry.event));
         let mut rows = vec![];
-        for entry in entries {
+        for mut entry in entries {
+            // a capital, as the popups' labels; the status bar keeps the hint lowercase
+            let mut chars = entry.label.action.chars();
+            if let Some(first) = chars.next() {
+                entry.label.action = first.to_uppercase().chain(chars).collect();
+            }
             let last = rows.last().and_then(|row: &Option<MenuEntry>| row.as_ref());
             if last.is_some_and(|last| section(last.event) != section(entry.event)) {
                 rows.push(None);
@@ -313,7 +318,7 @@ mod tests {
         assert_eq!(menu.selected(), 0);
     }
 
-    // A row names the action first, its keys after it, in a column at the right.
+    // A row names the action first, with a capital, its keys after it, in a column at the right.
     #[test]
     fn test_action_before_its_keys() {
         let ctx = test_ctx();
@@ -333,8 +338,8 @@ mod tests {
         menu.render(&mut buf, screen, &ctx);
         let row = |y: u16| -> String { (0..40).map(|x| buf[(x, y)].symbol()).collect() };
         let (merge, checkout) = (row(2), row(3));
-        assert!(merge.contains("merge      m "), "{merge:?}");
-        assert!(checkout.contains("checkout   space "), "{checkout:?}");
+        assert!(merge.contains("Merge      m "), "{merge:?}");
+        assert!(checkout.contains("Checkout   space "), "{checkout:?}");
     }
 
     // The entries by section, a rule between two; the keys, the pointer and a click pass the rule
@@ -364,12 +369,12 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "│▌diff        │",
+                "│▌Diff        │",
                 "│─────────────│",
-                "│ merge       │",
-                "│ checkout    │",
+                "│ Merge       │",
+                "│ Checkout    │",
                 "│─────────────│",
-                "│ copy        │",
+                "│ Copy        │",
             ],
         );
         assert_eq!(menu.event(1), None);

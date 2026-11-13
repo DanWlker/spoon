@@ -859,10 +859,10 @@
         "create_branch": {
           "$ref": "#/definitions/keybindArray"
         },
-        "branch_only": {
+        "active_branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
-        "branch_only_at_commit": {
+        "this_branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {
@@ -1199,10 +1199,10 @@
         "create_branch": {
           "$ref": "#/definitions/keybindArray"
         },
-        "branch_only": {
+        "active_branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
-        "branch_only_at_commit": {
+        "this_branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {

@@ -82,7 +82,7 @@ A key is looked up from the scope having the focus outward: the first scope bind
 The key then works only where its command does: the status bar, the keys popup (<kbd>H</kbd>) and the keys list (<kbd>?</kbd>) show what works where the focus is, and other keys do nothing. The commands of the graph don't act on the details, say, and the diff beside the files doesn't take the keys of the files.
 
 An event written in `[keybind]` is bound in its own scope:
-the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `create_branch`, `branch_only`, `branch_only_at_commit`) in `graph`;
+the commands of the commit graph (`diff`, `rebase`, `merge`, `checkout`, `cherry_pick`, `squash`, `revert`, `reset`, `amend_commit`, `drop_commit`, `create_tag`, `create_branch`, `active_branch_only`, `this_branch_only`) in `graph`;
 those of the refs (`create_ref`, `delete_ref`, `edit_ref`, `next_section`, `previous_section`) in `sidebar`;
 `older_commit` and `newer_commit` in `file_history`;
 those of the local changes page (`stash`, `commit`, `next_file`, `previous_file`, `next_folder`, `previous_folder`, `continue`, `abort`, `skip`, `toggle_amend`, `discard`) in `local_changes`;

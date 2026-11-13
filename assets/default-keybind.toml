@@ -117,10 +117,11 @@ create_branch = ["b"]
 # create a tag at the selected commit; in the refs sidebar at the selected ref
 create_tag = ["t"]
 # show only the commits of the current branch (the history of HEAD), or all of them again
-branch_only = ["shift-l"]
-# show only the commits of the branch at the selected commit (a local one, else a remote one), or all
-# again; bound to no key, in the menu of a commit
-# branch_only_at_commit = []
+active_branch_only = ["shift-l"]
+# show only the commits of the selected branch or remote branch in the refs sidebar, or of the branch
+# at the selected commit (a local one, else a remote one), or all again; bound to no key, in the menus
+# of a commit and of a branch
+# this_branch_only = []
 # open the page of the selected commit, branch (or a new pull request), remote branch, tag or file on
 # the web host of its remote
 open_in_browser = ["o"]
