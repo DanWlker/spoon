@@ -42,7 +42,7 @@ use crate::{
     },
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
-    layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target},
+    layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target, Thumb},
     pointer::{Cell, Gesture, OnPicks, Pointer},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::{SearchKind, SearchOptions, SearchOutcome},
@@ -174,6 +174,14 @@ struct AppStatus {
     images: Vec<(u16, u16, u16)>,
 }
 
+// A scrollbar's thumb being dragged from the line `from`, its panel showing from `shown` since.
+#[derive(Debug, Clone, Copy)]
+struct ThumbDrag {
+    thumb: Thumb,
+    from: u16,
+    shown: usize,
+}
+
 // The parts of the app that don't depend on the loaded repository, kept when it is reloaded:
 // the sidebar, the focus, the pages not shown, the popup and the status line.
 #[derive(Debug)]
@@ -221,6 +229,8 @@ pub struct AppShell {
     drag: Option<Target>,
     // a border pressed, not dragged yet: released there, it was a click focusing its panel
     border_press: Option<Cell>,
+    // a scrollbar's thumb dragged, see `App::drag_thumb`
+    thumb_drag: Option<ThumbDrag>,
     // the actions a right click shows, over everything but the notices
     menu: Option<ActionMenu>,
 }
@@ -630,6 +640,7 @@ impl<'a> App<'a> {
                 pointer: Pointer::default(),
                 drag: None,
                 border_press: None,
+                thumb_drag: None,
                 menu: None,
             },
         };
@@ -2802,10 +2813,13 @@ impl App<'_> {
     // `handle_gesture`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         let (x, y) = (mouse.column, mouse.row);
+        let over = self.shell.dialog.is_some() || self.shell.menu.is_some();
+        if self.drag_thumb(mouse, over) {
+            return;
+        }
         let mut layout = self.ctx.layout.borrow_mut();
         // what is drawn on a border, like the tabs of the details, takes the click; a popup or the
         // menu takes the mouse, no border moving under it, but one opening during a drag ends it
-        let over = self.shell.dialog.is_some() || self.shell.menu.is_some();
         let border = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 !over && layout.hit(x, y).is_none_or(|hit| hit.border) && layout.press(x, y)
@@ -2849,6 +2863,41 @@ impl App<'_> {
         let closed = (dialog && self.shell.dialog.is_none()) || (menu && self.shell.menu.is_none());
         if button || closed {
             self.shell.pointer.clicked_button();
+        }
+    }
+
+    // A scrollbar's thumb pressed focuses its panel, then dragged scrolls it as the wheel does, by
+    // the rows the thumb moved over; returns whether the mouse was on one.
+    fn drag_thumb(&mut self, mouse: MouseEvent, over: bool) -> bool {
+        let (x, y) = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if !over => {
+                let Some(thumb) = self.ctx.layout.borrow().thumb(x, y) else {
+                    return false;
+                };
+                self.point(Cell { x, y }, OnPicks::Keep);
+                let shown = thumb.offset;
+                self.shell.thumb_drag = Some(ThumbDrag {
+                    thumb,
+                    from: y,
+                    shown,
+                });
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(drag) = self.shell.thumb_drag.as_mut() else {
+                    return false;
+                };
+                let offset = drag.thumb.offset_moved(y as isize - drag.from as isize);
+                let rows = offset as isize - drag.shown as isize;
+                drag.shown = offset;
+                if rows != 0 && !over {
+                    self.run_event(UserEvent::Wheel(rows));
+                }
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.shell.thumb_drag.take().is_some(),
+            _ => false,
         }
     }
 
@@ -2960,7 +3009,8 @@ impl App<'_> {
                 let hit = hit.map(|hit| Hit { row: None, ..hit });
                 if hit.is_some_and(|hit| self.point_hit(hit, OnPicks::Keep)) {
                     let next = toward == Toward::Next;
-                    self.run_event(if next { WheelDown } else { WheelUp });
+                    let rows = crate::widget::style::WHEEL_ROWS as isize;
+                    self.run_event(Wheel(if next { rows } else { -rows }));
                 }
             }
             Gesture::Hover(_) => {}

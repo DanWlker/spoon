@@ -152,7 +152,7 @@ impl<'a> CommandLog<'a> {
         area: Rect,
         buf: &mut Buffer,
         state: &mut CommandLogState,
-    ) -> [(Target, Rect, RowMap); 3] {
+    ) -> Vec<(Target, Rect, RowMap)> {
         let theme = self.theme;
         Clear.render(area, buf);
         Block::default().bg(theme.bg).render(area, buf);
@@ -176,7 +176,8 @@ impl<'a> CommandLog<'a> {
         let height = inner.height as usize;
         let total = state.entries.len();
         let offset = state.cursor.fit(height, total, self.scrolloff);
-        render_panel_scrollbar(buf, list_area, total, offset, commands_focused, theme);
+        let commands_thumb =
+            render_panel_scrollbar(buf, list_area, total, offset, commands_focused, theme);
         let commands = (
             Target::LogCommands,
             inner,
@@ -217,11 +218,9 @@ impl<'a> CommandLog<'a> {
             theme,
         );
         // the whole panel, its title too: the output has no rows to select
-        let drawn = [
-            commands_frame,
-            commands,
-            (Target::LogOutput, output_area, RowMap::None),
-        ];
+        let mut drawn = vec![commands_frame, commands];
+        drawn.extend(commands_thumb.map(|(area, rows)| (Target::LogCommands, area, rows)));
+        drawn.push((Target::LogOutput, output_area, RowMap::None));
         let output = state
             .entries
             .get(state.cursor.selected())
@@ -233,7 +232,7 @@ impl<'a> CommandLog<'a> {
         // only the rows shown are made, the output can be long
         let total = output.lines().count();
         let rows = state.output.fit(total, inner.height as usize, 0);
-        render_panel_scrollbar(
+        let output_thumb = render_panel_scrollbar(
             buf,
             output_area,
             total,
@@ -241,6 +240,7 @@ impl<'a> CommandLog<'a> {
             !commands_focused,
             theme,
         );
+        drawn.extend(output_thumb.map(|(area, rows)| (Target::LogOutput, area, rows)));
         let lines: Vec<Line> = output
             .lines()
             .skip(rows.start)

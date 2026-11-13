@@ -125,8 +125,8 @@ impl KeyList {
     pub fn takes(&self, event: UserEvent) -> bool {
         // the wheel works where the scroll keys do
         let event = match event {
-            UserEvent::WheelDown => UserEvent::ScrollDown,
-            UserEvent::WheelUp => UserEvent::ScrollUp,
+            UserEvent::Wheel(rows) if rows > 0 => UserEvent::ScrollDown,
+            UserEvent::Wheel(_) => UserEvent::ScrollUp,
             event => event,
         };
         self.0

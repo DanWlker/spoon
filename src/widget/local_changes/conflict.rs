@@ -166,7 +166,12 @@ impl LocalChangesPanel<'_> {
             }
             height = content_area.height as usize;
             let range = state.pane.scroll_state().fit(longest, height, scrolloff);
-            render_panel_scrollbar(buf, *side_area, longest, range.start, is_focused, theme);
+            let thumb =
+                render_panel_scrollbar(buf, *side_area, longest, range.start, is_focused, theme);
+            if let Some(item) = item {
+                let mut layout = self.ctx.layout.borrow_mut();
+                layout.record_thumb(Target::Conflict(item), thumb);
+            }
             let lines: Vec<Line> = rows
                 .iter()
                 .skip(range.start)

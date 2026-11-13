@@ -255,7 +255,10 @@ impl<'a> SubmodulePanel<'a> {
         let inner = render_panel(buf, area, title, focused, theme);
         ctx.layout.borrow_mut().frame(Target::Submodule, area);
         if let Some((total, offset)) = self.render_content(ctx, inner, buf, focused) {
-            render_panel_scrollbar(buf, area, total, offset, focused, theme);
+            let thumb = render_panel_scrollbar(buf, area, total, offset, focused, theme);
+            ctx.layout
+                .borrow_mut()
+                .record_thumb(Target::Submodule, thumb);
         }
     }
 
@@ -270,7 +273,10 @@ impl<'a> SubmodulePanel<'a> {
         focused: bool,
     ) {
         if let Some((total, offset)) = self.render_content(ctx, area, buf, focused) {
-            render_scrollbar(buf, scrollbar, total, offset, focused, &ctx.color_theme);
+            let thumb = render_scrollbar(buf, scrollbar, total, offset, focused, &ctx.color_theme);
+            ctx.layout
+                .borrow_mut()
+                .record_thumb(Target::Submodule, thumb);
         }
     }
 

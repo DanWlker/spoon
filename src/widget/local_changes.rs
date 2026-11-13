@@ -1957,7 +1957,9 @@ impl LocalChangesPanel<'_> {
             &self.ctx,
         );
         let total = tree.rows().len();
-        render_panel_scrollbar(buf, area, total, offset, focused, &self.ctx.color_theme);
+        let theme = &self.ctx.color_theme;
+        let thumb = render_panel_scrollbar(buf, area, total, offset, focused, theme);
+        self.ctx.layout.borrow_mut().record_thumb(target, thumb);
     }
 
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {

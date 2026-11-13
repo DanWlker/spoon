@@ -545,7 +545,7 @@ impl<'a> CommitListState<'a> {
             UserEvent::PageUp => self.scroll_up_page(),
             UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.jump_half_page(event),
             // the selection stays, so its picks do
-            UserEvent::WheelDown | UserEvent::WheelUp => {
+            UserEvent::Wheel(_) => {
                 self.cursor.navigate(event, self.commits.len());
             }
             _ => return false,
@@ -673,7 +673,7 @@ pub fn render_commit_list_panel<'a>(
     ctx.layout.borrow_mut().record(Target::Commits, inner, rows);
     mark_commit_list_bar(f.buffer_mut(), inner, state, focused, &ctx.color_theme);
     let theme = &ctx.color_theme;
-    render_panel_scrollbar(
+    let thumb = render_panel_scrollbar(
         f.buffer_mut(),
         area,
         state.commits.len(),
@@ -681,6 +681,7 @@ pub fn render_commit_list_panel<'a>(
         focused,
         theme,
     );
+    ctx.layout.borrow_mut().record_thumb(Target::Commits, thumb);
 }
 
 // The bar at the selected commit of a list drawn in `inner`, on the border left of it: the graph

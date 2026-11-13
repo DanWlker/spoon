@@ -18,7 +18,7 @@ use crate::{
     event::Sender,
     git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
     keybind::UserEvent,
-    layout::{fit_size, Edge, Panel, Target},
+    layout::{fit_size, Edge, Panel, RowMap, Target},
     pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
@@ -1073,7 +1073,11 @@ impl CommitTab {
             empty,
             &self.ctx,
         );
-        render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
+        let thumb = render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
+        self.ctx
+            .layout
+            .borrow_mut()
+            .record_thumb(Target::DetailFiles, thumb);
 
         // a submodule shows its own commits, with the graph, instead of the gitlink diff
         if let Some(submodule) = state.submodule.as_mut() {
@@ -1120,7 +1124,11 @@ impl CommitTab {
                 "No matches",
                 &self.ctx,
             );
-            render_tree_scrollbar(buf, tree_area, tree, offset, focused, theme);
+            let thumb = render_tree_scrollbar(buf, tree_area, tree, offset, focused, theme);
+            self.ctx
+                .layout
+                .borrow_mut()
+                .record_thumb(Target::DetailFiles, thumb);
         }
 
         let dim = |text: String| vec![placeholder(text, theme)];
@@ -1219,10 +1227,10 @@ fn render_tree_scrollbar(
     offset: usize,
     focused: bool,
     theme: &ColorTheme,
-) {
+) -> Option<(Rect, RowMap)> {
     let divider = Rect::new(area.right() + 1, area.y, 1, area.height);
     // the accent's while the tree has the focus, like the other panels' scrollbars
-    render_scrollbar(buf, divider, tree.rows().len(), offset, focused, theme);
+    render_scrollbar(buf, divider, tree.rows().len(), offset, focused, theme)
 }
 
 #[cfg(test)]

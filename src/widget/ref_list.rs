@@ -779,7 +779,11 @@ impl StatefulWidget for RefList {
         let total = state.visible_rows.len();
         let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
         let offset = state.cursor.fit(height, total, scrolloff);
-        render_panel_scrollbar(buf, area, total, offset, focused, theme);
+        let thumb = render_panel_scrollbar(buf, area, total, offset, focused, theme);
+        self.ctx
+            .layout
+            .borrow_mut()
+            .record_thumb(Target::Sidebar, thumb);
         let rows = RowMap::Rows {
             first: offset,
             count: total,

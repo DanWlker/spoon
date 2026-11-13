@@ -614,8 +614,9 @@ impl BlameView {
             return;
         }
         let author_width = self.author_width;
-        // the commits with the line after them, resizable; both keep some room
-        let default = (SHORT_HASH_WIDTH + 1 + author_width + 1 + self.date_width + 1) as u16;
+        // the commits with the line after them, a space each side of it, resizable; both keep
+        // some room
+        let default = (SHORT_HASH_WIDTH + 1 + author_width + 1 + self.date_width + 3) as u16;
         let width = ctx.layout.borrow().size(Panel::BlameCommits, default);
         let width = fit_size(width, inner.width, 8, 10);
         let [commits_area, text_area] =
@@ -623,12 +624,13 @@ impl BlameView {
         ctx.layout
             .borrow_mut()
             .place(Panel::BlameCommits, commits_area, Edge::Right);
+        // the space after the line takes the text's selection bar, as the padding of a panel
         let gutter = Rect {
-            width: commits_area.width - 1,
+            width: commits_area.width.saturating_sub(3),
             ..commits_area
         };
         for y in commits_area.top()..commits_area.bottom() {
-            let x = commits_area.right() - 1;
+            let x = commits_area.right().saturating_sub(2);
             buf.set_string(x, y, "│", Style::default().fg(theme.divider_fg));
         }
         // the search highlighted where it applies, in the text or the commits

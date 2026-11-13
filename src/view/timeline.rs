@@ -510,7 +510,10 @@ impl TimelineView {
             let line = Line::from(revision_spans(&ctx, revision, search));
             buf.set_line(inner.x, y, &line, inner.width);
         }
-        render_panel_scrollbar(buf, list_area, count, offset, focused, theme);
+        let thumb = render_panel_scrollbar(buf, list_area, count, offset, focused, theme);
+        ctx.layout
+            .borrow_mut()
+            .record_thumb(Target::TimelineCommits, thumb);
 
         // the file's changes in it
         let path = self.history[self.cursor.selected()].path.clone();

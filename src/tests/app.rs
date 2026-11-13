@@ -434,7 +434,9 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
                     drag(texts.iter().map(|text| find_cell(&cells, text)).collect())
                 }
                 TestGesture::DragBy(dx, dy) => {
-                    drag(vec![((at.0 as i32 + dx) as u16, (at.1 as i32 + dy) as u16)])
+                    // off the screen's edge, at it
+                    let by = |at: u16, d: i32| (at as i32 + d).max(0) as u16;
+                    drag(vec![(by(at.0, dx), by(at.1, dy))])
                 }
                 TestGesture::WheelDown => {
                     ec.send(mouse_event(MouseEventKind::ScrollDown, at, none))
@@ -3457,6 +3459,37 @@ fn test_wheel_scrolls_the_graph_not_the_selection() {
     ]);
 }
 
+// Dragging a scrollbar's thumb focuses its panel and scrolls it as the wheel does, the selection
+// staying: to the last rows at the bottom of the track, the first at the top.
+#[test]
+fn test_drag_the_scrollbar_thumb() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..120 {
+        let message = format!("commit-{i:03}");
+        git(&path, &["commit", "-q", "--allow-empty", "-m", &message]);
+    }
+    let offset = |app: &App| app.view.as_list_state().unwrap().cursor().offset();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("1"),
+        check(move |app| assert_eq!(offset(app), 0)),
+        mouse_on("█", TestGesture::DragBy(0, 5)),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+        check(|app| assert_eq!(selected_subject(app), "commit-119")),
+        check(move |app| assert!(offset(app) > 5, "{}", offset(app))),
+        draw(),
+        // the oldest commit shown
+        mouse_on("█", TestGesture::DragBy(0, 100)),
+        draw(),
+        screen(|s| assert!(s.contains(" c1 "), "{s}")),
+        // past the top of the track
+        mouse_on("█", TestGesture::DragBy(0, -100)),
+        check(move |app| assert_eq!(offset(app), 0)),
+        check(|app| assert_eq!(selected_subject(app), "commit-119")),
+    ]);
+}
+
 #[test]
 fn test_click_after_a_reload_uses_the_drawn_frame() {
     let dir = tempfile::tempdir().unwrap();
@@ -5275,5 +5308,36 @@ fn test_the_graph_follows_the_sidebar_only_when_configured() {
     harness.run(vec![
         keys("1 j j"),
         check(|app| assert_eq!(selected(app), "c2")),
+    ]);
+}
+
+// The wheel and a scrollbar's thumb scroll a file tree past its selected row, which isn't drawn
+// then: it was, above the rows shown, which panicked.
+#[test]
+fn test_wheel_scrolls_a_file_tree_off_its_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..80 {
+        std::fs::write(path.join(format!("u{i:02}.txt")), "x\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        mouse_on("u01", TestGesture::WheelDown),
+        draw(),
+        // past the root row selected
+        screen(|s| {
+            assert!(
+                s.lines().nth(2).unwrap().starts_with("│   │ ? u01.txt"),
+                "{s}"
+            )
+        }),
+        mouse_on("█", TestGesture::DragBy(0, 100)),
+        draw(),
+        screen(|s| assert!(s.contains("u79.txt"), "{s}")),
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some(":/"))),
     ]);
 }

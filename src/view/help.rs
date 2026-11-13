@@ -192,7 +192,10 @@ impl HelpView {
         let total = self.shown.len();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let offset = self.cursor.fit(height, total, scrolloff);
-        render_panel_scrollbar(f.buffer_mut(), panel, total, offset, true, theme);
+        let thumb = render_panel_scrollbar(f.buffer_mut(), panel, total, offset, true, theme);
+        ctx.layout
+            .borrow_mut()
+            .record_thumb(Target::KeysList, thumb);
         let shown = RowMap::Rows {
             first: offset,
             count: total,

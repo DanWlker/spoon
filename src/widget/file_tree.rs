@@ -794,8 +794,11 @@ pub fn render_tree(
             mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);
         }
     }
-    if cursor != TreeCursor::Hidden {
-        let y = area.y + (tree.cursor() - offset) as u16;
+    // the selected row, unless the wheel scrolled it off the rows shown
+    let shown = tree.cursor().checked_sub(offset);
+    let shown = shown.filter(|row| *row < area.height as usize);
+    if let Some(row) = shown.filter(|_| cursor != TreeCursor::Hidden) {
+        let y = area.y + row as u16;
         let focused = matches!(cursor, TreeCursor::Bright | TreeCursor::PickedBright);
         if matches!(cursor, TreeCursor::PickedDim | TreeCursor::PickedBright) {
             mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);

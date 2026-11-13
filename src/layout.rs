@@ -88,9 +88,31 @@ pub enum Closes {
 pub enum RowMap {
     None,
     Frame,
+    // the thumb of a scrollbar in `track`, scrolling `total` rows from `offset`, see `Thumb`
+    Thumb(Thumb),
     One,
     Rows { first: usize, count: usize },
     Lines(Vec<Option<usize>>),
+}
+
+// A scrollbar's thumb as drawn, which dragging scrolls its panel by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Thumb {
+    pub track: Rect,
+    pub total: usize,
+    pub offset: usize,
+}
+
+impl Thumb {
+    // The first row shown with the thumb moved `cells` down (up when negative) from where it is
+    // drawn, the thumb moving along its track as the rows past the first page.
+    pub fn offset_moved(&self, cells: isize) -> usize {
+        let height = self.track.height as usize;
+        let thumb = (height * height / self.total).max(1);
+        let (span, last) = (height.saturating_sub(thumb).max(1), self.total - height);
+        let rows = cells * last as isize / span as isize;
+        self.offset.saturating_add_signed(rows).min(last)
+    }
 }
 
 // What is under the pointer: the target, and its row there, None past its rows.
@@ -234,6 +256,13 @@ impl PanelLayout {
         self.borders.clear();
     }
 
+    // The thumb of a scrollbar `render_scrollbar` drew, if any, for dragging it to scroll `target`.
+    pub fn record_thumb(&mut self, target: Target, drawn: Option<(Rect, RowMap)>) {
+        if let Some((area, rows)) = drawn {
+            self.record(target, area, rows);
+        }
+    }
+
     // `target` drawn in `area`, its rows on its lines as `rows` says.
     pub fn record(&mut self, target: Target, area: Rect, rows: RowMap) {
         if !area.is_empty() {
@@ -247,6 +276,19 @@ impl PanelLayout {
         self.record(target, area, RowMap::Frame);
     }
 
+    // The thumb of the scrollbar drawn at the cell, on top; its panel is the target hit there.
+    pub fn thumb(&self, x: u16, y: u16) -> Option<Thumb> {
+        let (_, _, rows) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, area, _)| area.contains((x, y).into()))?;
+        match rows {
+            RowMap::Thumb(thumb) => Some(*thumb),
+            _ => None,
+        }
+    }
+
     // What was drawn last at the cell, the innermost of what is drawn over each other.
     pub fn hit(&self, x: u16, y: u16) -> Option<Hit> {
         let (target, area, rows) = self
@@ -256,7 +298,7 @@ impl PanelLayout {
             .find(|(_, area, _)| area.contains((x, y).into()))?;
         let line = (y - area.y) as usize;
         let row = match rows {
-            RowMap::None | RowMap::Frame => None,
+            RowMap::None | RowMap::Frame | RowMap::Thumb(_) => None,
             RowMap::One => Some(0),
             RowMap::Rows { first, count } => first.checked_add(line).filter(|row| row < count),
             RowMap::Lines(lines) => lines.get(line).copied().flatten(),
@@ -265,7 +307,7 @@ impl PanelLayout {
             target: *target,
             row,
             column: (x - area.x) as usize,
-            border: *rows == RowMap::Frame,
+            border: matches!(rows, RowMap::Frame | RowMap::Thumb(_)),
         })
     }
 

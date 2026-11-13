@@ -20,7 +20,6 @@ use crate::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
         style::{
             picked_style, render_scrollbar, scroll_to, tabs_shown, ScrollState, VisualSelection,
-            WHEEL_ROWS,
         },
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
@@ -136,13 +135,7 @@ impl FileText {
             UserEvent::PageDown => height,
             UserEvent::PageUp => -height,
             // the wheel scrolls the window alone, the selected line staying even off it
-            UserEvent::WheelDown | UserEvent::WheelUp => {
-                let rows = WHEEL_ROWS as isize;
-                let rows = if event == UserEvent::WheelDown {
-                    rows
-                } else {
-                    -rows
-                };
+            UserEvent::Wheel(rows) => {
                 let last = self
                     .wrap
                     .total()
@@ -312,7 +305,8 @@ impl FileText {
             .scroll_state
             .fit(total, area.height as usize, scrolloff);
         let border = Rect::new(area.right(), area.y, 1, area.height);
-        render_scrollbar(buf, border, total, screen.start, focused, theme);
+        let thumb = render_scrollbar(buf, border, total, screen.start, focused, theme);
+        ctx.layout.borrow_mut().record_thumb(target, thumb);
         let lines = (screen.start..screen.start + area.height as usize)
             .map(|row| (row < total).then(|| self.wrap.logical_at(row)))
             .collect();
@@ -417,7 +411,7 @@ mod tests {
     use ratatui::layout::Rect;
 
     use super::*;
-    use crate::test_support::ui::test_ctx;
+    use crate::{test_support::ui::test_ctx, widget::style::WHEEL_ROWS};
 
     // The scroll keys move the selected line of a file's text like the other lists: the page keys
     // by a page, ctrl-d and ctrl-u by half of one, g and G to the ends.
@@ -502,12 +496,12 @@ mod tests {
         };
         draw(&mut text);
         for _ in 0..10 {
-            assert!(text.scroll(UserEvent::WheelDown));
+            assert!(text.scroll(UserEvent::Wheel(WHEEL_ROWS as isize)));
         }
         draw(&mut text);
         assert_eq!(text.selected_line(), 0);
         assert_eq!(text.scroll_state.offset, 10 * WHEEL_ROWS);
-        text.scroll(UserEvent::WheelUp);
+        text.scroll(UserEvent::Wheel(-(WHEEL_ROWS as isize)));
         assert_eq!(text.scroll_state.offset, 9 * WHEEL_ROWS);
     }
 

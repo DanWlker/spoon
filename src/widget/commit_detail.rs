@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     context::AppContext,
     git::{Commit, FileChange, Head, Ref, Tracking},
+    layout::Target,
     widget::{
         commit_list::{refs_spans, CommitInfo},
         style::{change_span, divider, render_scrollbar, tabs_shown, ScrollState},
@@ -68,7 +69,11 @@ impl StatefulWidget for CommitDetail<'_> {
         // on the right border, like the diffs'
         let border = Rect::new(area.right(), area.y, 1, area.height);
         let theme = &self.ctx.color_theme;
-        render_scrollbar(buf, border, total, state.offset, self.focused, theme);
+        let thumb = render_scrollbar(buf, border, total, state.offset, self.focused, theme);
+        self.ctx
+            .layout
+            .borrow_mut()
+            .record_thumb(Target::Info, thumb);
 
         label_lines = label_lines.into_iter().skip(state.offset).collect();
         value_lines = value_lines.into_iter().skip(state.offset).collect();

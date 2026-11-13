@@ -13,7 +13,13 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::{background::shows_loading, color::ColorTheme, git::is_kept_byte, keybind::UserEvent};
+use crate::{
+    background::shows_loading,
+    color::ColorTheme,
+    git::is_kept_byte,
+    keybind::UserEvent,
+    layout::{RowMap, Thumb},
+};
 
 // How often the spinner of a running task turns, see `spinner`.
 pub const SPINNER_RATE: Duration = Duration::from_millis(180);
@@ -322,10 +328,10 @@ pub fn render_scrollbar(
     offset: usize,
     focused: bool,
     theme: &ColorTheme,
-) {
+) -> Option<(Rect, RowMap)> {
     let height = column.height as usize;
     if height == 0 || total <= height {
-        return;
+        return None;
     }
     let thumb = (height * height / total).max(1);
     let max_offset = total - height;
@@ -339,6 +345,17 @@ pub fn render_scrollbar(
     for y in top..top + thumb {
         buf.set_string(column.x, column.y + y as u16, "█", style);
     }
+    // for the mouse to drag, recorded by the caller under its panel, see `Thumb`
+    let area = Rect::new(column.x, column.y + top as u16, 1, thumb as u16);
+    let track = column;
+    Some((
+        area,
+        RowMap::Thumb(Thumb {
+            track,
+            total,
+            offset,
+        }),
+    ))
 }
 
 // The rows a notch of the mouse wheel scrolls, as lazygit's.
@@ -384,8 +401,7 @@ impl ScrollState {
         let rows = match event {
             UserEvent::ScrollDown => 1,
             UserEvent::ScrollUp => -1,
-            UserEvent::WheelDown => WHEEL_ROWS as isize,
-            UserEvent::WheelUp => -(WHEEL_ROWS as isize),
+            UserEvent::Wheel(rows) => rows,
             UserEvent::PageDown => page,
             UserEvent::PageUp => -page,
             UserEvent::HalfPageDown => page / 2,
@@ -586,8 +602,7 @@ impl ListCursor {
         match event {
             UserEvent::ScrollDown => self.scroll_lines(1, total),
             UserEvent::ScrollUp => self.scroll_lines(-1, total),
-            UserEvent::WheelDown => self.wheel(WHEEL_ROWS as isize, total),
-            UserEvent::WheelUp => self.wheel(-(WHEEL_ROWS as isize), total),
+            UserEvent::Wheel(rows) => self.wheel(rows, total),
             UserEvent::PageDown => self.scroll_pages(1, total),
             UserEvent::PageUp => self.scroll_pages(-1, total),
             _ => {
@@ -682,11 +697,12 @@ pub fn render_panel_scrollbar(
     offset: usize,
     focused: bool,
     theme: &ColorTheme,
-) {
+) -> Option<(Rect, RowMap)> {
     if area.width > 0 && area.height > 2 {
         let column = Rect::new(area.right() - 1, area.y + 1, 1, area.height - 2);
-        render_scrollbar(buf, column, total, offset, focused, theme);
+        return render_scrollbar(buf, column, total, offset, focused, theme);
     }
+    None
 }
 
 // Text as it is drawn: ratatui drops control characters, so a tab, in a commit message, a file
@@ -821,7 +837,7 @@ mod tests {
         let mut cursor = ListCursor::default();
         cursor.fit(10, 30, 2);
         for _ in 0..5 {
-            assert!(cursor.navigate(UserEvent::WheelDown, 30));
+            assert!(cursor.navigate(UserEvent::Wheel(WHEEL_ROWS as isize), 30));
         }
         assert_eq!((cursor.selected(), cursor.offset()), (0, 5 * WHEEL_ROWS));
         assert_eq!(cursor.row(), None);
@@ -829,15 +845,15 @@ mod tests {
         assert_eq!(cursor.fit(10, 30, 2), 5 * WHEEL_ROWS);
         // no further than the last row, nor the first
         for _ in 0..30 {
-            cursor.navigate(UserEvent::WheelDown, 30);
+            cursor.navigate(UserEvent::Wheel(WHEEL_ROWS as isize), 30);
         }
         assert_eq!(cursor.offset(), 20);
         for _ in 0..30 {
-            cursor.navigate(UserEvent::WheelUp, 30);
+            cursor.navigate(UserEvent::Wheel(-(WHEEL_ROWS as isize)), 30);
         }
         assert_eq!(cursor.offset(), 0);
-        cursor.navigate(UserEvent::WheelDown, 30);
-        cursor.navigate(UserEvent::WheelDown, 30);
+        cursor.navigate(UserEvent::Wheel(WHEEL_ROWS as isize), 30);
+        cursor.navigate(UserEvent::Wheel(WHEEL_ROWS as isize), 30);
         // moving the selection shows it again
         assert!(cursor.navigate(UserEvent::NavigateDown, 30));
         assert_eq!((cursor.selected(), cursor.offset()), (1, 0));

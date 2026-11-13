@@ -221,7 +221,7 @@ impl DiffPane {
             return false;
         }
         // ctrl-e and ctrl-y, see `keep_in_view`; the wheel leaves the selection, even off the rows
-        let wheel = matches!(event, UserEvent::WheelDown | UserEvent::WheelUp);
+        let wheel = matches!(event, UserEvent::Wheel(_));
         if let Some((diff, part)) = focused.filter(|_| !wheel) {
             self.cursor.keep_in_view(diff, part);
         }
@@ -485,7 +485,8 @@ impl DiffPane {
             .cursor
             .scroll
             .fit(total, area.height as usize, scrolloff);
-        render_scrollbar(buf, scrollbar, total, range.start, focused, theme);
+        let thumb = render_scrollbar(buf, scrollbar, total, range.start, focused, theme);
+        ctx.layout.borrow_mut().record_thumb(target, thumb);
         let lines = (range.start..range.start + area.height as usize)
             .map(|screen| (screen < total).then(|| self.cursor.wrap().logical_at(screen)))
             .collect();
@@ -685,7 +686,7 @@ mod tests {
         draw(&mut pane, &ctx, area);
         assert!(pane.enter());
         for _ in 0..2 {
-            assert!(pane.scroll(UserEvent::WheelDown));
+            assert!(pane.scroll(UserEvent::Wheel(crate::widget::style::WHEEL_ROWS as isize)));
         }
         // the first hunk, rows 0-2, is off the rows shown from 4
         assert_eq!(pane.cursor.hunk, 0);

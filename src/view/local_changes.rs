@@ -243,8 +243,7 @@ impl<'a> LocalChangesView<'a> {
             | UserEvent::PageUp
             | UserEvent::ScrollDown
             | UserEvent::ScrollUp
-            | UserEvent::WheelDown
-            | UserEvent::WheelUp => {
+            | UserEvent::Wheel(_) => {
                 self.local_changes_state.scroll(event);
             }
             // y and Y copy the path of the selected file

@@ -394,11 +394,10 @@ pub enum UserEvent {
     GoToBottom,
     ScrollUp,
     ScrollDown,
-    // the mouse wheel, scrolling the rows shown alone: a list's selection stays, even off them
+    // the mouse wheel or a scrollbar dragged, scrolling the rows shown alone by the rows, down
+    // when positive: a list's selection stays, even off them
     #[serde(skip)]
-    WheelUp,
-    #[serde(skip)]
-    WheelDown,
+    Wheel(isize),
     PageUp,
     PageDown,
     HalfPageUp,
@@ -504,8 +503,7 @@ impl UserEvent {
                 | UserEvent::HalfPageUp
                 | UserEvent::ScrollDown
                 | UserEvent::ScrollUp
-                | UserEvent::WheelDown
-                | UserEvent::WheelUp
+                | UserEvent::Wheel(_)
         )
     }
 
