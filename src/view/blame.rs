@@ -531,6 +531,13 @@ impl BlameView {
     }
 
     // Focuses what the mouse points at and selects its line, see `View::point`.
+    // Clears the lines picked unless `target` is the text, see `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::BlameText) {
+            self.text.cancel_visual();
+        }
+    }
+
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         self.focus = match target {
             Target::BlameRevision => BlameFocus::Revision,
@@ -538,8 +545,8 @@ impl BlameView {
             Target::BlameText => BlameFocus::Text,
             _ => return false,
         };
+        self.text.prepare_point(row, picks);
         if let Some(row) = row {
-            self.text.prepare_point(row, picks);
             self.text.select_line(row);
         }
         true

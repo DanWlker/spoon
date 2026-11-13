@@ -133,13 +133,18 @@ impl<'a> ListView<'a> {
     }
 
     // Selects the commit at `row` the mouse points at, see `View::point`.
+    // Clears the commits picked unless `target` is the list, see `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::Commits) {
+            self.as_mut_list_state().clear_picks();
+        }
+    }
+
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         if target != Target::Commits {
             return false;
         }
-        if let Some(row) = row {
-            self.as_mut_list_state().point(row, picks);
-        }
+        self.as_mut_list_state().point(row, picks);
         true
     }
 

@@ -3638,6 +3638,12 @@ fn test_right_click_on_an_unpicked_line_clears_the_picks() {
         steps.extend(mouse_at("MASTER", (0, -1), TestGesture::RightClick));
         steps.extend(keys("esc"));
         steps.extend(copies("copy line"));
+        // off the lines, on empty space, too
+        steps.extend(keys(pick));
+        steps.extend(copies("copy lines"));
+        steps.extend(mouse_at("MASTER", (0, 6), TestGesture::RightClick));
+        steps.extend(keys("esc"));
+        steps.extend(copies("copy line"));
         steps
     };
     for (open, pick) in [("enter 5 shift-b", "v j v"), ("enter 5 shift-t", "v v")] {
@@ -3648,6 +3654,105 @@ fn test_right_click_on_an_unpicked_line_clears_the_picks() {
     let mut preview = keys("enter 5");
     preview.extend(mouse_on("f.txt", TestGesture::Click));
     harness.run(vec![pick_then_right_click(preview, "v j v")]);
+}
+
+// A right click off the rows, on empty space or a diff's file header, is on none picked: it clears
+// them, in the lists as on a row not picked.
+#[test]
+fn test_right_click_off_the_rows_clears_the_picks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = local_changes_harness(dir.path());
+    // in the diff of all the changes, with a header of its own
+    git(&path, &["add", "-N", "a.txt"]);
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let picks = |shown: bool| screen(move |s| assert_eq!(s.contains("2 picked"), shown, "{s}"));
+    let lines = |short: &'static str| {
+        check(move |app| assert_eq!(app.panel_keys().describe(UserEvent::ShortCopy), Some(short)))
+    };
+    harness.run(vec![
+        // the files: a.txt and b.txt
+        keys("j v j v"),
+        picks(true),
+        mouse_at("[1] Unstaged", (2, 8), TestGesture::RightClick),
+        keys("esc"),
+        picks(false),
+        // the lines of the diff of all of them, then the header of a file
+        keys("g enter enter v j v"),
+        lines("copy lines"),
+        mouse_on("── f.txt", TestGesture::RightClick),
+        keys("esc"),
+        lines("copy line"),
+        // and empty space under the diff
+        keys("v j v"),
+        lines("copy lines"),
+        mouse_at("[3] Commit", (60, -3), TestGesture::RightClick),
+        keys("esc"),
+        lines("copy line"),
+        // the commits and the refs
+        keys("tab 2 v j v"),
+        picks(true),
+        mouse_at("c1", (0, 3), TestGesture::RightClick),
+        keys("esc"),
+        picks(false),
+        keys("1 j v j v"),
+        picks(true),
+        mouse_at("Stashes", (0, 3), TestGesture::RightClick),
+        keys("esc"),
+        picks(false),
+    ]);
+}
+
+// A right click in another panel clears the picks too: anywhere off them. The commits picked stay
+// while their diff is open, which goes with them.
+#[test]
+fn test_right_click_in_another_panel_clears_the_picks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    let picks = |shown: bool| screen(move |s| assert_eq!(s.contains("2 picked"), shown, "{s}"));
+    let lines = |short: &'static str| {
+        check(move |app| assert_eq!(app.panel_keys().describe(UserEvent::ShortCopy), Some(short)))
+    };
+    harness.run(vec![
+        // the files, then the diff
+        keys("j v j v"),
+        picks(true),
+        mouse_on("1 b", TestGesture::RightClick),
+        keys("esc"),
+        keys("1"),
+        picks(false),
+        // the lines of the diff of f.txt, then the commit message
+        keys("j"),
+        mouse_on("MASTER", TestGesture::Click),
+        keys("v k v"),
+        lines("copy lines"),
+        mouse_on("Summary", TestGesture::RightClick),
+        // its menu closed, if any
+        vec![Step::Act(Box::new(|app| app.shell.menu = None))],
+        // a cell over, no double click
+        mouse_at("MASTER", (1, 0), TestGesture::Click),
+        lines("copy line"),
+        // the commits, then the refs; the refs, then the commits
+        keys("tab 2 v j v"),
+        picks(true),
+        mouse_on("Tags", TestGesture::RightClick),
+        keys("esc"),
+        picks(false),
+        keys("1 g j v j v"),
+        picks(true),
+        mouse_on("c1", TestGesture::RightClick),
+        keys("esc"),
+        picks(false),
+        // the commits of a diff, kept while it is open
+        keys("2 g v j v shift-d"),
+        picks(true),
+        mouse_on("f.txt", TestGesture::RightClick),
+        keys("esc"),
+        picks(true),
+    ]);
 }
 
 // A double click on a line not picked acts on it alone, as on the other lists.

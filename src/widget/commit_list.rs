@@ -217,13 +217,16 @@ impl<'a> CommitListState<'a> {
     }
 
     // Selects the commit at `row`, as the mouse does, see `OnPicks`.
-    pub fn point(&mut self, row: usize, picks: OnPicks) {
-        let Some(commit) = self.commits.get(row) else {
-            return;
-        };
-        if picks == OnPicks::ClearUnlessPicked && !self.is_picked(&commit.commit.commit_hash) {
+    pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
+        // no row, on empty space, is none picked
+        let commit = row.and_then(|row| self.commits.get(row));
+        let picked = commit.is_some_and(|commit| self.is_picked(&commit.commit.commit_hash));
+        if picks == OnPicks::ClearUnlessPicked && !picked {
             self.clear_picks();
         }
+        let Some(row) = row.filter(|row| *row < self.commits.len()) else {
+            return;
+        };
         self.select_in_view(row);
         self.sync_visual_picks();
     }

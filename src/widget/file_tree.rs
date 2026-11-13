@@ -461,12 +461,12 @@ impl TreeSelection {
     }
 
     // Before the mouse selects `row` of the tree, see `OnPicks`.
-    pub fn prepare_point(&mut self, tree: &mut FileTreeState, row: usize, picks: OnPicks) {
-        let unpicked = tree
-            .rows()
-            .get(row)
-            .is_some_and(|row| !self.contains(&row.path));
-        if picks == OnPicks::ClearUnlessPicked && unpicked {
+    pub fn prepare_point(&mut self, tree: &mut FileTreeState, row: Option<usize>, picks: OnPicks) {
+        // no row, on empty space, is none picked
+        let picked = row
+            .and_then(|row| tree.rows().get(row))
+            .is_some_and(|row| self.contains(&row.path));
+        if picks == OnPicks::ClearUnlessPicked && !picked {
             self.clear(tree);
         }
     }

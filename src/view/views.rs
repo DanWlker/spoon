@@ -59,6 +59,11 @@ impl<'a> View<'a> {
         on_page!(self, view => view.point(target, row, picks), false)
     }
 
+    // Clears the picks of the page but in the panel of `target`, see `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        on_page!(self, view => view.clear_picks_off(target), {})
+    }
+
     // Whether the focused list is picking from where a visual selection started.
     pub fn is_visual(&self) -> bool {
         on_page!(self, view => view.is_visual(), false)

@@ -325,6 +325,13 @@ impl FileWindow {
         }
     }
 
+    fn clear_picks_off(&mut self, target: Option<Target>) {
+        match self {
+            FileWindow::Blame(blame) => blame.clear_picks_off(target),
+            FileWindow::Timeline(timeline) => timeline.clear_picks_off(target),
+        }
+    }
+
     // See `View::point`.
     fn point(
         &mut self,
@@ -3087,8 +3094,25 @@ impl App<'_> {
     // Focuses the panel at `at` as drawn in the last frame and selects its row there; returns
     // what is there, None where nothing takes a click.
     fn point(&mut self, at: Cell, picks: OnPicks) -> Option<Hit> {
-        let hit = self.ctx.layout.borrow().hit(at.x, at.y)?;
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        if picks == OnPicks::ClearUnlessPicked {
+            self.clear_picks_off(hit.map(|hit| hit.target));
+        }
+        let hit = hit?;
         self.point_hit(hit, picks).then_some(hit)
+    }
+
+    // Clears the picks of every panel but the one of `target`, clicked (None, off them all), whose
+    // own `point` keeps those clicked on, see `OnPicks`: a click anywhere off the picks clears them.
+    // The refs picked stay while their diff is open, which goes with them.
+    fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::Sidebar) && !self.is_diffing() {
+            self.shell.sidebar.clear_picks();
+        }
+        self.view.clear_picks_off(target);
+        if let Some(Overlay::File(window)) = &mut self.shell.overlay {
+            window.clear_picks_off(target);
+        }
     }
 
     fn point_hit(&mut self, hit: Hit, picks: OnPicks) -> bool {
@@ -3125,8 +3149,8 @@ impl App<'_> {
             return pointed;
         }
         self.focus_sidebar();
-        if let Some(row) = hit.row {
-            self.shell.sidebar.point(row, picks);
+        self.shell.sidebar.point(hit.row, picks);
+        if hit.row.is_some() {
             if let Some(message) = self.shell.sidebar.visual_outside_section() {
                 self.ec.send(AppEvent::NotifyWarn(message));
             }

@@ -422,6 +422,13 @@ impl TimelineView {
         .when(commits);
     }
 
+    // Clears the lines picked unless `target` is the diff, see `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::TimelineDiff) {
+            self.pane.clear_picks();
+        }
+    }
+
     // Focuses what the mouse points at and selects its row there, see `View::point`.
     pub fn point(
         &mut self,
@@ -437,10 +444,7 @@ impl TimelineView {
                     self.select(row, repository);
                 }
             }
-            (Target::TimelineDiff, Some(row)) => self.pane.point(row, picks),
-            (Target::TimelineDiff, None) => {
-                self.pane.enter();
-            }
+            (Target::TimelineDiff, row) => self.pane.point(row, picks),
             _ => return false,
         }
         true

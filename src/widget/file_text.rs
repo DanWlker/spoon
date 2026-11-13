@@ -213,8 +213,9 @@ impl FileText {
 
     // Selects a line, the last one past the end.
     // Before the mouse selects `line`, see `OnPicks`.
-    pub fn prepare_point(&mut self, line: usize, picks: OnPicks) {
-        if picks == OnPicks::ClearUnlessPicked && !self.selection.contains(&line) {
+    pub fn prepare_point(&mut self, line: Option<usize>, picks: OnPicks) {
+        let picked = line.is_some_and(|line| self.selection.contains(&line));
+        if picks == OnPicks::ClearUnlessPicked && !picked {
             self.cancel_visual();
         }
     }

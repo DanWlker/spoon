@@ -438,11 +438,23 @@ impl<'a> CommitChangesState<'a> {
         self.tree.is_visual()
     }
 
+    // Clears the files and the lines picked but in the panel of `target`, see `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::DetailFiles) {
+            self.picked.clear(&mut self.tree);
+        }
+        if target != Some(Target::DetailPane) {
+            self.pane.clear_picks();
+        }
+    }
+
     // Selects the file at `row` the mouse points at, out of the diff, see `OnPicks`.
-    pub fn point(&mut self, row: usize, picks: OnPicks) {
+    pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
         self.pane.leave();
         self.picked.prepare_point(&mut self.tree, row, picks);
-        self.update_tree(|tree| tree.select_index(row));
+        if let Some(row) = row {
+            self.update_tree(|tree| tree.select_index(row));
+        }
     }
 
     // Applies a tree operation; the diff of another row selected loads once used, see
@@ -595,21 +607,39 @@ impl<'a> CommitFilesState<'a> {
             .map_or_else(Vec::new, |tree| self.picked.entries(tree))
     }
 
+    // Clears the files and the lines picked but in the panel of `target`, see `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::DetailFiles) {
+            match &mut self.tree {
+                Some(tree) => self.picked.clear(tree),
+                None => self.picked.clear_picks(),
+            }
+        }
+        if target != Some(Target::DetailPane) {
+            self.text.cancel_visual();
+        }
+    }
+
     // Selects the file at `row` the mouse points at, back from the preview, see `OnPicks`.
-    pub fn point(&mut self, row: usize, picks: OnPicks) {
+    pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
         self.back();
         let Self { tree, picked, .. } = self;
         if let Some(tree) = tree {
             picked.prepare_point(tree, row, picks);
         }
-        self.update_tree(|tree| tree.select_index(row));
+        if let Some(row) = row {
+            self.update_tree(|tree| tree.select_index(row));
+        }
     }
 
-    // Selects the line at `row` of the preview the mouse points at, going into it.
-    pub fn point_preview(&mut self, row: usize, picks: OnPicks) {
+    // Selects the line at `row` of the preview the mouse points at, going into it; on empty space
+    // only going into it.
+    pub fn point_preview(&mut self, row: Option<usize>, picks: OnPicks) {
         if self.enter() {
             self.text.prepare_point(row, picks);
-            self.text.select_line(row);
+            if let Some(row) = row {
+                self.text.select_line(row);
+            }
         }
     }
 

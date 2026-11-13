@@ -1034,6 +1034,20 @@ impl<'a> LocalChangesState<'a> {
 
     // Focuses the panel the mouse points at and selects its row there, see `View::point`; false
     // for what isn't on the page.
+    // Clears the files and the lines picked but in the panel of `target`, see
+    // `App::clear_picks_off`.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        let panels = [Target::Unstaged, Target::Staged];
+        for (section, panel) in self.sections.iter_mut().zip(panels) {
+            if target != Some(panel) {
+                section.picked.clear(&mut section.tree);
+            }
+        }
+        if target != Some(Target::ChangesSide) {
+            self.pane.clear_picks();
+        }
+    }
+
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         match target {
             Target::Unstaged | Target::Staged => {
@@ -1042,18 +1056,17 @@ impl<'a> LocalChangesState<'a> {
                     _ => LocalChangesSection::Staged,
                 };
                 self.focus_section(section);
+                let current = self.current_mut();
+                current.picked.prepare_point(&mut current.tree, row, picks);
                 if let Some(row) = row {
-                    let current = self.current_mut();
-                    current.picked.prepare_point(&mut current.tree, row, picks);
                     self.update_tree(|tree| tree.select_index(row));
                 }
             }
-            Target::ChangesSide => match row {
-                Some(row) => self.pane.point(row, picks),
-                None => {
-                    self.pane.enter();
-                }
-            },
+            // from the commit message too
+            Target::ChangesSide => {
+                self.chosen = Focus::Side;
+                self.pane.point(row, picks);
+            }
             Target::Conflict(item) => {
                 if let Some(conflict) = self.conflict_mut() {
                     conflict.item = item;

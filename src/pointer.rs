@@ -11,8 +11,9 @@ use crate::widget::tree_query::Toward;
 // The most between the presses of a double click, on the same cell.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-// What selecting a row with the mouse does to the picks of its list: they stay, as moving with
-// the keys, or are cleared unless the row is picked, so the action works on the row pointed at.
+// What selecting a row with the mouse does to the picks: they stay, as moving with the keys, or are
+// cleared unless the row is picked, so the action works on the row pointed at; those of the other
+// panels then too (see `App::clear_picks_off`), a click anywhere off the picks clearing them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnPicks {
     Keep,

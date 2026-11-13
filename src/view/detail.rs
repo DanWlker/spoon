@@ -445,14 +445,21 @@ impl<'a> DetailView<'a> {
         self.list_focused = true;
     }
 
+    // Clears the picks but in the panel of `target`, see `App::clear_picks_off`; the commits picked
+    // stay while their diff is open, which goes with them.
+    pub fn clear_picks_off(&mut self, target: Option<Target>) {
+        if target != Some(Target::Commits) && !self.is_comparing() {
+            self.as_mut_list_state().clear_picks();
+        }
+        self.changes_state.clear_picks_off(target);
+        self.files_state.clear_picks_off(target);
+    }
+
     // Focuses the panel the mouse points at, see `View::point`.
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         match target {
             Target::Commits => {
                 self.list_focused = true;
-                let Some(row) = row else {
-                    return true;
-                };
                 let before = self.as_list_state().selected_commit_hash().clone();
                 self.as_mut_list_state().point(row, picks);
                 if *self.as_list_state().selected_commit_hash() != before {
@@ -470,11 +477,10 @@ impl<'a> DetailView<'a> {
             }
             Target::DetailFiles => {
                 self.list_focused = false;
-                let Some(row) = row else {
+                if row.is_none() {
                     self.changes_state.pane.leave();
                     self.files_state.back();
-                    return true;
-                };
+                }
                 match self.tab {
                     DetailTab::Changes => self.changes_state.point(row, picks),
                     DetailTab::Files => self.files_state.point(row, picks),
@@ -484,19 +490,15 @@ impl<'a> DetailView<'a> {
             }
             Target::DetailPane => {
                 self.list_focused = false;
-                match (self.tab, row) {
-                    (DetailTab::Changes, Some(row)) => {
-                        self.changes_state.ensure_loaded();
+                match self.tab {
+                    DetailTab::Changes => {
+                        if row.is_some() {
+                            self.changes_state.ensure_loaded();
+                        }
                         self.changes_state.pane.point(row, picks);
                     }
-                    (DetailTab::Files, Some(row)) => self.files_state.point_preview(row, picks),
-                    (DetailTab::Changes, None) => {
-                        self.changes_state.pane.enter();
-                    }
-                    (DetailTab::Files, None) => {
-                        self.files_state.enter();
-                    }
-                    (DetailTab::Info, _) => {}
+                    DetailTab::Files => self.files_state.point_preview(row, picks),
+                    DetailTab::Info => {}
                 }
                 true
             }

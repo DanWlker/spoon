@@ -728,9 +728,10 @@ impl DiffCursor {
         !std::mem::take(&mut self.picked).is_empty()
     }
 
-    // Before the mouse selects `row`, see `OnPicks`.
-    pub fn prepare_point(&mut self, row: usize, picks: OnPicks) {
-        if picks == OnPicks::ClearUnlessPicked && !self.picked.contains(&row) {
+    // Before the mouse selects `row`, or no row on empty space, see `OnPicks`.
+    pub fn prepare_point(&mut self, row: Option<usize>, picks: OnPicks) {
+        let picked = row.is_some_and(|row| self.picked.contains(&row));
+        if picks == OnPicks::ClearUnlessPicked && !picked {
             self.cancel_range();
         }
     }

@@ -365,13 +365,16 @@ impl RefListState {
     }
 
     // Selects the row at `row` of those shown, as the mouse does, see `OnPicks`.
-    pub fn point(&mut self, row: usize, picks: OnPicks) {
-        let Some(shown) = self.visible_rows.get(row) else {
-            return;
-        };
-        if picks == OnPicks::ClearUnlessPicked && !self.is_picked(shown) {
+    pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
+        // no row, on empty space, is none picked
+        let shown = row.and_then(|row| self.visible_rows.get(row));
+        if picks == OnPicks::ClearUnlessPicked && !shown.is_some_and(|shown| self.is_picked(shown))
+        {
             self.clear_picks();
         }
+        let Some(row) = row.filter(|row| *row < self.visible_rows.len()) else {
+            return;
+        };
         self.select_visible_index(row);
         self.sync_visual_picks();
     }

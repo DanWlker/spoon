@@ -290,8 +290,17 @@ impl DiffPane {
 
     // Selects what the mouse points at, at `row` of the diff: its hunk, the cursor on the changed
     // line there, or that line while selecting lines (in the hunk of the lines picked); a drag
-    // starting there goes into the lines, see `OnPicks`.
-    pub fn point(&mut self, row: usize, picks: OnPicks) {
+    // starting there goes into the lines, see `OnPicks`. Off the rows, on empty space, it goes into
+    // the diff.
+    pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
+        // off the lines picked, a header or empty space too
+        if self.focus == Some(DiffPart::Line) {
+            self.cursor.prepare_point(row, picks);
+        }
+        let Some(row) = row else {
+            self.enter();
+            return;
+        };
         let Some(diff) = shown(&self.state) else {
             return;
         };
@@ -300,7 +309,6 @@ impl DiffPane {
         };
         let change = diff.rows[row].is_change();
         if self.focus == Some(DiffPart::Line) {
-            self.cursor.prepare_point(row, picks);
             if change && (hunk == self.cursor.hunk || !self.cursor.has_range()) {
                 self.cursor.select_line(diff, row);
             }
@@ -314,6 +322,11 @@ impl DiffPane {
         if picks == OnPicks::StartRange && self.cursor.enter_lines(diff) {
             self.focus = Some(DiffPart::Line);
         }
+    }
+
+    // Clears the lines picked, keeping the selected one.
+    pub fn clear_picks(&mut self) {
+        self.cursor.cancel_range();
     }
 
     // Goes one level back: the lines picked cleared -> hunks -> out of the diff. Returns false
