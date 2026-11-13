@@ -2883,8 +2883,15 @@ impl App<'_> {
                 if hit.is_none() {
                     self.shell.pointer.cancel();
                 }
-                if on_row(hit) && !hit.is_some_and(|hit| hit.target.enter_leaves()) {
+                if hit.is_some_and(|hit| hit.target == Target::Commits && hit.row.is_some()) {
+                    self.click_commit();
+                } else if on_row(hit) && !hit.is_some_and(|hit| hit.target.enter_leaves()) {
                     self.run_event(Confirm);
+                    // the focus stays on the panel clicked, where Enter would leave it: a file's
+                    // diff shows beside it, a ref's commit on the graph; Enter goes there
+                    if let Some(hit) = hit {
+                        self.point_hit(hit, OnPicks::Keep);
+                    }
                 }
             }
             Gesture::DoubleClick(at) => {
@@ -2966,6 +2973,20 @@ impl App<'_> {
             _ => return false,
         }
         true
+    }
+
+    // A click on a commit shows its details below the list (over a diff, see `park_compare`), as
+    // Enter does, but the focus stays on the list, as on any panel clicked; the details open from
+    // an event Enter sends, which would focus them after the click.
+    fn click_commit(&mut self) {
+        match self.view {
+            // at once, to focus the list after
+            View::List(_) => self.open_detail(DetailTab::Info),
+            _ => self.run_event(UserEvent::Confirm),
+        }
+        if let View::Detail(view) = &mut self.view {
+            view.focus_list();
+        }
     }
 
     // Types in the box of the commit message at `at`, as space does there; returns whether one

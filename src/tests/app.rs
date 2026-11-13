@@ -2817,12 +2817,12 @@ fn test_clicks_in_the_sidebar() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
-        // a branch: back to the graph at its commit, as enter
+        // a branch: the graph at its commit, as enter, the sidebar keeping the focus
         mouse_on("feat", TestGesture::Click),
         check(|app| {
             let feat = RefSelection::Ref(NamedRef::Branch("feat".into()));
             assert_eq!(app.shell.sidebar.selection(), feat);
-            assert!(!app.shell.sidebar_focused());
+            assert!(app.shell.sidebar_focused());
             assert_eq!(selected_subject(app), "feat1");
         }),
         double_click("feat"),
@@ -3279,7 +3279,7 @@ fn test_copy_keys_alike_in_the_diffs() {
         // the diff of a local change
         keys("tab"),
         mouse_on("f.txt", TestGesture::Click),
-        keys("y"),
+        keys("enter y"),
         // no link: the change isn't on the web host
         next(&[("f", "copy full path"), ("y", "copy hunk")]),
     ]);
@@ -3545,8 +3545,9 @@ fn test_click_on_a_detail_tab_switches_to_it() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
+        // the details opened, the focus staying on the list
         mouse_on("c1", TestGesture::Click),
-        detail_focus(DetailFocus::Info, DetailTab::Info),
+        detail_focus(DetailFocus::List, DetailTab::Info),
         // the top bar says Local Changes too
         mouse_on("[4]", TestGesture::Click),
         detail_focus(DetailFocus::Files, DetailTab::Changes),
@@ -3565,12 +3566,15 @@ fn test_click_on_a_file_opens_its_diff() {
     harness.run(vec![
         keys("enter 4"),
         detail_focus(DetailFocus::Files, DetailTab::Changes),
+        // its diff beside it, the focus staying on the files, a click on the diff going in
         mouse_on("f.txt", TestGesture::Click),
+        detail_focus(DetailFocus::Files, DetailTab::Changes),
+        mouse_on("MASTER", TestGesture::Click),
         detail_focus(DetailFocus::Pane, DetailTab::Changes),
         // the preview of the files tab
         keys("5"),
         mouse_on("f.txt", TestGesture::Click),
-        detail_focus(DetailFocus::Pane, DetailTab::Files),
+        detail_focus(DetailFocus::Files, DetailTab::Files),
         // a line of the preview, the focus staying in it
         mouse_on("MASTER", TestGesture::Click),
         detail_focus(DetailFocus::Pane, DetailTab::Files),
@@ -3584,10 +3588,10 @@ fn test_click_in_the_commit_list_over_the_details() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         keys("enter 4"),
-        // as enter on the list: that commit's details, the focus in them
+        // that commit's details, the focus staying on the list, unlike enter
         mouse_on("c1", TestGesture::Click),
         check(|app| assert_eq!(selected_subject(app), "c1")),
-        detail_focus(DetailFocus::Files, DetailTab::Changes),
+        detail_focus(DetailFocus::List, DetailTab::Changes),
     ]);
 }
 
@@ -3746,8 +3750,9 @@ fn test_click_on_a_changed_file_opens_its_diff() {
     let dir = tempfile::tempdir().unwrap();
     let (_, mut harness) = local_changes_harness(dir.path());
     harness.run(vec![
+        // its diff beside it, the focus staying on the files
         mouse_on("b.txt", TestGesture::Click),
-        local_scope(Scope::LocalChangesDiff),
+        local_scope(Scope::LocalChanges),
         check(|app| assert_eq!(local_change_path(app).as_deref(), Some("b.txt"))),
     ]);
 }
