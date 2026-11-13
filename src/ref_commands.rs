@@ -12,7 +12,8 @@ use crate::{
 
 // Whether `event` does something on the selected row of the sidebar, with the `picked` refs: its
 // key is handled there only then, and shown in the hints (see `App::sidebar_keys`). The commands
-// of the graph work on a branch, remote branch or tag; diffing and deleting on the picked refs too.
+// of the graph on a ref work on a branch, remote branch or tag (those on a commit, like dropping,
+// don't); diffing and deleting on the picked refs too.
 // Other events, like moving about, are not commands of the sidebar and always apply.
 pub fn ref_command_applies(
     repository: &Repository,
@@ -42,6 +43,13 @@ pub fn ref_command_applies(
             _ => !picked.is_empty(),
         },
         UserEvent::Diff => diff_refs(selection, picked).is_some(),
+        // on a commit, not a ref: the commit list's
+        UserEvent::CherryPick
+        | UserEvent::Squash
+        | UserEvent::AmendCommit
+        | UserEvent::DropCommit
+        | UserEvent::Revert
+        | UserEvent::Reset => false,
         // the others work on the selected row alone
         _ if !picked.is_empty() => {
             !(graph

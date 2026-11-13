@@ -38,7 +38,7 @@ use crate::{
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog},
         style::{
-            badge, divider, loading_note, mark_selected_bar, panel_title, placeholder,
+            badge, check_mark, divider, loading_note, mark_selected_bar, panel_title, placeholder,
             render_border_buttons, render_panel, render_panel_scrollbar, tree_panel_width,
         },
         submodule::{submodule_key, SubmodulePanel},
@@ -687,6 +687,8 @@ impl<'a> LocalChangesState<'a> {
             "Select the hunks of the diff, then their lines; resolve a conflict",
         )
         .when(|v| files(v) && !empty(v))
+        // resolving a conflict, or a submodule's changes, act
+        .moves(|v| !(v.conflict().is_some() && !picks(v)) && v.submodule().is_none())
         .short(|v| {
             let resolve = v.conflict().is_some() && !picks(v);
             match (resolve, v.submodule().is_some()) {
@@ -701,7 +703,8 @@ impl<'a> LocalChangesState<'a> {
             "unstaged",
             "On the empty staged files, go to the unstaged ones",
         )
-        .when(|v| files(v) && empty(v) && !unstaged(v));
+        .when(|v| files(v) && empty(v) && !unstaged(v))
+        .moves(|_| true);
         register_diff_keys(
             k,
             |v| v.is_diff_focused().then_some(&v.pane),

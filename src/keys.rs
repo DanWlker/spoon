@@ -14,6 +14,9 @@ pub struct Key {
     pub long: &'static str,
     // works where the focus is
     pub active: bool,
+    // only moves the focus or changes what the panel selects, like into a diff's hunks: the right
+    // click menu leaves it out, a click doing it
+    pub moves: bool,
 }
 
 // The keys of a part of the app, registered on `view`, whose state decides which work and their
@@ -45,6 +48,7 @@ impl<'a, T: ?Sized> Keys<'a, T> {
             short: short.into(),
             long,
             active: true,
+            moves: false,
         });
         self
     }
@@ -58,6 +62,14 @@ impl<'a, T: ?Sized> Keys<'a, T> {
     pub fn when(&mut self, applies: impl FnOnce(&T) -> bool) -> &mut Self {
         if let (Some(view), Some(key)) = (self.view, self.keys.last_mut()) {
             key.active &= applies(view);
+        }
+        self
+    }
+
+    // The last key only moves where `moves` says so of the view, see `Key::moves`.
+    pub fn moves(&mut self, moves: impl FnOnce(&T) -> bool) -> &mut Self {
+        if let (Some(view), Some(key)) = (self.view, self.keys.last_mut()) {
+            key.moves = moves(view);
         }
         self
     }
@@ -126,12 +138,21 @@ impl KeyList {
     // together, like [ ] and h l stepping through commits. An event is listed under the first key
     // working with it, which it means, see `meaning`.
     pub fn hints(&self) -> Vec<KeyHint> {
+        self.hints_where(|_| true)
+    }
+
+    // The hints of the right click menu: those of `hints` acting, not only moving.
+    pub fn menu_hints(&self) -> Vec<KeyHint> {
+        self.hints_where(|key| !key.moves)
+    }
+
+    fn hints_where(&self, listed: impl Fn(&Key) -> bool) -> Vec<KeyHint> {
         let mut hints: Vec<KeyHint> = vec![];
         let active: Vec<&Key> = self.0.iter().filter(|k| k.active).collect();
         for (i, key) in active
             .iter()
             .enumerate()
-            .filter(|(_, k)| !k.short.is_empty())
+            .filter(|(_, k)| !k.short.is_empty() && listed(k))
         {
             let taken = |event: &UserEvent| active[..i].iter().any(|k| k.events.contains(event));
             let events: Vec<UserEvent> = key.events.iter().copied().filter(|e| !taken(e)).collect();

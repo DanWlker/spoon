@@ -26,8 +26,8 @@ use crate::{
     keys::{KeyList, Keys},
     layout::{PanelLayout, RowMap, Target},
     widget::style::{
-        change_span, choice_arrows, focused_title, no_choice_arrows, render_border_buttons,
-        render_close_button, render_popup, tabs_shown,
+        change_span, check_mark, choice_arrows, focused_title, no_choice_arrows,
+        render_border_buttons, render_close_button, render_popup, tabs_shown,
     },
 };
 
@@ -2892,14 +2892,9 @@ impl Widget for GitDialogWidget<'_> {
                         lines.push(Line::raw(""));
                     }
                     checks_started = true;
-                    let mark = if *checked {
-                        Span::raw("[•] ").fg(theme.status_success_fg).bold()
-                    } else {
-                        Span::styled("[ ] ", dim)
-                    };
                     Line::from(vec![
                         bar,
-                        mark,
+                        check_mark(*checked, dim, theme),
                         Span::styled(label.to_string(), label_style),
                     ])
                 }

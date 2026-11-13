@@ -534,7 +534,8 @@ pub fn register_diff_keys<T: ?Sized>(
         "select lines",
         "Select the hunks of the diff, then their lines",
     )
-    .when(|v| pane(v).is_some_and(|p| !p.is_selecting_lines()));
+    .when(|v| pane(v).is_some_and(|p| !p.is_selecting_lines()))
+    .moves(|_| true);
     k.add(&[ShortCopy], "copy hunk", "Copy the selected hunk or line")
         .when(|v| pane(v).is_some())
         .short(|v| {

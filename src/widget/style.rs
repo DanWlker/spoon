@@ -195,6 +195,15 @@ pub fn render_border_buttons(
     areas
 }
 
+// A checkbox's mark, the same in the popups and the commit message; `unchecked` styles the empty one.
+pub fn check_mark(checked: bool, unchecked: Style, theme: &ColorTheme) -> Span<'static> {
+    if checked {
+        Span::raw("[•] ").fg(theme.status_success_fg).bold()
+    } else {
+        Span::styled("[ ] ", unchecked)
+    }
+}
+
 // The [x] closing a panel or popup, on the top border of `area` right before its corner: its area,
 // none when the border is too narrow for it.
 pub fn render_close_button(buf: &mut Buffer, area: Rect, theme: &ColorTheme) -> Option<Rect> {

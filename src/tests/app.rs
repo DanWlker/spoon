@@ -2947,7 +2947,10 @@ fn test_popup_click_on_fields() {
 
 fn menu_events(app: &App) -> Vec<UserEvent> {
     let menu = app.shell.menu.as_ref().expect("a menu");
-    (0..).map_while(|row| menu.event(row)).collect()
+    // past the rules between the sections
+    (0..usize::from(u16::MAX))
+        .filter_map(|row| menu.event(row))
+        .collect()
 }
 
 // The menu of a branch in the sidebar fetches and pushes it, pulls into the checked-out one only;
@@ -2973,9 +2976,9 @@ fn test_sidebar_menu_fetch_pull_push() {
         mouse_at("Branches", (2, 2), TestGesture::RightClick),
         has(&[Fetch, Pull, Push], &[]),
         keys("esc"),
+        // nothing acting on a header, opening it being a click's
         mouse_on("Tags", TestGesture::RightClick),
-        has(&[], &[Fetch, Pull, Push]),
-        keys("esc"),
+        check(|app| assert!(app.shell.menu.is_none())),
         // pushing feat from its menu
         mouse_at("Branches", (2, 1), TestGesture::RightClick),
         mouse_on("push", TestGesture::Click),
@@ -3066,23 +3069,30 @@ fn test_sidebar_menu_lists_what_works() {
     harness.run(vec![
         // feat, then master
         mouse_at("Branches", (2, 1), TestGesture::RightClick),
+        // the commands on a commit are the commit list's, no ref's
         menu_has(
-            &[Checkout, Merge, Rebase, DeleteRef, CherryPick, BranchOnly],
-            &[Squash, AmendCommit, Revert],
+            &[Checkout, Merge, Rebase, DeleteRef, BranchOnly],
+            &[CherryPick, Squash, AmendCommit, DropCommit, Revert, Reset],
         ),
         keys("esc"),
         mouse_at("Branches", (2, 2), TestGesture::RightClick),
         menu_has(
-            &[Squash, Revert, BranchOnly],
-            &[Checkout, Merge, Rebase, DeleteRef, CherryPick],
+            &[BranchOnly],
+            &[Checkout, Merge, Rebase, DeleteRef, Squash, Revert, Reset],
         ),
         keys("esc"),
+        // nor their keys
+        keys("u"),
+        keys("U"),
+        keys("A"),
+        keys("C"),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        // opening a node is a click's: no menu on a header
         mouse_on("Branches", TestGesture::RightClick),
-        menu_has(&[], &[BranchOnly, Cancel, Search]),
-        keys("esc"),
+        check(|app| assert!(app.shell.menu.is_none())),
         mouse_on("Tags", TestGesture::Click),
         mouse_at("Tags", (2, 1), TestGesture::RightClick),
-        menu_has(&[Checkout, Revert], &[BranchOnly, CherryPick]),
+        menu_has(&[Checkout], &[BranchOnly, CherryPick, Revert, Reset]),
     ]);
 }
 
@@ -3756,6 +3766,32 @@ fn test_commit_button() {
     ]);
 }
 
+// The amend checkbox at the bottom left of the commit message is checked while amending, a click
+// toggling it as the key does, while typing too.
+#[test]
+fn test_amend_checkbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    let amending = |on: bool| {
+        let mark = if on { "[•] amend" } else { "[ ] amend" };
+        screen(move |s| assert!(s.contains(mark), "{s}"))
+    };
+    harness.run(vec![
+        draw(),
+        amending(false),
+        mouse_on("[ ] amend", TestGesture::Click),
+        draw(),
+        amending(true),
+        // typing the summary, now the last commit's
+        mouse_at("[3] Commit", (2, 1), TestGesture::Click),
+        check(|app| assert!(app.is_typing())),
+        mouse_on("[•] amend", TestGesture::Click),
+        draw(),
+        amending(false),
+        check(|app| assert!(!app.is_typing())),
+    ]);
+}
+
 // A click on a box of the commit message types in it; while typing, a click on a box types in the
 // box clicked, and a double click keeps typing.
 #[test]
@@ -3947,16 +3983,20 @@ fn test_right_click_menu_in_every_panel() {
         // c2, whose diff and blame have MASTER
         right_click("c2"),
         menu(),
-        right_click("Branches"),
+        mouse_at("Branches", (2, 1), TestGesture::RightClick),
         menu(),
         // the details: the files and the diff of the changes tab, the preview of the files tab
         keys("esc enter 4"),
         right_click("f.txt"),
+        // selecting the hunks or the lines is a click's
+        menu_has(&[], &[UserEvent::Confirm]),
         menu(),
         right_click("MASTER"),
+        menu_has(&[], &[UserEvent::Confirm]),
         menu(),
         keys("5"),
         right_click("f.txt"),
+        menu_has(&[], &[UserEvent::Confirm]),
         menu(),
         // the windows: the blame, the keys list, the command log
         keys("shift-b"),

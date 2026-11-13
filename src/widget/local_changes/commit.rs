@@ -450,8 +450,34 @@ impl LocalChangesPanel<'_> {
         };
         let button = render_border_buttons(buf, area, &[("[Commit]", style)], theme);
         let mut layout = self.ctx.layout.borrow_mut();
-        for at in button {
-            layout.record(Target::CommitButton, at, RowMap::One);
+        for at in &button {
+            layout.record(Target::CommitButton, *at, RowMap::One);
+        }
+        // at the bottom left, as the amend key; dimmed where it can't toggle
+        const AMEND: &str = "amend";
+        let width = 4 + AMEND.len() as u16;
+        let fits = button
+            .first()
+            .is_some_and(|at| area.x.saturating_add(3 + width) < at.x);
+        if fits {
+            let label = match state.keys().takes(UserEvent::ToggleAmend) {
+                true => Style::default().fg(theme.fg),
+                false => Style::default().fg(theme.muted_fg),
+            };
+            let mark = check_mark(state.draft.amend.is_some(), label, theme);
+            let line = Line::from(vec![
+                Span::raw(" "),
+                mark,
+                Span::styled(AMEND, label),
+                Span::raw(" "),
+            ]);
+            let y = area.bottom() - 1;
+            buf.set_line(area.x + 1, y, &line, width + 2);
+            layout.record(
+                Target::AmendCheck,
+                Rect::new(area.x + 2, y, width, 1),
+                RowMap::One,
+            );
         }
     }
 

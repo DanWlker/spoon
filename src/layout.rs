@@ -46,9 +46,11 @@ pub enum Target {
     Menu,
     // a part of the popup, see `DialogHit`
     Dialog(DialogHit),
-    // the [x] of what it closes, and the button committing below the commit message
+    // the [x] of what it closes, and the button committing and the amend checkbox below the commit
+    // message
     Close(Closes),
     CommitButton,
+    AmendCheck,
     // drawn over the panels, a notice or the keys popup: a click on it does nothing
     Covered,
 }

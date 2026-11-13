@@ -212,13 +212,15 @@ impl<'a> DetailView<'a> {
             "select hunks",
             "Select the hunks of the diff, then their lines",
         )
-        .when(|v| entry(v) && tab(DetailTab::Changes)(v));
+        .when(|v| entry(v) && tab(DetailTab::Changes)(v))
+        .moves(|_| true);
         k.add(
             &[Confirm],
             "select lines",
             "Select the lines of the preview",
         )
-        .when(|v| entry(v) && tab(DetailTab::Files)(v));
+        .when(|v| entry(v) && tab(DetailTab::Files)(v))
+        .moves(|_| true);
         // the main action in the diff
         register_apply_key(k, |v| {
             let diff = v.focus() == Pane && v.tab == DetailTab::Changes;

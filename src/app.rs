@@ -1892,7 +1892,8 @@ impl App<'_> {
             &[Confirm],
             "open",
             "Open/close a node, else back to the page",
-        );
+        )
+        .moves(|_| true);
         k.add(
             &[Cancel],
             "clear search",
@@ -2814,7 +2815,7 @@ impl App<'_> {
                 .borrow()
                 .hit(at.x, at.y)
                 .map(|hit| hit.target),
-            Some(Target::Close(_) | Target::CommitButton)
+            Some(Target::Close(_) | Target::CommitButton | Target::AmendCheck)
         );
         let (dialog, menu) = (self.shell.dialog.is_some(), self.shell.menu.is_some());
         self.handle_gesture(gesture);
@@ -2841,12 +2842,15 @@ impl App<'_> {
             return;
         }
         if self.is_typing() {
-            // in the commit message, a click on a box types there, on the button commits
+            // in the commit message, a click on a box types there, on a button acts
             if let Gesture::Click(at) | Gesture::DoubleClick(at) = gesture {
                 if self.view.is_typing_message() && self.click_message(at) {
                     return;
                 }
-                if self.view.is_typing_message() && self.hit_is(at, Target::CommitButton) {
+                let button = [Target::CommitButton, Target::AmendCheck]
+                    .into_iter()
+                    .any(|target| self.hit_is(at, target));
+                if self.view.is_typing_message() && button {
                     self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                     self.click_button(at);
                     return;
@@ -2939,7 +2943,8 @@ impl App<'_> {
     }
 
     // Runs the button at `at`: an [x] closes what it is on, [Commit] commits as its key, unless
-    // there is nothing to; returns whether a button is there.
+    // there is nothing to, the amend checkbox toggles amending as its key; returns whether a button
+    // is there.
     fn click_button(&mut self, at: Cell) -> bool {
         let hit = self.ctx.layout.borrow().hit(at.x, at.y);
         match hit.map(|hit| hit.target) {
@@ -2952,6 +2957,7 @@ impl App<'_> {
                     self.run_event(UserEvent::Commit);
                 }
             }
+            Some(Target::AmendCheck) => self.run_event(UserEvent::ToggleAmend),
             _ => return false,
         }
         true
@@ -2976,7 +2982,7 @@ impl App<'_> {
         let scope = self.current_scope();
         let entries = self
             .panel_keys()
-            .hints()
+            .menu_hints()
             .into_iter()
             .filter(|(events, _)| !left_out_of_menu(events[0]))
             // in the sidebar, the branch only of a branch's row

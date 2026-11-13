@@ -86,7 +86,7 @@ pub fn register_graph_commands<T: ?Sized>(
         (CreateTag, "new tag", "New tag at the commit or ref"),
         (
             BranchOnly,
-            "branch only",
+            "active branch only",
             "Show only the commits of the current (or selected) branch, or all",
         ),
         (
