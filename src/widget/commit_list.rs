@@ -658,6 +658,7 @@ pub fn render_commit_list_panel<'a>(
         panel_block(focused, theme).title(panel_title("[2] Commits", notes, focused, theme));
     let inner = block.inner(area);
     f.render_widget(block, area);
+    ctx.layout.borrow_mut().frame(Target::Commits, area);
     if let Some(FilterNote::BranchOnly(_)) = state.filter_note {
         if let Some(at) = render_close_button(f.buffer_mut(), area, theme) {
             let close = Target::Close(Closes::BranchOnly);

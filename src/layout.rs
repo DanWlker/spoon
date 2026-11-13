@@ -82,10 +82,12 @@ pub enum Closes {
 }
 
 // The rows of a panel on the lines of its area: none, one (a button), from the row shown first
-// (`count` in all), or line by line for text whose rows wrap over several lines.
+// (`count` in all), or line by line for text whose rows wrap over several lines; or the frame of a
+// panel, its border and padding around what it records inside, see `PanelLayout::frame`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowMap {
     None,
+    Frame,
     One,
     Rows { first: usize, count: usize },
     Lines(Vec<Option<usize>>),
@@ -98,6 +100,8 @@ pub struct Hit {
     pub row: Option<usize>,
     // the cells from the left of what is hit, like into the text of a field
     pub column: usize,
+    // on the border or padding of the panel, which a click only focuses
+    pub border: bool,
 }
 
 // A size that can be changed: a width for the panels side by side, a height for those on top of
@@ -237,6 +241,12 @@ impl PanelLayout {
         }
     }
 
+    // The panel of `target` drawn in `area`, border included, before what it records inside: a
+    // click on its border or padding focuses it.
+    pub fn frame(&mut self, target: Target, area: Rect) {
+        self.record(target, area, RowMap::Frame);
+    }
+
     // What was drawn last at the cell, the innermost of what is drawn over each other.
     pub fn hit(&self, x: u16, y: u16) -> Option<Hit> {
         let (target, area, rows) = self
@@ -246,7 +256,7 @@ impl PanelLayout {
             .find(|(_, area, _)| area.contains((x, y).into()))?;
         let line = (y - area.y) as usize;
         let row = match rows {
-            RowMap::None => None,
+            RowMap::None | RowMap::Frame => None,
             RowMap::One => Some(0),
             RowMap::Rows { first, count } => first.checked_add(line).filter(|row| row < count),
             RowMap::Lines(lines) => lines.get(line).copied().flatten(),
@@ -255,6 +265,7 @@ impl PanelLayout {
             target: *target,
             row,
             column: (x - area.x) as usize,
+            border: *rows == RowMap::Frame,
         })
     }
 
@@ -400,7 +411,8 @@ mod tests {
             Some(Hit {
                 target: Target::Commits,
                 row: Some(10),
-                column: 0
+                column: 0,
+                border: false,
             })
         );
         assert_eq!(
@@ -408,7 +420,8 @@ mod tests {
             Some(Hit {
                 target: Target::Commits,
                 row: Some(11),
-                column: 19
+                column: 19,
+                border: false,
             })
         );
         // past the rows, in the panel: no row
@@ -417,7 +430,8 @@ mod tests {
             Some(Hit {
                 target: Target::Commits,
                 row: None,
-                column: 1
+                column: 1,
+                border: false,
             })
         );
         assert_eq!(hit(22, 5), None);
@@ -440,7 +454,8 @@ mod tests {
             Some(Hit {
                 target: Target::Sidebar,
                 row: Some(1),
-                column: 1
+                column: 1,
+                border: false,
             })
         );
         assert_eq!(
@@ -448,7 +463,8 @@ mod tests {
             Some(Hit {
                 target: Target::Commits,
                 row: None,
-                column: 1
+                column: 1,
+                border: false,
             })
         );
         layout.clear_hits();
@@ -469,7 +485,8 @@ mod tests {
             Some(Hit {
                 target: Target::Info,
                 row: None,
-                column: 1
+                column: 1,
+                border: false,
             })
         );
     }

@@ -184,6 +184,7 @@ impl HelpView {
         let title = panel_title("Keys", notes, true, theme);
         let panel = area;
         let inner = render_panel(f.buffer_mut(), panel, title, true, theme);
+        ctx.layout.borrow_mut().frame(Target::KeysList, panel);
         if self.shown.is_empty() {
             placeholder("No action matches the filter", theme).render(inner, f.buffer_mut());
         }

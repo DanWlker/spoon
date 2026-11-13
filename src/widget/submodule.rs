@@ -253,6 +253,7 @@ impl<'a> SubmodulePanel<'a> {
     ) {
         let theme = &ctx.color_theme;
         let inner = render_panel(buf, area, title, focused, theme);
+        ctx.layout.borrow_mut().frame(Target::Submodule, area);
         if let Some((total, offset)) = self.render_content(ctx, inner, buf, focused) {
             render_panel_scrollbar(buf, area, total, offset, focused, theme);
         }

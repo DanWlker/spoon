@@ -1924,6 +1924,11 @@ impl LocalChangesPanel<'_> {
             title.push_span(warn_note("amending", theme));
         }
         let inner = render_panel(buf, area, title, focused, theme);
+        let target = match section {
+            LocalChangesSection::Unstaged => Target::Unstaged,
+            LocalChangesSection::Staged => Target::Staged,
+        };
+        self.ctx.layout.borrow_mut().frame(target, area);
 
         let empty = if files.is_empty() {
             "No changes"
@@ -1932,10 +1937,6 @@ impl LocalChangesPanel<'_> {
         };
         // only the section whose diff is displayed shows its cursor, quieter while another panel,
         // like the refs sidebar, has the focus
-        let target = match section {
-            LocalChangesSection::Unstaged => Target::Unstaged,
-            LocalChangesSection::Staged => Target::Staged,
-        };
         let offset = render_tree(
             buf,
             inner,

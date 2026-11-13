@@ -146,13 +146,13 @@ impl<'a> CommandLog<'a> {
         CommandLog { theme, scrolloff }
     }
 
-    // Returns where the commands and the output were drawn, for the clicks.
+    // Returns where the commands, their panel and the output were drawn, for the clicks.
     pub fn render(
         self,
         area: Rect,
         buf: &mut Buffer,
         state: &mut CommandLogState,
-    ) -> [(Target, Rect, RowMap); 2] {
+    ) -> [(Target, Rect, RowMap); 3] {
         let theme = self.theme;
         Clear.render(area, buf);
         Block::default().bg(theme.bg).render(area, buf);
@@ -169,6 +169,7 @@ impl<'a> CommandLog<'a> {
             commands_focused,
             theme,
         );
+        let commands_frame = (Target::LogCommands, list_area, RowMap::Frame);
         if state.entries.is_empty() {
             placeholder("No git command has changed the repository yet", theme).render(inner, buf);
         }
@@ -216,7 +217,11 @@ impl<'a> CommandLog<'a> {
             theme,
         );
         // the whole panel, its title too: the output has no rows to select
-        let drawn = [commands, (Target::LogOutput, output_area, RowMap::None)];
+        let drawn = [
+            commands_frame,
+            commands,
+            (Target::LogOutput, output_area, RowMap::None),
+        ];
         let output = state
             .entries
             .get(state.cursor.selected())

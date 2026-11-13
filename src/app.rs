@@ -219,6 +219,8 @@ pub struct AppShell {
     pointer: Pointer,
     // the panel a drag picks rows in, see `App::handle_gesture`
     drag: Option<Target>,
+    // a border pressed, not dragged yet: released there, it was a click focusing its panel
+    border_press: Option<Cell>,
     // the actions a right click shows, over everything but the notices
     menu: Option<ActionMenu>,
 }
@@ -627,6 +629,7 @@ impl<'a> App<'a> {
                 reveal: None,
                 pointer: Pointer::default(),
                 drag: None,
+                border_press: None,
                 menu: None,
             },
         };
@@ -2805,7 +2808,7 @@ impl App<'_> {
         let over = self.shell.dialog.is_some() || self.shell.menu.is_some();
         let border = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                !over && layout.hit(x, y).is_none() && layout.press(x, y)
+                !over && layout.hit(x, y).is_none_or(|hit| hit.border) && layout.press(x, y)
             }
             MouseEventKind::Drag(MouseButton::Left) => !over && layout.drag_to(x, y),
             MouseEventKind::Up(MouseButton::Left) => layout.release(),
@@ -2813,6 +2816,16 @@ impl App<'_> {
         };
         drop(layout);
         if border {
+            // a click on a border focuses its panel, as on any border; a drag only resizes
+            match mouse.kind {
+                MouseEventKind::Down(_) => self.shell.border_press = Some(Cell { x, y }),
+                MouseEventKind::Up(_) => {
+                    if let Some(at) = self.shell.border_press.take() {
+                        self.point(at, OnPicks::Keep);
+                    }
+                }
+                _ => self.shell.border_press = None,
+            }
             return;
         }
         let Some(gesture) = self.shell.pointer.gesture(mouse, Instant::now()) else {
@@ -2993,7 +3006,8 @@ impl App<'_> {
     // is there.
     fn click_message(&mut self, at: Cell) -> bool {
         let hit = self.ctx.layout.borrow().hit(at.x, at.y);
-        let Some(hit) = hit.filter(|hit| matches!(hit.target, Target::Commit(_))) else {
+        let message = |hit: &Hit| matches!(hit.target, Target::Commit(_)) && !hit.border;
+        let Some(hit) = hit.filter(message) else {
             return false;
         };
         if self.point_hit(hit, OnPicks::Keep) {

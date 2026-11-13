@@ -770,6 +770,7 @@ impl StatefulWidget for RefList {
             focused,
             theme,
         );
+        self.ctx.layout.borrow_mut().frame(Target::Sidebar, area);
         if collapsed || inner.width == 0 || inner.height == 0 {
             return;
         }

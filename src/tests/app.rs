@@ -3352,6 +3352,40 @@ fn test_border_press_still_resizes() {
     ]);
 }
 
+// A click on a border, or the padding inside it, focuses its panel, a border to drag too; a drag
+// only resizes, see `test_border_press_still_resizes`.
+#[test]
+fn test_click_on_a_border_focuses_its_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        check(|app| assert!(!app.shell.sidebar_focused())),
+        // the right border of the sidebar, which drags
+        mouse_at("╮", (0, 5), TestGesture::Click),
+        check(|app| assert!(app.shell.sidebar_focused())),
+        // the title on the commits' top border, then their left padding
+        mouse_on("[2] Commits", TestGesture::Click),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+        keys("1"),
+        mouse_at("c1", (-3, 0), TestGesture::Click),
+        check(|app| assert!(!app.shell.sidebar_focused())),
+        // the commit message's border focuses it, no typing
+        keys("tab"),
+        mouse_on("[3] Commit", TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+        check(|app| assert_eq!(app.panel_keys().describe(UserEvent::Edit), Some("type"))),
+        // its bottom border, which doesn't drag, past the checkbox
+        mouse_on("[1] Unstaged", TestGesture::Click),
+        mouse_at("[ ] Amend", (12, 0), TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+        check(|app| assert_eq!(app.panel_keys().describe(UserEvent::Edit), Some("type"))),
+        mouse_on("[1] Unstaged", TestGesture::Click),
+        check(|app| assert_ne!(app.panel_keys().describe(UserEvent::Edit), Some("type"))),
+        local_scope(Scope::LocalChanges),
+    ]);
+}
+
 // While a popup or the menu is open, the mouse moves no border: it used to, from the popup's own
 // border over one too.
 #[test]

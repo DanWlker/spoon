@@ -608,6 +608,7 @@ impl BlameView {
             panel_block(focused, theme).title(panel_title("[2] Blame", notes, focused, theme));
         let inner = block.inner(body);
         block.render(body, buf);
+        ctx.layout.borrow_mut().frame(Target::BlameText, body);
         // no room for the commits' divider
         if inner.is_empty() {
             return;

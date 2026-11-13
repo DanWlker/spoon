@@ -444,6 +444,7 @@ impl DiffPane {
         search: Option<&str>,
     ) -> Rect {
         let inner = render_panel(buf, area, title, focused, &ctx.color_theme);
+        ctx.layout.borrow_mut().frame(target, area);
         let scrollbar = Rect::new(area.right().saturating_sub(1), inner.y, 1, inner.height);
         self.render(inner, target, scrollbar, buf, ctx, focused, search);
         inner

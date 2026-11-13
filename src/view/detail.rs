@@ -941,6 +941,11 @@ impl<'a> DetailView<'a> {
         let panel_area = detail_area;
         let detail_area = block.inner(panel_area);
         f.render_widget(block, panel_area);
+        let frame = match self.tab {
+            DetailTab::Info => Target::Info,
+            DetailTab::Changes | DetailTab::Files => Target::DetailFiles,
+        };
+        self.ctx.layout.borrow_mut().frame(frame, panel_area);
         let close = render_close_button(f.buffer_mut(), panel_area, &self.ctx.color_theme);
         if let Some(at) = close {
             let mut layout = self.ctx.layout.borrow_mut();

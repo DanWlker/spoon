@@ -441,6 +441,8 @@ impl LocalChangesPanel<'_> {
             title.push(warn_note(doing, theme));
         }
         let text_area = render_panel(buf, area, Line::from(title), focused, theme);
+        let summary = Target::Commit(CommitField::Summary);
+        self.ctx.layout.borrow_mut().frame(summary, area);
         self.render_message(state, text_area, buf);
         // for the mouse, as the commit key; dimmed with nothing to commit
         let style = if state.can_commit() {

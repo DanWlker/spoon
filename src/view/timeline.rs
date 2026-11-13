@@ -497,6 +497,7 @@ impl TimelineView {
             count,
         };
         let mut layout = ctx.layout.borrow_mut();
+        layout.frame(Target::TimelineCommits, list_area);
         layout.record(Target::TimelineCommits, inner, shown);
         drop(layout);
         let rows = self.history.iter().enumerate().skip(offset);
