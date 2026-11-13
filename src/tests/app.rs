@@ -3954,10 +3954,19 @@ fn test_click_while_typing_the_message_stops_typing() {
         keys("3"),
         typing("abc"),
         check(|app| assert!(app.is_typing())),
+        // the message kept, the click selecting the file and focusing the files
         mouse_on("b.txt", TestGesture::Click),
         check(|app| assert!(!app.is_typing())),
         check(|app| assert_eq!(draft(app), "abc")),
-        check(|app| assert_ne!(local_change_path(app).as_deref(), Some("b.txt"))),
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some("b.txt"))),
+        local_scope(Scope::LocalChanges),
+        // the diff focused from there too, typing again after the text
+        mouse_at("abc", (3, 0), TestGesture::Click),
+        typing("d"),
+        mouse_on("1 b", TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+        local_scope(Scope::LocalChangesDiff),
+        check(|app| assert_eq!(draft(app), "abcd")),
     ]);
 }
 

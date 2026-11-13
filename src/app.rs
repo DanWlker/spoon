@@ -2854,31 +2854,29 @@ impl App<'_> {
             return;
         }
         if self.is_typing() {
-            // in the commit message, a click on a box types there, on a button acts
+            let message = self.view.is_typing_message();
+            // in the commit message, a click on a box types there
             if let Gesture::Click(at) | Gesture::DoubleClick(at) = gesture {
-                if self.view.is_typing_message() && self.click_message(at) {
-                    return;
-                }
-                let button = [Target::CommitButton, Target::AmendCheck]
-                    .into_iter()
-                    .any(|target| self.hit_is(at, target));
-                if self.view.is_typing_message() && button {
-                    self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-                    self.click_button(at);
+                if message && self.click_message(at) {
                     return;
                 }
             }
-            if !matches!(
+            if matches!(
                 gesture,
                 Gesture::Wheel { .. }
                     | Gesture::Hover(_)
                     | Gesture::DragTo(_)
                     | Gesture::DragEnd(_)
             ) {
-                self.shell.pointer.cancel();
-                self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                return;
             }
-            return;
+            self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            // the message kept, the click acts where it is, focusing it there; a click in a search
+            // only ends it, which esc may clear
+            if !message {
+                self.shell.pointer.cancel();
+                return;
+            }
         }
         // on empty space a click only focuses; on nothing, it is no first click of a double click
         let on_row = |hit: Option<Hit>| hit.is_some_and(|hit| hit.row.is_some());
@@ -2954,11 +2952,6 @@ impl App<'_> {
             }
             Gesture::Hover(_) => {}
         }
-    }
-
-    fn hit_is(&self, at: Cell, target: Target) -> bool {
-        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
-        hit.is_some_and(|hit| hit.target == target)
     }
 
     // Runs the button at `at`: an [x] closes what it is on, [Commit] commits as its key, unless
