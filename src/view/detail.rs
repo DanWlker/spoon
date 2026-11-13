@@ -166,8 +166,25 @@ impl<'a> DetailView<'a> {
             "Back to the diff of the two commits",
         )
         .when(|v| v.compare_parked() && v.focus() != Pane);
+        // before closing the diff, as without it
+        k.add(
+            &[Cancel],
+            "show all",
+            "Show all the commits again after showing a branch's only",
+        )
+        .when(|v| {
+            v.list_focused
+                && v.is_comparing()
+                && !v.compare_parked()
+                && v.as_list_state().is_branch_only()
+        });
         k.add(&[Cancel], "close diff", "Close the diff of the two commits")
-            .when(|v| v.is_comparing() && !v.compare_parked() && v.focus() != Pane);
+            .when(|v| {
+                v.is_comparing()
+                    && !v.compare_parked()
+                    && v.focus() != Pane
+                    && !(v.list_focused && v.as_list_state().is_branch_only())
+            });
         // the help lists them under the commit list
         if k.view().is_some() {
             register_commit_list_keys(
@@ -176,7 +193,13 @@ impl<'a> DetailView<'a> {
                 |v, event| match event {
                     _ if !v.list_focused => Availability::Off,
                     // no other diff until this one is closed, which clears the picks too
-                    ToggleSelect | Diff | BranchOnly if v.is_comparing() => Availability::Warns,
+                    ToggleSelect | Diff | BranchOnlyAtCommit if v.is_comparing() => {
+                        Availability::Warns
+                    }
+                    // showing all the commits again keeps the picked ones
+                    BranchOnly if v.is_comparing() && !v.as_list_state().is_branch_only() => {
+                        Availability::Warns
+                    }
                     Cancel if v.is_comparing() => Availability::Off,
                     _ => graph_availability(v.as_list_state(), v.repository, event),
                 },
@@ -466,7 +489,7 @@ impl<'a> DetailView<'a> {
                         self.changes_state.ensure_loaded();
                         self.changes_state.pane.point(row, picks);
                     }
-                    (DetailTab::Files, Some(row)) => self.files_state.point_preview(row),
+                    (DetailTab::Files, Some(row)) => self.files_state.point_preview(row, picks),
                     (DetailTab::Changes, None) => {
                         self.changes_state.pane.enter();
                     }
@@ -693,6 +716,14 @@ impl<'a> DetailView<'a> {
                 return;
             }
             let picked = !self.as_list_state().picked_commit_hashes().is_empty();
+            // after the picks and the search; before the diff of the picked commits closes
+            if self.list_focused
+                && self.as_list_state().is_branch_only()
+                && (self.is_comparing() || !picked)
+            {
+                self.tx.send(AppEvent::ShowAllCommits);
+                return;
+            }
             if !self.is_pane_focused() && picked && !self.compare_parked() {
                 self.clear_picks();
                 // the diff of the picked commits goes with them

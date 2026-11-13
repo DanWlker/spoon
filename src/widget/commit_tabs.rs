@@ -606,8 +606,9 @@ impl<'a> CommitFilesState<'a> {
     }
 
     // Selects the line at `row` of the preview the mouse points at, going into it.
-    pub fn point_preview(&mut self, row: usize) {
+    pub fn point_preview(&mut self, row: usize, picks: OnPicks) {
         if self.enter() {
+            self.text.prepare_point(row, picks);
             self.text.select_line(row);
         }
     }

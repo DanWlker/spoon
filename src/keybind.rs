@@ -457,6 +457,7 @@ pub enum UserEvent {
     CreateTag,
     CreateBranch,
     BranchOnly,
+    BranchOnlyAtCommit,
     CreateRef,
     DeleteRef,
     EditRef,
@@ -525,7 +526,8 @@ impl UserEvent {
             | UserEvent::DropCommit
             | UserEvent::CreateTag
             | UserEvent::CreateBranch
-            | UserEvent::BranchOnly => Scope::Graph,
+            | UserEvent::BranchOnly
+            | UserEvent::BranchOnlyAtCommit => Scope::Graph,
             UserEvent::CreateRef
             | UserEvent::DeleteRef
             | UserEvent::EditRef
@@ -620,6 +622,20 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty())
+    }
+
+    // Branch only of the commit's branch is bound to no key, unless the config binds one.
+    #[test]
+    fn test_branch_only_at_commit_is_unbound_until_bound() {
+        assert!(!KeyBind::new(None)
+            .bound_events()
+            .any(|event| event == UserEvent::BranchOnlyAtCommit));
+        let custom: KeyBind = toml::from_str("branch_only_at_commit = [\"g\"]").unwrap();
+        let keybind = KeyBind::new(Some(custom));
+        assert_eq!(
+            keybind.event_in(Scope::Graph, &key('g')),
+            Some(UserEvent::BranchOnlyAtCommit)
+        );
     }
 
     // Tab's event is named for what it does; the old name is gone, not kept alongside.

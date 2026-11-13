@@ -391,9 +391,11 @@ impl<'a> LocalChangesView<'a> {
     }
 
     // Reloads the changes, keeping the selection, for those made outside the app.
-    pub fn reload_files(&mut self, files: FilesSnapshot) {
-        self.local_changes_state.reload_if_changed(files);
+    // Returns whether the files changed.
+    pub fn reload_files(&mut self, files: FilesSnapshot) -> bool {
+        let changed = self.local_changes_state.reload_if_changed(files);
         self.send_request();
+        changed
     }
 
     // Empties the message box once its commit is made.

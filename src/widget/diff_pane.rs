@@ -300,6 +300,7 @@ impl DiffPane {
         };
         let change = diff.rows[row].is_change();
         if self.focus == Some(DiffPart::Line) {
+            self.cursor.prepare_point(row, picks);
             if change && (hunk == self.cursor.hunk || !self.cursor.has_range()) {
                 self.cursor.select_line(diff, row);
             }

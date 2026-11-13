@@ -431,6 +431,10 @@ impl<'a> CommitListState<'a> {
         self.filter_note.is_some()
     }
 
+    pub fn is_branch_only(&self) -> bool {
+        matches!(self.filter_note, Some(FilterNote::BranchOnly(_)))
+    }
+
     pub fn set_head(&mut self, head: Head) {
         self.head = head;
     }

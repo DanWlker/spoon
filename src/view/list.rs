@@ -7,7 +7,7 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     git::{CommitHash, Head, Repository},
-    graph_commands::commit_command_works,
+    graph_commands::{branches_at, commit_command_works},
     keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
     layout::Target,
@@ -68,6 +68,8 @@ impl<'a> ListView<'a> {
         }
         match event {
             _ if self.as_mut_list_state().handle_navigation(event) => {}
+            // after the picks and the search
+            UserEvent::Cancel => self.tx.send(AppEvent::ShowAllCommits),
             UserEvent::NavigateLeft | UserEvent::NavigateRight => {
                 if let Some(fold) = self.as_list_state().fold_event(event) {
                     self.tx.send(fold);
@@ -237,6 +239,8 @@ impl<'a> ListView<'a> {
 pub struct ListFacts {
     pub picked: usize,
     pub search_applied: bool,
+    // the graph shows a branch's commits only, see `UserEvent::BranchOnly`
+    pub branch_only: bool,
     // the commits are being selected from where the visual selection started
     pub visual: bool,
     // a rebase, merge, cherry-pick or revert waits to be finished: the commands moving HEAD are
@@ -247,6 +251,8 @@ pub struct ListFacts {
     pub head_history_empty: bool,
     // the selected commit is a stash, which space applies, see `lone_stash`
     pub stash: bool,
+    // the branches at the selected commit, see `branches_at`
+    pub commit_branches: usize,
 }
 
 // Whether the command of the graph `event` works on the picked commits, else the selected one,
@@ -273,11 +279,16 @@ impl ListFacts {
             operation_waits: repository.operation_in_progress().is_some(),
             picked: state.picked_commit_hashes().len(),
             search_applied: state.search_applied(),
+            branch_only: state.is_branch_only(),
             visual: state.is_visual(),
             head_history_empty: matches!(repository.head(), Head::Unborn { .. })
                 && !state.is_filtered(),
             stash: !state.is_empty()
                 && lone_stash(repository, state.selected_commit_hash()).is_some(),
+            commit_branches: match state.is_empty() {
+                true => 0,
+                false => branches_at(repository, state.selected_commit_hash()).len(),
+            },
         }
     }
 }
@@ -323,6 +334,15 @@ pub fn register_commit_list_keys<T: ?Sized>(
         "Clear the picked commits, then the search",
     )
     .when(move |v| works(Search)(v) && facts(v).search_applied && facts(v).picked == 0);
+    k.add(
+        &[Cancel],
+        "show all",
+        "Show all the commits again after showing a branch's only",
+    )
+    .when(move |v| {
+        let facts = facts(v);
+        works(Cancel)(v) && facts.branch_only && facts.picked == 0 && !facts.search_applied
+    });
     k.add_where(
         &[ToggleSelect],
         "select",
@@ -345,6 +365,21 @@ pub fn register_commit_list_keys<T: ?Sized>(
         availability,
         move |v| facts(v).picked > 0,
         move |v| facts(v).operation_waits,
+    );
+    // unbound by default, in the menu of a commit; several branches there say to choose one
+    k.add_where(
+        &[BranchOnlyAtCommit],
+        "this branch only",
+        "Show only the commits of the branch at the selected commit, or all again",
+        move |v| match (
+            availability(v, BranchOnlyAtCommit),
+            facts(v).commit_branches,
+        ) {
+            (Availability::Works, 0) => Availability::Off,
+            (Availability::Works, 1) => Availability::Works,
+            (Availability::Works, _) => Availability::Warns,
+            (availability, _) => availability,
+        },
     );
     // a stash isn't on the web host
     register_commit_link_keys(k, works(ShortCopy), move |v| !facts(v).stash);

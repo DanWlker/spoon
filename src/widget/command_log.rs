@@ -49,7 +49,6 @@ impl CommandLogState {
         self.focus
     }
 
-    // Focuses the commands or the output, by the panel number.
     // Focuses what the mouse points at and selects its command, see `View::point`.
     pub fn point(&mut self, target: Target, row: Option<usize>) -> bool {
         self.focus = match target {
@@ -66,6 +65,7 @@ impl CommandLogState {
         true
     }
 
+    // Focuses the commands or the output, by the panel number.
     pub fn focus_panel(&mut self, panel: usize) {
         self.focus = match panel {
             1 => CommandLogFocus::Commands,

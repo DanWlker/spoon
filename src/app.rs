@@ -37,7 +37,8 @@ use crate::{
     },
     graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
     graph_commands::{
-        commit_command_works, graph_command, moves_head, ref_graph_command, Compare, GraphCommand,
+        branches_at, commit_command_works, graph_command, moves_head, ref_graph_command, Compare,
+        GraphCommand,
     },
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
     keys::{Availability, KeyList, Keys},
@@ -333,7 +334,7 @@ impl FileWindow {
         repository: &Repository,
     ) -> bool {
         match self {
-            FileWindow::Blame(blame) => blame.point(target, row),
+            FileWindow::Blame(blame) => blame.point(target, row, picks),
             FileWindow::Timeline(timeline) => timeline.point(target, row, picks, repository),
         }
     }
@@ -742,9 +743,20 @@ impl App<'_> {
     }
 
     fn handle(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
-        // anything but the mouse may change what is shown, like files reloaded in place: a click
-        // before the next frame acts on nothing rather than on a row that moved
-        if !matches!(event, AppEvent::Mouse(_)) {
+        // what may change what is shown, like a key: a click before the next frame acts on nothing
+        // rather than on a row that moved; the ticks and checks coming while git runs or every few
+        // seconds change nothing until then, but files reloaded in place, see `reload_files`
+        let unchanged = matches!(
+            event,
+            AppEvent::Mouse(_)
+                | AppEvent::SpinnerTick
+                | AppEvent::Loaded
+                | AppEvent::RefsSnapshot(_)
+                | AppEvent::FilesTick(_)
+                | AppEvent::FocusGained
+                | AppEvent::LocalChangesChanged
+        );
+        if !unchanged {
             self.ctx.layout.borrow_mut().clear_hits();
         }
         match event {
@@ -841,6 +853,10 @@ impl App<'_> {
                 if let View::Detail(_) = self.view {
                     self.show_list();
                 }
+            }
+            AppEvent::ShowAllCommits => {
+                self.shell.graph_filter = GraphFilter::All;
+                self.view.refresh();
             }
             AppEvent::RunExternal(command) => {
                 self.run_external(&command);
@@ -1941,8 +1957,6 @@ impl App<'_> {
         self.ec.send(status);
     }
 
-    // Whether the event does something on the selected row of the sidebar, see
-    // `ref_command_applies`.
     // Whether a command applying on the sidebar row goes through too, see `ref_command_applies`:
     // none moving to or deleting the checked-out branch, those of the graph as on the ref's commit
     // (see `commit_command_works`), checking out a tag or another branch at it still.
@@ -1982,6 +1996,8 @@ impl App<'_> {
         }
     }
 
+    // Whether the event does something on the selected row of the sidebar, see
+    // `ref_command_applies`.
     fn sidebar_command_applies(&self, event: UserEvent) -> bool {
         if event == UserEvent::ToggleSelect && self.shell.sidebar.is_visual() {
             return true;
@@ -2533,33 +2549,13 @@ impl App<'_> {
         quit
     }
 
-    // Branch only from the menu of a commit, with the commit pointed at: the history of the branch
-    // at it, or all of it again while it shows; with no branch there, or several, it says so. The
-    // key shows the current branch's, see `handle_graph_event`.
+    // The history of the branch at the selected commit, or all of it again while it shows; with no
+    // branch there, which the key isn't listed for, or several, it says so, see `branches_at`.
     fn branch_only_of_commit(&mut self) {
-        if self.refused_while_diffing(UserEvent::BranchOnly) {
-            return;
-        }
         let Some(state) = self.view.as_list_state() else {
             return;
         };
-        // the local branches, else the remote ones
-        let refs = self.repository.refs(state.selected_commit_hash());
-        let named = |remote: bool| -> Vec<NamedRef> {
-            refs.iter()
-                .filter_map(|r| r.named())
-                .filter(|named| match named {
-                    NamedRef::Branch(_) => !remote,
-                    NamedRef::RemoteBranch(_) => remote,
-                    NamedRef::Tag(_) => false,
-                })
-                .collect()
-        };
-        let mut branches = named(false);
-        if branches.is_empty() {
-            branches = named(true);
-        }
-        let branch = match &branches[..] {
+        let branch = match &branches_at(self.repository, state.selected_commit_hash())[..] {
             [branch] => branch.clone(),
             [] => {
                 let err = "No branch at this commit to show the commits of".into();
@@ -2579,8 +2575,13 @@ impl App<'_> {
 
     // The commands of the commit graph, see `graph_command`.
     fn handle_graph_event(&mut self, event: UserEvent) {
-        if self.refused_while_diffing(event) {
+        // showing all the commits again keeps the picked ones, and their diff
+        let shows_all = matches!(self.shell.graph_filter, GraphFilter::BranchOnly(_));
+        if !(event == UserEvent::BranchOnly && shows_all) && self.refused_while_diffing(event) {
             return;
+        }
+        if event == UserEvent::BranchOnlyAtCommit {
+            return self.branch_only_of_commit();
         }
         if event == UserEvent::BranchOnly {
             // the commits are loaded again, of the current branch or of all
@@ -2698,7 +2699,10 @@ impl App<'_> {
     // Whether `event` would open another diff, or change the commits shown, while a diff is
     // open; tells so when it does.
     fn refused_while_diffing(&self, event: UserEvent) -> bool {
-        let refused = matches!(event, UserEvent::Diff | UserEvent::BranchOnly) && self.is_diffing();
+        let refused = matches!(
+            event,
+            UserEvent::Diff | UserEvent::BranchOnly | UserEvent::BranchOnlyAtCommit
+        ) && self.is_diffing();
         if refused {
             let msg = "A diff is open, close it first (esc)".to_string();
             self.ec.send(AppEvent::NotifyWarn(msg));
@@ -2783,12 +2787,14 @@ impl App<'_> {
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         let (x, y) = (mouse.column, mouse.row);
         let mut layout = self.ctx.layout.borrow_mut();
-        // what is drawn on a border, like the tabs of the details, takes the click
+        // what is drawn on a border, like the tabs of the details, takes the click; a popup or the
+        // menu takes the mouse, no border moving under it, but one opening during a drag ends it
+        let over = self.shell.dialog.is_some() || self.shell.menu.is_some();
         let border = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                layout.hit(x, y).is_none() && layout.press(x, y)
+                !over && layout.hit(x, y).is_none() && layout.press(x, y)
             }
-            MouseEventKind::Drag(MouseButton::Left) => layout.drag_to(x, y),
+            MouseEventKind::Drag(MouseButton::Left) => !over && layout.drag_to(x, y),
             MouseEventKind::Up(MouseButton::Left) => layout.release(),
             _ => false,
         };
@@ -2796,8 +2802,27 @@ impl App<'_> {
         if border {
             return;
         }
-        if let Some(gesture) = self.shell.pointer.gesture(mouse, Instant::now()) {
-            self.handle_gesture(gesture);
+        let Some(gesture) = self.shell.pointer.gesture(mouse, Instant::now()) else {
+            return;
+        };
+        let (Gesture::Click(at) | Gesture::DoubleClick(at)) = gesture else {
+            return self.handle_gesture(gesture);
+        };
+        let button = matches!(
+            self.ctx
+                .layout
+                .borrow()
+                .hit(at.x, at.y)
+                .map(|hit| hit.target),
+            Some(Target::Close(_) | Target::CommitButton)
+        );
+        let (dialog, menu) = (self.shell.dialog.is_some(), self.shell.menu.is_some());
+        self.handle_gesture(gesture);
+        // a click on a button, or closing the popup or the menu, changes what is under it: a second
+        // one there soon after does nothing, rather than act on what shows there next
+        let closed = (dialog && self.shell.dialog.is_none()) || (menu && self.shell.menu.is_none());
+        if button || closed {
+            self.shell.pointer.clicked_button();
         }
     }
 
@@ -2921,10 +2946,7 @@ impl App<'_> {
             Some(Target::Close(Closes::Details)) => self.ec.send(AppEvent::CloseDetail),
             Some(Target::Close(Closes::Window)) => self.shell.overlay = None,
             Some(Target::Close(Closes::KeysPopup)) => self.shell.keys_popup = false,
-            Some(Target::Close(Closes::BranchOnly)) => {
-                self.shell.graph_filter = GraphFilter::All;
-                self.view.refresh();
-            }
+            Some(Target::Close(Closes::BranchOnly)) => self.ec.send(AppEvent::ShowAllCommits),
             Some(Target::CommitButton) => {
                 if self.view.can_commit() {
                     self.run_event(UserEvent::Commit);
@@ -2970,7 +2992,6 @@ impl App<'_> {
                 event: events[0],
                 label: KeyLabel::new(self.ctx.short_keys(scope, &events), action),
             })
-            .filter(|entry| !entry.label.keys.is_empty())
             .chain(self.sidebar_remote_entries(scope))
             .collect();
         self.shell.menu = ActionMenu::new(entries, at);
@@ -2988,12 +3009,7 @@ impl App<'_> {
             self.ec.send(AppEvent::Quit);
         }
         if let MenuOutcome::Run(event) = outcome {
-            match event {
-                UserEvent::BranchOnly if !self.shell.sidebar_focused() => {
-                    self.branch_only_of_commit();
-                }
-                event => self.run_event(event),
-            }
+            self.run_event(event);
             // no second press of its key to wait for
             if let Some(popup) = self.shell.dialog.as_mut() {
                 popup.reveal = None;
@@ -3278,7 +3294,11 @@ impl App<'_> {
     // count in the page bar.
     fn reload_files(&mut self, files: FilesSnapshot) {
         match &mut self.view {
-            View::LocalChanges(view) => view.reload_files(files),
+            View::LocalChanges(view) => {
+                if view.reload_files(files) {
+                    self.ctx.layout.borrow_mut().clear_hits();
+                }
+            }
             _ => {
                 self.repository.set_local_changes(files);
             }

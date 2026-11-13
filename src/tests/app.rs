@@ -2543,6 +2543,96 @@ fn test_esc_clears_the_picks_before_the_search() {
     ]);
 }
 
+// The branch only graph is left last: after the search being typed, the picks and the search.
+#[test]
+fn test_esc_shows_all_commits_after_the_picks_and_the_search() {
+    use crate::keybind::UserEvent::Cancel;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let state = |picked: usize, searched: bool, note: Option<&'static str>| {
+        check(move |app| {
+            let state = app.view.as_list_state().unwrap();
+            let shown = (state.picked_commit_hashes().len(), state.search_applied());
+            assert_eq!(shown, (picked, searched));
+            assert_eq!(graph_note(app).as_deref(), note);
+        })
+    };
+    let esc_means = |short: Option<&'static str>| {
+        check(move |app| assert_eq!(app.view.keys().describe(Cancel), short))
+    };
+    harness.run(vec![
+        keys("shift-l v /"),
+        typing("c"),
+        keys("esc"),
+        check(|app| assert!(!app.is_typing())),
+        state(1, false, Some("master only")),
+        keys("/"),
+        typing("c"),
+        keys("enter"),
+        state(1, true, Some("master only")),
+        keys("esc"),
+        state(0, true, Some("master only")),
+        esc_means(Some("clear search")),
+        keys("esc"),
+        state(0, false, Some("master only")),
+        esc_means(Some("show all")),
+        keys("esc"),
+        state(0, false, None),
+        esc_means(None),
+    ]);
+}
+
+// With the commit list focused over the details or a diff of picked commits, L and Esc show all
+// the commits again; the diff stays, Esc closing it next.
+#[test]
+fn test_branch_only_ends_from_the_list_over_the_details() {
+    use crate::keybind::UserEvent::Cancel;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let state = |detail: bool, note: Option<&'static str>, diff: bool| {
+        check(move |app| {
+            assert_eq!(matches!(app.view, View::Detail(_)), detail);
+            assert_eq!(graph_note(app).as_deref(), note);
+            assert_eq!(compared(app).is_some(), diff);
+        })
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("shift-l enter 2"),
+        check(|app| assert_eq!(app.view.keys().describe(Cancel), Some("show all"))),
+        keys("esc"),
+        state(true, None, false),
+        keys("shift-l"),
+        state(true, Some("master only"), false),
+    ]);
+    for end in ["shift-l", "esc"] {
+        let mut harness = Harness::new(&path, launch());
+        harness.run(vec![
+            keys("shift-l v j v shift-d 2"),
+            state(true, Some("master only"), true),
+            check(|app| assert_eq!(app.view.keys().describe(Cancel), Some("show all"))),
+            keys(end),
+            state(true, None, true),
+            check(|app| {
+                assert_eq!(
+                    app.view
+                        .as_list_state()
+                        .unwrap()
+                        .picked_commit_hashes()
+                        .len(),
+                    2
+                )
+            }),
+            // showing a branch's only stays refused, it could hide the picked commits
+            keys("shift-l"),
+            check(|app| assert_notice(app, "A diff is open, close it first (esc)")),
+            keys("esc"),
+            state(false, None, false),
+        ]);
+    }
+}
+
 // The commit list beside the details clears the picks first too: it used to clear the search,
 // its hint saying it cleared the picks.
 #[test]
@@ -2656,6 +2746,56 @@ fn test_double_click_on_an_unpicked_row_clears_the_picks() {
         double_click("c1"),
         commits_picked(0),
         check(|app| assert!(popup_command(app).starts_with("checkout"))),
+    ]);
+}
+
+// The spinner turning while git runs, or the checks every few seconds finding nothing changed,
+// keep a click on what the last frame showed; they used to drop it.
+#[test]
+fn test_click_after_a_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![
+            Step::Locate("c1", (0, 0)),
+            // handled before the next frame
+            Step::Together(vec![
+                Step::Event(Box::new(AppEvent::SpinnerTick)),
+                Step::Tick,
+                Step::Mouse(TestGesture::Click),
+            ]),
+        ],
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+    ]);
+}
+
+// A double click on a button or menu entry closing it runs nothing on the row under it then.
+#[test]
+fn test_double_click_on_a_button_acts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // rows under the buttons
+    for n in 0..40 {
+        git(
+            &path,
+            &["commit", "-q", "--allow-empty", "-m", &format!("e{n}")],
+        );
+    }
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("space"),
+        double_click("[Cancel]"),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        keys("enter"),
+        double_click("[x]"),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        check(|app| assert!(app.shell.dialog.is_none())),
+        mouse_on("e38", TestGesture::RightClick),
+        double_click("details"),
+        check(|app| assert!(matches!(app.view, View::Detail(_)))),
+        check(|app| assert!(app.shell.dialog.is_none())),
     ]);
 }
 
@@ -2946,10 +3086,11 @@ fn test_sidebar_menu_lists_what_works() {
     ]);
 }
 
-// From the menu of a commit, branch only shows the branch at it, or all again; with no branch
-// there or several it says so. The key keeps showing the current branch's.
+// From the menu of a commit, this branch only (bound to no key) shows the branch at it, or all
+// again: listed on a commit with one branch, saying so with several. Branch only does what L does.
 #[test]
 fn test_menu_branch_only_of_the_commit() {
+    use crate::keybind::UserEvent::{BranchOnly, BranchOnlyAtCommit};
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
@@ -2961,32 +3102,45 @@ fn test_menu_branch_only_of_the_commit() {
             )
         })
     };
-    let branch_only = |text: &'static str| {
-        let mut steps = mouse_on(text, TestGesture::RightClick);
-        steps.extend(mouse_on("branch only", TestGesture::Click));
+    let run = |row: &'static str, entry: &'static str| {
+        let mut steps = mouse_on(row, TestGesture::RightClick);
+        steps.extend(mouse_on(entry, TestGesture::Click));
         steps.extend(draw());
         steps
     };
+    let feat = || GraphFilter::BranchOnly(Some(NamedRef::Branch("feat".into())));
     harness.run(vec![
-        branch_only("feat1"),
-        filter(GraphFilter::BranchOnly(Some(NamedRef::Branch(
-            "feat".into(),
-        )))),
-        branch_only("feat1"),
+        mouse_on("feat1", TestGesture::RightClick),
+        menu_has(&[BranchOnly, BranchOnlyAtCommit], &[]),
+        // no key shown for it
+        screen(|s| {
+            let after = s.split("this branch only").nth(1).unwrap();
+            assert!(after.trim_start().starts_with('│'), "{s}");
+        }),
+        keys("esc"),
+        run("feat1", "this branch only"),
+        filter(feat()),
+        run("feat1", "this branch only"),
         filter(GraphFilter::All),
-        branch_only("c1"),
+        // as L: the current branch's
+        run("feat1", "branch only"),
+        filter(GraphFilter::BranchOnly(None)),
+        keys("shift-l"),
         filter(GraphFilter::All),
-        check(|app| assert_notice(app, "No branch")),
+        // no branch at c1
+        mouse_on("c1", TestGesture::RightClick),
+        menu_has(&[BranchOnly], &[BranchOnlyAtCommit]),
+        keys("esc"),
+        // two at c2, to choose in the sidebar
         outside_git(&["branch", "other"]),
         keys("ctrl-r"),
         draw(),
-        branch_only("c2"),
+        mouse_on("c2", TestGesture::RightClick),
+        menu_has(&[BranchOnly], &[BranchOnlyAtCommit]),
+        keys("esc"),
+        vec![Step::Act(Box::new(|app| app.run_event(BranchOnlyAtCommit)))],
         filter(GraphFilter::All),
         check(|app| assert_notice(app, "sidebar")),
-        mouse_on("feat1", TestGesture::Click),
-        keys("esc"),
-        keys("shift-l"),
-        filter(GraphFilter::BranchOnly(None)),
     ]);
 }
 
@@ -3005,7 +3159,7 @@ fn test_branch_only_of_a_remote_branch() {
     let remote_feat = "BranchOnly(Some(RemoteBranch(\"origin/feat\")))";
     harness.run(vec![
         mouse_on("feat1", TestGesture::RightClick),
-        mouse_on("branch only", TestGesture::Click),
+        mouse_on("this branch only", TestGesture::Click),
         draw(),
         filter(remote_feat),
         screen(|s| assert!(s.contains("origin/feat only"), "{s}")),
@@ -3161,6 +3315,28 @@ fn test_border_press_still_resizes() {
         check(move |app| assert!(width(app) > 0)),
         commits_picked(0),
         check(|app| assert!(!app.shell.sidebar_focused())),
+    ]);
+}
+
+// While a popup or the menu is open, the mouse moves no border: it used to, from the popup's own
+// border over one too.
+#[test]
+fn test_no_border_drag_over_a_popup_or_the_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let width = |app: &App| app.ctx.layout.borrow().size(Panel::Sidebar, 0);
+    harness.run(vec![
+        keys("space"),
+        mouse_at("╮", (0, 5), TestGesture::DragBy(6, 0)),
+        draw(),
+        check(move |app| assert_eq!(width(app), 0)),
+        check(|app| assert!(app.shell.dialog.is_some())),
+        keys("esc"),
+        mouse_on("c1", TestGesture::RightClick),
+        mouse_at("╮", (0, 5), TestGesture::DragBy(6, 0)),
+        draw(),
+        check(move |app| assert_eq!(width(app), 0)),
     ]);
 }
 
@@ -3399,6 +3575,61 @@ fn test_double_click_on_a_diff_line_applies_it() {
         // the line clicked, not its hunk
         double_click("two"),
         check(move |_| assert_eq!(std::fs::read_to_string(&applied).unwrap(), "two\n")),
+    ]);
+}
+
+// A right click on a line not picked clears the picked lines, so its menu acts on that line, as
+// on the other lists: in the preview, the blame and the diff of the timeline.
+#[test]
+fn test_right_click_on_an_unpicked_line_clears_the_picks() {
+    use crate::keybind::UserEvent::ShortCopy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let copies = |short: &'static str| {
+        check(move |app| assert_eq!(app.panel_keys().describe(ShortCopy), Some(short)))
+    };
+    // the lines MASTER and c of f.txt in c2, picked, then a right click on one of them and on a
+    let pick_then_right_click = |open: Vec<Step>, pick: &'static str| {
+        let mut steps = open;
+        steps.extend(mouse_on("MASTER", TestGesture::Click));
+        steps.extend(keys(pick));
+        steps.extend(copies("copy lines"));
+        steps.extend(mouse_on("MASTER", TestGesture::RightClick));
+        steps.extend(keys("esc"));
+        steps.extend(copies("copy lines"));
+        steps.extend(mouse_at("MASTER", (0, -1), TestGesture::RightClick));
+        steps.extend(keys("esc"));
+        steps.extend(copies("copy line"));
+        steps
+    };
+    for (open, pick) in [("enter 5 shift-b", "v j v"), ("enter 5 shift-t", "v v")] {
+        let mut harness = Harness::new(&path, launch());
+        harness.run(vec![pick_then_right_click(keys(open), pick)]);
+    }
+    let mut harness = Harness::new(&path, launch());
+    let mut preview = keys("enter 5");
+    preview.extend(mouse_on("f.txt", TestGesture::Click));
+    harness.run(vec![pick_then_right_click(preview, "v j v")]);
+}
+
+// A double click on a line not picked acts on it alone, as on the other lists.
+#[test]
+fn test_double_click_on_an_unpicked_diff_line_clears_the_picks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(&path, &["checkout", "-q", "feat"]);
+    std::fs::write(path.join("h.txt"), "one\ntwo\nthree\n").unwrap();
+    git(&path, &["add", "h.txt"]);
+    git(&path, &["commit", "-q", "-m", "feat2"]);
+    git(&path, &["checkout", "-q", "master"]);
+    let mut harness = Harness::new(&path, launch());
+    let applied = path.join("h.txt");
+    harness.run(vec![
+        mouse_on("feat2", TestGesture::Click),
+        keys("4"),
+        mouse_on("one", TestGesture::Drag(&["two"])),
+        double_click("three"),
+        check(move |_| assert_eq!(std::fs::read_to_string(&applied).unwrap(), "three\n")),
     ]);
 }
 

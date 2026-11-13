@@ -1262,11 +1262,13 @@ impl<'a> LocalChangesState<'a> {
     // Reloads with `files`, loaded in the background, for changes made outside the app, leaving the
     // page as it is (scroll, focus) when nothing it shows changed.
     // Those from before its own last change are dropped, and wait for one loading after a change.
-    pub fn reload_if_changed(&mut self, files: FilesSnapshot) {
+    pub fn reload_if_changed(&mut self, files: FilesSnapshot) -> bool {
         let stale = files.started < self.reloaded || self.files_loading.is_some();
-        if !stale && files.stamp != self.files_stamp {
+        let changed = !stale && files.stamp != self.files_stamp;
+        if changed {
             self.reload_with(files.changes);
         }
+        changed
     }
 
     // Loads the files on another thread with the app's `tx`, after a change, see `reload`.

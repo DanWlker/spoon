@@ -51,11 +51,19 @@ struct Press {
     dragging: bool,
 }
 
+// What a second click soon after on the cell of the last one makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Second {
+    DoubleClick,
+    // the first was on a button, closing or changing what is under it: nothing
+    Nothing,
+}
+
 #[derive(Debug, Default)]
 pub struct Pointer {
     press: Option<Press>,
-    // the press of the last click, which a second one on its cell soon after makes a double click
-    last_click: Option<(Cell, Instant)>,
+    // the press of the last click, and what a second one on its cell soon after makes
+    last_click: Option<(Cell, Instant, Second)>,
 }
 
 impl Pointer {
@@ -98,15 +106,19 @@ impl Pointer {
                         false => Gesture::CtrlClick(press.at),
                     });
                 }
-                let double = self.last_click.is_some_and(|(at, when)| {
-                    at == press.at && press.when.duration_since(when) < DOUBLE_CLICK
+                let second = self.last_click.and_then(|(at, when, second)| {
+                    let soon = press.when.duration_since(when) < DOUBLE_CLICK;
+                    (at == press.at && soon).then_some(second)
                 });
-                if double {
-                    self.last_click = None;
-                    Some(Gesture::DoubleClick(press.at))
-                } else {
-                    self.last_click = Some((press.at, press.when));
-                    Some(Gesture::Click(press.at))
+                match second {
+                    Some(second) => {
+                        self.last_click = None;
+                        (second == Second::DoubleClick).then_some(Gesture::DoubleClick(press.at))
+                    }
+                    None => {
+                        self.last_click = Some((press.at, press.when, Second::DoubleClick));
+                        Some(Gesture::Click(press.at))
+                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Right) => {
@@ -131,6 +143,14 @@ impl Pointer {
     pub fn cancel(&mut self) {
         self.press = None;
         self.last_click = None;
+    }
+
+    // The last click was on a button: a second one soon after on its cell does nothing, instead of
+    // acting on what shows there now.
+    pub fn clicked_button(&mut self) {
+        if let Some((_, _, second)) = self.last_click.as_mut() {
+            *second = Second::Nothing;
+        }
     }
 }
 
@@ -184,6 +204,23 @@ mod tests {
         assert_eq!(
             click(&mut pointer, start, 1100, 5, 4),
             Some(Gesture::Click(other))
+        );
+    }
+
+    #[test]
+    fn test_second_click_on_a_button_does_nothing() {
+        let (mut pointer, start) = (Pointer::default(), Instant::now());
+        let cell = Cell { x: 3, y: 4 };
+        assert_eq!(
+            click(&mut pointer, start, 0, 3, 4),
+            Some(Gesture::Click(cell))
+        );
+        pointer.clicked_button();
+        assert_eq!(click(&mut pointer, start, 300, 3, 4), None);
+        // the next is a click again
+        assert_eq!(
+            click(&mut pointer, start, 400, 3, 4),
+            Some(Gesture::Click(cell))
         );
     }
 

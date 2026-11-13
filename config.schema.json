@@ -862,6 +862,9 @@
         "branch_only": {
           "$ref": "#/definitions/keybindArray"
         },
+        "branch_only_at_commit": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "create_ref": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1197,6 +1200,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "branch_only": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "branch_only_at_commit": {
           "$ref": "#/definitions/keybindArray"
         },
         "create_ref": {

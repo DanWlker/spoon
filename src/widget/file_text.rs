@@ -14,6 +14,7 @@ use crate::{
     context::AppContext,
     keybind::UserEvent,
     layout::{RowMap, Target},
+    pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
@@ -211,6 +212,13 @@ impl FileText {
     }
 
     // Selects a line, the last one past the end.
+    // Before the mouse selects `line`, see `OnPicks`.
+    pub fn prepare_point(&mut self, line: usize, picks: OnPicks) {
+        if picks == OnPicks::ClearUnlessPicked && !self.selection.contains(&line) {
+            self.cancel_visual();
+        }
+    }
+
     pub fn select_line(&mut self, line: usize) {
         self.selected = line.min(self.lines.len().saturating_sub(1));
         self.sync_selection();

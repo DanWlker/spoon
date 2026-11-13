@@ -21,6 +21,7 @@ use crate::{
     color::ColorTheme,
     git::{PatchDirection, Repository},
     keybind::UserEvent,
+    pointer::OnPicks,
     search::SearchOptions,
     widget::{
         style::{
@@ -725,6 +726,13 @@ impl DiffCursor {
     pub fn cancel_range(&mut self) -> bool {
         self.visual.cancel();
         !std::mem::take(&mut self.picked).is_empty()
+    }
+
+    // Before the mouse selects `row`, see `OnPicks`.
+    pub fn prepare_point(&mut self, row: usize, picks: OnPicks) {
+        if picks == OnPicks::ClearUnlessPicked && !self.picked.contains(&row) {
+            self.cancel_range();
+        }
     }
 
     // Whether lines are picked, while the visual selection or after it ended.

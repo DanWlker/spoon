@@ -213,6 +213,28 @@ pub fn commit_command_works(
     }
 }
 
+// The branches at the commit `hash`, those `UserEvent::BranchOnlyAtCommit` shows: the local ones,
+// else the remote ones.
+pub fn branches_at(repository: &Repository, hash: &CommitHash) -> Vec<NamedRef> {
+    let refs = repository.refs(hash);
+    let named = |remote: bool| -> Vec<NamedRef> {
+        refs.iter()
+            .filter_map(|r| r.named())
+            .filter(|named| match named {
+                NamedRef::Branch(_) => !remote,
+                NamedRef::RemoteBranch(_) => remote,
+                NamedRef::Tag(_) => false,
+            })
+            .collect()
+    };
+    let local = named(false);
+    if local.is_empty() {
+        named(true)
+    } else {
+        local
+    }
+}
+
 // The command of `event` on a branch, remote branch or tag selected in the refs sidebar: rebase
 // and merge name the ref (in full when another has its name, which git could take instead),
 // checkout offers it first; the others work on the commit it points at.

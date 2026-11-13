@@ -64,6 +64,8 @@ impl Repository {
             repository.operation = joined(operation);
             repository.tracking = joined(tracking);
             repository.submodules = joined(submodules);
+            // walked here, off the thread drawing, which needs it for the first frame's keys
+            repository.head_history();
             Ok(repository)
         })
     }

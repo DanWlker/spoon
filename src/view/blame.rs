@@ -19,6 +19,7 @@ use crate::{
     keybind::UserEvent,
     keys::{KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
+    pointer::OnPicks,
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
         commit_event, copy_selection, edit_files, file_link, query_or_search_status,
@@ -530,7 +531,7 @@ impl BlameView {
     }
 
     // Focuses what the mouse points at and selects its line, see `View::point`.
-    pub fn point(&mut self, target: Target, row: Option<usize>) -> bool {
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         self.focus = match target {
             Target::BlameRevision => BlameFocus::Revision,
             Target::BlameCommits => BlameFocus::Commit,
@@ -538,6 +539,7 @@ impl BlameView {
             _ => return false,
         };
         if let Some(row) = row {
+            self.text.prepare_point(row, picks);
             self.text.select_line(row);
         }
         true
