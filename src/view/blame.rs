@@ -530,7 +530,6 @@ impl BlameView {
         .when(on(Revision));
     }
 
-    // Focuses what the mouse points at and selects its line, see `View::point`.
     // Clears the lines picked unless `target` is the text, see `App::clear_picks_off`.
     pub fn clear_picks_off(&mut self, target: Option<Target>) {
         if target != Some(Target::BlameText) {
@@ -538,6 +537,7 @@ impl BlameView {
         }
     }
 
+    // Focuses what the mouse points at and selects its line, see `View::point`.
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         self.focus = match target {
             Target::BlameRevision => BlameFocus::Revision,
@@ -629,9 +629,12 @@ impl BlameView {
             width: commits_area.width.saturating_sub(3),
             ..commits_area
         };
-        for y in commits_area.top()..commits_area.bottom() {
-            let x = commits_area.right().saturating_sub(2);
-            buf.set_string(x, y, "│", Style::default().fg(theme.divider_fg));
+        // the space after it in the commits, which may be too narrow for it
+        if commits_area.width >= 2 {
+            for y in commits_area.top()..commits_area.bottom() {
+                let x = commits_area.right() - 2;
+                buf.set_string(x, y, "│", Style::default().fg(theme.divider_fg));
+            }
         }
         // the search highlighted where it applies, in the text or the commits
         let search_in = |focus| self.query.search().filter(|_| self.focus == focus);

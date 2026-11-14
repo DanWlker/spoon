@@ -21,10 +21,11 @@ use crate::{
     ref_commands::lone_stash,
     search::{SearchKind, SearchOutcome},
     view::{
-        apply_selection, commit_event, copy_hashes, copy_path, copy_paths, copy_selection,
-        edit_files, file_link, graph_availability, handle_search_event, query_or_search_status,
-        register_apply_key, register_commit_link_keys, register_commit_list_keys,
-        type_commit_search, CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
+        apply_selection, commit_branches, commit_event, copy_hashes, copy_path, copy_paths,
+        copy_selection, edit_files, file_link, graph_availability, handle_search_event,
+        query_or_search_status, register_apply_key, register_commit_link_keys,
+        register_commit_list_keys, type_commit_search, CopyForm, ListFacts, ListRefreshViewContext,
+        RefreshViewContext,
     },
     widget::diff_pane::register_diff_keys,
     widget::tree_query::{type_query, typing_keys},
@@ -159,37 +160,45 @@ impl<'a> DetailView<'a> {
         // or a filter hiding all of them, to change
         let queried = move |v: &Self| files(v) && v.query().is_some_and(|q| q.filter().is_some());
 
-        // the commit list: back to the diff of two commits, closing it, or the list's own keys
+        // the commit list: back to the diff of two commits, closing it, or the list's own keys; with
+        // none picked, after the search, see `handle_event`
+        let search_first = |v: &Self| {
+            let state = v.as_list_state();
+            v.list_focused && state.search_applied() && state.picked_commit_hashes().is_empty()
+        };
         k.add(
             &[Cancel],
             "back to diff",
             "Back to the diff of the two commits",
         )
-        .when(|v| v.compare_parked() && v.focus() != Pane);
+        .when(move |v| v.compare_parked() && v.focus() != Pane && !search_first(v));
         // before closing the diff, as without it
         k.add(
             &[Cancel],
             "show all",
             "Show all the commits again after showing a branch's only",
         )
-        .when(|v| {
+        .when(move |v| {
             v.list_focused
                 && v.is_comparing()
                 && !v.compare_parked()
                 && v.as_list_state().is_branch_only()
+                && !search_first(v)
         });
         k.add(&[Cancel], "close diff", "Close the diff of the two commits")
-            .when(|v| {
+            .when(move |v| {
                 v.is_comparing()
                     && !v.compare_parked()
                     && v.focus() != Pane
                     && !(v.list_focused && v.as_list_state().is_branch_only())
+                    && !search_first(v)
             });
         // the help lists them under the commit list
         if k.view().is_some() {
             register_commit_list_keys(
                 k,
                 |v| ListFacts::of(v.as_list_state(), v.repository),
+                |v| commit_branches(v.as_list_state(), v.repository),
                 |v, event| match event {
                     _ if !v.list_focused => Availability::Off,
                     // no other diff until this one is closed, which clears the picks too
@@ -460,6 +469,11 @@ impl<'a> DetailView<'a> {
         match target {
             Target::Commits => {
                 self.list_focused = true;
+                // the commits a diff open is of go with it, see `clear_picks_off`
+                let picks = match picks {
+                    OnPicks::ClearUnlessPicked if self.is_comparing() => OnPicks::Keep,
+                    picks => picks,
+                };
                 let before = self.as_list_state().selected_commit_hash().clone();
                 self.as_mut_list_state().point(row, picks);
                 if *self.as_list_state().selected_commit_hash() != before {

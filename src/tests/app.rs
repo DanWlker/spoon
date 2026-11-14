@@ -5341,3 +5341,168 @@ fn test_wheel_scrolls_a_file_tree_off_its_selection() {
         check(|app| assert_eq!(local_change_path(app).as_deref(), Some(":/"))),
     ]);
 }
+
+// The mouse at the cell located last, right away, as the terminal sends it.
+fn mouse_now(kind: MouseEventKind) -> Vec<Step> {
+    vec![Step::Act(Box::new(move |app| {
+        let (x, y) = LOCATED.with(|located| located.borrow().1);
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+    }))]
+}
+
+// A window over the page takes the clicks: those in it leave the picks of the page under it.
+#[test]
+fn test_clicks_in_a_window_keep_the_picks_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("2 g v j v"),
+        commits_picked(2),
+        keys("?"),
+        mouse_on("Search the commits", TestGesture::RightClick),
+        vec![Step::Act(Box::new(|app| app.shell.menu = None))],
+        commits_picked(2),
+    ]);
+}
+
+// Pressing a scrollbar's thumb while typing a search ends it, as a click does.
+#[test]
+fn test_thumb_press_while_typing_a_search_ends_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..120 {
+        let message = format!("commit-{i:03}");
+        git(&path, &["commit", "-q", "--allow-empty", "-m", &message]);
+    }
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("2 /"),
+        typing("commit"),
+        check(|app| assert!(app.is_typing())),
+        mouse_on("█", TestGesture::Click),
+        check(|app| assert!(!app.is_typing())),
+    ]);
+}
+
+// A thumb drag whose release never came, outside the terminal, ends at the next press.
+#[test]
+fn test_a_press_ends_a_thumb_drag_never_released() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..120 {
+        let message = format!("commit-{i:03}");
+        git(&path, &["commit", "-q", "--allow-empty", "-m", &message]);
+    }
+    let left = MouseButton::Left;
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![Step::Locate("█", (0, 0))],
+        mouse_now(MouseEventKind::Down(left)),
+        check(|app| assert!(app.shell.thumb_drag.is_some())),
+        vec![Step::Locate("commit-110", (0, 0))],
+        mouse_now(MouseEventKind::Down(left)),
+        check(|app| assert!(app.shell.thumb_drag.is_none())),
+    ]);
+}
+
+// The commits a diff open is of stay picked, a right click on a row not picked or on empty space
+// too, see `test_right_click_in_another_panel_clears_the_picks`.
+#[test]
+fn test_right_click_keeps_the_commits_of_a_diff_picked() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let close_menu = || vec![Step::Act(Box::new(|app: &mut App| app.shell.menu = None))];
+    harness.run(vec![
+        keys("2 g v j v shift-d"),
+        commits_picked(2),
+        mouse_at("c1", (0, 1), TestGesture::RightClick),
+        close_menu(),
+        commits_picked(2),
+        mouse_on("c1", TestGesture::RightClick),
+        close_menu(),
+        commits_picked(2),
+        check(|app| assert!(compared(app).is_some())),
+    ]);
+}
+
+// The wheel, like a click on a border or a thumb, goes into a diff, no deeper.
+#[test]
+fn test_wheel_over_a_diff_stays_on_its_hunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, mut harness) = local_changes_harness(dir.path());
+    let copies = |short: &'static str| {
+        check(move |app| assert_eq!(app.panel_keys().describe(UserEvent::ShortCopy), Some(short)))
+    };
+    harness.run(vec![
+        mouse_on("MASTER", TestGesture::WheelDown),
+        local_scope(Scope::LocalChangesDiff),
+        copies("copy hunk"),
+        mouse_on("MASTER", TestGesture::WheelDown),
+        copies("copy hunk"),
+    ]);
+}
+
+// While a branch's commits only show, this branch only shows all of them again from a commit with
+// no branch, and from the current branch's when L shows it.
+#[test]
+fn test_this_branch_only_of_a_commit_shows_all_again() {
+    use crate::keybind::UserEvent::ThisBranchOnly;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let this = || {
+        vec![Step::Act(Box::new(|app: &mut App| {
+            app.run_event(ThisBranchOnly)
+        }))]
+    };
+    harness.run(vec![
+        // c2, master's
+        keys("2 g"),
+        this(),
+        check(|app| assert_eq!(graph_note(app).as_deref(), Some("master only"))),
+        // c1, of no branch
+        keys("shift-g"),
+        check(|app| assert_eq!(selected_subject(app), "c1")),
+        check(|app| assert!(app.view.keys().takes(ThisBranchOnly))),
+        this(),
+        check(|app| assert_eq!(graph_note(app), None)),
+        // L's, the current branch's
+        keys("shift-l g"),
+        check(|app| {
+            assert!(matches!(
+                app.shell.graph_filter,
+                GraphFilter::BranchOnly(None)
+            ))
+        }),
+        this(),
+        check(|app| assert_eq!(graph_note(app), None)),
+    ]);
+}
+
+// In a comparison with none picked, esc clears the search first, as its hint says.
+#[test]
+fn test_esc_in_a_comparison_clears_the_search_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let esc = |short: &'static str| {
+        check(move |app| assert_eq!(app.panel_keys().describe(UserEvent::Cancel), Some(short)))
+    };
+    harness.run(vec![
+        keys("2 shift-g shift-d 2 /"),
+        typing("c"),
+        keys("enter"),
+        check(|app| assert!(compared(app).is_some())),
+        esc("clear search"),
+        keys("esc"),
+        check(|app| assert!(compared(app).is_some())),
+        esc("close diff"),
+    ]);
+}

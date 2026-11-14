@@ -270,11 +270,12 @@ impl<'a> LocalChangesView<'a> {
         }
     }
 
-    // Focuses the panel the mouse points at, see `View::point`.
+    // Clears the picks of the page but in the panel of `target`, see `App::clear_picks_off`.
     pub fn clear_picks_off(&mut self, target: Option<Target>) {
         self.local_changes_state.clear_picks_off(target);
     }
 
+    // Focuses the panel the mouse points at, see `View::point`.
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         self.local_changes_state.point(target, row, picks)
     }

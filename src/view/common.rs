@@ -87,7 +87,7 @@ pub fn register_graph_commands<T: ?Sized>(
         (
             ActiveBranchOnly,
             "active branch only",
-            "Show only the commits of the current (or selected) branch, or all",
+            "Show only the commits of the current branch, or all again",
         ),
         (
             Revert,

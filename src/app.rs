@@ -2577,14 +2577,17 @@ impl App<'_> {
         quit
     }
 
-    // The history of the branch at the selected commit, or all of it again while it shows; with no
+    // The history of the branch at the selected commit, or all of it again while it shows; while a
+    // branch's only show, all of them again from a commit with no branch or several; else with no
     // branch there, which the key isn't listed for, or several, it says so, see `branches_at`.
     fn branch_only_of_commit(&mut self) {
         let Some(state) = self.view.as_list_state() else {
             return;
         };
+        let shows_branch = matches!(self.shell.graph_filter, GraphFilter::BranchOnly(_));
         let branch = match &branches_at(self.repository, state.selected_commit_hash())[..] {
             [branch] => branch.clone(),
+            _ if shows_branch => return self.toggle_branch_only(None),
             [] => {
                 let err = "No branch at this commit to show the commits of".into();
                 return self.ec.send(AppEvent::NotifyError(err));
@@ -2598,10 +2601,16 @@ impl App<'_> {
     }
 
     // Shows only the commits of `branch`, the current one for None, or all of them again when they
-    // are already shown; L shows all of them again from any branch's.
+    // are already shown; L shows all of them again from any branch's. The current branch by its
+    // name is the one L shows.
     fn toggle_branch_only(&mut self, branch: Option<NamedRef>) {
+        let current = self.repository.current_branch().map(NamedRef::Branch);
+        let current = current.as_ref();
         self.shell.graph_filter = match &self.shell.graph_filter {
-            GraphFilter::BranchOnly(shown) if branch.is_none() || *shown == branch => {
+            GraphFilter::BranchOnly(shown)
+                if branch.is_none()
+                    || shown.as_ref().or(current) == branch.as_ref().or(current) =>
+            {
                 GraphFilter::All
             }
             _ => GraphFilter::BranchOnly(branch),
@@ -2835,7 +2844,9 @@ impl App<'_> {
                 MouseEventKind::Down(_) => self.shell.border_press = Some(Cell { x, y }),
                 MouseEventKind::Up(_) => {
                     if let Some(at) = self.shell.border_press.take() {
-                        self.point(at, OnPicks::Keep);
+                        if self.end_typing() {
+                            self.point(at, OnPicks::Keep);
+                        }
                     }
                 }
                 _ => self.shell.border_press = None,
@@ -2868,13 +2879,21 @@ impl App<'_> {
 
     // A scrollbar's thumb pressed focuses its panel, then dragged scrolls it as the wheel does, by
     // the rows the thumb moved over; returns whether the mouse was on one.
+    // A press ends the drag before, whose release may not have come, outside the terminal; a popup
+    // or the menu opening during the drag ends it, as it does a border's.
     fn drag_thumb(&mut self, mouse: MouseEvent, over: bool) -> bool {
         let (x, y) = (mouse.column, mouse.row);
+        if matches!(mouse.kind, MouseEventKind::Down(_)) || over {
+            self.shell.thumb_drag = None;
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if !over => {
                 let Some(thumb) = self.ctx.layout.borrow().thumb(x, y) else {
                     return false;
                 };
+                if !self.end_typing() {
+                    return true;
+                }
                 self.point(Cell { x, y }, OnPicks::Keep);
                 let shown = thumb.offset;
                 self.shell.thumb_drag = Some(ThumbDrag {
@@ -2891,7 +2910,7 @@ impl App<'_> {
                 let offset = drag.thumb.offset_moved(y as isize - drag.from as isize);
                 let rows = offset as isize - drag.shown as isize;
                 drag.shown = offset;
-                if rows != 0 && !over {
+                if rows != 0 {
                     self.run_event(UserEvent::Wheel(rows));
                 }
                 true
@@ -2899,6 +2918,21 @@ impl App<'_> {
             MouseEventKind::Up(MouseButton::Left) => self.shell.thumb_drag.take().is_some(),
             _ => false,
         }
+    }
+
+    // While typing, a click elsewhere ends it as esc does; returns whether the click acts where it
+    // is after, focusing it there: in the commit message, kept, it does; in a search, which esc may
+    // clear, a click only ends it.
+    fn end_typing(&mut self) -> bool {
+        if !self.is_typing() {
+            return true;
+        }
+        let message = self.view.is_typing_message();
+        self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        if !message {
+            self.shell.pointer.cancel();
+        }
+        message
     }
 
     // What the mouse does, as the keys would on what it points at, see `Gesture`: with a popup
@@ -2932,11 +2966,7 @@ impl App<'_> {
             ) {
                 return;
             }
-            self.type_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-            // the message kept, the click acts where it is, focusing it there; a click in a search
-            // only ends it, which esc may clear
-            if !message {
-                self.shell.pointer.cancel();
+            if !self.end_typing() {
                 return;
             }
         }
@@ -3161,15 +3191,18 @@ impl App<'_> {
 
     // Clears the picks of every panel but the one of `target`, clicked (None, off them all), whose
     // own `point` keeps those clicked on, see `OnPicks`: a click anywhere off the picks clears them.
-    // The refs picked stay while their diff is open, which goes with them.
+    // The refs picked stay while their diff is open, which goes with them; a window over the page
+    // takes the clicks, the page's picks staying under it, see `point_hit`.
     fn clear_picks_off(&mut self, target: Option<Target>) {
+        match &mut self.shell.overlay {
+            Some(Overlay::File(window)) => return window.clear_picks_off(target),
+            Some(_) => return,
+            None => {}
+        }
         if target != Some(Target::Sidebar) && !self.is_diffing() {
             self.shell.sidebar.clear_picks();
         }
         self.view.clear_picks_off(target);
-        if let Some(Overlay::File(window)) = &mut self.shell.overlay {
-            window.clear_picks_off(target);
-        }
     }
 
     fn point_hit(&mut self, hit: Hit, picks: OnPicks) -> bool {
@@ -3206,6 +3239,11 @@ impl App<'_> {
             return pointed;
         }
         self.focus_sidebar();
+        // the refs a diff open is of go with it, see `clear_picks_off`
+        let picks = match picks {
+            OnPicks::ClearUnlessPicked if self.is_diffing() => OnPicks::Keep,
+            picks => picks,
+        };
         self.shell.sidebar.point(hit.row, picks);
         if hit.row.is_some() {
             if let Some(message) = self.shell.sidebar.visual_outside_section() {

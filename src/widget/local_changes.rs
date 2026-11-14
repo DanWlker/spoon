@@ -775,11 +775,7 @@ impl<'a> LocalChangesState<'a> {
             "amend",
             "Amend the last commit, or stop amending",
         )
-        // during an operation only stopping, see `toggle_amend`; a commit being edited stays amended
-        .when(|v| {
-            !v.editing_commit()
-                && (v.repository.operation_in_progress().is_none() || v.draft.amend.is_some())
-        })
+        .when(|v| v.can_toggle_amend())
         .short(|v| {
             if v.draft.amend.is_some() {
                 "stop amending"
@@ -1032,8 +1028,6 @@ impl<'a> LocalChangesState<'a> {
         Ok(true)
     }
 
-    // Focuses the panel the mouse points at and selects its row there, see `View::point`; false
-    // for what isn't on the page.
     // Clears the files and the lines picked but in the panel of `target`, see
     // `App::clear_picks_off`.
     pub fn clear_picks_off(&mut self, target: Option<Target>) {
@@ -1048,6 +1042,8 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // Focuses the panel the mouse points at and selects its row there, see `View::point`; false
+    // for what isn't on the page.
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         match target {
             Target::Unstaged | Target::Staged => {

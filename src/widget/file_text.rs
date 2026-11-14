@@ -204,7 +204,6 @@ impl FileText {
         self.sync_selection();
     }
 
-    // Selects a line, the last one past the end.
     // Before the mouse selects `line`, see `OnPicks`.
     pub fn prepare_point(&mut self, line: Option<usize>, picks: OnPicks) {
         let picked = line.is_some_and(|line| self.selection.contains(&line));
@@ -213,6 +212,7 @@ impl FileText {
         }
     }
 
+    // Selects a line, the last one past the end.
     pub fn select_line(&mut self, line: usize) {
         self.selected = line.min(self.lines.len().saturating_sub(1));
         self.sync_selection();

@@ -328,6 +328,13 @@ impl LocalChangesState<'_> {
         self.draft = CommitDraft::default();
     }
 
+    // Whether amending can be turned on or off, see `toggle_amend`: during an operation only off;
+    // a commit being edited stays amended.
+    pub fn can_toggle_amend(&self) -> bool {
+        !self.editing_commit()
+            && (self.repository.operation_in_progress().is_none() || self.draft.amend.is_some())
+    }
+
     // Turning amend on shows the changes of HEAD in the staged section, combined with what is staged,
     // and the HEAD message in place of the typed one. Turning it off restores both.
     pub fn toggle_amend(&mut self) -> Result<(), String> {
@@ -462,7 +469,7 @@ impl LocalChangesPanel<'_> {
             .first()
             .is_some_and(|at| area.x.saturating_add(3 + width) < at.x);
         if fits {
-            let label = match state.keys().takes(UserEvent::ToggleAmend) {
+            let label = match state.can_toggle_amend() {
                 true => Style::default().fg(theme.fg),
                 false => Style::default().fg(theme.muted_fg),
             };

@@ -120,6 +120,7 @@ impl<'a> ListView<'a> {
         register_commit_list_keys(
             k,
             |v| ListFacts::of(v.as_list_state(), v.repository),
+            |v| commit_branches(v.as_list_state(), v.repository),
             // a new repository has no commits yet, nothing to select
             |v, event| match v.as_list_state().is_empty() {
                 true => Availability::Off,
@@ -132,7 +133,6 @@ impl<'a> ListView<'a> {
         self.as_list_state().is_visual()
     }
 
-    // Selects the commit at `row` the mouse points at, see `View::point`.
     // Clears the commits picked unless `target` is the list, see `App::clear_picks_off`.
     pub fn clear_picks_off(&mut self, target: Option<Target>) {
         if target != Some(Target::Commits) {
@@ -140,6 +140,7 @@ impl<'a> ListView<'a> {
         }
     }
 
+    // Selects the commit at `row` the mouse points at, see `View::point`.
     pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         if target != Target::Commits {
             return false;
@@ -256,8 +257,6 @@ pub struct ListFacts {
     pub head_history_empty: bool,
     // the selected commit is a stash, which space applies, see `lone_stash`
     pub stash: bool,
-    // the branches at the selected commit, see `branches_at`
-    pub commit_branches: usize,
 }
 
 // Whether the command of the graph `event` works on the picked commits, else the selected one,
@@ -290,11 +289,16 @@ impl ListFacts {
                 && !state.is_filtered(),
             stash: !state.is_empty()
                 && lone_stash(repository, state.selected_commit_hash()).is_some(),
-            commit_branches: match state.is_empty() {
-                true => 0,
-                false => branches_at(repository, state.selected_commit_hash()).len(),
-            },
         }
+    }
+}
+
+// The branches at the selected commit, see `branches_at`: apart from `ListFacts`, which every key
+// asks for, as only `UserEvent::ThisBranchOnly` needs them.
+pub fn commit_branches(state: &CommitListState, repository: &Repository) -> usize {
+    match state.is_empty() {
+        true => 0,
+        false => branches_at(repository, state.selected_commit_hash()).len(),
     }
 }
 
@@ -317,6 +321,7 @@ pub fn graph_availability(
 pub fn register_commit_list_keys<T: ?Sized>(
     k: &mut Keys<T>,
     facts: impl Fn(&T) -> ListFacts + Copy,
+    commit_branches: impl Fn(&T) -> usize + Copy,
     availability: impl Fn(&T, UserEvent) -> Availability + Copy,
 ) {
     use UserEvent::*;
@@ -371,16 +376,20 @@ pub fn register_commit_list_keys<T: ?Sized>(
         move |v| facts(v).picked > 0,
         move |v| facts(v).operation_waits,
     );
-    // unbound by default, in the menu of a commit; several branches there say to choose one
+    // unbound by default, in the menu of a commit; several branches there say to choose one; while
+    // a branch's only show, all of them again from any commit, see `App::branch_only_of_commit`
     k.add_where(
         &[ThisBranchOnly],
         "this branch only",
         "Show only the commits of the branch at the selected commit, or all again",
-        move |v| match (availability(v, ThisBranchOnly), facts(v).commit_branches) {
-            (Availability::Works, 0) => Availability::Off,
-            (Availability::Works, 1) => Availability::Works,
-            (Availability::Works, _) => Availability::Warns,
-            (availability, _) => availability,
+        move |v| match availability(v, ThisBranchOnly) {
+            Availability::Works if facts(v).active_branch_only => Availability::Works,
+            Availability::Works => match commit_branches(v) {
+                0 => Availability::Off,
+                1 => Availability::Works,
+                _ => Availability::Warns,
+            },
+            availability => availability,
         },
     );
     // a stash isn't on the web host
