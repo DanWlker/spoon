@@ -291,15 +291,28 @@ impl DiffPane {
     // Selects what the mouse points at, at `row` of the diff: its hunk, the cursor on the changed
     // line there, or that line while selecting lines (in the hunk of the lines picked); a drag
     // starting there goes into the lines, see `OnPicks`. Off the rows, on empty space, a border or
-    // the thumb, it goes into the diff, no deeper when already in it.
+    // the thumb, it goes into the diff, no deeper when already in it, at the first hunk shown, the
+    // diff not scrolling.
     pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
         // off the lines picked, a header or empty space too
         if self.focus == Some(DiffPart::Line) {
             self.cursor.prepare_point(row, picks);
         }
         let Some(row) = row else {
-            if !self.is_focused() {
+            if self.is_focused() {
+                return;
+            }
+            // while it loads, its first hunk once shown
+            let Some(diff) = shown(&self.state) else {
                 self.enter();
+                return;
+            };
+            let offset = self.cursor.scroll.offset;
+            let top = self.cursor.wrap().logical_at(offset);
+            let hunk = diff.hunks.iter().position(|h| h.rows.end > top);
+            if self.cursor.select_hunk(diff, hunk.unwrap_or(usize::MAX)) {
+                self.focus = Some(DiffPart::Hunk);
+                self.cursor.scroll.offset = offset;
             }
             return;
         };

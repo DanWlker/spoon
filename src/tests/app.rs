@@ -5429,6 +5429,52 @@ fn test_wheel_over_a_diff_stays_on_its_hunks() {
     ]);
 }
 
+// Pressing the thumb of a diff not gone into goes into it where it is scrolled, at the first hunk
+// shown, the diff not jumping to its first hunk.
+#[test]
+fn test_thumb_press_goes_into_a_diff_where_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let lines: String = (0..300).map(|i| format!("line{i:03}\n")).collect();
+    std::fs::write(path.join("long.txt"), &lines).unwrap();
+    git(&path, &["add", "long.txt"]);
+    git(&path, &["commit", "-q", "-m", "long"]);
+    // a change every 20 lines, a hunk each
+    let changed: String = (0..300)
+        .map(|i| match i % 20 {
+            0 => format!("CHANGED{i:03}\n"),
+            _ => format!("line{i:03}\n"),
+        })
+        .collect();
+    std::fs::write(path.join("long.txt"), changed).unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let first_shown = |expected: &'static str| {
+        screen(move |s| {
+            let first = (0..300)
+                .step_by(20)
+                .map(|i| format!("CHANGED{i:03}"))
+                .find(|change| s.contains(change.as_str()));
+            assert_eq!(first.as_deref(), Some(expected), "{s}");
+        })
+    };
+    harness.run(vec![
+        keys("enter ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d ctrl-d esc"),
+        local_scope(Scope::LocalChanges),
+        first_shown("CHANGED200"),
+        vec![Step::Locate("█", (0, 0))],
+        mouse_now(MouseEventKind::Down(MouseButton::Left)),
+        local_scope(Scope::LocalChangesDiff),
+        first_shown("CHANGED200"),
+        // the hunk after it next, shown already
+        keys("j"),
+        first_shown("CHANGED200"),
+    ]);
+}
+
 // While a branch's commits only show, this branch only shows all of them again from a commit with
 // no branch, and from the current branch's when L shows it.
 #[test]
