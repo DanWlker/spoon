@@ -3206,6 +3206,49 @@ mod tests {
         Repository::load(path, SortCommit::Chronological, None, false).unwrap()
     }
 
+    // The amend checkbox looks as a click on it works: lit while typing the message, which the
+    // click ends first, dimmed during an operation, where amending can't start.
+    #[test]
+    fn test_amend_checkbox_lit_where_a_click_toggles() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        git.commit("first", "2024-01-01");
+        let checkbox = |state: &mut LocalChangesState| {
+            let ctx = test_ctx();
+            let area = Rect::new(0, 0, 120, 20);
+            let mut buf = Buffer::empty(area);
+            LocalChangesPanel::new(ctx.clone(), true).render(area, &mut buf, state);
+            let at = (0..area.height).find_map(|y| {
+                let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                let i = row.find("Amend")?;
+                Some((row[..i].chars().count() as u16, y))
+            });
+            let at = at.expect("the amend checkbox drawn");
+            let fg = buf[at].style().fg;
+            let theme = &ctx.color_theme;
+            assert!(fg == Some(theme.fg) || fg == Some(theme.muted_fg), "{fg:?}");
+            fg == Some(theme.fg)
+        };
+
+        let repository = reload(repo_path);
+        let mut state = LocalChangesState::load(&repository);
+        assert!(checkbox(&mut state));
+        state.focus_commit();
+        assert!(state.is_editing());
+        assert!(checkbox(&mut state));
+
+        let head = git_stdout(repo_path, &["rev-parse", "HEAD"]);
+        fs::write(repo_path.join(".git/MERGE_HEAD"), head)?;
+        let repository = reload(repo_path);
+        let mut state = LocalChangesState::load(&repository);
+        assert!(!checkbox(&mut state));
+        Ok(())
+    }
+
     #[test]
     fn test_toggle_amend() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
