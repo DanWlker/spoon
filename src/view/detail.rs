@@ -454,10 +454,9 @@ impl<'a> DetailView<'a> {
         self.list_focused = true;
     }
 
-    // Clears the picks but in the panel of `target`, see `App::clear_picks_off`; the commits picked
-    // stay while their diff is open, which goes with them.
+    // Clears the picks but in the panel of `target`, see `App::clear_picks_off`.
     pub fn clear_picks_off(&mut self, target: Option<Target>) {
-        if target != Some(Target::Commits) && !self.is_comparing() {
+        if target != Some(Target::Commits) {
             self.as_mut_list_state().clear_picks();
         }
         self.changes_state.clear_picks_off(target);
@@ -469,11 +468,6 @@ impl<'a> DetailView<'a> {
         match target {
             Target::Commits => {
                 self.list_focused = true;
-                // the commits a diff open is of go with it, see `clear_picks_off`
-                let picks = match picks {
-                    OnPicks::ClearUnlessPicked if self.is_comparing() => OnPicks::Keep,
-                    picks => picks,
-                };
                 let before = self.as_list_state().selected_commit_hash().clone();
                 self.as_mut_list_state().point(row, picks);
                 if *self.as_list_state().selected_commit_hash() != before {

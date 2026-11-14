@@ -3191,15 +3191,15 @@ impl App<'_> {
 
     // Clears the picks of every panel but the one of `target`, clicked (None, off them all), whose
     // own `point` keeps those clicked on, see `OnPicks`: a click anywhere off the picks clears them.
-    // The refs picked stay while their diff is open, which goes with them; a window over the page
-    // takes the clicks, the page's picks staying under it, see `point_hit`.
+    // A diff open stays, its commits or refs no longer picked; a window over the page takes the
+    // clicks, the page's picks staying under it, see `point_hit`.
     fn clear_picks_off(&mut self, target: Option<Target>) {
         match &mut self.shell.overlay {
             Some(Overlay::File(window)) => return window.clear_picks_off(target),
             Some(_) => return,
             None => {}
         }
-        if target != Some(Target::Sidebar) && !self.is_diffing() {
+        if target != Some(Target::Sidebar) {
             self.shell.sidebar.clear_picks();
         }
         self.view.clear_picks_off(target);
@@ -3239,11 +3239,6 @@ impl App<'_> {
             return pointed;
         }
         self.focus_sidebar();
-        // the refs a diff open is of go with it, see `clear_picks_off`
-        let picks = match picks {
-            OnPicks::ClearUnlessPicked if self.is_diffing() => OnPicks::Keep,
-            picks => picks,
-        };
         self.shell.sidebar.point(hit.row, picks);
         if hit.row.is_some() {
             if let Some(message) = self.shell.sidebar.visual_outside_section() {

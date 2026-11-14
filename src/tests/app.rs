@@ -3773,8 +3773,8 @@ fn test_right_click_off_the_rows_clears_the_picks() {
     ]);
 }
 
-// A right click in another panel clears the picks too: anywhere off them. The commits picked stay
-// while their diff is open, which goes with them.
+// A right click in another panel clears the picks too: anywhere off them. The diff of the commits
+// picked stays open.
 #[test]
 fn test_right_click_in_another_panel_clears_the_picks() {
     let dir = tempfile::tempdir().unwrap();
@@ -3813,12 +3813,13 @@ fn test_right_click_in_another_panel_clears_the_picks() {
         mouse_on("c1", TestGesture::RightClick),
         keys("esc"),
         picks(false),
-        // the commits of a diff, kept while it is open
+        // the commits of a diff, the diff staying open
         keys("2 g v j v shift-d"),
         picks(true),
         mouse_on("f.txt", TestGesture::RightClick),
         keys("esc"),
-        picks(true),
+        picks(false),
+        check(|app| assert!(compared(app).is_some())),
     ]);
 }
 
@@ -5408,27 +5409,6 @@ fn test_a_press_ends_a_thumb_drag_never_released() {
         vec![Step::Locate("commit-110", (0, 0))],
         mouse_now(MouseEventKind::Down(left)),
         check(|app| assert!(app.shell.thumb_drag.is_none())),
-    ]);
-}
-
-// The commits a diff open is of stay picked, a right click on a row not picked or on empty space
-// too, see `test_right_click_in_another_panel_clears_the_picks`.
-#[test]
-fn test_right_click_keeps_the_commits_of_a_diff_picked() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = repository(dir.path());
-    let mut harness = Harness::new(&path, launch());
-    let close_menu = || vec![Step::Act(Box::new(|app: &mut App| app.shell.menu = None))];
-    harness.run(vec![
-        keys("2 g v j v shift-d"),
-        commits_picked(2),
-        mouse_at("c1", (0, 1), TestGesture::RightClick),
-        close_menu(),
-        commits_picked(2),
-        mouse_on("c1", TestGesture::RightClick),
-        close_menu(),
-        commits_picked(2),
-        check(|app| assert!(compared(app).is_some())),
     ]);
 }
 
