@@ -264,6 +264,7 @@ enum DialogKind {
     Commit {
         preview: Box<CommitPreview>,
         task: Box<GitTask>,
+        no_verify: Check,
     },
     // the changes of `paths` (all of them when empty) on the local changes page
     Stash {
@@ -767,11 +768,14 @@ impl GitDialog {
         } else {
             (" Commit ", "commit")
         };
+        let mut form = Form::default();
+        let no_verify = form.check("Skip the commit hooks (--no-verify)", false);
         let kind = DialogKind::Commit {
             preview: Box::new(preview),
             task: Box::new(task),
+            no_verify,
         };
-        let mut dialog = Self::with(title, verb, vec![], kind, Form::default());
+        let mut dialog = Self::with(title, verb, vec![], kind, form);
         dialog.trigger = Some(UserEvent::Commit);
         dialog
     }
@@ -2460,7 +2464,21 @@ impl GitDialog {
             )),
             K::CreateTag { at, name, message } => self.create_tag_command(at, *name, *message),
             K::DeleteTags { names, remote } => self.delete_tags_command(names, remote),
-            K::Prepared { task, .. } | K::Commit { task, .. } => Ok(*task.clone()),
+            K::Prepared { task, .. } => Ok(*task.clone()),
+            K::Commit {
+                task, no_verify, ..
+            } => {
+                let mut task = *task.clone();
+                // the commit comes first, the rebase, cherry-pick or revert it concludes after
+                if let Some(commit) = task
+                    .commands
+                    .first_mut()
+                    .filter(|_| self.checked(*no_verify))
+                {
+                    commit.args.push("--no-verify".into());
+                }
+                Ok(task)
+            }
             K::Stash {
                 paths,
                 target,

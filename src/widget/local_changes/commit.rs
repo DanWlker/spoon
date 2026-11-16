@@ -13,6 +13,8 @@ pub struct CommitDraft {
     // git's prepared message put in the message box for the operation in progress, see
     // `prepare_message`
     pub(super) prepared_message: Option<String>,
+    // files conflicted when the changes last loaded, see `offer_resolved_commit`
+    pub(super) conflicted: bool,
 }
 
 // Amending the commit after `base`, the parent of HEAD: the staged section is compared to it
@@ -255,35 +257,52 @@ impl LocalChangesState<'_> {
             .filter(|operation| *operation != Operation::Merge)
     }
 
-    // Fills the empty message box with git's message for the merge, cherry-pick or revert in progress,
-    // once, so it can still be cleared.
+    // Fills the message box with git's message for the operation in progress, or for a squash merge,
+    // and again when git's message changes, as at the next stop of a rebase or cherry-pick continued
+    // outside the app; a box edited or cleared since keeps what was typed. The message goes once the
+    // operation is over, unless it was edited.
     pub(super) fn prepare_message(&mut self) {
-        let Some(operation) = self.repository.operation_in_progress() else {
-            // a squash merge leaves its message without a merge in progress
-            match self.repository.squash_message() {
-                Some(message) if self.draft.prepared_message.is_none() && self.draft.is_empty() => {
-                    self.draft.set_message(&message);
-                    self.draft.prepared_message = Some(self.draft.message());
-                }
-                Some(_) => {}
-                // the operation is over, aborted say: its message goes too, unless it was edited
-                None => {
-                    if self.draft.prepared_message.take() == Some(self.draft.message()) {
-                        self.draft.set_message("");
-                    }
-                }
-            }
-            return;
+        let message = match self.repository.operation_in_progress() {
+            Some(_) => self.repository.prepared_message(),
+            None => self.repository.squash_message(),
         };
-        if operation.continues_without_commit()
-            || self.draft.prepared_message.is_some()
-            || !self.draft.is_empty()
-        {
+        // as the box holds it, to compare with what it holds
+        let message = message.map(|message| {
+            let mut draft = CommitDraft::default();
+            draft.set_message(&message);
+            draft.message()
+        });
+        if message == self.draft.prepared_message {
             return;
         }
-        if let Some(message) = self.repository.prepared_message() {
-            self.draft.set_message(&message);
-            self.draft.prepared_message = Some(self.draft.message());
+        let unedited = self.draft.is_empty()
+            || self.draft.prepared_message.as_ref() == Some(&self.draft.message());
+        if unedited {
+            self.draft.set_message(message.as_deref().unwrap_or(""));
+        }
+        self.draft.prepared_message = message;
+    }
+
+    // Once the last conflict of a rebase stop is resolved, in the app or outside, offers the commit
+    // going on with it, like lazygit; git's message gone means the rebase went on to another stop,
+    // like `m s` to one to edit, which has nothing resolved to commit.
+    pub(super) fn offer_resolved_commit(&mut self) {
+        let conflicted = self
+            .changes
+            .unstaged
+            .iter()
+            .any(|f| f.status == LocalChangeStatus::Conflicted);
+        let resolved = std::mem::replace(&mut self.draft.conflicted, conflicted) && !conflicted;
+        if resolved
+            && self.repository.operation_in_progress() == Some(Operation::Rebase)
+            && self.repository.prepared_message().is_some()
+            && self.request.is_none()
+            && !self.is_editing()
+            && !self.changes.staged.is_empty()
+            && !self.draft.summary.text().trim().is_empty()
+        {
+            // can't fail: an operation is in progress, see `check_commit`
+            let _ = self.request_commit();
         }
     }
 

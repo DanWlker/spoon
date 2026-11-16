@@ -263,6 +263,7 @@ impl<'a> LocalChangesState<'a> {
         // after the draft, filling the message only when it is empty, like MERGE_MSG on conflicts
         state.prepare_message();
         state.sync_amend();
+        state.offer_resolved_commit();
         state.load_diff();
         // the loaded diff and the submodule panel show what the focus may be on
         if let Some(focus) = focus {
@@ -536,10 +537,11 @@ impl<'a> LocalChangesState<'a> {
         } else {
             row.path.clone()
         };
+        // the staged changes stay, see `discard_task`
         let target = if self.is_diff_focused() {
-            format!("this {} of", self.pane.selected_name())
+            format!("the unstaged {} of", self.pane.selected_name())
         } else {
-            "all changes to".into()
+            "the unstaged changes to".into()
         };
         let Some(task) = self.discard_task()? else {
             return Ok(());
@@ -1306,6 +1308,7 @@ impl<'a> LocalChangesState<'a> {
         self.changes = self.with_amend(changes);
         self.prepare_message();
         self.sync_amend();
+        self.offer_resolved_commit();
         let files = [&self.changes.unstaged, &self.changes.staged];
         for (section, files) in self.sections.iter_mut().zip(files) {
             section.tree.set_tree(file_tree(files));
@@ -3791,7 +3794,7 @@ mod tests {
         state.request_discard()?;
         assert_eq!(
             prompt(&state),
-            Some("Discard all changes to all files".into())
+            Some("Discard the unstaged changes to all files".into())
         );
         confirm_and_run(&mut state)?;
         assert!(state.changes.unstaged.is_empty());
@@ -4171,7 +4174,7 @@ mod tests {
         state.request_discard()?;
         assert_eq!(
             prompt(&state),
-            Some("Discard all changes to 1 picked file".into())
+            Some("Discard the unstaged changes to 1 picked file".into())
         );
         confirm_and_run(&mut state)?;
         assert_eq!(paths(&state.changes.unstaged), vec!["c.txt"]);
@@ -4327,9 +4330,10 @@ mod tests {
             Some(Operation::Rebase)
         );
 
-        // resolved, staged as the files load again, then continued
+        // resolved, staged as the files load again, which offers the commit; continued instead
         fs::write(repo_path.join("a.txt"), "resolved\n")?;
         state.reload();
+        assert!(state.dialog().is_some_and(|d| d.commit_preview().is_some()));
         state.continue_rebase();
         state.run_task()?;
         assert_eq!(state.repository.operation_in_progress(), None);
@@ -4342,6 +4346,107 @@ mod tests {
         for event in [UserEvent::Abort, UserEvent::Continue, UserEvent::Skip] {
             assert!(!state.keys().takes(event), "{event:?}");
         }
+        Ok(())
+    }
+
+    // A rebase stopped on a conflict fills the message box with the commit's message and the files
+    // that conflicted, and resolving the last conflict offers the commit going on with it.
+    #[test]
+    fn test_rebase_stop_fills_the_message_and_offers_the_commit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = conflicting_rebase(repo_path);
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert_eq!(
+            state.draft.message(),
+            "feature change\n\nConflicts:\n  a.txt"
+        );
+        assert!(state.dialog().is_none());
+
+        // resolved outside, loaded again as Ctrl-r does
+        fs::write(repo_path.join("a.txt"), "resolved\n")?;
+        state.reload_repository();
+        let preview = state.dialog().and_then(GitDialog::commit_preview);
+        assert_eq!(preview.map(|p| p.subject.as_str()), Some("feature change"));
+        confirm_and_run(&mut state)?;
+        assert_eq!(state.repository.operation_in_progress(), None);
+        assert_eq!(
+            git_stdout(repo_path, &["log", "-1", "--format=%B"]),
+            "feature change\n\nConflicts:\n  a.txt"
+        );
+        Ok(())
+    }
+
+    // Two commits conflicting, the first resolved and continued outside the app: the box takes the
+    // message of the next stop, unless it was edited; skipping to a stop to edit offers no commit.
+    #[test]
+    fn test_rebase_next_stop_refills_the_message() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for (key, value) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.com"),
+            ("commit.gpgsign", "false"),
+            ("core.hooksPath", "/dev/null"),
+        ] {
+            git_stdout(repo_path, &["config", key, value]);
+        }
+        fs::write(repo_path.join("a.txt"), "base\n")?;
+        fs::write(repo_path.join("b.txt"), "base\n")?;
+        git.add(&["a.txt", "b.txt"]);
+        git.commit("base", "2024-01-01");
+        git.checkout_b("feature");
+        for (name, file, date) in [
+            ("first", "a.txt", "2024-01-02"),
+            ("second", "b.txt", "2024-01-03"),
+            ("third", "c.txt", "2024-01-04"),
+        ] {
+            fs::write(repo_path.join(file), "feature\n")?;
+            git.add(&[file]);
+            git.commit(name, date);
+        }
+        git.checkout("master");
+        fs::write(repo_path.join("a.txt"), "master\n")?;
+        fs::write(repo_path.join("b.txt"), "master\n")?;
+        git.add(&["a.txt", "b.txt"]);
+        git.commit("master change", "2024-01-05");
+        git.checkout("feature");
+        let run = |args: &[&str]| {
+            crate::git::git_command()
+                .args(args)
+                .env("GIT_EDITOR", "true")
+                .env("GIT_SEQUENCE_EDITOR", "sed -i 3s/^pick/edit/")
+                .current_dir(repo_path)
+                .status()
+                .unwrap()
+        };
+        run(&["rebase", "-q", "-i", "master"]);
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        assert_eq!(state.draft.message(), "first\n\nConflicts:\n  a.txt");
+
+        fs::write(repo_path.join("a.txt"), "resolved\n")?;
+        run(&["add", "a.txt"]);
+        // stopped again, on the second
+        assert!(!run(&["rebase", "--continue"]).success());
+        state.reload_repository();
+        assert_eq!(state.draft.message(), "second\n\nConflicts:\n  b.txt");
+        assert!(state.dialog().is_none());
+
+        // skipping the second stops to edit the third, which isn't offered as resolved; the edited
+        // message is kept, under the third's, for when amending stops
+        state.draft.set_message("mine");
+        // the files loading again, as the app does once the skip is done
+        assert!(run(&["rebase", "--skip"]).success());
+        state.reload();
+        assert!(state.editing_commit());
+        assert!(state.dialog().is_none());
+        let amend = state.draft.amend.as_ref().unwrap();
+        assert_eq!(amend.message_before.0.text(), "mine");
         Ok(())
     }
 
@@ -4519,7 +4624,7 @@ mod tests {
         state.request_discard()?;
         assert_eq!(
             prompt(&state),
-            Some("Discard all changes to all files".into())
+            Some("Discard the unstaged changes to all files".into())
         );
         confirm_and_run(&mut state)?;
         assert_eq!(fs::read_to_string(repo_path.join("a.txt"))?, "master\n");

@@ -4740,6 +4740,38 @@ fn test_commit_refused_by_a_hook_keeps_the_message() {
     ]);
 }
 
+// The commit popup's checkbox skips the hook that refuses the commit.
+#[test]
+fn test_commit_skips_the_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let hook = path.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys("space 3"),
+        typing("skipped"),
+        keys("esc c space"),
+        screen(|screen| {
+            assert!(
+                screen.contains("git commit --quiet --file=- --no-verify"),
+                "{screen}"
+            )
+        }),
+        keys("enter"),
+    ]);
+    assert_eq!(git(&path, &["log", "-1", "--format=%s"]), "skipped\n");
+}
+
 #[test]
 fn test_checkout_refused_over_local_changes() {
     let dir = tempfile::tempdir().unwrap();

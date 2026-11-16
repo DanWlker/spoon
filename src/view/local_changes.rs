@@ -59,6 +59,8 @@ impl<'a> LocalChangesView<'a> {
         self.local_changes_state
             .load_stale_diff_in_background(&self.tx);
         self.local_changes_state.update_submodule_height(area);
+        // the commit offered once the files loaded resolve the last conflict, see `reload_with`
+        self.send_request();
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
