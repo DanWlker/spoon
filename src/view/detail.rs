@@ -1002,18 +1002,23 @@ impl<'a> DetailView<'a> {
                 layout.record(Target::Info, detail_area, RowMap::None);
             }
             DetailTab::Changes => {
-                let search = self.changes_query.filter();
+                // the filter typed, and the one the tree applies, are set together, see
+                // `apply_query_change`
+                debug_assert_eq!(self.changes_query.filter(), self.changes_state.filter());
                 let diff_search = self.pane_query.search();
-                CommitTab::new(self.ctx.clone(), search, diff_search, focused).render_changes(
+                CommitTab::new(self.ctx.clone(), diff_search, focused).render_changes(
                     detail_area,
                     f.buffer_mut(),
                     &mut self.changes_state,
                 );
             }
             DetailTab::Files => {
-                let search = self.files_query.filter();
+                // as for the changes, once the files are loaded
+                if let Some(filter) = self.files_state.loaded_filter() {
+                    debug_assert_eq!(self.files_query.filter(), filter);
+                }
                 let preview_search = self.pane_query.search();
-                CommitTab::new(self.ctx.clone(), search, preview_search, focused).render_files(
+                CommitTab::new(self.ctx.clone(), preview_search, focused).render_files(
                     detail_area,
                     f.buffer_mut(),
                     &mut self.files_state,

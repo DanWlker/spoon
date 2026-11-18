@@ -469,6 +469,11 @@ impl<'a> CommitChangesState<'a> {
         self.tree.view()
     }
 
+    // The filter the files are shown with.
+    pub fn filter(&self) -> Option<&str> {
+        self.tree.filter()
+    }
+
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
@@ -862,6 +867,11 @@ impl<'a> CommitFilesState<'a> {
         self.is_preview_focused() && self.text.scroll(event)
     }
 
+    // The filter the files are shown with once they are loaded, None before.
+    pub fn loaded_filter(&self) -> Option<Option<&str>> {
+        self.tree.as_ref().map(FileTreeState::filter)
+    }
+
     pub fn is_preview_focused(&self) -> bool {
         matches!(self.preview, Some(FilePreview::Text(LineCursor::Shown)))
     }
@@ -1028,8 +1038,6 @@ fn apply_changes(
 // The changes or the files tab of the details: a file tree beside the diff or the preview.
 pub struct CommitTab {
     ctx: Rc<AppContext>,
-    // the filter, highlighted in the names
-    search: Option<String>,
     // highlighted in the diff or the preview
     pane_search: Option<String>,
     // the panel has the focus, its border the accent's color
@@ -1037,15 +1045,9 @@ pub struct CommitTab {
 }
 
 impl CommitTab {
-    pub fn new(
-        ctx: Rc<AppContext>,
-        search: Option<&str>,
-        pane_search: Option<&str>,
-        focused: bool,
-    ) -> Self {
+    pub fn new(ctx: Rc<AppContext>, pane_search: Option<&str>, focused: bool) -> Self {
         Self {
             ctx,
-            search: search.map(String::from),
             pane_search: pane_search.map(String::from),
             focused,
         }
@@ -1072,7 +1074,6 @@ impl CommitTab {
             Target::DetailFiles,
             &state.tree,
             |i| Some(state.files[i].symbol),
-            self.search.as_deref(),
             |path| state.picked.contains(path),
             cursor,
             empty,
@@ -1123,7 +1124,6 @@ impl CommitTab {
                 Target::DetailFiles,
                 tree,
                 |_| None,
-                self.search.as_deref(),
                 |path| state.picked.contains(path),
                 cursor,
                 "No matches",
@@ -1477,7 +1477,7 @@ mod tests {
         assert!(state.pane.loading_since().is_some());
         let area = Rect::new(0, 0, 100, 12);
         let mut buf = Buffer::empty(area);
-        CommitTab::new(test_ctx(), None, None, true).render_changes(area, &mut buf, &mut state);
+        CommitTab::new(test_ctx(), None, true).render_changes(area, &mut buf, &mut state);
         let drawn = crate::test_support::ui::dump(&buf);
         assert!(
             drawn.contains("changed") && !drawn.contains("README"),
@@ -1579,7 +1579,7 @@ mod tests {
         assert!(!state.has_text());
         let area = Rect::new(0, 0, 80, 6);
         let mut buf = Buffer::empty(area);
-        CommitTab::new(test_ctx(), None, None, true).render_files(area, &mut buf, &mut state);
+        CommitTab::new(test_ctx(), None, true).render_files(area, &mut buf, &mut state);
         let drawn = crate::test_support::ui::dump(&buf);
         assert!(
             drawn.contains("changed") && !drawn.contains("Loading"),

@@ -1971,6 +1971,8 @@ impl LocalChangesPanel<'_> {
         } else {
             "No matches"
         };
+        // the filter typed, and the one the tree applies, are set together, see `apply_query_change`
+        debug_assert_eq!(state.query_of(section).filter(), tree.filter());
         // only the section whose diff is displayed shows its cursor, quieter while another panel,
         // like the refs sidebar, has the focus
         let offset = render_tree(
@@ -1979,8 +1981,6 @@ impl LocalChangesPanel<'_> {
             target,
             tree,
             |i| Some(files[i].status.symbol()),
-            // the filter is highlighted in the section it applies to
-            state.query_of(section).filter(),
             |path| picked.contains(path),
             match (active, self.focused) {
                 (false, _) => TreeCursor::Hidden,

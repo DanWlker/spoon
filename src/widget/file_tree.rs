@@ -889,8 +889,8 @@ pub enum TreeCursor {
 }
 
 // Draws the rows of `tree` in `area`, like every file tree: the directories open or closed, the
-// files with their change letter from `symbol` (by their index) when they have one, the match of
-// `search` highlighted; the `picked` rows and, unless the `cursor` is hidden, the selected one
+// files with their change letter from `symbol` (by their index) when they have one, what the
+// filter matched highlighted; the `picked` rows and, unless the `cursor` is hidden, the selected one
 // highlighted across the row, the lines of the tree keeping their color; `empty` when there is
 // no row. Returns the first row shown, for the scrollbar.
 #[expect(clippy::too_many_arguments)]
@@ -900,7 +900,6 @@ pub fn render_tree(
     target: Target,
     tree: &FileTreeState,
     symbol: impl Fn(usize) -> Option<&'static str>,
-    search: Option<&str>,
     picked: impl Fn(&str) -> bool,
     cursor: TreeCursor,
     empty: &str,
@@ -909,11 +908,10 @@ pub fn render_tree(
 ) -> usize {
     let theme = &ctx.color_theme;
     // the filter highlights what it matched, with the options it was set with
-    let options = tree
-        .filter
-        .as_ref()
-        .filter(|(filter, _)| search == Some(filter.as_str()))
-        .map_or(ctx.search_options.get(), |(_, options)| *options);
+    let (search, options) = match &tree.filter {
+        Some((filter, options)) => (Some(filter.as_str()), *options),
+        None => (None, ctx.search_options.get()),
+    };
     let rows = tree.rows();
     if rows.is_empty() {
         Paragraph::new(placeholder(empty, theme)).render(area, buf);
@@ -1350,7 +1348,6 @@ mod tests {
             Target::DetailFiles,
             &tree,
             |_| None,
-            Some("ab"),
             |_| false,
             TreeCursor::Hidden,
             "",
@@ -1407,7 +1404,6 @@ mod tests {
             Target::DetailFiles,
             tree,
             symbol,
-            None,
             is_picked,
             cursor,
             "",
@@ -1476,7 +1472,6 @@ mod tests {
                     Target::DetailFiles,
                     &tree,
                     |_| None,
-                    None,
                     |_| false,
                     TreeCursor::Bright,
                     "",

@@ -3329,13 +3329,14 @@ impl Widget for GitDialogWidget<'_> {
             } else {
                 TreeCursor::Hidden
             };
+            // the filter typed, and the one the tree applies, are set together, see `type_filter`
+            debug_assert_eq!(files.query.filter(), files.tree.filter());
             let offset = render_tree(
                 buf,
                 rows,
                 Target::Dialog(DialogHit::Files(i)),
                 &files.tree,
                 |file| files.symbols.get(file).copied(),
-                None,
                 |_| false,
                 cursor,
                 "No files",
