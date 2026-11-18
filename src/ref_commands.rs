@@ -139,10 +139,10 @@ pub fn ref_command(
             let url = repository.remote_url(name).unwrap_or_default();
             Ok(GitDialog::edit_remote(name, &url))
         }
-        (UserEvent::Select, RefSelection::Stash(name)) => Ok(GitDialog::apply_stash(
-            name,
-            &stash_message(repository, name),
-        )),
+        (UserEvent::Select, RefSelection::Stash(name)) => match loaded_stash(repository, name) {
+            Some((message, target)) => Ok(GitDialog::apply_stash(name, &message, target)),
+            None => Err(format!("{name} is gone, reload to see the stashes")),
+        },
         _ => return None,
     };
     Some(dialog)
@@ -191,7 +191,18 @@ fn delete_refs(
                 .collect();
             upstreams.sort();
             upstreams.dedup();
-            Ok(GitDialog::delete_branches(names, unmerged, upstreams))
+            let branches = names
+                .into_iter()
+                .map(|name| {
+                    let tip = repository.all_refs().into_iter().find_map(|r| match r {
+                        Ref::Branch { name: n, target } if *n == name => Some(target.clone()),
+                        _ => None,
+                    });
+                    tip.map(|tip| (name.clone(), tip))
+                        .ok_or_else(|| format!("{name} is gone, reload to see the branches"))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(GitDialog::delete_branches(branches, unmerged, upstreams))
         }
         RefSection::Remotes => {
             let info = repository.remote_info();
@@ -236,22 +247,25 @@ fn delete_refs(
 // applies it on the graph, as in the sidebar, instead of checking the commit out.
 pub fn lone_stash(repository: &Repository, hash: &CommitHash) -> Option<GitDialog> {
     match repository.refs(hash).as_slice() {
-        [Ref::Stash { name, message, .. }] => Some(GitDialog::apply_stash(name, message)),
+        [Ref::Stash {
+            name,
+            message,
+            target,
+        }] => Some(GitDialog::apply_stash(name, message, target.clone())),
         _ => None,
     }
 }
 
-fn stash_message(repository: &Repository, name: &str) -> String {
-    repository
-        .all_refs()
-        .into_iter()
-        .find_map(|r| match r {
-            Ref::Stash {
-                name: n, message, ..
-            } if n == name => Some(message.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
+// The message and commit of the stash `name`, as loaded.
+fn loaded_stash(repository: &Repository, name: &str) -> Option<(String, CommitHash)> {
+    repository.all_refs().into_iter().find_map(|r| match r {
+        Ref::Stash {
+            name: n,
+            message,
+            target,
+        } if n == name => Some((message.clone(), target.clone())),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

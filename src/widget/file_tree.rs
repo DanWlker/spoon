@@ -114,7 +114,7 @@ impl FileTree {
         let mut root = DirNode::default();
         for (index, path) in paths.into_iter().enumerate() {
             // an untracked repository inside is listed as `nested/`, a file named `nested`
-            let mut parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+            let mut parts: Vec<&str> = tree_path(path).split('/').collect();
             let name = parts.pop().unwrap_or_default();
             let mut node = &mut root;
             for part in parts {
@@ -578,11 +578,12 @@ impl TreeSelection {
     }
 }
 
-// The files of a tree checked, like those to stash: a directory, and the root row, is checked when
-// every file under it the filter shows is, and toggles them all.
+// The files of a tree checked, like those to stash, by their index in the paths the tree was built
+// from, see `RowKind::File`: a path git lists as `nested/` is the row `nested`. A directory, and the
+// root row, is checked when every file under it the filter shows is, and toggles them all.
 #[derive(Debug, Default)]
 pub struct CheckedFiles {
-    checked: Picks<String>,
+    checked: Picks<usize>,
     // every file, and whether the filter shows it, see `show`
     files: Vec<(String, bool)>,
     // the files shown under each directory and the root, and how many of them are checked
@@ -590,12 +591,12 @@ pub struct CheckedFiles {
 }
 
 impl CheckedFiles {
-    // `files`, each checked or not, all shown.
+    // `files`, each checked or not, all shown; in the order the tree was built from.
     pub fn new(files: impl IntoIterator<Item = (String, bool)>) -> Self {
         let mut this = Self::default();
-        for (path, checked) in files {
+        for (index, (path, checked)) in files.into_iter().enumerate() {
             if checked {
-                this.checked.insert(&path);
+                this.checked.insert(&index);
             }
             this.files.push((path, true));
         }
@@ -611,8 +612,8 @@ impl CheckedFiles {
         self.files.len()
     }
 
-    pub fn contains(&self, path: &str) -> bool {
-        self.checked.contains(path)
+    pub fn contains(&self, index: usize) -> bool {
+        self.checked.contains(&index)
     }
 
     // Only the files `keep` is true for are shown, like the filter of the tree.
@@ -626,7 +627,7 @@ impl CheckedFiles {
     // A file checked, or a directory with every file under it shown checked.
     pub fn row_checked(&self, row: &FileTreeRow) -> bool {
         match row.kind {
-            RowKind::File(_) => self.contains(&row.path),
+            RowKind::File(index) => self.contains(index),
             RowKind::Root | RowKind::Dir => self
                 .counts
                 .get(&row.path)
@@ -637,26 +638,26 @@ impl CheckedFiles {
     // Checks the file of `row`, or every file under it shown; unchecks them when all are.
     pub fn toggle(&mut self, row: &FileTreeRow) {
         let check = !self.row_checked(row);
-        let under: Vec<String> = self
-            .files
-            .iter()
-            .filter(|(path, shown)| *shown && row.contains(path))
-            .map(|(path, _)| path.clone())
-            .collect();
-        let changed: FxHashSet<String> = under
+        let under: Vec<usize> = match row.kind {
+            RowKind::File(index) => vec![index],
+            RowKind::Root | RowKind::Dir => (0..self.files.len())
+                .filter(|&i| self.files[i].1 && row.contains(tree_path(&self.files[i].0)))
+                .collect(),
+        };
+        let changed: FxHashSet<usize> = under
             .into_iter()
-            .filter(|path| check != self.contains(path))
+            .filter(|&index| check != self.contains(index))
             .collect();
         if check {
-            for path in &changed {
-                self.checked.insert(path);
+            for index in &changed {
+                self.checked.insert(index);
             }
         } else {
             // at once, as removing one at a time goes through all of them each time
-            self.checked.retain(|path| !changed.contains(path));
+            self.checked.retain(|index| !changed.contains(index));
         }
-        for path in &changed {
-            for dir in ancestors(path) {
+        for &index in &changed {
+            for dir in ancestors(tree_path(&self.files[index].0)) {
                 if let Some(count) = self.counts.get_mut(&dir) {
                     count.0 = if check { count.0 + 1 } else { count.0 - 1 };
                 }
@@ -667,15 +668,24 @@ impl CheckedFiles {
     // Counts the files shown, and those checked, under each directory.
     fn count(&mut self) {
         self.counts.clear();
-        for (path, _) in self.files.iter().filter(|(_, shown)| *shown) {
-            let checked = self.checked.contains(path.as_str());
-            for dir in ancestors(path) {
+        for (index, (path, shown)) in self.files.iter().enumerate() {
+            if !shown {
+                continue;
+            }
+            let checked = self.checked.contains(&index);
+            for dir in ancestors(tree_path(path)) {
                 let count = self.counts.entry(dir).or_default();
                 count.0 += usize::from(checked);
                 count.1 += 1;
             }
         }
     }
+}
+
+// The path of a file's row: an untracked repository inside, which git lists as `nested/`, is a
+// file named `nested`, see `FileTree::new`.
+fn tree_path(path: &str) -> &str {
+    path.trim_end_matches('/')
 }
 
 // The indent markers before each row of a tree, given as its depth and whether it shows a marker
@@ -1109,14 +1119,14 @@ mod tests {
         assert!(!checked.row_checked(&row("a")));
         // some unchecked under it: checks them
         checked.toggle(&row("a"));
-        assert!(checked.row_checked(&row("a")) && checked.contains("a/y"));
+        assert!(checked.row_checked(&row("a")) && checked.contains(1));
         assert!(!checked.row_checked(&row(ROOT_PATH)));
         checked.toggle(&row("z"));
         assert!(checked.row_checked(&row(ROOT_PATH)));
         // all checked: unchecks them
         checked.toggle(&row("a"));
         assert_eq!(checked.len(), 1);
-        assert!(!checked.contains("a/x") && !checked.row_checked(&row(ROOT_PATH)));
+        assert!(!checked.contains(0) && !checked.row_checked(&row(ROOT_PATH)));
         checked.toggle(&row(ROOT_PATH));
         assert_eq!(checked.len(), 3);
         checked.toggle(&row(ROOT_PATH));
@@ -1124,7 +1134,7 @@ mod tests {
         // with a filter, of the files it shows
         checked.show(|path| path.starts_with("a/"));
         checked.toggle(&row("a"));
-        assert!(checked.row_checked(&row(ROOT_PATH)) && !checked.contains("z"));
+        assert!(checked.row_checked(&row(ROOT_PATH)) && !checked.contains(2));
         checked.show(|_| true);
         assert!(!checked.row_checked(&row(ROOT_PATH)));
         checked.toggle(&row(ROOT_PATH));

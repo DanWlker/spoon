@@ -18,9 +18,9 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
-        parse_git_bool, pathspecs, stash_args, todo_action, AfterTask, BranchStatus, CommitHash,
-        Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask, LocalChangeFile,
-        NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
+        fits_a_command_line, parse_git_bool, pathspecs, stash_args, todo_action, AfterTask,
+        BranchStatus, CommitHash, Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask,
+        LocalChangeFile, NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
     keybind::UserEvent,
     keys::{register_moving_keys, KeyList, Keys},
@@ -222,7 +222,8 @@ enum DialogKind {
     // local branches, with those whose commits are on no other branch, and their upstreams
     // still on their remotes, which may be deleted too when there are some
     DeleteBranches {
-        names: Vec<String>,
+        // each with its commit as loaded, which it must still be, see `GitTask::verify`
+        branches: Vec<(String, CommitHash)>,
         unmerged: Vec<String>,
         upstreams: Vec<RemoteBranch>,
         also_upstreams: Option<Check>,
@@ -262,6 +263,7 @@ enum DialogKind {
     // a stash like "stash@{0}"
     ApplyStash {
         name: String,
+        target: CommitHash,
         index: Check,
         pop: Check,
     },
@@ -882,7 +884,9 @@ impl GitDialog {
         };
         let checked: Vec<&StashFile> = stashed
             .iter()
-            .filter(|file| field.checked.contains(&file.path))
+            .enumerate()
+            .filter(|&(index, _)| field.checked.contains(index))
+            .map(|(_, file)| file)
             .collect();
         // all of them stash all changes, with no paths
         let all = checked.len() == stashed.len();
@@ -902,6 +906,13 @@ impl GitDialog {
                 (paths, format!("{n} files"))
             }
         };
+        let names: Vec<&str> = paths.iter().map(String::as_str).collect();
+        if !fits_a_command_line(&names) {
+            return Err(format!(
+                "{} files are more than git can stash by name: check all of them, or fewer",
+                paths.len()
+            ));
+        }
         Ok(GitTask {
             commands: vec![stash_args(&paths, &self.text(message))],
             running: format!("Stashing {target}"),
@@ -1650,11 +1661,14 @@ impl GitDialog {
     // Local branches; `unmerged` are those whose commits are on no other branch, which it warns
     // about, as their commits may be lost. `upstreams` are their upstreams still on
     // their remotes, which a checkbox deletes too.
+    // Deletes `branches`, each with its commit as loaded: forced, as the warning says what is lost
+    // of it, so one moved meanwhile isn't deleted.
     pub fn delete_branches(
-        names: Vec<String>,
+        branches: Vec<(String, CommitHash)>,
         unmerged: Vec<String>,
         upstreams: Vec<RemoteBranch>,
     ) -> Self {
+        let names: Vec<String> = branches.iter().map(|(name, _)| name.clone()).collect();
         let intro = names_intro("Delete the branch", "Delete the branches", &names);
         let label = match upstreams.len() {
             0 => None,
@@ -1664,7 +1678,7 @@ impl GitDialog {
         let mut form = Form::default();
         let also_upstreams = label.map(|label| form.check(label, false));
         let kind = DialogKind::DeleteBranches {
-            names,
+            branches,
             unmerged,
             upstreams,
             also_upstreams,
@@ -1675,15 +1689,21 @@ impl GitDialog {
     // confirmed with the warning when it isn't merged
     fn delete_branches_command(
         &self,
-        names: &[String],
+        branches: &[(String, CommitHash)],
         upstreams: &[RemoteBranch],
         also_upstreams: Option<Check>,
     ) -> Result<GitTask, String> {
+        let names: Vec<String> = branches.iter().map(|(name, _)| name.clone()).collect();
         let args =
             GitCommand::Branch.args(std::iter::once("-D").chain(names.iter().map(String::as_str)));
-        let what = names_label("branch", "branches", names);
+        let what = names_label("branch", "branches", &names);
+        let verify = branches
+            .iter()
+            .map(|(name, tip)| (format!("refs/heads/{name}"), tip.clone()))
+            .collect();
         let mut task = GitTask {
             commands: vec![args],
+            verify,
             running: format!("Deleting {what}"),
             done: format!("Deleted {what}"),
             ..Default::default()
@@ -1950,20 +1970,28 @@ impl GitDialog {
     }
 
     // `name` is like "stash@{0}", `message` what it says.
-    pub fn apply_stash(name: &str, message: &str) -> Self {
+    // `target` is its commit as loaded, which `name` must still be, see `GitTask::verify`.
+    pub fn apply_stash(name: &str, message: &str, target: CommitHash) -> Self {
         let intro = vec![format!("Apply {name}"), format!("  {message}")];
         let mut form = Form::default();
         let index = form.check("Restore what was staged as staged", false);
         let pop = form.check("Drop it once applied (pop)", false);
         let kind = DialogKind::ApplyStash {
             name: name.to_string(),
+            target,
             index,
             pop,
         };
         Self::with(" Apply stash ", "apply", intro, kind, form)
     }
 
-    fn apply_stash_command(&self, name: &str, index: Check, pop: Check) -> Result<GitTask, String> {
+    fn apply_stash_command(
+        &self,
+        name: &str,
+        target: &CommitHash,
+        index: Check,
+        pop: Check,
+    ) -> Result<GitTask, String> {
         // popping drops it once applied, git keeps it when it stops on conflicts
         let pop = self.checked(pop);
         let mut args = vec![if pop { "pop" } else { "apply" }];
@@ -1981,6 +2009,8 @@ impl GitDialog {
         };
         Ok(GitTask {
             after: AfterTask::LocalChanges,
+            // a stash pushed meanwhile makes `name` another one
+            verify: vec![(name.to_string(), target.clone())],
             ..GitTask::new(GitCommand::Stash, &args, running, done)
         })
     }
@@ -2692,11 +2722,11 @@ impl GitDialog {
                 checkout,
             } => self.create_branch_command(starts, *name, *from, *checkout),
             K::DeleteBranches {
-                names,
+                branches,
                 upstreams,
                 also_upstreams,
                 ..
-            } => self.delete_branches_command(names, upstreams, *also_upstreams),
+            } => self.delete_branches_command(branches, upstreams, *also_upstreams),
             K::DeleteRemoteBranches { branches } => self.delete_remote_branches_command(branches),
             K::EditBranch {
                 name,
@@ -2735,7 +2765,12 @@ impl GitDialog {
                 files,
                 stashed,
             } => self.stash_command(*message, *files, stashed),
-            K::ApplyStash { name, index, pop } => self.apply_stash_command(name, *index, *pop),
+            K::ApplyStash {
+                name,
+                target,
+                index,
+                pop,
+            } => self.apply_stash_command(name, target, *index, *pop),
             K::DropStashes { stashes } => self.drop_stashes_command(stashes),
             K::Revert { commits, commit } => self.revert_command(commits, *commit),
             K::Reset {
@@ -2781,12 +2816,12 @@ impl GitDialog {
                 Some("Its branches here and the upstreams set to them go; the remote is untouched.")
             }
             DialogKind::DeleteBranches {
-                names,
+                branches,
                 unmerged,
                 upstreams,
                 also_upstreams,
             } => {
-                let unmerged = match (names.len(), unmerged.as_slice()) {
+                let unmerged = match (branches.len(), unmerged.as_slice()) {
                     (_, []) => None,
                     (1, _) => Some("Its commits on no other branch are lost.".into()),
                     (_, [one]) => {
@@ -2807,6 +2842,13 @@ impl GitDialog {
                 return (!warnings.is_empty()).then(|| warnings.join("\n"));
             }
             DialogKind::DropStashes { .. } => Some("The stashed changes are lost."),
+            // stashed with no paths, see `stash_command`
+            DialogKind::Stash { files, .. } => match &self.fields[files.0].1 {
+                Field::Files(field) if field.checked.len() == field.checked.total() => {
+                    Some("All changes, those made since this opened too.")
+                }
+                _ => None,
+            },
             DialogKind::Prepared { warning, .. } => Some(*warning),
             DialogKind::Commit { preview, .. } if preview.kind.amends() => {
                 Some("The last commit is rewritten.")
@@ -2936,14 +2978,20 @@ fn delete_on_remotes(branches: &[RemoteBranch]) -> Vec<GitArgs> {
     remotes
         .into_iter()
         .map(|remote| {
-            let mut args = vec![remote.clone(), "--delete".into()];
-            args.extend(
-                branches
-                    .iter()
-                    .filter(|b| b.remote == *remote)
-                    // in full, as a tag of the same name makes the short one ambiguous
-                    .map(|b| format!("refs/heads/{}", b.branch)),
-            );
+            // in full, as a tag of the same name makes the short one ambiguous
+            let refs: Vec<String> = branches
+                .iter()
+                .filter(|b| b.remote == *remote)
+                .map(|b| format!("refs/heads/{}", b.branch))
+                .collect();
+            // each where the last fetch left it, else nothing is deleted: commits pushed meanwhile
+            // would go unseen
+            let mut args: Vec<String> = refs
+                .iter()
+                .map(|r| format!("--force-with-lease={r}"))
+                .collect();
+            args.extend([remote.clone(), "--delete".into()]);
+            args.extend(refs);
             GitCommand::Push.args(args)
         })
         .collect()
@@ -3420,7 +3468,14 @@ mod tests {
             GitDialog::abort(Operation::Rebase),
             GitDialog::stash(files(15)),
             GitDialog::merge("main", "feature".into(), "feature", None),
-            GitDialog::delete_branches(vec!["a".into(), "b".into()], vec!["a".into()], vec![]),
+            GitDialog::delete_branches(
+                vec![
+                    ("a".into(), commit('a').hash),
+                    ("b".into(), commit('b').hash),
+                ],
+                vec!["a".into()],
+                vec![],
+            ),
             GitDialog::commit(preview, GitTask::default()),
             GitDialog::remote(RemoteAction::Push, info()).unwrap(),
             GitDialog::create_tag(StartPoint::Ref(NamedRef::Branch("main".into()))),
@@ -3716,15 +3771,59 @@ mod tests {
         );
         assert!(!dialog.can_run());
         assert_eq!(dialog.summary(), err(&dialog));
-        // all of them stash with no paths, which git takes
+        assert_eq!(dialog.warning(), None);
+        // all of them stash with no paths, which git takes, new changes too, as the popup says
         toggle(&mut dialog, 3);
         assert!(!args(&dialog).contains(" -- "), "{}", args(&dialog));
         assert_eq!(done(&dialog), "Stashed all changes");
+        assert!(dialog
+            .warning()
+            .is_some_and(|w| w.contains("since this opened")));
         // nothing checked
         for row in 0..4 {
             toggle(&mut dialog, row);
         }
         assert_eq!(err(&dialog), "No files checked");
+    }
+
+    // More checked files than a command line takes are refused, nothing run: git would fail after
+    // saving the stash.
+    #[test]
+    fn test_stash_refuses_more_paths_than_a_command_line_takes() {
+        let mut files: Vec<StashFile> = (0..60_000)
+            .map(|i| {
+                file(
+                    &format!("a/directory/with/a/longer/name/f{i:05}"),
+                    true,
+                    false,
+                )
+            })
+            .collect();
+        files[0].checked = false;
+        let dialog = GitDialog::stash(files);
+        let err = dialog.command().unwrap().unwrap_err();
+        assert!(err.contains("more than git can stash by name"), "{err}");
+        assert!(!dialog.can_run());
+    }
+
+    // An untracked repository inside, which git lists as `nested/`, is checked and unchecked by
+    // its row `nested`.
+    #[test]
+    fn test_stash_nested_repository() {
+        let mut dialog =
+            GitDialog::stash(vec![file("a", true, false), file("nested/", true, false)]);
+        dialog.editing = false;
+        dialog.selected = 1;
+        assert_eq!(files_of(&mut dialog).tree.rows()[1].path, "nested");
+        files_of(&mut dialog).tree.select_index(1);
+        let files = files_of(&mut dialog);
+        assert!(files.checked.row_checked(&files.tree.rows()[1]));
+        press(&mut dialog, UserEvent::Select);
+        assert!(
+            args(&dialog).ends_with("-- :(literal)a"),
+            "{}",
+            args(&dialog)
+        );
     }
 
     // `/` filters the files as in every file tree; a folder checks only those shown, and esc
@@ -3978,11 +4077,15 @@ mod tests {
             remote: "origin".into(),
             branch: "a".into(),
         }];
-        let mut dialog = GitDialog::delete_branches(vec!["a".into()], vec![], upstreams);
+        let mut dialog =
+            GitDialog::delete_branches(vec![("a".into(), commit('a').hash)], vec![], upstreams);
         press(&mut dialog, UserEvent::Select);
         assert_eq!(
             commands(&dialog),
-            ["push origin --delete refs/heads/a", "branch -D a"]
+            [
+                "push --force-with-lease=refs/heads/a origin --delete refs/heads/a",
+                "branch -D a"
+            ]
         );
     }
 
@@ -4422,6 +4525,87 @@ mod tests {
     }
 
     // Popping a stash that stops on conflicts keeps it, its changes not lost.
+    // A branch that moved after the popup opened isn't deleted: the commits it gained would go
+    // without the warning.
+    #[test]
+    fn test_delete_refused_once_the_branch_moved() {
+        let dir = test_repo();
+        let path = dir.path();
+        git(path, &["branch", "feat"]);
+        let tip = git(path, &["rev-parse", "feat"]);
+        let dialog =
+            GitDialog::delete_branches(vec![("feat".into(), tip.trim().into())], vec![], vec![]);
+        let new = git(
+            path,
+            &["commit-tree", "-m", "new", "HEAD^{tree}", "-p", "HEAD"],
+        );
+        git(path, &["update-ref", "refs/heads/feat", new.trim()]);
+        let err = crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap_err();
+        assert!(err.contains("changed meanwhile"), "{err}");
+        assert!(git(path, &["branch", "--list", "feat"]).contains("feat"));
+    }
+
+    // A remote branch someone pushed to since the last fetch isn't deleted: their commits would go
+    // unseen.
+    #[test]
+    fn test_remote_delete_refused_once_the_branch_moved() {
+        let dir = test_repo();
+        let path = dir.path();
+        let remote = dir.path().join("remote.git");
+        git(path, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        git(path, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(path, &["push", "-q", "origin", "HEAD:refs/heads/feat"]);
+        git(path, &["fetch", "-q", "origin"]);
+        // pushed meanwhile, from elsewhere
+        let new = git(
+            path,
+            &["commit-tree", "-m", "theirs", "HEAD^{tree}", "-p", "HEAD"],
+        );
+        let refspec = format!("{}:refs/heads/feat", new.trim());
+        git(path, &["push", "-q", remote.to_str().unwrap(), &refspec]);
+        // the last fetch saw the branch before that
+        git(path, &["update-ref", "refs/remotes/origin/feat", "HEAD"]);
+        let branch = RemoteBranch {
+            remote: "origin".into(),
+            branch: "feat".into(),
+        };
+        let dialog = GitDialog::delete_remote_branches(vec![branch]);
+        let task = dialog.command().unwrap().unwrap();
+        assert!(crate::git::run_task(path, &task).is_err());
+        let left = git(
+            path,
+            &["ls-remote", remote.to_str().unwrap(), "refs/heads/feat"],
+        );
+        assert!(left.starts_with(new.trim()), "{left}");
+        // once fetched, it goes
+        git(path, &["fetch", "-q", "origin"]);
+        crate::git::run_task(path, &task).unwrap();
+        assert!(git(
+            path,
+            &["ls-remote", remote.to_str().unwrap(), "refs/heads/feat"]
+        )
+        .is_empty());
+    }
+
+    // A stash pushed after the popup opened makes its name another stash: nothing is applied.
+    #[test]
+    fn test_apply_refused_once_the_stashes_moved() {
+        let dir = test_repo();
+        let path = dir.path();
+        std::fs::write(path.join("f"), "mine\n").unwrap();
+        git(path, &["stash", "-q", "-m", "mine"]);
+        let target = git(path, &["rev-parse", "stash@{0}"]);
+        let dialog = GitDialog::apply_stash("stash@{0}", "mine", target.trim().into());
+        std::fs::write(path.join("f"), "other\n").unwrap();
+        git(path, &["stash", "-q", "-m", "other"]);
+        let err = crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap_err();
+        assert!(err.contains("changed meanwhile"), "{err}");
+        assert_eq!(
+            git(path, &["stash", "list", "--format=%s"]).lines().count(),
+            2
+        );
+    }
+
     #[test]
     fn test_pop_stopping_on_conflicts_keeps_the_stash() {
         let dir = test_repo();
@@ -4431,7 +4615,8 @@ mod tests {
         std::fs::write(path.join("f"), "committed\n").unwrap();
         git(path, &["commit", "-qam", "c5"]);
 
-        let mut dialog = GitDialog::apply_stash("stash@{0}", "On main: c4");
+        let target = git(path, &["rev-parse", "stash@{0}"]);
+        let mut dialog = GitDialog::apply_stash("stash@{0}", "On main: c4", target.trim().into());
         // the second check: pop
         dialog.handle_key(Some(UserEvent::NavigateDown), key(KeyCode::Null));
         dialog.handle_key(Some(UserEvent::NavigateRight), key(KeyCode::Null));

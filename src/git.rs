@@ -29,11 +29,13 @@ use local_changes::{load_local_changes, parse_name_status};
 pub use local_changes::{Entry, FilesSnapshot, LocalChangeFile, LocalChangeStatus, LocalChanges};
 use submodule::{load_submodules, SubmoduleRepositories};
 pub use task::{
-    command_log, git_arg, git_bytes, git_command, is_kept_byte, pathspecs, run_task, stash_args,
-    text_from_git, todo_action, work_path, AfterTask, BranchStatus, GitArgs, GitCommand, GitTask,
-    LoggedCommand, RunningTask, SharedTask,
+    command_log, fits_a_command_line, git_arg, git_bytes, git_command, is_kept_byte, pathspecs,
+    run_task, stash_args, text_from_git, todo_action, work_path, AfterTask, BranchStatus, GitArgs,
+    GitCommand, GitTask, LoggedCommand, RunningTask, SharedTask,
 };
-use task::{git_output, git_output_bytes, git_output_with_status, lock, run_logged};
+use task::{
+    git_output, git_output_bytes, git_output_with_status, lock, pathspec_parts, run_logged,
+};
 
 // One allocation for all the copies of a hash, which the maps of parents, children and the graph's
 // layout hold for each commit: a `String` each took about 80 bytes a copy.

@@ -440,7 +440,17 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     let run = || {
         task.commands.iter().enumerate().try_for_each(|(i, args)| {
             let input = task.input.as_deref().filter(|_| i == 0);
-            run_task_step(path, args, input, task)
+            // git can save a stash and fail after it, on a path matching nothing with
+            // --include-untracked, which leaves the changes both there and in the work tree
+            let pushes = args.command == GitCommand::Stash
+                && args.args.first().is_some_and(|arg| arg == "push");
+            let before = pushes.then(stash_top);
+            run_task_step(path, args, input, task).map_err(|err| match before {
+                Some(before) if stash_top() != before => format!(
+                    "{err}; git saved stash@{{0}} all the same, its changes are in the work tree too"
+                ),
+                _ => err,
+            })
         })
     };
     match run() {
@@ -596,6 +606,9 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> std::io::Result<Opt
 }
 
 // The command stashing the changes of `paths` (all changes when empty), including untracked files.
+// Its paths can't be split in parts, which would be as many stashes, nor read from the input: git
+// runs `add` with them all, failing past the limit after it saved the stash; past the limit, the
+// command itself doesn't start, which changes nothing, see `fits_a_command_line`.
 pub fn stash_args(paths: &[String], message: &str) -> GitArgs {
     let mut args: Vec<String> = ["push", "--include-untracked", "--quiet"]
         .map(String::from)
@@ -686,6 +699,33 @@ pub fn work_path(root: &Path, path: &str) -> std::path::PathBuf {
 
 // Paths of files or directories for git, taken as they are, not as patterns: a file named
 // `*.log` is only that file. The root of the repository stays ":/".
+// The bytes of the paths one command line takes here, well under the limit, see `pathspec_parts`.
+const PART_BYTES: usize = 256 * 1024;
+
+// Whether the pathspecs of `paths` fit one command line, see `pathspec_parts`.
+pub fn fits_a_command_line(paths: &[&str]) -> bool {
+    pathspec_parts(paths).len() <= 1
+}
+
+// The pathspecs of `paths` in parts, each short enough for one command line: the OS refuses a
+// command whose arguments go past its limit (2 MiB on Linux, 1 MiB on macOS, the environment
+// counted in), and git can't read the paths of every command from its input, like `clean`'s.
+pub fn pathspec_parts(paths: &[&str]) -> Vec<Vec<String>> {
+    let mut parts: Vec<Vec<String>> = vec![];
+    let mut bytes = PART_BYTES;
+    for spec in pathspecs(paths) {
+        // with the NUL ending it
+        let len = spec.len() + 1;
+        if bytes + len > PART_BYTES {
+            parts.push(vec![]);
+            bytes = 0;
+        }
+        bytes += len;
+        parts.last_mut().expect("a part was pushed").push(spec);
+    }
+    parts
+}
+
 pub fn pathspecs(paths: &[&str]) -> Vec<String> {
     paths
         .iter()
@@ -1097,6 +1137,51 @@ mod tests {
         // the older stash is left alone
         let stashes = git(&path, &["stash", "list", "--format=%s"]);
         assert_eq!(stashes, "On main: older\n");
+    }
+
+    // More paths than a command line takes: in parts, each under the limit, all of them in order.
+    #[test]
+    fn test_more_paths_than_a_command_line_takes() {
+        let names: Vec<String> = (0..60_000)
+            .map(|i| format!("a/directory/with/a/longer/name/f{i:05}"))
+            .collect();
+        let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+        let parts = pathspec_parts(&paths);
+        assert!(parts.len() > 1 && !fits_a_command_line(&paths));
+        let bytes = |part: &Vec<String>| part.iter().map(|p| p.len() + 1).sum::<usize>();
+        assert!(parts.iter().all(|part| bytes(part) <= PART_BYTES));
+        assert_eq!(parts.concat(), pathspecs(&paths));
+        assert!(fits_a_command_line(&paths[..10]));
+    }
+
+    // A stash git saves before failing is said, its changes being in two places.
+    #[test]
+    fn test_stash_saved_before_failing_is_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = |args: &[&str]| git_output(path, args).unwrap();
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "user.email", "t@t"]);
+        std::fs::write(path.join("a"), "1\n").unwrap();
+        git(&["add", "a"]);
+        git(&["commit", "-q", "-m", "c"]);
+        std::fs::write(path.join("a"), "2\n").unwrap();
+        // gone since it was listed
+        let task = GitTask {
+            commands: vec![stash_args(&["a".into(), "gone".into()], "")],
+            ..Default::default()
+        };
+        let err = run_task(path, &task).unwrap_err();
+        assert!(err.contains("git saved stash@{0} all the same"), "{err}");
+        assert_eq!(git(&["stash", "list"]).lines().count(), 1);
+        // failing before saving one says nothing of it
+        let task = GitTask {
+            commands: vec![GitCommand::Stash.args(["push", "--", ":(bad)a"])],
+            ..Default::default()
+        };
+        let err = run_task(path, &task).unwrap_err();
+        assert!(!err.contains("stash@{0}"), "{err}");
     }
 
     #[test]

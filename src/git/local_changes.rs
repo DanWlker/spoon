@@ -7,8 +7,8 @@ use std::{
 };
 
 use super::{
-    git_bytes, git_output, git_output_bytes, lock, pathspecs, text_from_git, work_path, GitArgs,
-    GitCommand, Repository,
+    git_bytes, git_output, git_output_bytes, lock, pathspec_parts, pathspecs, text_from_git,
+    work_path, GitArgs, GitCommand, Repository,
 };
 
 impl Repository {
@@ -78,10 +78,11 @@ impl Repository {
     // Stages the paths: `git add -- <paths>`, the command a user would type. It records the
     // deletions and finds the new files under a directory already, `--all` would add nothing.
     pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {
-        let mut args = vec!["add", "--"];
-        let paths = pathspecs(paths);
-        args.extend(paths.iter().map(String::as_str));
-        self.run(&args, None)
+        pathspec_parts(paths).iter().try_for_each(|part| {
+            let mut args = vec!["add", "--"];
+            args.extend(part.iter().map(String::as_str));
+            self.run(&args, None)
+        })
     }
 
     // Resets the index entries of `paths` to `staged_base`, HEAD when None: `git reset --quiet
@@ -91,12 +92,13 @@ impl Repository {
         paths: &[&str],
         staged_base: Option<&str>,
     ) -> std::result::Result<(), String> {
-        let mut args = vec!["reset", "--quiet"];
-        args.extend(staged_base);
-        args.push("--");
-        let paths = pathspecs(paths);
-        args.extend(paths.iter().map(String::as_str));
-        self.run(&args, None)
+        pathspec_parts(paths).iter().try_for_each(|part| {
+            let mut args = vec!["reset", "--quiet"];
+            args.extend(staged_base);
+            args.push("--");
+            args.extend(part.iter().map(String::as_str));
+            self.run(&args, None)
+        })
     }
 
     // The commands discarding the unstaged changes of `tracked` files (restoring them from the
@@ -117,15 +119,21 @@ impl Repository {
         let mut tracked = tracked.to_vec();
         let mut untracked = untracked.to_vec();
         // restoring and cleaning files moves no HEAD, which an operation stopped allows
+        // in parts, many paths being more than a command line takes
         let command = |command: GitCommand, args: &[&str], paths: &[&str]| {
-            let mut command = command.args(args.iter().copied());
-            command.args.push("--".into());
-            command.args.extend(pathspecs(paths));
-            command
+            pathspec_parts(paths)
+                .into_iter()
+                .map(|part| {
+                    let mut command = command.args(args.iter().copied());
+                    command.args.push("--".into());
+                    command.args.extend(part);
+                    command
+                })
+                .collect::<Vec<_>>()
         };
         let mut commands = vec![];
         if !conflicted.is_empty() {
-            commands.push(command(
+            commands.extend(command(
                 GitCommand::Restore,
                 &["--staged", "--quiet"],
                 conflicted,
@@ -143,10 +151,10 @@ impl Repository {
             }
         }
         if !tracked.is_empty() {
-            commands.push(command(GitCommand::Restore, &["--quiet"], &tracked));
+            commands.extend(command(GitCommand::Restore, &["--quiet"], &tracked));
         }
         if !untracked.is_empty() {
-            commands.push(command(
+            commands.extend(command(
                 GitCommand::Clean,
                 &["--force", "--quiet"],
                 &untracked,
