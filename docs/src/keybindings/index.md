@@ -158,6 +158,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus | `next_tab` `previous_tab` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
+| <kbd>`</kbd>                         | Show the files of the changes/files tab in their folders, or as a list of their paths (each tab keeps its own, from one commit to the next) | `toggle_tree_view` |
 | <kbd>/</kbd>                         | Filter files (changes and files tabs); search the diff or preview while it has the focus | `search` |
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `select` |
 | <kbd>u</kbd>                         | Reset the selected files to how they were at the commit or before it, in the working tree and the index, after confirming (changes tab) | `reset_file` |
@@ -313,9 +314,10 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>v</kbd>                         | Select a range of files or directories, from the first to the selected one; move to extend it (moving back unpicks what it went over; <kbd>v</kbd> <kbd>v</kbd> on a picked one unpicks it), <kbd>v</kbd> again to end it. A new selection adds to the picked ones; <kbd>Esc</kbd> clears them<br>While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>]f</kbd> <kbd>[f</kbd>          | Go to next/previous file, staying in the diff                | `next_file` `previous_file`     |
 | <kbd>]F</kbd> <kbd>[F</kbd>          | Go to the next/previous folder at the same depth, or a level up when none is left there (closed folders stay closed); from the root row, the first/last folder at the top; from the diff, on in the diff of the folder's first file | `next_folder` `previous_folder` |
-| <kbd>s</kbd>                         | Stash all changes, or the picked files (asks for a message)  | `stash`                         |
+| <kbd>s</kbd>                         | Stash the files checked in a popup, which asks for a message too: the picked files, or else all of them, start checked. The files are a list of their paths, <kbd>`</kbd> shows them in their folders; they move as in every file tree (<kbd>g/G</kbd>, <kbd>Ctrl-d/u</kbd>, <kbd>Ctrl-f/b</kbd>, <kbd>Ctrl-e/y</kbd>, the wheel over them, <kbd>l/h</kbd> for the folders), <kbd>Space</kbd> or a click checks the file, or every file in the folder (all of them on the `/` row). A file staged as deleted or renamed is only stashed with all the others, since git can't stash it alone | `stash` |
 | <kbd>d</kbd>                         | Discard unstaged file, directory, hunk, line or selected lines (asks first) | `discard`                       |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory                                    | `navigate_right` `navigate_left` |
+| <kbd>`</kbd>                         | Show the files of the section in their folders, or as a list of their paths (each section keeps its own) | `toggle_tree_view` |
 | <kbd>/</kbd>                         | Filter files<br>Search the diff, while it has the focus      | `search`                        |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the relative/absolute paths of the selected files, one per line<br>Copy the line, selected lines or hunk (<kbd>y</kbd><kbd>y</kbd>), or the file's absolute path (<kbd>y</kbd><kbd>f</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |

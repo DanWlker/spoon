@@ -28,7 +28,7 @@ use crate::{
         file_text::{FileText, LineCursor},
         file_tree::{
             render_tree, Entry, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeSelection,
-            TreeShape,
+            TreeShape, TreeView,
         },
         submodule::SubmodulePanel,
         tree_query::SearchDirection,
@@ -257,17 +257,20 @@ impl<'a> CommitChangesState<'a> {
         ctx: Rc<AppContext>,
         commit_hash: CommitHash,
         changes: &[FileChange],
+        view: TreeView,
     ) -> Self {
-        Self::between(repository, ctx, None, commit_hash, changes)
+        Self::between(repository, ctx, None, commit_hash, changes, view)
     }
 
-    // The changes from `base` to the commit; from its parent when None.
+    // The changes from `base` to the commit; from its parent when None; shown in `view`, as the
+    // tab showed the commit before.
     pub fn between(
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         base: Option<CommitHash>,
         commit_hash: CommitHash,
         changes: &[FileChange],
+        view: TreeView,
     ) -> Self {
         let files: Vec<ChangedFile> = changes
             .iter()
@@ -288,6 +291,7 @@ impl<'a> CommitChangesState<'a> {
         let mut tree = FileTreeState::new(
             FileTree::new(files.iter().map(|f| f.path.as_str())),
             TreeShape::Rooted,
+            view,
         );
         // start on the first file rather than its directory
         if let Some(path) = tree
@@ -459,6 +463,11 @@ impl<'a> CommitChangesState<'a> {
 
     // Applies a tree operation; the diff of another row selected loads once used, see
     // `ensure_loaded`.
+    // How the files are shown, kept for the next commit, see `between`.
+    pub fn tree_view(&self) -> TreeView {
+        self.tree.view()
+    }
+
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
@@ -823,7 +832,7 @@ impl<'a> CommitFilesState<'a> {
             self.tree = Some(match self.previous_tree.take() {
                 Some(previous) => previous.with_tree(tree),
                 // collapsed by default, a whole repository is too much to show at once
-                None => FileTreeState::new(tree, TreeShape::Closed),
+                None => FileTreeState::new(tree, TreeShape::Closed, TreeView::Tree),
             });
             self.replace_preview();
         }
@@ -1071,6 +1080,7 @@ impl CommitTab {
             |path| state.picked.contains(path),
             cursor,
             empty,
+            None,
             &self.ctx,
         );
         let thumb = render_tree_scrollbar(buf, tree_area, &state.tree, offset, tree_focused, theme);
@@ -1122,6 +1132,7 @@ impl CommitTab {
                 |path| state.picked.contains(path),
                 cursor,
                 "No matches",
+                None,
                 &self.ctx,
             );
             let thumb = render_tree_scrollbar(buf, tree_area, tree, offset, focused, theme);
@@ -1360,7 +1371,8 @@ mod tests {
             .commit_hash
             .clone();
         let (_, changes) = repository.commit_detail(&bump);
-        let mut state = CommitChangesState::new(&repository, test_ctx(), bump, &changes);
+        let mut state =
+            CommitChangesState::new(&repository, test_ctx(), bump, &changes, TreeView::Tree);
         state.ensure_loaded();
         let submodule = state.submodule.as_ref().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
@@ -1373,7 +1385,13 @@ mod tests {
             repository_with_a_bumped_submodule(dir.path());
         let head = repository.head_commit().unwrap();
         let (_, changes) = repository.commit_detail(&head);
-        let mut state = CommitChangesState::new(&repository, test_ctx(), head.clone(), &changes);
+        let mut state = CommitChangesState::new(
+            &repository,
+            test_ctx(),
+            head.clone(),
+            &changes,
+            TreeView::Tree,
+        );
         state.ensure_loaded();
         let submodule = state.submodule.as_ref().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
@@ -1443,7 +1461,13 @@ mod tests {
         // changes: under the root row like the local changes, expanded, starts on the first file,
         // a rename shows its source too
         let (_, changes) = repository.commit_detail(&second);
-        let mut state = CommitChangesState::new(&repository, test_ctx(), second.clone(), &changes);
+        let mut state = CommitChangesState::new(
+            &repository,
+            test_ctx(),
+            second.clone(),
+            &changes,
+            TreeView::Tree,
+        );
         state.ensure_loaded();
         assert_eq!(
             visible(&state.tree),
@@ -1519,7 +1543,13 @@ mod tests {
 
         // the root commit is compared to the empty tree
         let (_, changes) = repository.commit_detail(&first);
-        let mut state = CommitChangesState::new(&repository, test_ctx(), first.clone(), &changes);
+        let mut state = CommitChangesState::new(
+            &repository,
+            test_ctx(),
+            first.clone(),
+            &changes,
+            TreeView::Tree,
+        );
         state.ensure_loaded();
         assert!(state.pane.diff().unwrap().raw.contains("+a"));
 
@@ -1684,7 +1714,8 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let first = repository.all_commits()[0].commit_hash.clone();
         let (_, changes) = repository.commit_detail(&first);
-        let mut state = CommitChangesState::new(&repository, test_ctx(), first, &changes);
+        let mut state =
+            CommitChangesState::new(&repository, test_ctx(), first, &changes, TreeView::Tree);
         let ec = crate::event::EventController::without_terminal();
         let tx = ec.sender();
         state.update_tree(|tree| tree.select_path("a.txt"));
@@ -1715,7 +1746,8 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let second = repository.all_commits()[0].commit_hash.clone();
         let (_, changes) = repository.commit_detail(&second);
-        let mut state = CommitChangesState::new(&repository, test_ctx(), second, &changes);
+        let mut state =
+            CommitChangesState::new(&repository, test_ctx(), second, &changes, TreeView::Tree);
         state.ensure_loaded();
 
         // enter goes into the hunks, then the lines of the selected one; back goes out
@@ -1864,7 +1896,8 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false)?;
         let head = repository.head_commit().unwrap();
         let (_, changes) = repository.commit_detail(&head);
-        let state = CommitChangesState::new(&repository, test_ctx(), head, &changes);
+        let state =
+            CommitChangesState::new(&repository, test_ctx(), head, &changes, TreeView::Tree);
         assert_eq!(names(state.tree.rows()), local_rows);
         Ok(())
     }

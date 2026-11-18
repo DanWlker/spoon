@@ -223,6 +223,26 @@ impl KeyList {
     }
 }
 
+// The keys moving in a list of lines, in the blame, the timeline and a popup's list, where
+// `applies`.
+pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
+    use UserEvent::*;
+    k.add(&[NavigateDown, NavigateUp], "move", "Move down/up")
+        .when(applies);
+    k.add(&[GoToTop, GoToBottom], "top/bottom", "Go to the top/bottom")
+        .when(applies);
+    k.add(
+        &[HalfPageDown, HalfPageUp],
+        "half page",
+        "Jump half a page down/up",
+    )
+    .when(applies);
+    k.add(&[PageDown, PageUp], "page", "Scroll a page down/up")
+        .when(applies);
+    k.add(&[ScrollDown, ScrollUp], "scroll", "Scroll down/up")
+        .when(applies);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

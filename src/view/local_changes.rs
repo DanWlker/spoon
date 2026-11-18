@@ -237,6 +237,9 @@ impl<'a> LocalChangesView<'a> {
             UserEvent::NavigateLeft => {
                 self.local_changes_state.collapse();
             }
+            UserEvent::ToggleTreeView => {
+                self.local_changes_state.toggle_tree_view();
+            }
             // every scroll key scrolls what has the focus: the files or the submodule move, the
             // commit message, the diff or the conflict sides scroll
             UserEvent::HalfPageDown

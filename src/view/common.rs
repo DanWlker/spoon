@@ -187,25 +187,6 @@ pub fn revision_matches(
         || name_matches(&format_date(ctx, &revision.date), query, options)
 }
 
-// The keys moving in a list of lines, in the blame and the timeline, where `applies`.
-pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
-    use UserEvent::*;
-    k.add(&[NavigateDown, NavigateUp], "move", "Move down/up")
-        .when(applies);
-    k.add(&[GoToTop, GoToBottom], "top/bottom", "Go to the top/bottom")
-        .when(applies);
-    k.add(
-        &[HalfPageDown, HalfPageUp],
-        "half page",
-        "Jump half a page down/up",
-    )
-    .when(applies);
-    k.add(&[PageDown, PageUp], "page", "Scroll a page down/up")
-        .when(applies);
-    k.add(&[ScrollDown, ScrollUp], "scroll", "Scroll down/up")
-        .when(applies);
-}
-
 // Space on the diff of a commit, where `pane` is: applying the selected hunk or lines to the
 // working tree, see `apply_selection`.
 pub fn register_apply_key<T: ?Sized>(k: &mut Keys<T>, pane: fn(&T) -> Option<&DiffPane>) {

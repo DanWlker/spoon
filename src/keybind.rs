@@ -422,6 +422,8 @@ pub enum UserEvent {
     // out, applying a stash, toggling a field; each part says which, see `KeyList::meaning`
     Select,
     ToggleSelect,
+    // shows the files of a tree in their folders, or as a list of their paths
+    ToggleTreeView,
     IncreaseDiffContext,
     DecreaseDiffContext,
     NextFile,

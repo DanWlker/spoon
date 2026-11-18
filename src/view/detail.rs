@@ -37,7 +37,7 @@ use crate::{
             CommitFilesState, CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
-        file_tree::{path_contains, Entry, FileTreeRow, FileTreeState},
+        file_tree::{path_contains, Entry, FileTreeRow, FileTreeState, TreeView},
         git_dialog::GitDialog,
         style::{loading_note, panel_block, render_close_button, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
@@ -113,7 +113,13 @@ impl<'a> DetailView<'a> {
             commit_list_state,
             commit_detail_state: ScrollState::default(),
             tab: DetailTab::default(),
-            changes_state: CommitChangesState::new(repository, ctx.clone(), hash, &changes),
+            changes_state: CommitChangesState::new(
+                repository,
+                ctx.clone(),
+                hash,
+                &changes,
+                TreeView::Tree,
+            ),
             files_state: CommitFilesState::new(repository, &commit, &changes),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
@@ -135,8 +141,15 @@ impl<'a> DetailView<'a> {
     pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, compare: Compare) {
         let repository = self.repository;
         let changes = repository.diff_summary_between(&base, &target);
-        self.changes_state =
-            CommitChangesState::between(repository, self.ctx.clone(), Some(base), target, &changes);
+        let view = self.changes_state.tree_view();
+        self.changes_state = CommitChangesState::between(
+            repository,
+            self.ctx.clone(),
+            Some(base),
+            target,
+            &changes,
+            view,
+        );
         self.compare = Comparing::Shown(compare);
         self.show_tab(DetailTab::Changes);
     }
@@ -385,6 +398,12 @@ impl<'a> DetailView<'a> {
             "Expand/collapse the directory",
         )
         .when(entry);
+        k.add(
+            &[ToggleTreeView],
+            "tree/list",
+            "Show the files in their folders, or as a list of their paths",
+        )
+        .when(files);
         k.quiet(
             &[
                 PageDown,
@@ -593,6 +612,7 @@ impl<'a> DetailView<'a> {
             Comparing::Shown(compare) => compare,
             other => return self.compare = other,
         };
+        let view = self.changes_state.tree_view();
         let changes = std::mem::replace(
             &mut self.changes_state,
             CommitChangesState::new(
@@ -600,6 +620,7 @@ impl<'a> DetailView<'a> {
                 self.ctx.clone(),
                 self.commit.commit_hash.clone(),
                 &[],
+                view,
             ),
         );
         self.compare = Comparing::Parked(compare, Box::new(changes));
@@ -1620,8 +1641,9 @@ impl<'a> DetailView<'a> {
         let selected = self.as_list_state().selected_commit_hash().clone();
         let commit = repository.commit(&selected).unwrap().clone();
         let refs = repository.refs(&selected).into_iter().cloned().collect();
+        let view = self.changes_state.tree_view();
         self.changes_state =
-            CommitChangesState::new(repository, self.ctx.clone(), selected, &changes);
+            CommitChangesState::new(repository, self.ctx.clone(), selected, &changes, view);
         self.files_state.set_commit(&commit, &changes);
         self.commit = commit;
         self.changes = changes;
@@ -1675,6 +1697,7 @@ fn handle_tree_event(
         }),
         UserEvent::NavigateRight => update(&FileTreeState::expand),
         UserEvent::NavigateLeft => update(&FileTreeState::collapse),
+        UserEvent::ToggleTreeView => update(&FileTreeState::toggle_view),
         // enter expands and collapses directories instead of closing the details
         UserEvent::Confirm => update(&FileTreeState::toggle),
         _ => return false,

@@ -23,11 +23,17 @@ use crate::{
         NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
     keybind::UserEvent,
-    keys::{KeyList, Keys},
+    keys::{register_moving_keys, KeyList, Keys},
     layout::{PanelLayout, RowMap, Target},
-    widget::style::{
-        change_span, check_mark, choice_arrows, focused_title, no_choice_arrows,
-        render_border_buttons, render_close_button, render_popup, tabs_shown,
+    widget::{
+        file_tree::{
+            render_tree, CheckedFiles, FileTree, FileTreeState, TreeCursor, TreeShape, TreeView,
+        },
+        style::{
+            change_span, check_mark, choice_arrows, focused_title, no_choice_arrows, panel_title,
+            render_border_buttons, render_close_button, render_panel, render_panel_scrollbar,
+            render_popup, tabs_shown,
+        },
     },
 };
 
@@ -116,6 +122,18 @@ impl StartPoint {
             StartPoint::Ref(named) => named.full_name(),
         }
     }
+}
+
+// A file the stash popup lists, and whether it starts checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashFile {
+    pub path: String,
+    // its change letter, like the panel's
+    pub symbol: &'static str,
+    pub checked: bool,
+    // staged as deleted, or as renamed from another name: git takes no such path to stash (with
+    // --include-untracked, it fails after saving the stash), so only stashing all changes takes it
+    pub staged_removal: bool,
 }
 
 // A commit listed in a popup: its full hash, and the line describing it.
@@ -266,11 +284,12 @@ enum DialogKind {
         task: Box<GitTask>,
         no_verify: Check,
     },
-    // the changes of `paths` (all of them when empty) on the local changes page
+    // the changes of the checked files on the local changes page
     Stash {
-        paths: Vec<String>,
-        target: String,
         message: Text,
+        files: Files,
+        // by their index in the tree, see `RowKind::File`
+        stashed: Vec<StashFile>,
     },
 }
 
@@ -389,6 +408,10 @@ struct Check(usize);
 // A text field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Text(usize);
+
+// The handle of a files field, see `Form::files`.
+#[derive(Debug, Clone, Copy)]
+struct Files(usize);
 
 // One of a list of names, like the remotes, or a value that can't change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -579,6 +602,10 @@ impl Form {
         Pick(self.push(label, Field::Choice { options, index }))
     }
 
+    fn files(&mut self, label: &str, field: FilesField) -> Files {
+        Files(self.push(label, Field::Files(Box::new(field))))
+    }
+
     fn fixed(&mut self, label: &str, value: String) -> Pick {
         Pick(self.push(label, Field::Fixed(value)))
     }
@@ -607,7 +634,20 @@ enum Field {
     Check(bool),
     // a value that can't change, like the commit a branch starts from
     Fixed(String),
+    // files with a checkbox each, in a file tree like every other, its keys while selected
+    Files(Box<FilesField>),
 }
+
+#[derive(Debug)]
+struct FilesField {
+    tree: FileTreeState,
+    checked: CheckedFiles,
+    // the change letter of each file, by its index
+    symbols: Vec<&'static str>,
+}
+
+// The rows a files field shows at most, scrolling past them.
+const FILES_HEIGHT: usize = 10;
 
 // What a click in the popup is on, see `GitDialog::click`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -615,6 +655,8 @@ pub enum DialogHit {
     Field(usize),
     // a chevron of a field with options
     Arrow(usize, Toward),
+    // the rows of a files field
+    Files(usize),
     // the text of a text field
     Text(usize),
     Cancel,
@@ -653,6 +695,9 @@ impl std::fmt::Debug for Conflicts {
     }
 }
 
+// The git command a popup's fields make, see `GitDialog::command`.
+type Command = Option<Result<GitTask, String>>;
+
 // The popup confirming a git command, with its options: fetch, pull and push, and the commands
 // on the commit graph like merge or checkout.
 #[derive(Debug)]
@@ -673,6 +718,9 @@ pub struct GitDialog {
     conflicts: Conflicts,
     // the remote branch already having the commits it rewrites, see `GitDialog::pushed`
     pushed: Option<String>,
+    // the command as the fields make it, kept from one frame to the next: it can stash 100k paths;
+    // made again once a field changes, see `change`
+    task: RefCell<Option<Box<Command>>>,
 }
 
 impl GitDialog {
@@ -694,6 +742,7 @@ impl GitDialog {
             trigger: None,
             conflicts: Conflicts::None,
             pushed: None,
+            task: RefCell::default(),
         };
         // a text field first is typed in right away
         dialog.editing = dialog.can_edit();
@@ -780,31 +829,120 @@ impl GitDialog {
         dialog
     }
 
-    // Stashes the changes of `paths`, all of them when empty, described as `target`.
-    pub fn stash(target: String, paths: Vec<String>) -> Self {
-        let intro = vec![format!("Stash {target}")];
+    // Stashes the changes of the files checked, shown as a list.
+    pub fn stash(stashed: Vec<StashFile>) -> Self {
+        let intro = vec!["Stash the changes of the checked files".to_string()];
         let mut form = Form::default();
         let message = form.text("Message", "", vec![], Need::Optional);
+        let paths = stashed.iter().map(|file| file.path.as_str());
+        let tree = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted, TreeView::List);
+        let checked = CheckedFiles::new(stashed.iter().map(|f| (f.path.clone(), f.checked)));
+        let symbols = stashed.iter().map(|file| file.symbol).collect();
+        let field = FilesField {
+            tree,
+            checked,
+            symbols,
+        };
+        let files = form.files("Files", field);
         let kind = DialogKind::Stash {
-            paths,
-            target,
             message,
+            files,
+            stashed,
         };
         Self::with(" Stash ", "stash", intro, kind, form)
     }
 
     fn stash_command(
         &self,
-        paths: &[String],
-        target: &str,
         message: Text,
+        files: Files,
+        stashed: &[StashFile],
     ) -> Result<GitTask, String> {
+        let Field::Files(field) = &self.fields[files.0].1 else {
+            unreachable!("the handle of a files field")
+        };
+        let checked: Vec<&StashFile> = stashed
+            .iter()
+            .filter(|file| field.checked.contains(&file.path))
+            .collect();
+        // all of them stash all changes, with no paths
+        let all = checked.len() == stashed.len();
+        if let Some(file) = checked.iter().find(|file| !all && file.staged_removal) {
+            return Err(format!(
+                "{} is staged as deleted or renamed, which git can't stash alone: \
+                 check all files, or uncheck it",
+                file.path
+            ));
+        }
+        let (paths, target) = match checked.len() {
+            0 => return Err("No files checked".into()),
+            _ if all => (vec![], "all changes".to_string()),
+            1 => (vec![checked[0].path.clone()], "1 file".to_string()),
+            n => {
+                let paths = checked.iter().map(|file| file.path.clone()).collect();
+                (paths, format!("{n} files"))
+            }
+        };
         Ok(GitTask {
-            commands: vec![stash_args(paths, &self.text(message))],
+            commands: vec![stash_args(&paths, &self.text(message))],
             running: format!("Stashing {target}"),
             done: format!("Stashed {target}"),
             ..Default::default()
         })
+    }
+
+    // The selected field when it is a files field.
+    fn selected_files(&mut self) -> Option<&mut FilesField> {
+        match self.fields.get_mut(self.selected) {
+            Some((_, Field::Files(files))) => Some(files),
+            _ => None,
+        }
+    }
+
+    fn is_files_selected(&self) -> bool {
+        matches!(self.fields.get(self.selected), Some((_, Field::Files(_))))
+    }
+
+    // Scrolls the files with the wheel, whatever is selected, as the other lists do.
+    pub fn wheel(&mut self, field: usize, rows: isize) {
+        if let Some((_, Field::Files(files))) = self.fields.get_mut(field) {
+            files.tree.navigate(UserEvent::Wheel(rows));
+        }
+    }
+
+    // The keys of the files while they are selected, as in every file tree; up from their first
+    // row and down from their last go on to the fields around them. Whether it took `event`.
+    fn files_event(&mut self, event: UserEvent) -> bool {
+        use UserEvent::*;
+        let Some(files) = self.selected_files() else {
+            return false;
+        };
+        let (cursor, total) = (files.tree.cursor(), files.tree.rows().len());
+        match event {
+            NavigateUp | SelectUp if cursor == 0 => return false,
+            NavigateDown | SelectDown if cursor + 1 >= total => return false,
+            NavigateRight => files.tree.expand(),
+            NavigateLeft => files.tree.collapse(),
+            ToggleTreeView => files.tree.toggle_view(),
+            Select => {
+                if let Some(row) = files.tree.selected().cloned() {
+                    files.checked.toggle(&row);
+                }
+                self.task.take();
+            }
+            _ => return files.tree.navigate(event),
+        }
+        true
+    }
+
+    // Starts on the first row of the files moved down into, or the last moved up into.
+    fn enter_files(&mut self, toward: Toward) {
+        if let Some(files) = self.selected_files() {
+            files.tree.select_index(match toward {
+                Toward::Next => 0,
+                Toward::Previous => usize::MAX,
+            });
+        }
     }
 
     #[cfg(test)]
@@ -966,6 +1104,7 @@ impl GitDialog {
 
     // Sets a fetch to the remote `from`, a push to the branch, else leaves it as it is.
     pub fn set_to(mut self, from: &RemoteFrom) -> Self {
+        self.task.take();
         let choose = |dialog: &mut Self, pick: Pick, value: &str| {
             if let Field::Choice { options, index } = &mut dialog.fields[pick.0].1 {
                 *index = options.iter().position(|o| o == value).unwrap_or(*index);
@@ -2122,6 +2261,7 @@ impl GitDialog {
                     let dashes = self.is_branch_name(self.selected);
                     if let Field::Text { input, .. } = &mut self.fields[self.selected].1 {
                         input.handle_event(&Event::Key(typed_key(key, dashes)));
+                        self.task.take();
                     }
                 }
             }
@@ -2134,15 +2274,20 @@ impl GitDialog {
         } else {
             event
         };
+        if event.is_some_and(|event| self.files_event(event)) {
+            return DialogOutcome::None;
+        }
         match event {
             Some(UserEvent::Cancel) => DialogOutcome::Close,
             Some(UserEvent::Quit) => DialogOutcome::Quit,
             Some(UserEvent::NavigateDown | UserEvent::SelectDown) => {
                 self.selected = (self.selected + 1) % len;
+                self.enter_files(Toward::Next);
                 DialogOutcome::None
             }
             Some(UserEvent::NavigateUp | UserEvent::SelectUp) => {
                 self.selected = (self.selected + len - 1) % len;
+                self.enter_files(Toward::Previous);
                 DialogOutcome::None
             }
             Some(UserEvent::NavigateRight) => {
@@ -2181,24 +2326,44 @@ impl GitDialog {
 
     // Whether confirming runs the command: no required field is empty and the fields make one.
     pub fn can_run(&self) -> bool {
-        self.missing_field().is_none() && !matches!(self.command(), Some(Err(_)))
+        self.missing_field().is_none() && !self.with_command(|task| matches!(task, Some(Err(_))))
     }
 
-    // A click on `hit`, `column` cells into it, which stops typing first: the buttons close or
-    // run the popup, Confirm only once it can run. Else it selects the field: a chevron changes it,
-    // a checkbox toggles, and a text field is typed in, the caret at the click on its text.
-    pub fn click(&mut self, hit: DialogHit, column: usize) -> DialogOutcome {
+    // `f` of the command, see `task`.
+    fn with_command<R>(&self, f: impl FnOnce(Option<&Result<GitTask, String>>) -> R) -> R {
+        let mut task = self.task.borrow_mut();
+        f(task
+            .get_or_insert_with(|| Box::new(self.command()))
+            .as_ref()
+            .as_ref())
+    }
+
+    // A click on `hit`, `column` cells into it and on its `row`, which stops typing first: the
+    // buttons close or run the popup, Confirm only once it can run. Else it selects the field: a
+    // chevron changes it, a checkbox or a row of the files toggles, and a text field is typed in,
+    // the caret at the click on its text.
+    pub fn click(&mut self, hit: DialogHit, column: usize, row: Option<usize>) -> DialogOutcome {
         self.editing = false;
         let index = match hit {
             DialogHit::Cancel => return DialogOutcome::Close,
             DialogHit::Confirm if self.can_run() => return self.run(),
             DialogHit::Confirm => return DialogOutcome::None,
-            DialogHit::Field(index) | DialogHit::Arrow(index, _) | DialogHit::Text(index) => index,
+            DialogHit::Field(index)
+            | DialogHit::Arrow(index, _)
+            | DialogHit::Text(index)
+            | DialogHit::Files(index) => index,
         };
         if index >= self.fields.len() {
             return DialogOutcome::None;
         }
         self.selected = index;
+        if let (DialogHit::Files(_), Some(row)) = (hit, row) {
+            if let Some(files) = self.selected_files() {
+                files.tree.select_index(row);
+            }
+            self.files_event(UserEvent::Select);
+            return DialogOutcome::None;
+        }
         match (hit, &mut self.fields[index].1) {
             (DialogHit::Arrow(_, toward), _) => self.change(toward),
             (_, Field::Check(_)) => self.change(Toward::Next),
@@ -2280,6 +2445,20 @@ impl GitDialog {
         .when(idle);
         k.quiet(&[NavigateRight, NavigateLeft], "Change the selected field")
             .when(idle);
+        // the files move as every file tree does
+        let files = |d: &Self| !d.editing && d.is_files_selected();
+        register_moving_keys(k, files);
+        k.quiet(
+            &[NavigateRight, NavigateLeft],
+            "Expand/collapse the directory",
+        )
+        .when(files);
+        k.add(
+            &[ToggleTreeView],
+            "tree/list",
+            "Show the files in their folders, or as a list of their paths",
+        )
+        .when(files);
         k.quiet(&[Quit], "Quit app").when(idle);
     }
 
@@ -2292,7 +2471,7 @@ impl GitDialog {
     // Whether the selected field is a checkbox, or has options to go through.
     fn can_toggle(&self) -> bool {
         match self.fields.get(self.selected) {
-            Some((_, Field::Check(_))) => true,
+            Some((_, Field::Check(_) | Field::Files(_))) => true,
             // a single option is fixed, like where a branch starts from a commit
             Some((_, Field::Choice { options, .. })) => options.len() > 1,
             Some((_, Field::Text { options, .. })) => !options.is_empty(),
@@ -2341,6 +2520,7 @@ impl GitDialog {
 
     // Changes the selected field to its next or previous option, or toggles it.
     fn change(&mut self, toward: Toward) {
+        self.task.take();
         // the branch to pull, kept on another remote having it too
         let previous_branch = match &self.kind {
             DialogKind::Pull { fields, .. } => Some(self.pick_value(fields.branch)),
@@ -2363,7 +2543,8 @@ impl GitDialog {
                 *input = Input::new(options[next].clone());
             }
             Field::Check(checked) => *checked = !*checked,
-            Field::Fixed(_) => {}
+            // see `files_event`
+            Field::Fixed(_) | Field::Files(_) => {}
         }
         // the fields that follow the one changed
         match &mut self.kind {
@@ -2480,10 +2661,10 @@ impl GitDialog {
                 Ok(task)
             }
             K::Stash {
-                paths,
-                target,
                 message,
-            } => self.stash_command(paths, target, *message),
+                files,
+                stashed,
+            } => self.stash_command(*message, *files, stashed),
             K::ApplyStash { name, index, pop } => self.apply_stash_command(name, *index, *pop),
             K::DropStashes { stashes } => self.drop_stashes_command(stashes),
             K::Revert { commits, commit } => self.revert_command(commits, *commit),
@@ -2576,35 +2757,36 @@ impl GitDialog {
         {
             return self.chosen_link(links, *remote, *page).url.clone();
         }
-        let task = match self.command() {
-            Some(Ok(task)) => task,
-            Some(Err(err)) => return err,
-            None => return String::new(),
-        };
-        // the paths of a command on many files are cut, for the popup to stay short; wrapping
-        // them all took long, each frame
-        // shortcut: the command itself is still made each frame; keep it in the dialog if a
-        // popup of 100k paths is slow to draw
-        const SHOWN_ARGS: usize = 20;
-        let git = |args: &GitArgs| {
-            let argv = args.argv();
-            let mut shown: Vec<_> = argv
-                .iter()
-                .take(SHOWN_ARGS)
-                .map(|a| shorten_hash(a).into_owned())
-                .collect();
-            if argv.len() > SHOWN_ARGS {
-                shown.push(format!("… ({} more)", argv.len() - SHOWN_ARGS));
+        self.with_command(|task| {
+            let task = match task {
+                Some(Ok(task)) => task,
+                Some(Err(err)) => return err.clone(),
+                None => return String::new(),
+            };
+            // the paths of a command on many files are cut, for the popup to stay short; wrapping
+            // them all took long, each frame
+            const SHOWN_ARGS: usize = 20;
+            let git = |args: &GitArgs| {
+                let argv = std::iter::once(args.command.name())
+                    .chain(args.args.iter().map(String::as_str));
+                let mut shown: Vec<_> = argv
+                    .take(SHOWN_ARGS)
+                    .map(|a| shorten_hash(a).into_owned())
+                    .collect();
+                let count = args.args.len() + 1;
+                if count > SHOWN_ARGS {
+                    shown.push(format!("… ({} more)", count - SHOWN_ARGS));
+                }
+                format!("git {}", shown.join(" "))
+            };
+            // with those run after it
+            let command = task.commands.iter().map(git).collect::<Vec<_>>().join("; ");
+            if task.stash {
+                format!("git stash; {command}; git stash pop")
+            } else {
+                command
             }
-            format!("git {}", shown.join(" "))
-        };
-        // with those run after it
-        let command = task.commands.iter().map(git).collect::<Vec<_>>().join("; ");
-        if task.stash {
-            format!("git stash; {command}; git stash pop")
-        } else {
-            command
-        }
+        })
     }
 }
 
@@ -2789,6 +2971,7 @@ pub struct GitDialogWidget<'a> {
     dialog: &'a GitDialog,
     theme: &'a ColorTheme,
     layout: &'a RefCell<PanelLayout>,
+    ctx: &'a AppContext,
 }
 
 impl<'a> GitDialogWidget<'a> {
@@ -2797,6 +2980,7 @@ impl<'a> GitDialogWidget<'a> {
             dialog,
             theme: &ctx.color_theme,
             layout: &ctx.layout,
+            ctx,
         }
     }
 }
@@ -2833,9 +3017,22 @@ impl Widget for GitDialogWidget<'_> {
         }
         let mut cursor = None;
         let mut checks_started = false;
+        // the lines of each files field, its border around them, drawn once the popup is
+        let mut files_boxes = vec![];
         // the line of each field, for the clicks
         let mut field_lines = vec![];
         for (i, (label, field)) in dialog.fields.iter().enumerate() {
+            if let Field::Files(files) = field {
+                if i > 0 {
+                    lines.push(Line::raw(""));
+                }
+                let rows = files.tree.rows().len().clamp(1, FILES_HEIGHT);
+                files_boxes.push((i, lines.len(), rows + 2));
+                // as wide as popups go, which long paths need, the same as the rows scroll
+                let blank = " ".repeat(MAX_CONTENT_WIDTH);
+                lines.extend((0..rows + 2).map(|_| Line::raw(blank.clone())));
+                continue;
+            }
             let selected = i == dialog.selected;
             // the field being changed has a bar beside it, like huh's forms
             let bar = if selected {
@@ -2916,6 +3113,7 @@ impl Widget for GitDialogWidget<'_> {
                         Span::styled(label.to_string(), label_style),
                     ])
                 }
+                Field::Files(_) => unreachable!("drawn above"),
             };
             field_lines.push((i, lines.len()));
             lines.push(line);
@@ -2968,7 +3166,7 @@ impl Widget for GitDialogWidget<'_> {
             match &dialog.fields[i].1 {
                 Field::Choice { .. } => {}
                 Field::Text { .. } => hits.push((DialogHit::Text(i), value, y, width)),
-                Field::Check(_) | Field::Fixed(_) => continue,
+                Field::Check(_) | Field::Fixed(_) | Field::Files(_) => continue,
             }
             hits.push((DialogHit::Arrow(i, Toward::Previous), left, y, 2));
             hits.push((DialogHit::Arrow(i, Toward::Next), value + width, y, 2));
@@ -2977,6 +3175,49 @@ impl Widget for GitDialogWidget<'_> {
         let title = focused_title(dialog.title, theme);
         let widths = (MIN_CONTENT_WIDTH, MAX_CONTENT_WIDTH);
         let (popup, inner) = render_popup(title, theme.accent_fg, lines, widths, area, buf, theme);
+        for (i, top, height) in files_boxes {
+            let Field::Files(files) = &dialog.fields[i].1 else {
+                unreachable!("a files field")
+            };
+            // a panel of its own, like every file tree, lit while it is selected
+            let focused = i == dialog.selected;
+            let note = format!(
+                "{} of {} checked",
+                files.checked.len(),
+                files.checked.total()
+            );
+            let label = &dialog.fields[i].0;
+            let at = Rect::new(
+                inner.x,
+                inner.y.saturating_add(top as u16),
+                inner.width,
+                height as u16,
+            )
+            .intersection(inner);
+            let title = panel_title(label, [note], focused, theme);
+            let rows = render_panel(buf, at, title, focused, theme);
+            // hidden otherwise, like a local changes section's
+            let cursor = if focused {
+                TreeCursor::Bright
+            } else {
+                TreeCursor::Hidden
+            };
+            let offset = render_tree(
+                buf,
+                rows,
+                Target::Dialog(DialogHit::Files(i)),
+                &files.tree,
+                |file| files.symbols.get(file).copied(),
+                None,
+                |_| false,
+                cursor,
+                "No files",
+                Some(&files.checked),
+                self.ctx,
+            );
+            // the popup takes no drag, the wheel scrolls it
+            render_panel_scrollbar(buf, at, files.tree.rows().len(), offset, focused, theme);
+        }
         let mut layout = self.layout.borrow_mut();
         for (hit, x, y, width) in hits {
             let at = Rect::new(
@@ -3030,8 +3271,10 @@ mod tests {
     // slow.
     #[test]
     fn test_summary_of_many_paths_is_cut() {
-        let paths: Vec<String> = (0..1000).map(|i| format!("f{i}")).collect();
-        let dialog = GitDialog::stash("1000 files".into(), paths);
+        // all but one, else no paths are needed
+        let mut files = files(1000);
+        files[0].checked = false;
+        let dialog = GitDialog::stash(files);
         let summary = dialog.summary();
         assert!(summary.contains("more)"), "{summary}");
         assert!(summary.len() < 400, "{summary}");
@@ -3054,7 +3297,7 @@ mod tests {
     fn test_typing_popups_open_typing_into_text() {
         let hash = CommitHash::from("0123456789abcdef0123456789abcdef01234567");
         let dialogs = [
-            GitDialog::stash("x".into(), vec![]),
+            GitDialog::stash(files(1)),
             GitDialog::create_branch_from(NamedRef::Branch("main".into()), vec![]),
             GitDialog::edit_branch("main", None, vec![]),
             GitDialog::edit_remote("origin", "url"),
@@ -3096,7 +3339,7 @@ mod tests {
         };
         let dialogs = [
             GitDialog::abort(Operation::Rebase),
-            GitDialog::stash("all changes".into(), vec![]),
+            GitDialog::stash(files(15)),
             GitDialog::merge("main", "feature".into(), "feature", None),
             GitDialog::delete_branches(vec!["a".into(), "b".into()], vec!["a".into()], vec![]),
             GitDialog::commit(preview, GitTask::default()),
@@ -3332,6 +3575,173 @@ mod tests {
         assert_eq!(intro[0], "Reset 20 files to");
         assert!(intro.iter().any(|line| line.contains("… and 10 more")));
         assert!(intro.len() <= 2 + MAX_LISTED + 1, "{intro:?}");
+    }
+
+    // Files to stash, named f00 and on, every one checked.
+    fn files(n: usize) -> Vec<StashFile> {
+        (0..n)
+            .map(|i| file(&format!("f{i:02}"), true, false))
+            .collect()
+    }
+
+    fn file(path: &str, checked: bool, staged_removal: bool) -> StashFile {
+        StashFile {
+            path: path.into(),
+            symbol: "M",
+            checked,
+            staged_removal,
+        }
+    }
+
+    // The files of the stash popup, its second field.
+    fn files_of(dialog: &mut GitDialog) -> &mut FilesField {
+        match &mut dialog.fields[1].1 {
+            Field::Files(files) => files,
+            field => panic!("no files but {field:?}"),
+        }
+    }
+
+    #[test]
+    fn test_stash_checked_files() {
+        // rows: the root, then a file each
+        let files = vec![
+            file("a", true, false),
+            // the new name of a staged rename
+            file("b", false, true),
+            file("c", true, false),
+            file("d", false, false),
+        ];
+        let mut dialog = GitDialog::stash(files);
+        // it opens typing the message
+        dialog.editing = false;
+        dialog.selected = 1;
+        let toggle = |dialog: &mut GitDialog, row: usize| {
+            files_of(dialog).tree.select_index(row);
+            press(dialog, UserEvent::Select);
+        };
+        let done = |dialog: &GitDialog| dialog.command().unwrap().unwrap().done;
+        let err = |dialog: &GitDialog| dialog.command().unwrap().unwrap_err();
+
+        assert!(
+            args(&dialog).ends_with("-- :(literal)a :(literal)c"),
+            "{}",
+            args(&dialog)
+        );
+        assert_eq!(done(&dialog), "Stashed 2 files");
+        // a staged rename or deletion git can't stash by its path, said in the popup
+        toggle(&mut dialog, 2);
+        assert!(
+            err(&dialog).starts_with("b is staged as deleted or renamed"),
+            "{}",
+            err(&dialog)
+        );
+        assert!(!dialog.can_run());
+        assert_eq!(dialog.summary(), err(&dialog));
+        // all of them stash with no paths, which git takes; the root row checks all
+        toggle(&mut dialog, 4);
+        assert_eq!(done(&dialog), "Stashed all changes");
+        toggle(&mut dialog, 2);
+        toggle(&mut dialog, 4);
+        toggle(&mut dialog, 0);
+        assert!(!args(&dialog).contains(" -- "), "{}", args(&dialog));
+        assert_eq!(done(&dialog), "Stashed all changes");
+        // and unchecks all once all are
+        toggle(&mut dialog, 0);
+        assert_eq!(err(&dialog), "No files checked");
+    }
+
+    #[test]
+    fn test_stash_files_scroll() {
+        use crate::test_support::ui::{popup_rect, row_text, test_ctx};
+        let ctx = test_ctx();
+        let draw = |dialog: &GitDialog| {
+            let area = Rect::new(0, 0, 100, 30);
+            let mut buf = Buffer::empty(area);
+            GitDialogWidget::new(dialog, &ctx).render(area, &mut buf);
+            let text = (0..area.height)
+                .map(|y| row_text(&buf, y))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (text, popup_rect(&buf))
+        };
+        let mut dialog = GitDialog::stash(files(15));
+        // the root and the first files, in a border of their own
+        let (shown, popup) = draw(&dialog);
+        assert!(shown.contains("Files  15 of 15 checked"), "{shown}");
+        let row = shown.lines().find(|line| line.contains("f00")).unwrap();
+        assert!(row.contains("[•] M f00"), "{row}");
+        // the scrollbar on its right border
+        assert!(
+            shown.lines().any(|line| line.trim_end().ends_with("█ │")),
+            "{shown}"
+        );
+        assert!(shown.contains("f08") && !shown.contains("f09"), "{shown}");
+
+        // up from the message goes around to the last file, scrolled to
+        dialog.editing = false;
+        press(&mut dialog, UserEvent::NavigateUp);
+        let (shown, _) = draw(&dialog);
+        assert!(shown.contains("f14") && !shown.contains("f04"), "{shown}");
+
+        // the wheel scrolls it, up to its ends, the selection staying, the popup as high
+        dialog.wheel(1, -3);
+        let (shown, scrolled) = draw(&dialog);
+        assert!(shown.contains("f02") && !shown.contains("f01"), "{shown}");
+        assert_eq!(scrolled, popup);
+        dialog.wheel(1, -10);
+        assert!(draw(&dialog).0.contains("f00"));
+        dialog.wheel(1, 100);
+        assert!(!draw(&dialog).0.contains("f04"));
+        assert_eq!(
+            (dialog.selected, files_of(&mut dialog).tree.cursor()),
+            (1, 15)
+        );
+
+        // the files scroll once the selection goes past their top
+        for _ in 0..10 {
+            press(&mut dialog, UserEvent::NavigateUp);
+        }
+        let (shown, _) = draw(&dialog);
+        assert!(shown.contains("f04") && !shown.contains("f14"), "{shown}");
+    }
+
+    #[test]
+    fn test_stash_files_move_as_every_file_tree() {
+        use UserEvent::*;
+        let mut dialog = GitDialog::stash(files(15));
+        dialog.editing = false;
+        // as drawn
+        files_of(&mut dialog).tree.scroll(FILES_HEIGHT, 0);
+        let cursor = |dialog: &mut GitDialog| files_of(dialog).tree.cursor();
+        // the keys of the files work in them only
+        assert!(!dialog.keys().takes(HalfPageDown));
+        press(&mut dialog, NavigateDown);
+        assert_eq!((dialog.selected, cursor(&mut dialog)), (1, 0));
+        assert!(dialog.keys().takes(HalfPageDown) && dialog.keys().takes(ToggleTreeView));
+        // half of the 10 rows shown
+        press(&mut dialog, HalfPageDown);
+        assert_eq!(cursor(&mut dialog), 5);
+        press(&mut dialog, GoToBottom);
+        assert_eq!(cursor(&mut dialog), 15);
+        press(&mut dialog, GoToTop);
+        assert_eq!(cursor(&mut dialog), 0);
+        // ctrl-e scrolls, the selection staying in view
+        press(&mut dialog, ScrollDown);
+        assert_eq!(cursor(&mut dialog), 1);
+        // a list by default, a tree with the key
+        assert_eq!(files_of(&mut dialog).tree.view(), TreeView::List);
+        press(&mut dialog, ToggleTreeView);
+        assert_eq!(files_of(&mut dialog).tree.view(), TreeView::Tree);
+        // up from the first row goes on to the message
+        press(&mut dialog, GoToTop);
+        press(&mut dialog, NavigateUp);
+        assert_eq!(dialog.selected, 0);
+        assert!(!dialog.keys().takes(GoToTop));
+        // and around into the files from their last row, down from it back to the message
+        press(&mut dialog, NavigateUp);
+        assert_eq!((dialog.selected, cursor(&mut dialog)), (1, 15));
+        press(&mut dialog, NavigateDown);
+        assert_eq!(dialog.selected, 0);
     }
 
     #[test]

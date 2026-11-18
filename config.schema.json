@@ -760,6 +760,9 @@
         "toggle_select": {
           "$ref": "#/definitions/keybindArray"
         },
+        "toggle_tree_view": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "increase_diff_context": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -1098,6 +1101,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_select": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_tree_view": {
           "$ref": "#/definitions/keybindArray"
         },
         "increase_diff_context": {

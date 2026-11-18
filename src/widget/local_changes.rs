@@ -1,4 +1,4 @@
-use std::{path::PathBuf, rc::Rc, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, rc::Rc, time::Instant};
 
 use ratatui::{
     buffer::Buffer,
@@ -34,9 +34,9 @@ use crate::{
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
-            TreeCursor, TreeSelection, TreeShape, ROOT_PATH,
+            TreeCursor, TreeSelection, TreeShape, TreeView, ROOT_PATH,
         },
-        git_dialog::{CommitKind, CommitPreview, GitDialog},
+        git_dialog::{CommitKind, CommitPreview, GitDialog, StashFile},
         style::{
             badge, check_mark, divider, loading_note, mark_selected_bar, panel_title, placeholder,
             render_border_buttons, render_panel, render_panel_scrollbar, tree_panel_width,
@@ -126,7 +126,7 @@ struct Section {
 impl Section {
     fn new(files: &[LocalChangeFile]) -> Self {
         Self {
-            tree: FileTreeState::new(file_tree(files), TreeShape::Rooted),
+            tree: FileTreeState::new(file_tree(files), TreeShape::Rooted, TreeView::Tree),
             query: TreeQuery::default(),
             picked: TreeSelection::default(),
         }
@@ -496,23 +496,43 @@ impl<'a> LocalChangesState<'a> {
             .collect()
     }
 
-    // Asks for a message to stash the picked files, or else all changes, with.
+    // Asks which files to stash, the picked ones checked, or else all of them, and for a message.
     pub fn start_stash(&mut self) -> Result<(), String> {
         if self.count() == 0 {
             return Err("No local changes to stash".into());
         }
-        let (target, paths) = if self.picked().is_empty() {
-            ("all changes".to_string(), vec![])
+        let picked: FxHashSet<&str> = if self.picked().is_empty() {
+            FxHashSet::default()
         } else {
             let targets = self.target_files();
             if targets.is_empty() {
                 return Err("No local changes in the picked files".into());
             }
-            let mut paths: Vec<String> = targets.iter().map(|f| f.path.clone()).collect();
-            paths.extend(targets.iter().filter_map(|f| f.orig_path.clone()));
-            (picked_files_label(targets.len()), paths)
+            targets.iter().map(|f| f.path.as_str()).collect()
         };
-        self.request = Some(Request::Dialog(GitDialog::stash(target, paths)));
+        // each file once, staged and unstaged
+        let mut files: BTreeMap<&str, StashFile> = BTreeMap::new();
+        for f in self.changes.unstaged.iter().chain(&self.changes.staged) {
+            files.entry(&f.path).or_insert_with(|| StashFile {
+                path: f.path.clone(),
+                // the unstaged change's, as it comes first
+                symbol: f.status.symbol(),
+                checked: picked.is_empty() || picked.contains(f.path.as_str()),
+                staged_removal: false,
+            });
+        }
+        for f in &self.changes.staged {
+            if matches!(
+                f.status,
+                LocalChangeStatus::Deleted | LocalChangeStatus::Renamed
+            ) {
+                files
+                    .entry(&f.path)
+                    .and_modify(|file| file.staged_removal = true);
+            }
+        }
+        let files = files.into_values().collect();
+        self.request = Some(Request::Dialog(GitDialog::stash(files)));
         Ok(())
     }
 
@@ -792,8 +812,12 @@ impl<'a> LocalChangesState<'a> {
             "Type the message, in the commit section",
         )
         .when(commit);
-        k.add(&[Stash], "stash", "Stash all changes, or the picked files")
-            .when(|v| files(v) && v.count() > 0);
+        k.add(
+            &[Stash],
+            "stash",
+            "Stash the files checked in a popup, the picked ones or else all",
+        )
+        .when(|v| files(v) && v.count() > 0);
         k.add(&[Edit], "edit", "Open the file in $VISUAL or $EDITOR")
             .when(file);
         k.add(
@@ -870,6 +894,12 @@ impl<'a> LocalChangesState<'a> {
             "Expand/collapse the directory; choose a side of the conflict",
         )
         .when(|v| files(v) || conflict(v));
+        k.add(
+            &[ToggleTreeView],
+            "tree/list",
+            "Show the files in their folders, or as a list of their paths",
+        )
+        .when(files);
         k.quiet(
             &[
                 PageDown,
@@ -1538,6 +1568,13 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // Shows the files of the focused section in their folders, or as a list.
+    pub fn toggle_tree_view(&mut self) {
+        if self.is_files_focused() {
+            self.update_tree(FileTreeState::toggle_view);
+        }
+    }
+
     // Collapses the selected directory, or moves to the parent directory when it is not open.
     pub fn collapse(&mut self) {
         if self.focus_on_files() {
@@ -1953,6 +1990,7 @@ impl LocalChangesPanel<'_> {
                 (true, true, true) => TreeCursor::PickedBright,
             },
             empty,
+            None,
             &self.ctx,
         );
         let total = tree.rows().len();
@@ -4232,7 +4270,9 @@ mod tests {
         state.toggle_visual();
         state.toggle_visual();
         state.start_stash()?;
-        assert_eq!(prompt(&state), Some("Stash 1 picked file".into()));
+        // only the picked file starts checked
+        let task = state.dialog().unwrap().command().unwrap()?;
+        assert!(task.commands[0].to_string().ends_with("-- :(literal)a.txt"));
         let dialog = state.dialog_mut().unwrap();
         for c in "only a".chars() {
             dialog.handle_key(None, key(KeyCode::Char(c)));

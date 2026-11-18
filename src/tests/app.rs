@@ -592,6 +592,63 @@ fn test_launch_on_local_changes() {
     })]);
 }
 
+// ` shows the files of the focused panel as a list of their paths, and back in their folders;
+// the other section keeps its own.
+#[test]
+fn test_files_shown_as_a_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::create_dir(path.join("sub")).unwrap();
+    for name in ["sub/new", "top"] {
+        std::fs::write(path.join(name), "x\n").unwrap();
+    }
+    git(&path, &["add", "top"]);
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        screen(|screen| assert!(!screen.contains("sub/new"), "{screen}")),
+        keys("`"),
+        screen(|screen| assert!(screen.contains("? sub/new"), "{screen}")),
+        keys("2"),
+        keys("`"),
+        keys("1"),
+        // the unstaged files stay a list
+        screen(|screen| assert!(screen.contains("? sub/new"), "{screen}")),
+        keys("`"),
+        screen(|screen| assert!(!screen.contains("sub/new"), "{screen}")),
+    ]);
+}
+
+// The wheel scrolls the files of the stash popup it is on, the selection staying.
+#[test]
+fn test_wheel_scrolls_the_stash_popup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..15 {
+        std::fs::write(path.join(format!("new{i:02}")), "x\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        keys("s"),
+        screen(|screen| assert!(screen.contains("[•] ? new00"), "{screen}")),
+        // off the files, it scrolls nothing
+        mouse_on("Message", TestGesture::WheelDown),
+        screen(|screen| assert!(screen.contains("[•] ? new00"), "{screen}")),
+        mouse_at("[•] ? new03", (6, 0), TestGesture::WheelDown),
+        screen(|screen| assert!(!screen.contains("[•] ? new00"), "{screen}")),
+        // still typing the message
+        typing("m"),
+        screen(|screen| assert!(screen.contains("‹ m ›"), "{screen}")),
+    ]);
+}
+
 #[test]
 fn test_a_key_after_moving_acts_on_the_diff_moved_to() {
     let dir = tempfile::tempdir().unwrap();

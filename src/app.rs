@@ -55,7 +55,9 @@ use crate::{
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitInfo, CommitListState, FilterNote},
         commit_tabs::DetailTab,
-        git_dialog::{DialogOutcome, GitDialog, GitDialogWidget, RemoteAction, RemoteFrom},
+        git_dialog::{
+            DialogHit, DialogOutcome, GitDialog, GitDialogWidget, RemoteAction, RemoteFrom,
+        },
         keys_popup::KeysPopup,
         local_changes::LocalChangesState,
         notices::{push_notice, render_notices, Notice},
@@ -2382,14 +2384,32 @@ impl App<'_> {
         let Some(Hit {
             target: Target::Dialog(part),
             column,
+            row,
             ..
         }) = hit
         else {
             return;
         };
         if let Some(Popup { dialog, .. }) = self.shell.dialog.as_mut() {
-            let outcome = dialog.click(part, column);
+            let outcome = dialog.click(part, column, row);
             self.end_dialog(outcome);
+        }
+    }
+
+    // The wheel at `at`, scrolling the files of the popup there, as drawn: none while the popup
+    // waits to be shown.
+    fn wheel_dialog(&mut self, at: Cell, toward: Toward) {
+        let hit = self.ctx.layout.borrow().hit(at.x, at.y);
+        let Some(Hit {
+            target: Target::Dialog(DialogHit::Files(field)),
+            ..
+        }) = hit
+        else {
+            return;
+        };
+        if let Some(Popup { dialog, .. }) = self.shell.dialog.as_mut() {
+            let rows = crate::widget::style::WHEEL_ROWS as isize;
+            dialog.wheel(field, if toward == Toward::Next { rows } else { -rows });
         }
     }
 
@@ -2936,12 +2956,15 @@ impl App<'_> {
     }
 
     // What the mouse does, as the keys would on what it points at, see `Gesture`: with a popup
-    // open, only a click on it; while typing, a click only ends it, as esc does.
+    // open, only a click on it, and the wheel on its files; while typing, a click only ends it, as
+    // esc does.
     fn handle_gesture(&mut self, gesture: Gesture) {
         use UserEvent::*;
         if self.shell.dialog.is_some() {
-            if let Gesture::Click(at) | Gesture::DoubleClick(at) = gesture {
-                self.click_dialog(at);
+            match gesture {
+                Gesture::Click(at) | Gesture::DoubleClick(at) => self.click_dialog(at),
+                Gesture::Wheel { at, toward } => self.wheel_dialog(at, toward),
+                _ => {}
             }
             return;
         }
