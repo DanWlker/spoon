@@ -13,7 +13,7 @@ use crate::{
     color::ColorTheme,
     git::{command_log, LoggedCommand},
     keybind::UserEvent,
-    keys::Keys,
+    keys::{register_moving_keys, Keys},
     layout::{RowMap, Target},
     widget::style::{
         mark_selected_row, panel_title, placeholder, render_panel, render_panel_scrollbar,
@@ -98,26 +98,17 @@ impl CommandLogState {
             .when(|s| s.focus() == CommandLogFocus::Output);
         k.quiet(&[FocusPanel(2)], "Focus the output")
             .when(|s| s.focus() == CommandLogFocus::Commands);
-        k.add(
-            &[NavigateDown, NavigateUp, SelectDown, SelectUp],
-            "move",
-            "Select the next/previous command",
-        )
-        .when(|s| s.focus() == CommandLogFocus::Commands);
-        k.add(
-            &[NavigateDown, NavigateUp, SelectDown, SelectUp],
-            "move",
-            "Move down/up",
-        )
-        .when(|s| s.focus() == CommandLogFocus::Output);
-        k.add(&[GoToTop, GoToBottom], "top/bottom", "Go to the top/bottom");
-        k.add(
-            &[HalfPageDown, HalfPageUp],
-            "half page",
-            "Jump half a page down/up",
-        );
-        k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
-        k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
+        for (focus, moves) in [
+            (
+                CommandLogFocus::Commands,
+                "Select the next/previous command",
+            ),
+            (CommandLogFocus::Output, "Move down/up"),
+        ] {
+            register_moving_keys(k, move |s| s.focus() == focus, moves);
+            k.quiet(&[SelectDown, SelectUp], moves)
+                .when(move |s| s.focus() == focus);
+        }
         k.add(&[ShortCopy], "copy", "Copy the command and its output");
         k.add(&[Cancel, CommandLog], "close", "Close the command log");
     }

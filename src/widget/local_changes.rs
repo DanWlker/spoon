@@ -34,7 +34,7 @@ use crate::{
         diff_pane::DiffPane,
         file_tree::{
             find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
-            TreeCursor, TreeSelection, TreeShape, TreeView, ROOT_PATH,
+            Folders, Root, TreeCursor, TreeSelection, TreeView, ROOT_PATH,
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog, StashFile},
         style::{
@@ -126,7 +126,7 @@ struct Section {
 impl Section {
     fn new(files: &[LocalChangeFile]) -> Self {
         Self {
-            tree: FileTreeState::new(file_tree(files), TreeShape::Rooted, TreeView::Tree),
+            tree: FileTreeState::new(file_tree(files), Folders::Open, Root::Shown, TreeView::Tree),
             query: TreeQuery::default(),
             picked: TreeSelection::default(),
         }

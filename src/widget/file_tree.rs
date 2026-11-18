@@ -151,12 +151,19 @@ impl FileTree {
     }
 }
 
-// How a tree starts: its directories closed, or open under a root row standing for everything,
-// see `FileTreeRow::root`.
+// How the directories of a tree start, before they are expanded or collapsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TreeShape {
+pub enum Folders {
+    Open,
     Closed,
-    Rooted,
+}
+
+// Whether a tree has a root row standing for everything above its top directory, see
+// `FileTreeRow::root`; it starts open, whatever `Folders` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Root {
+    Shown,
+    Hidden,
 }
 
 // How a tree shows its files: in their directories, or a list of their paths, like lazygit's
@@ -171,9 +178,10 @@ pub enum TreeView {
 #[derive(Debug)]
 pub struct FileTreeState {
     tree: FileTree,
-    shape: TreeShape,
+    folders: Folders,
+    root: Root,
     view: TreeView,
-    // directories whose state differs from how they start, see `TreeShape`
+    // directories whose state differs from how they start, see `Folders`
     toggled: HashSet<String>,
     // only files whose path matches are shown, with all directories expanded; matched with the
     // search options of when it was set
@@ -186,10 +194,11 @@ pub struct FileTreeState {
 }
 
 impl FileTreeState {
-    pub fn new(tree: FileTree, shape: TreeShape, view: TreeView) -> Self {
+    pub fn new(tree: FileTree, folders: Folders, root: Root, view: TreeView) -> Self {
         let mut state = Self {
             tree,
-            shape,
+            folders,
+            root,
             view,
             toggled: HashSet::new(),
             filter: None,
@@ -205,7 +214,8 @@ impl FileTreeState {
     pub fn with_tree(&self, tree: FileTree) -> Self {
         let mut state = Self {
             tree,
-            shape: self.shape,
+            folders: self.folders,
+            root: self.root,
             view: self.view,
             toggled: self.toggled.clone(),
             filter: self.filter.clone(),
@@ -313,7 +323,7 @@ impl FileTreeState {
     }
 
     pub fn is_open(&self, path: &str) -> bool {
-        let open_by_default = self.shape != TreeShape::Closed;
+        let open_by_default = path == ROOT_PATH || self.folders == Folders::Open;
         self.filter.is_some() || open_by_default != self.toggled.contains(path)
     }
 
@@ -387,7 +397,7 @@ impl FileTreeState {
         let parent = match row.path.rsplit_once('/') {
             Some((parent, _)) => parent.to_string(),
             // the top directory is in the root row
-            None if self.shape == TreeShape::Rooted => ROOT_PATH.to_string(),
+            None if self.root == Root::Shown => ROOT_PATH.to_string(),
             None => return,
         };
         self.select_path(&parent);
@@ -425,7 +435,7 @@ impl FileTreeState {
                 .rows(|path| self.is_open(path), |path| self.keeps(path)),
             TreeView::List => self.list_rows(),
         };
-        self.rows = if self.shape == TreeShape::Rooted {
+        self.rows = if self.root == Root::Shown {
             under_root(rows, self.is_open(ROOT_PATH))
         } else {
             rows
@@ -1028,12 +1038,31 @@ mod tests {
         }
     }
 
+    // Closed directories under a root row: the root starts open, showing the top directory.
+    #[test]
+    fn test_closed_folders_under_a_root() {
+        let paths = ["src/x.rs", "a.rs"];
+        let state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Closed,
+            Root::Shown,
+            TreeView::Tree,
+        );
+        let rows: Vec<&str> = state.rows().iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(rows, [ROOT_PATH, "src", "a.rs"]);
+    }
+
     // The files as a list of their paths, by path, under the root row; the selection stays across
     // the toggle when its row is still shown.
     #[test]
     fn test_list_view() {
         let paths = ["b/x.rs", "a.rs", "b/c/y.rs"];
-        let mut state = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted, TreeView::Tree);
+        let mut state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree,
+        );
         state.select_path("b/c/y.rs");
         state.toggle_view();
         let rows: Vec<(&str, &str)> = state
@@ -1063,7 +1092,12 @@ mod tests {
     #[test]
     fn test_checked_files() {
         let paths = ["a/x", "a/y", "z"];
-        let state = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted, TreeView::Tree);
+        let state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree,
+        );
         let row = |path: &str| {
             state
                 .rows()
@@ -1103,7 +1137,7 @@ mod tests {
     fn test_tree_guides() {
         // like nvim-tree's indent markers: a line down each directory, "└" at its last entry
         let tree = FileTree::new(["a/b/x.rs", "a/b/w.rs", "a/y.rs", "z.rs"]);
-        let state = FileTreeState::new(tree, TreeShape::Rooted, TreeView::Tree);
+        let state = FileTreeState::new(tree, Folders::Open, Root::Shown, TreeView::Tree);
         let lines: Vec<String> = (0..state.rows().len())
             .map(|i| {
                 let row = &state.rows()[i];
@@ -1154,7 +1188,12 @@ mod tests {
     #[test]
     fn test_file_tree_state() {
         let paths = ["src/a.rs", "src/b.rs", "README.md"];
-        let mut state = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted, TreeView::Tree);
+        let mut state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree,
+        );
         let visible = |state: &FileTreeState| -> Vec<String> {
             state.rows().iter().map(|r| r.path.clone()).collect()
         };
@@ -1183,14 +1222,24 @@ mod tests {
         );
 
         // closed by default
-        let state = FileTreeState::new(FileTree::new(paths), TreeShape::Closed, TreeView::Tree);
+        let state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Closed,
+            Root::Hidden,
+            TreeView::Tree,
+        );
         assert_eq!(visible(&state), vec!["src", "README.md"]);
     }
 
     #[test]
     fn test_rooted_file_tree_state() {
         let paths = ["src/main.rs", "README.md"];
-        let mut state = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted, TreeView::Tree);
+        let mut state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree,
+        );
         let expected = vec![
             row(0, "/", ":/", None),
             row(1, "src", "src", None),
@@ -1201,11 +1250,14 @@ mod tests {
         assert!(state.rows()[0].contains("src/main.rs"));
         assert!(state.rows()[0].contains("README.md"));
 
-        assert!(
-            FileTreeState::new(FileTree::new([]), TreeShape::Rooted, TreeView::Tree)
-                .rows()
-                .is_empty()
-        );
+        assert!(FileTreeState::new(
+            FileTree::new([]),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree
+        )
+        .rows()
+        .is_empty());
 
         // a file at the top goes to the root row, then the root row collapses everything
         state.navigate(UserEvent::GoToBottom);
@@ -1232,7 +1284,12 @@ mod tests {
             "docs/list.md",
             "README.md",
         ];
-        let mut state = FileTreeState::new(FileTree::new(paths), TreeShape::Closed, TreeView::Tree);
+        let mut state = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Closed,
+            Root::Hidden,
+            TreeView::Tree,
+        );
         let visible = |state: &FileTreeState| -> Vec<String> {
             state.rows().iter().map(|r| r.path.clone()).collect()
         };
@@ -1269,8 +1326,12 @@ mod tests {
             fuzzy: true,
             ..SearchOptions::default()
         };
-        let mut tree =
-            FileTreeState::new(FileTree::new(["axb.rs"]), TreeShape::Closed, TreeView::Tree);
+        let mut tree = FileTreeState::new(
+            FileTree::new(["axb.rs"]),
+            Folders::Closed,
+            Root::Hidden,
+            TreeView::Tree,
+        );
         tree.set_filter(Some("ab"), fuzzy);
         let ctx = crate::test_support::ui::test_ctx();
         ctx.search_options.set(SearchOptions::default());
@@ -1353,7 +1414,8 @@ mod tests {
         let theme = ColorTheme::default();
         let mut tree = FileTreeState::new(
             FileTree::new(["a/x.rs", "a/y.rs", "z.rs"]),
-            TreeShape::Rooted,
+            Folders::Open,
+            Root::Shown,
             TreeView::Tree,
         );
         for cursor in [TreeCursor::Bright, TreeCursor::Dim] {
@@ -1390,7 +1452,8 @@ mod tests {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(
             FileTree::new(paths.iter().map(String::as_str)),
-            TreeShape::Rooted,
+            Folders::Open,
+            Root::Shown,
             TreeView::Tree,
         );
         for height in 0..4 {
@@ -1423,7 +1486,8 @@ mod tests {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(
             FileTree::new(paths.iter().map(String::as_str)),
-            TreeShape::Rooted,
+            Folders::Open,
+            Root::Shown,
             TreeView::Tree,
         );
         let top = |tree: &FileTreeState| row_text(&draw_tree(tree, 4, TreeCursor::Bright, ""), 0);
@@ -1443,7 +1507,8 @@ mod tests {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(
             FileTree::new(paths.iter().map(String::as_str)),
-            TreeShape::Rooted,
+            Folders::Open,
+            Root::Shown,
             TreeView::Tree,
         );
         // drawn once: the half page counts the rows the tree is shown in
@@ -1467,7 +1532,8 @@ mod tests {
         let paths: Vec<String> = (0..10).map(|i| format!("f{i}.rs")).collect();
         let mut tree = FileTreeState::new(
             FileTree::new(paths.iter().map(String::as_str)),
-            TreeShape::Rooted,
+            Folders::Open,
+            Root::Shown,
             TreeView::Tree,
         );
         tree.select_index(5);

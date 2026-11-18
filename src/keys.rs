@@ -223,23 +223,23 @@ impl KeyList {
     }
 }
 
-// The keys moving in a list of lines, in the blame, the timeline and a popup's list, where
-// `applies`.
-pub fn register_moving_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> bool + Copy) {
+// The keys moving in a list, where `applies`, `moves` saying what j and k select: kept out of the
+// status bar, as they work alike in every list, for the keys of the list itself. Each list has
+// its own J/K.
+pub fn register_moving_keys<T: ?Sized>(
+    k: &mut Keys<T>,
+    applies: impl Fn(&T) -> bool + Copy,
+    moves: &'static str,
+) {
     use UserEvent::*;
-    k.add(&[NavigateDown, NavigateUp], "move", "Move down/up")
+    k.quiet(&[NavigateDown, NavigateUp], moves).when(applies);
+    k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom")
         .when(applies);
-    k.add(&[GoToTop, GoToBottom], "top/bottom", "Go to the top/bottom")
+    k.quiet(&[HalfPageDown, HalfPageUp], "Jump half a page down/up")
         .when(applies);
-    k.add(
-        &[HalfPageDown, HalfPageUp],
-        "half page",
-        "Jump half a page down/up",
-    )
-    .when(applies);
-    k.add(&[PageDown, PageUp], "page", "Scroll a page down/up")
+    k.quiet(&[PageDown, PageUp], "Scroll a page down/up")
         .when(applies);
-    k.add(&[ScrollDown, ScrollUp], "scroll", "Scroll down/up")
+    k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up")
         .when(applies);
 }
 

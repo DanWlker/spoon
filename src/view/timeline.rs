@@ -385,7 +385,7 @@ impl TimelineView {
         )
         .when(enterable);
         register_commit_keys(k, commits);
-        register_moving_keys(k, |_| true);
+        register_moving_keys(k, |_| true, "Move down/up");
         k.quiet(
             &[SelectDown, SelectUp],
             "Select the older/newer commit, on the commits",

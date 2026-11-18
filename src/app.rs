@@ -41,7 +41,7 @@ use crate::{
         GraphCommand,
     },
     keybind::{keys_to_string, KeyHint, Scope, SequenceMatch, UserEvent},
-    keys::{Availability, KeyList, Keys},
+    keys::{register_moving_keys, Availability, KeyList, Keys},
     layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target, Thumb},
     pointer::{Cell, Gesture, OnPicks, Pointer},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
@@ -1938,14 +1938,8 @@ impl App<'_> {
         k.add(&[Search], "search", "Search the refs");
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
             .when(searched);
-        k.quiet(
-            &[NavigateDown, SelectDown, NavigateUp, SelectUp],
-            "Move down/up",
-        );
-        k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
-        k.quiet(&[HalfPageDown, HalfPageUp], "Jump half a page down/up");
-        k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
-        k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
+        register_moving_keys(k, |_| true, "Move down/up");
+        k.quiet(&[SelectDown, SelectUp], "Move down/up");
         k.quiet(&[NavigateRight, NavigateLeft], "Open/close the node");
         k.quiet(
             &[NextSection, PreviousSection],

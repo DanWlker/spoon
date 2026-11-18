@@ -506,8 +506,8 @@ impl GraphEdges {
             return;
         }
         let index = self.runs.len();
-        for chunk in rows.start / CHUNK..=(rows.end - 1) / CHUNK {
-            self.chunks[chunk].push(index);
+        for chunk in &mut self.chunks[rows.start / CHUNK..=(rows.end - 1) / CHUNK] {
+            chunk.push(index);
         }
         self.runs.push(VerticalRun {
             rows,

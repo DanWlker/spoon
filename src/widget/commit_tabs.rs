@@ -27,8 +27,8 @@ use crate::{
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
         file_tree::{
-            render_tree, Entry, FileTree, FileTreeRow, FileTreeState, TreeCursor, TreeSelection,
-            TreeShape, TreeView,
+            render_tree, Entry, FileTree, FileTreeRow, FileTreeState, Folders, Root, TreeCursor,
+            TreeSelection, TreeView,
         },
         submodule::SubmodulePanel,
         tree_query::SearchDirection,
@@ -290,7 +290,8 @@ impl<'a> CommitChangesState<'a> {
             .collect();
         let mut tree = FileTreeState::new(
             FileTree::new(files.iter().map(|f| f.path.as_str())),
-            TreeShape::Rooted,
+            Folders::Open,
+            Root::Shown,
             view,
         );
         // start on the first file rather than its directory
@@ -832,7 +833,7 @@ impl<'a> CommitFilesState<'a> {
             self.tree = Some(match self.previous_tree.take() {
                 Some(previous) => previous.with_tree(tree),
                 // collapsed by default, a whole repository is too much to show at once
-                None => FileTreeState::new(tree, TreeShape::Closed, TreeView::Tree),
+                None => FileTreeState::new(tree, Folders::Closed, Root::Hidden, TreeView::Tree),
             });
             self.replace_preview();
         }

@@ -28,7 +28,7 @@ use crate::{
     search::{SearchKind, SearchOptions},
     widget::{
         file_tree::{
-            render_tree, CheckedFiles, FileTree, FileTreeState, TreeCursor, TreeShape, TreeView,
+            render_tree, CheckedFiles, FileTree, FileTreeState, Folders, Root, TreeCursor, TreeView,
         },
         style::{
             change_span, check_mark, choice_arrows, focused_title, no_choice_arrows, panel_title,
@@ -848,7 +848,12 @@ impl GitDialog {
         let mut form = Form::default();
         let message = form.text("Message", "", vec![], Need::Optional);
         let paths = stashed.iter().map(|file| file.path.as_str());
-        let tree = FileTreeState::new(FileTree::new(paths), TreeShape::Rooted, TreeView::List);
+        let tree = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Open,
+            Root::Hidden,
+            TreeView::List,
+        );
         let checked = CheckedFiles::new(stashed.iter().map(|f| (f.path.clone(), f.checked)));
         let symbols = stashed.iter().map(|file| file.symbol).collect();
         let field = FilesField {
@@ -2508,7 +2513,7 @@ impl GitDialog {
             .when(idle);
         // the files move as every file tree does
         let files = |d: &Self| !d.editing && d.is_files_selected();
-        register_moving_keys(k, files);
+        register_moving_keys(k, files, "Move down/up");
         k.add(&[Search], "filter", "Filter the files").when(files);
         k.quiet(
             &[NavigateRight, NavigateLeft],
@@ -3677,7 +3682,7 @@ mod tests {
 
     #[test]
     fn test_stash_checked_files() {
-        // rows: the root, then a file each
+        // rows: a file each
         let files = vec![
             file("a", true, false),
             // the new name of a staged rename
@@ -3703,7 +3708,7 @@ mod tests {
         );
         assert_eq!(done(&dialog), "Stashed 2 files");
         // a staged rename or deletion git can't stash by its path, said in the popup
-        toggle(&mut dialog, 2);
+        toggle(&mut dialog, 1);
         assert!(
             err(&dialog).starts_with("b is staged as deleted or renamed"),
             "{}",
@@ -3711,32 +3716,30 @@ mod tests {
         );
         assert!(!dialog.can_run());
         assert_eq!(dialog.summary(), err(&dialog));
-        // all of them stash with no paths, which git takes; the root row checks all
-        toggle(&mut dialog, 4);
-        assert_eq!(done(&dialog), "Stashed all changes");
-        toggle(&mut dialog, 2);
-        toggle(&mut dialog, 4);
-        toggle(&mut dialog, 0);
+        // all of them stash with no paths, which git takes
+        toggle(&mut dialog, 3);
         assert!(!args(&dialog).contains(" -- "), "{}", args(&dialog));
         assert_eq!(done(&dialog), "Stashed all changes");
-        // and unchecks all once all are
-        toggle(&mut dialog, 0);
+        // nothing checked
+        for row in 0..4 {
+            toggle(&mut dialog, row);
+        }
         assert_eq!(err(&dialog), "No files checked");
     }
 
-    // `/` filters the files as in every file tree; the root row checks only those shown, and esc
+    // `/` filters the files as in every file tree; a folder checks only those shown, and esc
     // clears the filter before it cancels.
     #[test]
     fn test_stash_files_filter() {
         let ctx = crate::test_support::ui::test_ctx();
-        let paths = ["dir/a", "dir/b", "f00", "f01"];
+        let paths = ["dir/a", "dir/b", "f00", "fa"];
         let mut dialog = GitDialog::stash(paths.iter().map(|p| file(p, true, false)).collect());
         dialog.editing = false;
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Search);
         assert!(dialog.is_editing());
         assert_eq!(dialog.keys(), typing_keys(SearchKind::Names));
-        for c in "dir".chars() {
+        for c in "a".chars() {
             assert!(dialog.type_filter(&ctx, key(KeyCode::Char(c))));
         }
         assert!(dialog.type_filter(&ctx, key(KeyCode::Enter)));
@@ -3747,15 +3750,14 @@ mod tests {
             .iter()
             .map(|r| r.path.clone())
             .collect();
-        assert_eq!(
-            shown,
-            [crate::widget::file_tree::ROOT_PATH, "dir/a", "dir/b"]
-        );
-        // the root row unchecks the files shown only
+        assert_eq!(shown, ["dir/a", "fa"]);
+        // in their folders, the folder unchecks the files shown only
+        press(&mut dialog, UserEvent::ToggleTreeView);
+        assert_eq!(files_of(&mut dialog).tree.rows()[0].path, "dir");
         files_of(&mut dialog).tree.select_index(0);
         press(&mut dialog, UserEvent::Select);
         assert!(
-            args(&dialog).ends_with("-- :(literal)f00 :(literal)f01"),
+            args(&dialog).ends_with("-- :(literal)dir/b :(literal)f00 :(literal)fa"),
             "{}",
             args(&dialog)
         );
@@ -3765,7 +3767,7 @@ mod tests {
             DialogOutcome::None
         ));
         assert_eq!(files_of(&mut dialog).tree.rows().len(), 5);
-        assert!(args(&dialog).ends_with("-- :(literal)f00 :(literal)f01"));
+        assert!(args(&dialog).ends_with("-- :(literal)dir/b :(literal)f00 :(literal)fa"));
         assert!(matches!(
             press(&mut dialog, UserEvent::Cancel),
             DialogOutcome::Close
@@ -3787,7 +3789,7 @@ mod tests {
             (text, popup_rect(&buf))
         };
         let mut dialog = GitDialog::stash(files(15));
-        // the root and the first files, in a border of their own
+        // the first files, in a border of their own
         let (shown, popup) = draw(&dialog);
         assert!(shown.contains("Files  15 of 15 checked"), "{shown}");
         let row = shown.lines().find(|line| line.contains("f00")).unwrap();
@@ -3797,7 +3799,7 @@ mod tests {
             shown.lines().any(|line| line.trim_end().ends_with("█ │")),
             "{shown}"
         );
-        assert!(shown.contains("f08") && !shown.contains("f09"), "{shown}");
+        assert!(shown.contains("f09") && !shown.contains("f10"), "{shown}");
 
         // up from the message goes around to the last file, scrolled to
         dialog.editing = false;
@@ -3816,7 +3818,7 @@ mod tests {
         assert!(!draw(&dialog).0.contains("f04"));
         assert_eq!(
             (dialog.selected, files_of(&mut dialog).tree.cursor()),
-            (1, 15)
+            (1, 14)
         );
 
         // the files scroll once the selection goes past their top
@@ -3844,7 +3846,7 @@ mod tests {
         press(&mut dialog, HalfPageDown);
         assert_eq!(cursor(&mut dialog), 5);
         press(&mut dialog, GoToBottom);
-        assert_eq!(cursor(&mut dialog), 15);
+        assert_eq!(cursor(&mut dialog), 14);
         press(&mut dialog, GoToTop);
         assert_eq!(cursor(&mut dialog), 0);
         // ctrl-e scrolls, the selection staying in view
@@ -3861,7 +3863,7 @@ mod tests {
         assert!(!dialog.keys().takes(GoToTop));
         // and around into the files from their last row, down from it back to the message
         press(&mut dialog, NavigateUp);
-        assert_eq!((dialog.selected, cursor(&mut dialog)), (1, 15));
+        assert_eq!((dialog.selected, cursor(&mut dialog)), (1, 14));
         press(&mut dialog, NavigateDown);
         assert_eq!(dialog.selected, 0);
     }

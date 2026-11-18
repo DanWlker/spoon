@@ -9,7 +9,7 @@ use crate::{
     git::{CommitHash, Head, Repository},
     graph_commands::{branches_at, commit_command_works},
     keybind::{Scope, UserEvent},
-    keys::{Availability, KeyList, Keys},
+    keys::{register_moving_keys, Availability, KeyList, Keys},
     layout::Target,
     pointer::OnPicks,
     ref_commands::lone_stash,
@@ -411,17 +411,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
             vec![FuzzyToggle],
             "Toggle fuzzy match, for every search but of text",
         ),
-        (
-            vec![NavigateDown, SelectDown, NavigateUp, SelectUp],
-            "Select the older/newer commit",
-        ),
-        (vec![GoToTop, GoToBottom], "Go to the top/bottom"),
-        (
-            vec![HalfPageDown, HalfPageUp],
-            "Jump half a page down/up, scrolling as needed",
-        ),
-        (vec![PageDown, PageUp], "Scroll a page down/up"),
-        (vec![ScrollDown, ScrollUp], "Scroll down/up"),
+        (vec![SelectDown, SelectUp], "Select the older/newer commit"),
         (
             vec![NavigateLeft, NavigateRight],
             "Fold/unfold the selected merge commit",
@@ -434,6 +424,7 @@ pub fn register_commit_list_keys<T: ?Sized>(
     for (events, long) in quiet {
         k.quiet(&events, long).when(works(events[0]));
     }
+    register_moving_keys(k, works(NavigateDown), "Select the older/newer commit");
 }
 
 // A key typed into the search of the commit list, unmapped like any search (see `type_query`);

@@ -642,7 +642,7 @@ fn test_filter_the_stash_popup() {
         assert!(screen.contains("filter: keep"), "{screen}");
         assert!(!screen.contains("[•] ? other"), "{screen}");
     }));
-    // the root row: the files shown
+    // the first file shown
     steps.push(keys("space"));
     steps.push(keys("esc"));
     steps.push(screen(|screen| {
@@ -2517,6 +2517,8 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
             for key in keys {
                 assert!(shown.iter().any(|d| d == key), "no {key:?} in {shown:?}");
             }
+            // the moving keys work alike everywhere, see `register_moving_keys`
+            assert!(!shown.iter().any(|d| d == "move"), "{shown:?}");
         })
     };
     harness.run(vec![
@@ -2529,7 +2531,7 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
             "back",
         ]),
         keys("esc esc shift-t"),
-        popup_has(&["into the diff", "copy hash", "move"]),
+        popup_has(&["into the diff", "copy hash"]),
         // typing a search, the popup gives way
         keys("/"),
         popup_has(&[]),
@@ -2538,7 +2540,7 @@ fn test_keys_popup_over_the_blame_and_the_timeline() {
         keys("esc esc ? /"),
         typing("git commands run"),
         keys("enter enter"),
-        popup_has(&["move", "copy", "close"]),
+        popup_has(&["copy", "close"]),
         keys("esc ?"),
         check(|app| assert!(app.keys_popup_keys().is_empty())),
     ]);

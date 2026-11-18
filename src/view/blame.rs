@@ -491,7 +491,7 @@ impl BlameView {
             "On the commit shown, blame as of the older/newer commit; else act on the commit or the text of the line",
         )
         .when(on(Text));
-        register_moving_keys(k, body);
+        register_moving_keys(k, body, "Move down/up");
         k.add(
             &[Search],
             "search",

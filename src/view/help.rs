@@ -15,7 +15,7 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     keybind::{KeyBind, Scope, UserEvent},
-    keys::{KeyList, Keys},
+    keys::{register_moving_keys, KeyList, Keys},
     layout::{RowMap, Target},
     search::SearchKind,
     view::{detail::DetailView, list::ListView, query_status, BlameView, TimelineView},
@@ -89,14 +89,8 @@ impl HelpView {
             .when(|v| v.query.filter().is_none());
         k.quiet(&[HelpToggle], "Close the keys list")
             .when(|v| v.query.filter().is_some());
-        k.quiet(
-            &[NavigateDown, SelectDown, NavigateUp, SelectUp],
-            "Select the next/previous action",
-        );
-        k.quiet(&[GoToTop, GoToBottom], "Go to the top/bottom");
-        k.quiet(&[HalfPageDown, HalfPageUp], "Jump half a page down/up");
-        k.quiet(&[PageDown, PageUp], "Scroll a page down/up");
-        k.quiet(&[ScrollDown, ScrollUp], "Scroll down/up");
+        register_moving_keys(k, |_| true, "Select the next/previous action");
+        k.quiet(&[SelectDown, SelectUp], "Select the next/previous action");
     }
 
     pub fn keys(&self) -> KeyList {
