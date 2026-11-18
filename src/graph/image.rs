@@ -21,8 +21,10 @@ use crate::{
 
 mod antialias;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GraphStyle {
+    #[default]
     Rounded,
     Angular,
     Curved,

@@ -1397,8 +1397,8 @@ mod tests {
         for image_protocol in [
             ImageProtocol::Iterm2,
             ImageProtocol::Kitty,
-            ImageProtocol::KittyUnicode { tmux: false },
-            ImageProtocol::KittyUnicode { tmux: true },
+            ImageProtocol::KittyUnicode(crate::protocol::Escapes::Direct),
+            ImageProtocol::KittyUnicode(crate::protocol::Escapes::Tmux),
         ] {
             with_commit_list_state_and_protocol(&["first", "second"], image_protocol, |state| {
                 state.ensure_visible_graph_uploaded();

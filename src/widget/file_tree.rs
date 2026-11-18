@@ -870,14 +870,12 @@ pub fn guide_span(guide: &str, theme: &ColorTheme) -> Span<'static> {
 }
 
 // How the selected row of a tree is drawn: not at all, quieter while the tree doesn't have the
-// focus, or bright while it has; picked while the rows are being selected.
+// focus, or bright while it has; picked too while the rows are being selected, see `render_tree`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeCursor {
     Hidden,
     Dim,
     Bright,
-    PickedDim,
-    PickedBright,
 }
 
 // Draws the rows of `tree` in `area`, like every file tree: the directories open or closed, the
@@ -974,8 +972,8 @@ pub fn render_tree(
     let shown = shown.filter(|row| *row < area.height as usize);
     if let Some(row) = shown.filter(|_| cursor != TreeCursor::Hidden) {
         let y = area.y + row as u16;
-        let focused = matches!(cursor, TreeCursor::Bright | TreeCursor::PickedBright);
-        if matches!(cursor, TreeCursor::PickedDim | TreeCursor::PickedBright) {
+        let focused = cursor == TreeCursor::Bright;
+        if tree.is_visual() {
             mark_picked_row(buf, Rect::new(area.x, y, area.width, 1), theme);
             if area.x > 0 {
                 mark_selected_bar(buf, area.x - 1, y, focused, theme);
@@ -1437,7 +1435,8 @@ mod tests {
 
         // while selecting, the cursor is picked too, with its bar
         tree.select_path("a/x.rs");
-        let buf = draw_tree(&tree, 5, TreeCursor::PickedBright, "");
+        tree.toggle_visual();
+        let buf = draw_tree(&tree, 5, TreeCursor::Bright, "");
         let row = Rect::new(1, 2, 20, 1);
         assert_row_bg(&buf, row, theme.list_picked_bg);
         assert_eq!(buf[(0, 2)].symbol(), "▌");

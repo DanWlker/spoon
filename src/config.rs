@@ -14,7 +14,8 @@ use crate::{
     browse::Forge,
     color::{ColorTheme, OptionalColorTheme},
     error::Result,
-    graph::GraphImageWidthMode,
+    git::SortCommit,
+    graph::{GraphImageWidthMode, GraphStyle},
     keybind::KeyBind,
     search::SearchTarget,
 };
@@ -137,7 +138,7 @@ pub struct CoreBrowserConfig {
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreOptionConfig {
     pub protocol: Option<ImageProtocolType>,
-    pub order: Option<CommitOrderType>,
+    pub order: Option<SortCommit>,
     pub graph_width: Option<GraphWidthType>,
     pub graph_style: Option<GraphStyle>,
     pub graph_antialias: Option<bool>,
@@ -338,25 +339,10 @@ pub enum ImageProtocolType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum CommitOrderType {
-    Chrono,
-    Topo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum GraphWidthType {
     Auto,
     Double,
     Single,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum GraphStyle {
-    Rounded,
-    Angular,
-    Curved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -497,7 +483,7 @@ mod tests {
             core: CoreConfig {
                 option: CoreOptionConfig {
                     protocol: Some(ImageProtocolType::KittyUnicode),
-                    order: Some(CommitOrderType::Topo),
+                    order: Some(SortCommit::Topological),
                     graph_width: Some(GraphWidthType::Single),
                     graph_style: Some(GraphStyle::Angular),
                     graph_antialias: Some(true),

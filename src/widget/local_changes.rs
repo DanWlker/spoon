@@ -1982,12 +1982,10 @@ impl LocalChangesPanel<'_> {
             // the filter is highlighted in the section it applies to
             state.query_of(section).filter(),
             |path| picked.contains(path),
-            match (active, tree.is_visual(), self.focused) {
-                (false, _, _) => TreeCursor::Hidden,
-                (true, false, false) => TreeCursor::Dim,
-                (true, false, true) => TreeCursor::Bright,
-                (true, true, false) => TreeCursor::PickedDim,
-                (true, true, true) => TreeCursor::PickedBright,
+            match (active, self.focused) {
+                (false, _) => TreeCursor::Hidden,
+                (true, false) => TreeCursor::Dim,
+                (true, true) => TreeCursor::Bright,
             },
             empty,
             None,

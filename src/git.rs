@@ -235,9 +235,15 @@ pub enum Head {
     None,
 }
 
-#[derive(Debug, Clone, Copy)]
+// Named in the config and on the command line as chrono and topo.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
 pub enum SortCommit {
+    #[default]
+    #[value(name = "chrono")]
+    #[serde(rename = "chrono")]
     Chronological,
+    #[value(name = "topo")]
+    #[serde(rename = "topo")]
     Topological,
 }
 

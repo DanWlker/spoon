@@ -15,7 +15,7 @@ use ratatui::{
 pub fn auto_detect() -> ImageProtocol {
     if detect_kitty_graphics_protocol() {
         if detect_tmux() {
-            ImageProtocol::KittyUnicode { tmux: true }
+            ImageProtocol::KittyUnicode(Escapes::Tmux)
         } else {
             ImageProtocol::Kitty
         }
@@ -52,7 +52,26 @@ pub fn detect_tmux() -> bool {
 pub enum ImageProtocol {
     Iterm2,
     Kitty,
-    KittyUnicode { tmux: bool },
+    KittyUnicode(Escapes),
+}
+
+// Where the escapes of the kitty protocol go: to the terminal, or through tmux, wrapped for it to
+// pass them on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Escapes {
+    Direct,
+    Tmux,
+}
+
+impl Escapes {
+    // Through tmux while it runs, see `detect_tmux`.
+    pub fn detect() -> Self {
+        if detect_tmux() {
+            Escapes::Tmux
+        } else {
+            Escapes::Direct
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,8 +116,8 @@ impl ImageProtocol {
         let symbol = match self {
             ImageProtocol::Iterm2 => iterm2_encode(bytes, cell_width, 1),
             ImageProtocol::Kitty => kitty_encode(bytes, cell_width, 1),
-            ImageProtocol::KittyUnicode { tmux } => {
-                return kitty_unicode_prepare(bytes, cell_width, image_id, *tmux);
+            ImageProtocol::KittyUnicode(escapes) => {
+                return kitty_unicode_prepare(bytes, cell_width, image_id, *escapes);
             }
         };
         let mut cells = Vec::with_capacity(cell_width);
@@ -126,7 +145,7 @@ impl ImageProtocol {
         match self {
             ImageProtocol::Iterm2 => {}
             ImageProtocol::Kitty => kitty_clear_line(y),
-            ImageProtocol::KittyUnicode { .. } => {}
+            ImageProtocol::KittyUnicode(_) => {}
         }
     }
 
@@ -134,7 +153,7 @@ impl ImageProtocol {
         match self {
             ImageProtocol::Iterm2 => {}
             ImageProtocol::Kitty => kitty_clear(),
-            ImageProtocol::KittyUnicode { .. } => {}
+            ImageProtocol::KittyUnicode(_) => {}
         }
     }
 
@@ -155,8 +174,8 @@ impl ImageProtocol {
     pub fn delete_image(&self, image_id: u32) -> Option<String> {
         match self {
             ImageProtocol::Iterm2 | ImageProtocol::Kitty => None,
-            ImageProtocol::KittyUnicode { tmux } => {
-                Some(kitty_unicode_delete_image_encode(image_id, *tmux))
+            ImageProtocol::KittyUnicode(escapes) => {
+                Some(kitty_unicode_delete_image_encode(image_id, *escapes))
             }
         }
     }
@@ -604,10 +623,10 @@ fn kitty_unicode_prepare(
     bytes: &[u8],
     cell_width: usize,
     image_id: u32,
-    tmux: bool,
+    escapes: Escapes,
 ) -> PreparedImage {
     let mut cells = Vec::with_capacity(cell_width);
-    let upload_symbol = kitty_unicode_encode(bytes, cell_width, 1, image_id, tmux);
+    let upload_symbol = kitty_unicode_encode(bytes, cell_width, 1, image_id, escapes);
     let foreground = Color::Rgb(
         ((image_id >> 16) & 0xff) as u8,
         ((image_id >> 8) & 0xff) as u8,
@@ -645,7 +664,7 @@ fn kitty_unicode_encode(
     cell_width: usize,
     cell_height: usize,
     image_id: u32,
-    tmux: bool,
+    escapes: Escapes,
 ) -> String {
     let base64_str = to_base64_str(bytes);
     let chunk_size = 4096;
@@ -655,7 +674,7 @@ fn kitty_unicode_encode(
     let chunks = base64_str.as_bytes().chunks(chunk_size);
     let total_chunks = chunks.len();
 
-    let (start, esc, end) = passthrough_escapes(tmux);
+    let (start, esc, end) = passthrough_escapes(escapes);
 
     for (i, chunk) in chunks.enumerate() {
         s.push_str(start);
@@ -693,16 +712,15 @@ fn kitty_clear() {
     print!("\x1b_Ga=d,d=A;\x1b\\");
 }
 
-fn kitty_unicode_delete_image_encode(image_id: u32, tmux: bool) -> String {
-    let (start, esc, end) = passthrough_escapes(tmux);
+fn kitty_unicode_delete_image_encode(image_id: u32, escapes: Escapes) -> String {
+    let (start, esc, end) = passthrough_escapes(escapes);
     format!("{start}{esc}_Ga=d,d=I,i={image_id}{esc}\\{end}")
 }
 
-fn passthrough_escapes(tmux: bool) -> (&'static str, &'static str, &'static str) {
-    if tmux {
-        ("\x1bPtmux;", "\x1b\x1b", "\x1b\\")
-    } else {
-        ("", "\x1b", "")
+fn passthrough_escapes(escapes: Escapes) -> (&'static str, &'static str, &'static str) {
+    match escapes {
+        Escapes::Tmux => ("\x1bPtmux;", "\x1b\x1b", "\x1b\\"),
+        Escapes::Direct => ("", "\x1b", ""),
     }
 }
 
@@ -715,7 +733,7 @@ mod tests {
     // A graph wider than the columns kitty's placeholders can name is cut, not a panic.
     #[test]
     fn test_kitty_unicode_wider_than_its_columns() {
-        let image = ImageProtocol::KittyUnicode { tmux: true }.prepare_image(&[0; 32], 400, 1);
+        let image = ImageProtocol::KittyUnicode(Escapes::Tmux).prepare_image(&[0; 32], 400, 1);
         assert_eq!(image.cells().len(), ROW_COLUMN_DIACRITICS.len());
     }
 

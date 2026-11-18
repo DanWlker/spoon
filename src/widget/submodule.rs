@@ -38,16 +38,23 @@ pub struct SubmodulePanel<'a> {
     shows: Shows<'a>,
 }
 
+// Which way the gitlink moved: on to commits it adds, or back, a rewind losing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    Ahead,
+    Back,
+}
+
 // What the panel shows under the note of the uncommitted files.
 #[derive(Debug)]
 enum Shows<'a> {
     // its commits loading on another thread, see `poll`
     Loading(Loading<'a>),
-    // the commits the second gitlink has that the first doesn't, or, when `rewind`, those it lost
-    // moving back, as `git diff --submodule=log` says
+    // the commits the second gitlink has that the first doesn't, or, moved back, those it lost, as
+    // `git diff --submodule=log` says
     Commits {
         list: Box<CommitListState<'a>>,
-        rewind: bool,
+        moved: Moved,
     },
     // why there is nothing to list: not checked out, no commits between the gitlinks, or an error
     Message(String),
@@ -100,14 +107,15 @@ impl<'a> SubmodulePanel<'a> {
                 .into_iter()
                 .enumerate()
                 .find_map(|(i, (from, to))| {
+                    let moved = if i == 1 { Moved::Back } else { Moved::Ahead };
                     Some((
                         repository.loaded_submodule_repository(path, from, to)?,
-                        i == 1,
+                        moved,
                     ))
                 });
-        if let Some((submodule, rewind)) = loaded {
+        if let Some((submodule, moved)) = loaded {
             let graph = graph::calc_graph(submodule, None, &Default::default());
-            return panel(commits(ctx, submodule, graph, rewind));
+            return panel(commits(ctx, submodule, graph, moved));
         }
         let ranges = [(from, to), (to, from)].map(|(from, to)| {
             let work = repository.submodule_repository_work(path, from, to);
@@ -301,9 +309,9 @@ impl<'a> SubmodulePanel<'a> {
             n => format!("{n} {what}s"),
         };
         let moved = match &self.shows {
-            Shows::Commits { list, rewind } => Some(match rewind {
-                false => format!("{} added", count(list.len(), "commit")),
-                true => format!("{} removed, a rewind", count(list.len(), "commit")),
+            Shows::Commits { list, moved } => Some(match moved {
+                Moved::Ahead => format!("{} added", count(list.len(), "commit")),
+                Moved::Back => format!("{} removed, a rewind", count(list.len(), "commit")),
             }),
             _ => None,
         };
@@ -351,7 +359,7 @@ impl<'a> SubmodulePanel<'a> {
 // Said when the gitlinks are the same, or have no commits between them.
 const NO_COMMITS: &str = "no commits ahead of the recorded one";
 
-// The panel's commits from the work loading them, or why there are none; a rewind when they
+// The panel's commits from the work loading them, or why there are none; moved back when they
 // were found the other way round than `forward`, the two gitlinks compared.
 fn shows_loaded<'a>(
     ctx: &AppContext,
@@ -362,9 +370,13 @@ fn shows_loaded<'a>(
 ) -> Shows<'a> {
     match loaded {
         Ok(Some(((from, to), submodule, layout))) => {
-            let rewind = (&from, &to) != (&forward.0, &forward.1);
+            let moved = if (&from, &to) == (&forward.0, &forward.1) {
+                Moved::Ahead
+            } else {
+                Moved::Back
+            };
             let submodule = repository.keep_submodule_repository(path, &from, &to, submodule);
-            commits(ctx, submodule, graph::Graph::of(submodule, layout), rewind)
+            commits(ctx, submodule, graph::Graph::of(submodule, layout), moved)
         }
         Ok(None) => Shows::Message(NO_COMMITS.into()),
         Err(err) => Shows::Message(err),
@@ -375,7 +387,7 @@ fn commits<'a>(
     ctx: &AppContext,
     submodule: &'a Repository,
     graph: graph::Graph<'a>,
-    rewind: bool,
+    moved: Moved,
 ) -> Shows<'a> {
     let manager = ctx.graph_image_manager(graph);
     let list = Box::new(submodule_commit_list(
@@ -384,7 +396,7 @@ fn commits<'a>(
         ctx.search_options.clone(),
         ctx.ui_config.common.scrolloff as usize,
     ));
-    Shows::Commits { list, rewind }
+    Shows::Commits { list, moved }
 }
 
 // What a submodule panel shows: its path and the two gitlinks, so a page can reuse the panel when

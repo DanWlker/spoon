@@ -36,7 +36,7 @@ use ratatui::style::Stylize;
 
 use crate::{
     app::{App, Ret},
-    config::{CommitOrderType, GraphStyle, GraphWidthType, ImageProtocolType, InitialSelection},
+    config::{GraphWidthType, ImageProtocolType, InitialSelection},
     error::Result,
     graph::GraphImageManager,
 };
@@ -55,7 +55,7 @@ struct Args {
 
     /// Commit ordering algorithm [default: chrono]
     #[arg(short, long, value_name = "TYPE")]
-    order: Option<CommitOrderType>,
+    order: Option<git::SortCommit>,
 
     /// Commit graph image cell width [default: auto]
     #[arg(short, long, value_name = "TYPE")]
@@ -63,7 +63,7 @@ struct Args {
 
     /// Commit graph image edge style [default: rounded]
     #[arg(short = 's', long, value_name = "TYPE")]
-    graph_style: Option<GraphStyle>,
+    graph_style: Option<graph::GraphStyle>,
 
     /// Enable antialiasing for commit graph images
     #[arg(long, conflicts_with = "no_graph_antialias")]
@@ -104,31 +104,10 @@ impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
             Some(ImageProtocolType::Auto) => protocol::auto_detect(),
             Some(ImageProtocolType::Iterm) => protocol::ImageProtocol::Iterm2,
             Some(ImageProtocolType::Kitty) => protocol::ImageProtocol::Kitty,
-            Some(ImageProtocolType::KittyUnicode) => protocol::ImageProtocol::KittyUnicode {
-                tmux: protocol::detect_tmux(),
-            },
+            Some(ImageProtocolType::KittyUnicode) => {
+                protocol::ImageProtocol::KittyUnicode(protocol::Escapes::detect())
+            }
             None => protocol::auto_detect(),
-        }
-    }
-}
-
-impl From<Option<CommitOrderType>> for git::SortCommit {
-    fn from(order: Option<CommitOrderType>) -> Self {
-        match order {
-            Some(CommitOrderType::Chrono) => git::SortCommit::Chronological,
-            Some(CommitOrderType::Topo) => git::SortCommit::Topological,
-            None => git::SortCommit::Chronological,
-        }
-    }
-}
-
-impl From<Option<GraphStyle>> for graph::GraphStyle {
-    fn from(style: Option<GraphStyle>) -> Self {
-        match style {
-            Some(GraphStyle::Rounded) => graph::GraphStyle::Rounded,
-            Some(GraphStyle::Angular) => graph::GraphStyle::Angular,
-            Some(GraphStyle::Curved) => graph::GraphStyle::Curved,
-            None => graph::GraphStyle::Rounded,
         }
     }
 }
@@ -158,9 +137,12 @@ fn run() -> Result<()> {
 
     let max_count = args.max_count.map(std::num::NonZeroUsize::get);
     let image_protocol = args.protocol.or(core_config.option.protocol).into();
-    let order = args.order.or(core_config.option.order).into();
+    let order = args.order.or(core_config.option.order).unwrap_or_default();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
-    let graph_style = args.graph_style.or(core_config.option.graph_style).into();
+    let graph_style = args
+        .graph_style
+        .or(core_config.option.graph_style)
+        .unwrap_or_default();
     let graph_antialias = args.resolve_graph_antialias(core_config.option.graph_antialias);
     let graph_image_width_mode = graph_config.row_image_width;
     let initial_selection = args

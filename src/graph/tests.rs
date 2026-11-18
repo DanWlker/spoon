@@ -2101,7 +2101,7 @@ fn graph_laid_out_again_keeps_the_images_of_the_rows_drawn_the_same() -> TestRes
             graph::CellWidthType::Double,
             graph::GraphStyle::Rounded,
             graph::GraphImageWidthMode::Compact,
-            crate::protocol::ImageProtocol::KittyUnicode { tmux: false },
+            crate::protocol::ImageProtocol::KittyUnicode(crate::protocol::Escapes::Direct),
         )
     };
     let hash = |subject: &str| {

@@ -511,10 +511,9 @@ impl<'a> CommitChangesState<'a> {
 // The contents of the file selected in the files tab.
 #[derive(Debug)]
 enum FilePreview {
-    // the lines of a file, in `CommitFilesState::text`, the files keeping the focus
-    Text,
-    // the same, the selection moving in its lines
-    TextFocused,
+    // the lines of a file, in `CommitFilesState::text`: its cursor shown while the selection moves
+    // in them, else the files keep the focus
+    Text(LineCursor),
     Binary,
     Directory,
     // a gitlink, whose commits are shown on the Changes tab
@@ -864,7 +863,7 @@ impl<'a> CommitFilesState<'a> {
     }
 
     pub fn is_preview_focused(&self) -> bool {
-        matches!(self.preview, Some(FilePreview::TextFocused))
+        matches!(self.preview, Some(FilePreview::Text(LineCursor::Shown)))
     }
 
     // Whether the lines of the preview are being selected from where the visual selection started.
@@ -890,10 +889,7 @@ impl<'a> CommitFilesState<'a> {
 
     // Whether the preview can have the focus, which only a file with text can.
     fn has_text(&self) -> bool {
-        matches!(
-            self.preview,
-            Some(FilePreview::Text | FilePreview::TextFocused)
-        ) && !self.text.lines().is_empty()
+        matches!(self.preview, Some(FilePreview::Text(_))) && !self.text.lines().is_empty()
     }
 
     // Moves the focus into the preview of a file, on the first line shown; false when it has no text.
@@ -902,7 +898,7 @@ impl<'a> CommitFilesState<'a> {
             return false;
         }
         if !self.is_preview_focused() {
-            self.preview = Some(FilePreview::TextFocused);
+            self.preview = Some(FilePreview::Text(LineCursor::Shown));
             self.text.select_shown();
         }
         true
@@ -912,7 +908,7 @@ impl<'a> CommitFilesState<'a> {
     pub fn back(&mut self) -> bool {
         let focused = self.is_preview_focused();
         if focused {
-            self.preview = Some(FilePreview::Text);
+            self.preview = Some(FilePreview::Text(LineCursor::Hidden));
         }
         focused
     }
@@ -954,7 +950,7 @@ impl<'a> CommitFilesState<'a> {
         if !self.has_text() || !self.text.search(query, from, direction, options) {
             return false;
         }
-        self.preview = Some(FilePreview::TextFocused);
+        self.preview = Some(FilePreview::Text(LineCursor::Shown));
         true
     }
 
@@ -991,7 +987,7 @@ impl<'a> CommitFilesState<'a> {
                 let text = crate::git::text_from_git(&bytes);
                 self.text
                     .set_lines(text.lines().map(String::from).collect());
-                FilePreview::Text
+                FilePreview::Text(LineCursor::Hidden)
             }
             Err(err) => FilePreview::Error(err),
         };
@@ -1065,11 +1061,10 @@ impl CommitTab {
             "No matches"
         };
         let tree_focused = !state.pane.is_focused();
-        let cursor = match (state.tree.is_visual(), tree_focused) {
-            (true, true) => TreeCursor::PickedBright,
-            (true, false) => TreeCursor::PickedDim,
-            (false, true) => TreeCursor::Bright,
-            (false, false) => TreeCursor::Dim,
+        let cursor = if tree_focused {
+            TreeCursor::Bright
+        } else {
+            TreeCursor::Dim
         };
         let offset = render_tree(
             buf,
@@ -1117,11 +1112,10 @@ impl CommitTab {
         if let Some(tree) = &state.tree {
             // a commit always has files, they can only be filtered out
             let focused = !state.is_preview_focused();
-            let cursor = match (tree.is_visual(), focused) {
-                (true, true) => TreeCursor::PickedBright,
-                (true, false) => TreeCursor::PickedDim,
-                (false, true) => TreeCursor::Bright,
-                (false, false) => TreeCursor::Dim,
+            let cursor = if focused {
+                TreeCursor::Bright
+            } else {
+                TreeCursor::Dim
             };
             let offset = render_tree(
                 buf,
@@ -1151,13 +1145,10 @@ impl CommitTab {
             false => &state.preview,
         };
         let lines = match preview {
-            Some(preview @ (FilePreview::Text | FilePreview::TextFocused)) => {
+            Some(FilePreview::Text(cursor)) => {
                 let search = self.pane_search.as_deref();
                 let ctx = &self.ctx;
-                let cursor = match preview {
-                    FilePreview::TextFocused if !loading => LineCursor::Shown,
-                    _ => LineCursor::Hidden,
-                };
+                let cursor = if loading { LineCursor::Hidden } else { *cursor };
                 state.text.render(
                     preview_area,
                     Target::DetailPane,
@@ -1574,20 +1565,16 @@ mod tests {
         assert!(matches!(state.preview, Some(FilePreview::Loading(_))));
         state.ensure_loaded();
         assert!(
-            matches!(
-                &state.preview,
-                Some(FilePreview::Text | FilePreview::TextFocused)
-            ) && state.text.lines() == ["a", "changed"]
+            matches!(&state.preview, Some(FilePreview::Text(_)))
+                && state.text.lines() == ["a", "changed"]
         );
         // another file: the preview before drawn while it loads, no key acting on it
         state.update_tree(|tree| tree.navigate(UserEvent::NavigateDown));
         state.ensure_loaded_in_background(&ec.sender());
         assert!(matches!(state.preview, Some(FilePreview::Loading(_))));
         assert!(
-            matches!(
-                &state.shown_before,
-                Some(FilePreview::Text | FilePreview::TextFocused)
-            ) && state.text.lines() == ["a", "changed"]
+            matches!(&state.shown_before, Some(FilePreview::Text(_)))
+                && state.text.lines() == ["a", "changed"]
         );
         assert!(!state.has_text());
         let area = Rect::new(0, 0, 80, 6);
@@ -1632,10 +1619,7 @@ mod tests {
             vec!["src", "src/a.rs", "README", "image.bin"]
         );
         assert_eq!(selected(tree), "src/a.rs");
-        assert!(matches!(
-            &state.preview,
-            Some(FilePreview::Text | FilePreview::TextFocused)
-        ));
+        assert!(matches!(&state.preview, Some(FilePreview::Text(_))));
         assert_eq!(state.text.lines(), ["a"]);
 
         Ok(())
