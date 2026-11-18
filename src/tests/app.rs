@@ -622,6 +622,38 @@ fn test_files_shown_as_a_list() {
     ]);
 }
 
+// `/` filters the files of the stash popup, typed as in every file tree.
+#[test]
+fn test_filter_the_stash_popup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for name in ["keep1", "keep2", "other"] {
+        std::fs::write(path.join(name), "x\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let mut steps = vec![keys("s"), keys("esc"), keys("j"), keys("/")];
+    steps.push(typing("keep"));
+    steps.push(keys("enter"));
+    steps.push(screen(|screen| {
+        assert!(screen.contains("filter: keep"), "{screen}");
+        assert!(!screen.contains("[•] ? other"), "{screen}");
+    }));
+    // the root row: the files shown
+    steps.push(keys("space"));
+    steps.push(keys("esc"));
+    steps.push(screen(|screen| {
+        assert!(
+            screen.contains("[ ] ? keep1") && screen.contains("[•] ? other"),
+            "{screen}"
+        );
+    }));
+    harness.run(steps);
+}
+
 // The wheel scrolls the files of the stash popup it is on, the selection staying.
 #[test]
 fn test_wheel_scrolls_the_stash_popup() {

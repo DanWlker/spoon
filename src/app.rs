@@ -2344,7 +2344,12 @@ impl App<'_> {
     // Types the key where `is_typing` says.
     fn type_key(&mut self, key: KeyEvent) {
         match (&mut self.shell.dialog, &mut self.shell.overlay) {
-            (Some(_), _) => self.handle_dialog_event(None, key),
+            (Some(popup), _) => {
+                // the filter of its files, else its text field
+                if !popup.dialog.type_filter(&self.ctx, key) {
+                    self.handle_dialog_event(None, key);
+                }
+            }
             (None, Some(Overlay::File(window))) => {
                 window.handle_event(UserEvent::Unknown, key, self.repository)
             }

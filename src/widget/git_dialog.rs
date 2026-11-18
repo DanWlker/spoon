@@ -10,7 +10,7 @@ use std::cell::RefCell;
 
 use tui_input::{backend::crossterm::EventHandler, Input};
 
-use crate::widget::tree_query::Toward;
+use crate::widget::tree_query::{type_query, typing_keys, QueryKind, Toward, TreeQuery};
 use crate::{
     background::Job,
     browse::{LinkAction, PageLink},
@@ -25,6 +25,7 @@ use crate::{
     keybind::UserEvent,
     keys::{register_moving_keys, KeyList, Keys},
     layout::{PanelLayout, RowMap, Target},
+    search::{SearchKind, SearchOptions},
     widget::{
         file_tree::{
             render_tree, CheckedFiles, FileTree, FileTreeState, TreeCursor, TreeShape, TreeView,
@@ -36,6 +37,7 @@ use crate::{
         },
     },
 };
+use unicode_width::UnicodeWidthStr;
 
 // What a fetch or push popup is set to from the sidebar: the remote to fetch, the branch to push.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,6 +646,17 @@ struct FilesField {
     checked: CheckedFiles,
     // the change letter of each file, by its index
     symbols: Vec<&'static str>,
+    // the filter, as in every file tree
+    query: TreeQuery,
+}
+
+impl FilesField {
+    // Shows the files the filter keeps, with the search options of now.
+    fn filter(&mut self, options: SearchOptions) {
+        self.tree.set_filter(self.query.filter(), options);
+        let tree = &self.tree;
+        self.checked.show(|path| tree.keeps(path));
+    }
 }
 
 // The rows a files field shows at most, scrolling past them.
@@ -842,6 +855,7 @@ impl GitDialog {
             tree,
             checked,
             symbols,
+            query: TreeQuery::default(),
         };
         let files = form.files("Files", field);
         let kind = DialogKind::Stash {
@@ -889,6 +903,14 @@ impl GitDialog {
             done: format!("Stashed {target}"),
             ..Default::default()
         })
+    }
+
+    // The filter of the selected files.
+    fn files_filter(&self) -> Option<&str> {
+        match self.fields.get(self.selected) {
+            Some((_, Field::Files(files))) => files.query.filter(),
+            _ => None,
+        }
     }
 
     // The selected field when it is a files field.
@@ -960,7 +982,24 @@ impl GitDialog {
 
     // Typing into a text field, which takes every key.
     pub fn is_editing(&self) -> bool {
-        self.editing
+        self.editing || self.is_typing_filter()
+    }
+
+    // Typing the filter of the files, which takes every key, see `type_filter`.
+    fn is_typing_filter(&self) -> bool {
+        matches!(self.fields.get(self.selected), Some((_, Field::Files(files))) if files.query.is_editing())
+    }
+
+    // Types `key` into the filter of the files while it is typed, as in every file tree, see
+    // `type_query`; whether it took it.
+    pub fn type_filter(&mut self, ctx: &AppContext, key: KeyEvent) -> bool {
+        let Some(files) = self.selected_files().filter(|f| f.query.is_editing()) else {
+            return false;
+        };
+        if type_query(ctx, &mut files.query, key, SearchKind::Names) == Some(QueryKind::Filter) {
+            files.filter(ctx.search_options.get());
+        }
+        true
     }
 
     // The event its key confirms it with besides Enter, like the key that opened it.
@@ -2278,7 +2317,22 @@ impl GitDialog {
             return DialogOutcome::None;
         }
         match event {
+            // the filter of the files first, as in every file tree
+            Some(UserEvent::Cancel) if self.files_filter().is_some() => {
+                if let Some(files) = self.selected_files() {
+                    files.query.clear();
+                    files.filter(SearchOptions::default());
+                }
+                DialogOutcome::None
+            }
             Some(UserEvent::Cancel) => DialogOutcome::Close,
+            Some(UserEvent::Search) => {
+                if let Some(files) = self.selected_files() {
+                    // a filter goes from no row, see `TreeQuery::step_from`
+                    files.query.start(QueryKind::Filter, 0);
+                }
+                DialogOutcome::None
+            }
             Some(UserEvent::Quit) => DialogOutcome::Quit,
             Some(UserEvent::NavigateDown | UserEvent::SelectDown) => {
                 self.selected = (self.selected + 1) % len;
@@ -2437,7 +2491,14 @@ impl GitDialog {
                 .when(idle)
                 .short(|d| d.verb.to_string());
         }
-        k.add(&[Cancel], "cancel", "Cancel").when(idle);
+        k.add(
+            &[Cancel],
+            "clear filter",
+            "Clear the filter of the files, then cancel",
+        )
+        .when(|d| idle(d) && d.files_filter().is_some());
+        k.add(&[Cancel], "cancel", "Cancel")
+            .when(|d| idle(d) && d.files_filter().is_none());
         k.quiet(
             &[NavigateDown, SelectDown, NavigateUp, SelectUp],
             "Select the next/previous field",
@@ -2448,6 +2509,7 @@ impl GitDialog {
         // the files move as every file tree does
         let files = |d: &Self| !d.editing && d.is_files_selected();
         register_moving_keys(k, files);
+        k.add(&[Search], "filter", "Filter the files").when(files);
         k.quiet(
             &[NavigateRight, NavigateLeft],
             "Expand/collapse the directory",
@@ -2463,6 +2525,9 @@ impl GitDialog {
     }
 
     pub fn keys(&self) -> KeyList {
+        if self.is_typing_filter() {
+            return typing_keys(SearchKind::Names);
+        }
         let mut keys = Keys::of(self);
         Self::register_keys(&mut keys);
         keys.list()
@@ -3194,7 +3259,16 @@ impl Widget for GitDialogWidget<'_> {
                 height as u16,
             )
             .intersection(inner);
-            let title = panel_title(label, [note], focused, theme);
+            // the filter as it is typed, the caret on it, else as it is
+            let typed = files.query.status_input().filter(|_| focused);
+            if let Some((text, caret)) = &typed {
+                let x = 1 + label.width() + 2 + 1 + text[..*caret].width();
+                cursor = Some((x as u16, top as u16));
+            }
+            let query = typed
+                .map(|(text, _)| text)
+                .or_else(|| files.query.indicator());
+            let title = panel_title(label, query.into_iter().chain([note]), focused, theme);
             let rows = render_panel(buf, at, title, focused, theme);
             // hidden otherwise, like a local changes section's
             let cursor = if focused {
@@ -3648,6 +3722,54 @@ mod tests {
         // and unchecks all once all are
         toggle(&mut dialog, 0);
         assert_eq!(err(&dialog), "No files checked");
+    }
+
+    // `/` filters the files as in every file tree; the root row checks only those shown, and esc
+    // clears the filter before it cancels.
+    #[test]
+    fn test_stash_files_filter() {
+        let ctx = crate::test_support::ui::test_ctx();
+        let paths = ["dir/a", "dir/b", "f00", "f01"];
+        let mut dialog = GitDialog::stash(paths.iter().map(|p| file(p, true, false)).collect());
+        dialog.editing = false;
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::Search);
+        assert!(dialog.is_editing());
+        assert_eq!(dialog.keys(), typing_keys(SearchKind::Names));
+        for c in "dir".chars() {
+            assert!(dialog.type_filter(&ctx, key(KeyCode::Char(c))));
+        }
+        assert!(dialog.type_filter(&ctx, key(KeyCode::Enter)));
+        assert!(!dialog.is_editing());
+        let shown: Vec<String> = files_of(&mut dialog)
+            .tree
+            .rows()
+            .iter()
+            .map(|r| r.path.clone())
+            .collect();
+        assert_eq!(
+            shown,
+            [crate::widget::file_tree::ROOT_PATH, "dir/a", "dir/b"]
+        );
+        // the root row unchecks the files shown only
+        files_of(&mut dialog).tree.select_index(0);
+        press(&mut dialog, UserEvent::Select);
+        assert!(
+            args(&dialog).ends_with("-- :(literal)f00 :(literal)f01"),
+            "{}",
+            args(&dialog)
+        );
+        // esc clears the filter, the files checked as they were, then cancels
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Cancel),
+            DialogOutcome::None
+        ));
+        assert_eq!(files_of(&mut dialog).tree.rows().len(), 5);
+        assert!(args(&dialog).ends_with("-- :(literal)f00 :(literal)f01"));
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Cancel),
+            DialogOutcome::Close
+        ));
     }
 
     #[test]

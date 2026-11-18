@@ -569,29 +569,27 @@ impl TreeSelection {
 }
 
 // The files of a tree checked, like those to stash: a directory, and the root row, is checked when
-// every file under it is, and toggles them all.
+// every file under it the filter shows is, and toggles them all.
 #[derive(Debug, Default)]
 pub struct CheckedFiles {
     checked: Picks<String>,
-    // every file, to check those under a directory
-    files: Vec<String>,
-    // the files under each directory and the root, and how many of them are checked
+    // every file, and whether the filter shows it, see `show`
+    files: Vec<(String, bool)>,
+    // the files shown under each directory and the root, and how many of them are checked
     counts: FxHashMap<String, (usize, usize)>,
 }
 
 impl CheckedFiles {
-    // `files`, each checked or not.
+    // `files`, each checked or not, all shown.
     pub fn new(files: impl IntoIterator<Item = (String, bool)>) -> Self {
         let mut this = Self::default();
         for (path, checked) in files {
-            for dir in ancestors(&path) {
-                this.counts.entry(dir).or_default().1 += 1;
-            }
-            this.files.push(path.clone());
             if checked {
-                this.check(&path);
+                this.checked.insert(&path);
             }
+            this.files.push((path, true));
         }
+        this.count();
         this
     }
 
@@ -607,7 +605,15 @@ impl CheckedFiles {
         self.checked.contains(path)
     }
 
-    // A file checked, or a directory with every file under it checked.
+    // Only the files `keep` is true for are shown, like the filter of the tree.
+    pub fn show(&mut self, keep: impl Fn(&str) -> bool) {
+        for (path, shown) in &mut self.files {
+            *shown = keep(path);
+        }
+        self.count();
+    }
+
+    // A file checked, or a directory with every file under it shown checked.
     pub fn row_checked(&self, row: &FileTreeRow) -> bool {
         match row.kind {
             RowKind::File(_) => self.contains(&row.path),
@@ -618,43 +624,45 @@ impl CheckedFiles {
         }
     }
 
-    // Checks the file of `row`, or every file under it; unchecks them when all are.
+    // Checks the file of `row`, or every file under it shown; unchecks them when all are.
     pub fn toggle(&mut self, row: &FileTreeRow) {
         let check = !self.row_checked(row);
-        let under: Vec<String> = match row.kind {
-            RowKind::File(_) => vec![row.path.clone()],
-            RowKind::Root | RowKind::Dir => self
-                .files
-                .iter()
-                .filter(|path| row.contains(path))
-                .cloned()
-                .collect(),
-        };
+        let under: Vec<String> = self
+            .files
+            .iter()
+            .filter(|(path, shown)| *shown && row.contains(path))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let changed: FxHashSet<String> = under
+            .into_iter()
+            .filter(|path| check != self.contains(path))
+            .collect();
         if check {
-            for path in &under {
-                self.check(path);
+            for path in &changed {
+                self.checked.insert(path);
             }
         } else {
-            let under: FxHashSet<&str> = under.iter().map(String::as_str).collect();
-            self.checked.retain(|path| !under.contains(path.as_str()));
-            for path in under {
-                for dir in ancestors(path) {
-                    if let Some(count) = self.counts.get_mut(&dir) {
-                        count.0 -= 1;
-                    }
+            // at once, as removing one at a time goes through all of them each time
+            self.checked.retain(|path| !changed.contains(path));
+        }
+        for path in &changed {
+            for dir in ancestors(path) {
+                if let Some(count) = self.counts.get_mut(&dir) {
+                    count.0 = if check { count.0 + 1 } else { count.0 - 1 };
                 }
             }
         }
     }
 
-    // Checks `path`, counted in its directories once.
-    fn check(&mut self, path: &str) {
-        if !self.contains(path) {
-            self.checked.insert(&path.to_string());
+    // Counts the files shown, and those checked, under each directory.
+    fn count(&mut self) {
+        self.counts.clear();
+        for (path, _) in self.files.iter().filter(|(_, shown)| *shown) {
+            let checked = self.checked.contains(path.as_str());
             for dir in ancestors(path) {
-                if let Some(count) = self.counts.get_mut(&dir) {
-                    count.0 += 1;
-                }
+                let count = self.counts.entry(dir).or_default();
+                count.0 += usize::from(checked);
+                count.1 += 1;
             }
         }
     }
@@ -1081,6 +1089,14 @@ mod tests {
         assert_eq!(checked.len(), 3);
         checked.toggle(&row(ROOT_PATH));
         assert_eq!(checked.len(), 0);
+        // with a filter, of the files it shows
+        checked.show(|path| path.starts_with("a/"));
+        checked.toggle(&row("a"));
+        assert!(checked.row_checked(&row(ROOT_PATH)) && !checked.contains("z"));
+        checked.show(|_| true);
+        assert!(!checked.row_checked(&row(ROOT_PATH)));
+        checked.toggle(&row(ROOT_PATH));
+        assert_eq!(checked.len(), 3);
     }
 
     #[test]
