@@ -1272,6 +1272,10 @@ impl<'a> DetailView<'a> {
                     UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                         self.adjust_diff_context(event)
                     }
+                    UserEvent::ToggleTreeView => self.ctx.split.set(!self.ctx.split.get()),
+                    UserEvent::NavigateLeft | UserEvent::NavigateRight => {
+                        state.switch_side(event);
+                    }
                     UserEvent::ShortCopy => {
                         if let Some(text) = state.selected_text() {
                             self.tx.send(copy_selection(text, state.selected_name()));

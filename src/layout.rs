@@ -82,8 +82,9 @@ pub enum Closes {
 }
 
 // The rows of a panel on the lines of its area: none, one (a button), from the row shown first
-// (`count` in all), or line by line for text whose rows wrap over several lines; or the frame of a
-// panel, its border and padding around what it records inside, see `PanelLayout::frame`.
+// (`count` in all), or line by line for text whose rows wrap over several lines, or line by line
+// with a row on each side of the column `split` for a diff side by side; or the frame of a panel,
+// its border and padding around what it records inside, see `PanelLayout::frame`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowMap {
     None,
@@ -91,8 +92,15 @@ pub enum RowMap {
     // the thumb of a scrollbar in `track`, scrolling `total` rows from `offset`, see `Thumb`
     Thumb(Thumb),
     One,
-    Rows { first: usize, count: usize },
+    Rows {
+        first: usize,
+        count: usize,
+    },
     Lines(Vec<Option<usize>>),
+    Sides {
+        lines: Vec<[Option<usize>; 2]>,
+        split: usize,
+    },
 }
 
 // A scrollbar's thumb as drawn, which dragging scrolls its panel by.
@@ -302,6 +310,10 @@ impl PanelLayout {
             RowMap::One => Some(0),
             RowMap::Rows { first, count } => first.checked_add(line).filter(|row| row < count),
             RowMap::Lines(lines) => lines.get(line).copied().flatten(),
+            RowMap::Sides { lines, split } => {
+                let side = usize::from((x - area.x) as usize > *split);
+                lines.get(line).and_then(|sides| sides[side])
+            }
         };
         Some(Hit {
             target: *target,

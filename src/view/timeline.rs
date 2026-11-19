@@ -178,6 +178,12 @@ impl TimelineView {
             UserEvent::FocusPanel(2) | UserEvent::NavigateRight if !in_diff => {
                 self.pane.enter();
             }
+            // side by side, h goes to the old side before it goes back
+            UserEvent::NavigateLeft | UserEvent::NavigateRight
+                if self.pane.can_switch_side(event) =>
+            {
+                self.pane.switch_side(event);
+            }
             UserEvent::NavigateLeft if in_diff => {
                 self.pane.back();
             }
@@ -244,6 +250,7 @@ impl TimelineView {
             UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                 self.adjust_diff_context(event, repository)
             }
+            UserEvent::ToggleTreeView => self.ctx.split.set(!self.ctx.split.get()),
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
                     self.tx
@@ -377,7 +384,7 @@ impl TimelineView {
         )
         .when(diff);
         k.add(&[NavigateLeft], "back", "Into the diff/back out of it")
-            .when(diff);
+            .when(move |v| diff(v) && !v.pane.can_switch_side(NavigateLeft));
         k.add(
             &[NavigateRight],
             "into the diff",

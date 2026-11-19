@@ -294,7 +294,7 @@ impl FileText {
         let wrap = ctx.wrap.get();
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
         // the lines are measured again, showing the selection again with them
-        if !self.wrap.matches(area.width, wrap) {
+        if !self.wrap.matches(area.width, wrap, false) {
             let rows = self.lines.len();
             self.wrap = WrapMap::from_lines(rows, || self.plain_lines(), area.width, wrap);
             self.scroll_to(self.selected..self.selected + 1);

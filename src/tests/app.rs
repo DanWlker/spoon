@@ -710,6 +710,45 @@ fn test_a_key_after_moving_acts_on_the_diff_moved_to() {
     );
 }
 
+// ` in a diff shows every diff side by side, or in one column; on the files it still shows them
+// in their folders or as a list. A line staged while split is the line selected, on its side.
+#[test]
+fn test_split_diff_toggles_in_the_diff_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "let x = 1;\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    std::fs::write(path.join("g.txt"), "let x = 2;\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        keys("`"),
+        check(|app| assert!(!app.ctx.split.get())),
+        keys("j enter `"),
+        check(|app| assert!(app.ctx.split.get())),
+        // the removed line beside the added one replacing it
+        screen(|screen| {
+            let row = screen
+                .lines()
+                .find(|l| l.contains("1 let x = 1;"))
+                .unwrap_or_default();
+            assert!(row.contains("1 let x = 2;"), "{screen}");
+        }),
+        // j stays on the old side, which has no other line; l goes to the added line beside it,
+        // staged alone
+        keys("enter j l space"),
+    ]);
+    let staged = git(&path, &["diff", "--cached"]);
+    assert!(
+        staged.contains("+let x = 2;") && !staged.contains("-let x = 1;"),
+        "{staged}"
+    );
+}
+
 #[test]
 fn test_a_key_after_moving_in_the_details_acts_on_the_diff_moved_to() {
     let dir = tempfile::tempdir().unwrap();

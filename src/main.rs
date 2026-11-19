@@ -196,6 +196,7 @@ fn run() -> Result<()> {
         key_names: Default::default(),
         layout: Default::default(),
         wrap: Default::default(),
+        split: Default::default(),
         diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
         search_options: Default::default(),
         pasting: Default::default(),

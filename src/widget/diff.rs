@@ -43,6 +43,9 @@ pub struct ParsedDiff {
     pub rows: Vec<DiffRow>,
     // the words changed in the rows, all in one list rather than one per row, see `DiffRow`
     emphasis: Vec<Range<usize>>,
+    // the removed rows paired with the added row replacing them, by the removed row, see
+    // `pair_changes`
+    pairs: Vec<(usize, usize)>,
     pub hunks: Vec<DiffHunk>,
     // hunks were left out, of files diffed as text converted from them
     pub converted: bool,
@@ -301,33 +304,83 @@ impl DiffPart {
     }
 }
 
-// The screen rows the rows of a diff wrap to, with a running total: the first screen row of each
-// logical row, and one past the last. The scroll counts these while wrapping, see
-// `DiffCursor::scroll_to`.
+// The screen rows the rows of a diff take, side by side (see `ParsedDiff::split_rows`) and wrapped,
+// with a running total: the first screen row of each row shown, and one past the last. The scroll
+// counts these, see `DiffCursor::scroll_to`.
 #[derive(Debug, Default, Clone)]
 pub struct WrapMap {
     width: u16,
     wrap: bool,
-    // the rows, each its own screen row while not wrapping
+    split: bool,
+    // the rows side by side, while split; empty else, each row of the diff shown on its own
+    split_rows: Vec<SplitRow>,
+    // the row of `split_rows` each row of the diff is on, while split
+    placed: Vec<usize>,
+    // the rows shown, each its own screen row while not wrapping
     rows: usize,
-    // prefix[i] = the screen row logical row i starts on, one longer than the rows, while
-    // wrapping; empty else, as the rows are their own screen rows
+    // prefix[i] = the screen row shown row i starts on, one longer than the rows, while wrapping;
+    // empty else, as the rows are their own screen rows
     prefix: Vec<usize>,
 }
 
 impl WrapMap {
-    // The rows of `diff` at `width`, wrapped when `wrap`; built once per width or wrap change, so
-    // drawing still builds only the rows it shows.
-    pub fn of(diff: &ParsedDiff, theme: &ColorTheme, width: u16, wrap: bool) -> Self {
-        let rows = diff_line_count(diff);
-        // made a few at a time, the whole diff of lines would take as much memory again
-        const CHUNK: usize = 1024;
-        let lines = || {
-            (0..rows).step_by(CHUNK).flat_map(move |start| {
-                diff_lines(diff, theme, start..rows.min(start + CHUNK), width)
-            })
+    // The rows of `diff` at `width`, side by side when `split`, wrapped when `wrap`; built once
+    // per change of them, so drawing still builds only the rows it shows.
+    pub fn of(diff: &ParsedDiff, theme: &ColorTheme, width: u16, wrap: bool, split: bool) -> Self {
+        let split_rows = match split {
+            true => diff.split_rows(),
+            false => Vec::new(),
         };
-        Self::from_lines(rows, lines, width, wrap)
+        if split_rows.is_empty() {
+            let rows = diff_line_count(diff);
+            // made a few at a time, the whole diff of lines would take as much memory again
+            const CHUNK: usize = 1024;
+            let lines = || {
+                (0..rows).step_by(CHUNK).flat_map(move |start| {
+                    diff_lines(diff, theme, start..rows.min(start + CHUNK), width)
+                })
+            };
+            return WrapMap {
+                split,
+                ..Self::from_lines(rows, lines, width, wrap)
+            };
+        }
+        let mut placed = vec![0; diff.rows.len()];
+        for (at, split_row) in split_rows.iter().enumerate() {
+            for row in split_row.rows() {
+                placed[row] = at;
+            }
+        }
+        let mut prefix = vec![];
+        if wrap {
+            let (old_width, new_width) = split_widths(width);
+            let height = |row: usize, gutter, width: u16| {
+                let line = diff_line(diff, &diff.rows[row], gutter, theme, width);
+                wrapped_height(&line, width as usize)
+            };
+            prefix.push(0);
+            let mut total = 0;
+            for split_row in &split_rows {
+                total += match *split_row {
+                    SplitRow::Whole(row) => height(row, Gutter::Both, width),
+                    SplitRow::Sides(old, new) => {
+                        let old = old.map_or(1, |row| height(row, Gutter::Old, old_width));
+                        let new = new.map_or(1, |row| height(row, Gutter::New, new_width));
+                        old.max(new)
+                    }
+                };
+                prefix.push(total);
+            }
+        }
+        WrapMap {
+            width,
+            wrap,
+            split,
+            rows: split_rows.len(),
+            split_rows,
+            placed,
+            prefix,
+        }
     }
 
     // The screen rows the `rows` of `lines` wrap to at `width`, wrapped when `wrap`; the diff and
@@ -353,12 +406,18 @@ impl WrapMap {
             wrap,
             rows,
             prefix,
+            ..WrapMap::default()
         }
     }
 
-    // Whether this is the map for `width` and `wrap`.
-    pub fn matches(&self, width: u16, wrap: bool) -> bool {
-        self.width == width && self.wrap == wrap
+    // Whether this is the map for `width`, `wrap` and `split`.
+    pub fn matches(&self, width: u16, wrap: bool, split: bool) -> bool {
+        self.width == width && self.wrap == wrap && self.split == split
+    }
+
+    // The rows side by side, empty while not split.
+    pub fn split_rows(&self) -> &[SplitRow] {
+        &self.split_rows
     }
 
     // The screen rows the diff takes.
@@ -366,38 +425,91 @@ impl WrapMap {
         self.prefix.last().copied().unwrap_or(self.rows)
     }
 
-    // The screen rows logical `rows` take.
-    pub fn visual_range(&self, rows: Range<usize>) -> Range<usize> {
-        if self.prefix.len() <= 1 {
-            // no map yet: the rows are their own screen rows, so a selection made before the
-            // first draw still shows
+    // The rows shown that rows of the diff are on, from the first to the last.
+    fn place(&self, rows: Range<usize>) -> Range<usize> {
+        if self.placed.is_empty() {
             return rows;
         }
-        self.visual_start(rows.start)..self.visual_start(rows.end)
+        let at = |row: usize| self.placed.get(row).copied().unwrap_or(self.rows);
+        if rows.is_empty() {
+            return at(rows.start)..at(rows.start);
+        }
+        // a change shows its added rows beside its removed ones, so they are out of order
+        let (first, last) = rows.map(at).fold((usize::MAX, 0), |(first, last), at| {
+            (first.min(at), last.max(at))
+        });
+        first..last + 1
+    }
+
+    // The rows of the diff on rows shown `shown`, from the first to the last.
+    fn unplace(&self, shown: Range<usize>) -> Range<usize> {
+        if self.placed.is_empty() {
+            return shown;
+        }
+        let end = self.placed.len();
+        let rows = || {
+            self.split_rows
+                .get(shown.clone())
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|split_row| split_row.rows())
+        };
+        match rows().min() {
+            Some(first) => first..rows().max().map_or(first, |last| last + 1),
+            None => {
+                let at = self
+                    .split_rows
+                    .get(shown.start)
+                    .and_then(|r| r.rows().next());
+                let at = at.unwrap_or(end);
+                at..at
+            }
+        }
+    }
+
+    // The first screen row of row shown `shown` (see `shown_rows`), the end of the diff past its
+    // last.
+    pub fn shown_start(&self, shown: usize) -> usize {
+        if self.prefix.len() <= 1 {
+            return shown;
+        }
+        self.prefix
+            .get(shown)
+            .copied()
+            .unwrap_or_else(|| self.total())
+    }
+
+    // The screen rows logical `rows` take.
+    pub fn visual_range(&self, rows: Range<usize>) -> Range<usize> {
+        // no map yet: the rows are their own screen rows, so a selection made before the first
+        // draw still shows
+        let shown = self.place(rows);
+        self.shown_start(shown.start)..self.shown_start(shown.end)
     }
 
     // The first screen row of logical row `row`, `row` itself when nothing has been measured
     // yet; the end of the diff past its last.
     pub fn visual_start(&self, row: usize) -> usize {
-        if self.prefix.len() <= 1 {
-            return row;
-        }
-        self.prefix
-            .get(row)
-            .copied()
-            .unwrap_or_else(|| self.total())
+        self.visual_range(row..row).start
     }
 
     // The logical row of screen row `screen`, `screen` itself when nothing has been measured yet.
     pub fn logical_at(&self, screen: usize) -> usize {
-        if self.prefix.len() <= 1 {
+        if self.prefix.len() <= 1 && self.placed.is_empty() {
             return screen;
         }
         self.logical_rows(screen..screen + 1).start
     }
 
-    // The logical rows whose screen rows overlap `visual`.
+    // The logical rows whose screen rows overlap `visual`; while split, from the first to the
+    // last, which can hold rows of a change scrolled out beside them.
     pub fn logical_rows(&self, visual: Range<usize>) -> Range<usize> {
+        self.unplace(self.shown_rows(visual))
+    }
+
+    // The rows shown (of the diff, or of `split_rows` while split) whose screen rows overlap
+    // `visual`.
+    pub fn shown_rows(&self, visual: Range<usize>) -> Range<usize> {
         if self.prefix.is_empty() {
             return visual.start.min(self.rows)..visual.end.min(self.rows);
         }
@@ -411,6 +523,12 @@ impl WrapMap {
             .min(self.prefix.len().saturating_sub(1));
         start..end
     }
+}
+
+// The widths of the old and the new side of a diff `width` wide, a divider between them.
+pub fn split_widths(width: u16) -> (u16, u16) {
+    let sides = width.saturating_sub(1);
+    (sides / 2, sides - sides / 2)
 }
 
 // Whether the row of `diff` at `row` is one a search matches.
@@ -477,7 +595,10 @@ impl DiffCursor {
     pub fn select_line(&mut self, diff: &ParsedDiff, row: usize) {
         self.line = row;
         if let Some(rows) = self.visual.range(row, usize::MAX) {
-            self.picked.extend(rows);
+            // side by side, the lines picked are those of the selected line's side
+            let side = self.side(diff);
+            self.picked
+                .extend(rows.filter(|&r| side.is_none_or(|kind| diff.rows[r].kind == kind)));
         }
         if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
             self.hunk = index;
@@ -609,11 +730,14 @@ impl DiffCursor {
         let row = self.wrap.logical_at(target);
         match part {
             DiffPart::Line => {
+                // by screen rows: side by side, the added lines of a change are beside its
+                // removed ones, after them in the diff
+                let screen = |r: usize| self.wrap.visual_range(r..r + 1);
                 let mut changed = self.selectable_rows(diff);
                 let found = if down {
-                    changed.find(|&r| r >= row)
+                    changed.find(|&r| screen(r).end > target)
                 } else {
-                    changed.rfind(|&r| r <= row)
+                    changed.rfind(|&r| screen(r).start <= target)
                 };
                 let found = found.or_else(|| {
                     if down {
@@ -668,16 +792,23 @@ impl DiffCursor {
             return;
         }
         let crosses = |rows: &Range<usize>| rows.start < window.end && window.start < rows.end;
+        // while split, the window's rows can hold rows of a change scrolled out beside them
+        let shows = |row: usize| {
+            let rows = self.wrap.visual_range(row..row + 1);
+            rows.start < offset + height && offset < rows.end
+        };
         match part {
             DiffPart::Line => {
-                if window.contains(&self.line) {
+                if shows(self.line) {
                     return;
                 }
-                let row = match self.line < window.start {
-                    true => self.selectable_rows(diff).find(|&r| r >= window.start),
-                    false => self.selectable_rows(diff).rfind(|&r| r < window.end),
+                let mut rows = self.selectable_rows(diff).filter(|r| window.contains(r));
+                let above = self.wrap.visual_range(self.line..self.line + 1).start < offset;
+                let row = match above {
+                    true => rows.find(|&r| shows(r)),
+                    false => rows.rfind(|&r| shows(r)),
                 };
-                if let Some(row) = row.filter(|r| window.contains(r)) {
+                if let Some(row) = row {
                     self.select_line(diff, row);
                 }
             }
@@ -701,7 +832,7 @@ impl DiffCursor {
     }
 
     // The changed rows the selected line can move to: those of the selected hunk while lines are
-    // picked, which stay in one hunk, else all.
+    // picked, which stay in one hunk, else all; side by side, those on its side.
     fn selectable_rows<'d>(
         &self,
         diff: &'d ParsedDiff,
@@ -711,7 +842,36 @@ impl DiffCursor {
             .then(|| diff.hunks.get(self.hunk))
             .flatten()
             .map(|hunk| hunk.rows.clone());
-        changed_rows(diff).filter(move |row| hunk.as_ref().is_none_or(|rows| rows.contains(row)))
+        let side = self.side(diff);
+        changed_rows(diff).filter(move |&row| {
+            hunk.as_ref().is_none_or(|rows| rows.contains(&row))
+                && side.is_none_or(|kind| diff.rows[row].kind == kind)
+        })
+    }
+
+    // The side of the selected changed line while the diff is side by side: removed on the old
+    // side, added on the new one.
+    fn side(&self, diff: &ParsedDiff) -> Option<DiffRowKind> {
+        let row = diff.rows.get(self.line).filter(|row| row.is_change())?;
+        (!self.wrap.split_rows().is_empty()).then_some(row.kind)
+    }
+
+    // The changed line of the selected hunk on the side of `kind` (removed: the old side, added:
+    // the new one) nearest on screen to the selected line, the one beside it first, while side by
+    // side and on the other side; none while lines are picked, which stay on one side.
+    pub fn other_side(&self, diff: &ParsedDiff, kind: DiffRowKind) -> Option<usize> {
+        if self.has_range() || self.side(diff)? == kind {
+            return None;
+        }
+        let at = self.wrap.place(self.line..self.line + 1).start;
+        let hunk = diff.hunks.get(self.hunk)?;
+        hunk.rows
+            .clone()
+            .filter(|&row| diff.rows[row].kind == kind)
+            .min_by_key(|&row| {
+                let shown = self.wrap.place(row..row + 1).start;
+                (shown.abs_diff(at), shown < at)
+            })
     }
 
     // Starts a visual selection of lines at the selected line, or ends it, keeping the lines
@@ -924,6 +1084,86 @@ impl ParsedDiff {
     }
 }
 
+// A screen row of a diff shown side by side, see `ParsedDiff::split_rows`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitRow {
+    // across both sides: a file, a hunk header or a note
+    Whole(usize),
+    // the old side and the new side: a line on both, or a removed line beside the added one
+    // replacing it, either side empty
+    Sides(Option<usize>, Option<usize>),
+}
+
+impl SplitRow {
+    // The rows of the diff shown on it.
+    fn rows(self) -> impl Iterator<Item = usize> {
+        let (a, b) = match self {
+            SplitRow::Whole(row) => (Some(row), None),
+            SplitRow::Sides(old, new) => (old, new),
+        };
+        a.into_iter().chain(b)
+    }
+}
+
+impl ParsedDiff {
+    // The rows side by side: the lines of a change on their side, a removed one beside the added
+    // one it is paired with, the others on a screen row of their own where they are met, like
+    // delta's; a "\ No newline" note on the side of the line it follows. Empty without rows.
+    pub fn split_rows(&self) -> Vec<SplitRow> {
+        use DiffRowKind::*;
+        let mut split = Vec::new();
+        let mut i = 0;
+        while i < self.rows.len() {
+            match self.rows[i].kind {
+                Context => split.push(SplitRow::Sides(Some(i), Some(i))),
+                Added | Removed => {}
+                File | Hunk | Meta => split.push(SplitRow::Whole(i)),
+            }
+            if !self.rows[i].is_change() {
+                i += 1;
+                continue;
+            }
+            // the change from `i`, each side's rows in order
+            let (mut old, mut new) = (Vec::new(), Vec::new());
+            let mut on_new = false;
+            while let Some(row) = self.rows.get(i) {
+                match row.kind {
+                    Removed => on_new = false,
+                    Added => on_new = true,
+                    Meta => {}
+                    _ => break,
+                }
+                match on_new {
+                    true => new.push(i),
+                    false => old.push(i),
+                }
+                i += 1;
+            }
+            // the first added row not shown yet
+            let mut next = 0;
+            for &row in &old {
+                let pair = self.pairs.binary_search_by_key(&row, |p| p.0).ok();
+                let skip =
+                    pair.and_then(|k| new[next..].iter().position(|&a| a == self.pairs[k].1));
+                let Some(skip) = skip else {
+                    split.push(SplitRow::Sides(Some(row), None));
+                    continue;
+                };
+                let added = &new[next..=next + skip];
+                split.extend(
+                    added[..skip]
+                        .iter()
+                        .map(|&a| SplitRow::Sides(None, Some(a))),
+                );
+                split.push(SplitRow::Sides(Some(row), Some(added[skip])));
+                next += skip + 1;
+            }
+            split.extend(new[next..].iter().map(|&a| SplitRow::Sides(None, Some(a))));
+        }
+        split
+    }
+}
+
 // `text` as shown, its tabs as four spaces.
 fn shown(text: &str) -> std::borrow::Cow<'_, str> {
     tabs_shown(text)
@@ -1040,7 +1280,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         rows.push(row);
     }
     finish_hunk(&mut current, &mut hunks, rows.len());
-    let emphasis = emphasize_changes(&mut rows, &shared);
+    let (emphasis, pairs) = pair_changes(&mut rows, &shared);
     let max_line = rows
         .iter()
         .flat_map(|r| [r.old, r.new])
@@ -1052,6 +1292,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         raw: shared,
         rows,
         emphasis,
+        pairs,
         hunks,
         converted: false,
         files: multiple_files_count,
@@ -1059,10 +1300,15 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
     }
 }
 
-// Pairs the removed lines of a change with the added lines after them, in order, and marks in
-// each pair the words that differ between them, in the text as shown, the bytes of `diff`.
-fn emphasize_changes(rows: &mut [DiffRow], diff: &str) -> Vec<Range<usize>> {
+// Pairs each removed line of a change with the first added line after the last one paired that is
+// alike enough (see `changed_ranges`), like delta does, and marks in each pair the words that
+// differ between them, in the text as shown, the bytes of `diff`. Returns the marks and the pairs.
+fn pair_changes(rows: &mut [DiffRow], diff: &str) -> (Vec<Range<usize>>, Vec<(usize, usize)>) {
+    // shortcut: an added line more than this many past the last one paired isn't tried, as each
+    // try diffs two lines; raise it when lines further apart should pair
+    const LOOKAHEAD: usize = 16;
     let mut emphasis = Vec::new();
+    let mut pairs = Vec::new();
     // the rows of `kind` from `from` on, past "\ No newline" notes, and where they end
     let run = |rows: &[DiffRow], from: usize, kind: DiffRowKind| {
         let mut found = Vec::new();
@@ -1085,9 +1331,42 @@ fn emphasize_changes(rows: &mut [DiffRow], diff: &str) -> Vec<Range<usize>> {
             continue;
         }
         let (added, end) = run(rows, end, DiffRowKind::Added);
-        for (&r, &a) in removed.iter().zip(&added) {
-            let text = |row: &DiffRow| shown(&diff[row.text.clone()]);
-            let (old, new) = changed_ranges(&text(&rows[r]), &text(&rows[a]));
+        let texts: Vec<_> = (removed.iter().chain(&added))
+            .map(|&row| shown(&diff[rows[row].text.clone()]))
+            .collect();
+        // the words of each line past blanks, sorted, to tell lines too different to diff
+        let sorted: Vec<Vec<&str>> = (texts.iter())
+            .map(|text| {
+                let mut words: Vec<&str> = (words(text).into_iter())
+                    .map(str::trim)
+                    .filter(|word| !word.is_empty())
+                    .collect();
+                words.sort_unstable();
+                words
+            })
+            .collect();
+        let (old_words, new_words) = sorted.split_at(removed.len());
+        let alike_enough = |old: usize, new: usize| {
+            let text = |words: &[&str]| -> usize { words.iter().map(|w| w.len()).sum() };
+            let (old, new) = (&old_words[old], &new_words[new]);
+            5 * common_text(old, new) >= text(old) + text(new)
+        };
+        // the first added line not passed yet
+        let mut next = 0;
+        for (old, &r) in removed.iter().enumerate() {
+            let found = (next..added.len())
+                .take(LOOKAHEAD)
+                .filter(|&new| alike_enough(old, new))
+                .find_map(|new| {
+                    let ranges = changed_ranges(&texts[old], &texts[removed.len() + new])?;
+                    Some((new, ranges))
+                });
+            let Some((new, [old, new_ranges])) = found else {
+                continue;
+            };
+            let a = added[new];
+            next = new + 1;
+            pairs.push((r, a));
             // a diff with more than u32 ranges, of over 4GB, shows the rest without them
             let mut add = |ranges: Vec<_>| {
                 let start = u32::try_from(emphasis.len()).ok()?;
@@ -1095,19 +1374,39 @@ fn emphasize_changes(rows: &mut [DiffRow], diff: &str) -> Vec<Range<usize>> {
                 let end = u32::try_from(emphasis.len()).ok()?;
                 Some(start..end)
             };
-            if let (Some(old), Some(new)) = (add(old), add(new)) {
+            if let (Some(old), Some(new)) = (add(old), add(new_ranges)) {
                 (rows[r].emphasis, rows[a].emphasis) = (old, new);
             }
         }
         i = end;
     }
-    emphasis
+    (emphasis, pairs)
 }
 
-// The bytes of the words of `old` and `new` that differ, by a diff of their words; none when the
-// lines are mostly different, or alike only in blanks.
-fn changed_ranges(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+// The most text two lines keep, of their `old` and `new` words sorted: that of the words both
+// have, each as often as both do.
+fn common_text(old: &[&str], new: &[&str]) -> usize {
+    let (mut i, mut j, mut kept) = (0, 0, 0);
+    while let (Some(o), Some(n)) = (old.get(i), new.get(j)) {
+        match o.cmp(n) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                kept += o.len();
+                (i, j) = (i + 1, j + 1);
+            }
+        }
+    }
+    kept
+}
+
+// The bytes of the words of `old` and `new` that differ, by a diff of their words; None when the
+// lines are mostly different, or alike only in blanks. Delta's test, of a distance of at most 0.6.
+fn changed_ranges(old: &str, new: &str) -> Option<[Vec<Range<usize>>; 2]> {
     let (old_words, new_words) = (words(old), words(new));
+    // how alike the lines are, by their text past blanks: unmarked under two fifths
+    let text = |words: &[&str]| -> usize { words.iter().map(|w| w.trim().len()).sum() };
+    let (old_text, new_text) = (text(&old_words), text(&new_words));
     // a line too long to diff in time is marked coarser, not waited for
     let deadline = Instant::now() + Duration::from_millis(10);
     let ops = similar::capture_diff_slices_deadline(
@@ -1116,16 +1415,14 @@ fn changed_ranges(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>
         &new_words,
         Some(deadline),
     );
-    // how alike the lines are, by their text past blanks: unmarked under two fifths
-    let text = |words: &[&str]| -> usize { words.iter().map(|w| w.trim().len()).sum() };
     let kept: usize = ops
         .iter()
         .map(|op| op.as_tag_tuple())
         .filter(|(tag, ..)| *tag == DiffTag::Equal)
         .map(|(_, words, _)| text(&old_words[words]))
         .sum();
-    if 5 * kept < text(&old_words) + text(&new_words) {
-        return (Vec::new(), Vec::new());
+    if 5 * kept < old_text + new_text {
+        return None;
     }
     // the byte where each word starts, and the end of the line
     let starts = |words: &[&str]| -> Vec<usize> {
@@ -1145,7 +1442,7 @@ fn changed_ranges(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>
             push_range(&mut marks.1, new_starts[n.start]..new_starts[n.end]);
         }
     }
-    marks
+    Some([marks.0, marks.1])
 }
 
 // Adds `range` to `ranges`, joined to the last when they touch.
@@ -1242,7 +1539,6 @@ pub fn diff_lines<'a>(
     range: Range<usize>,
     panel_width: u16,
 ) -> Vec<Line<'a>> {
-    let dim = theme.muted_fg;
     if diff.raw.is_empty() {
         // e.g. a directory of untracked files, which `git diff` does not show
         return vec![placeholder("No diff to show", theme)];
@@ -1251,51 +1547,71 @@ pub fn diff_lines<'a>(
         return hunkless_lines(diff)
             .skip(range.start)
             .take(range.len())
-            .map(|l| Line::raw(l).fg(dim))
+            .map(|l| Line::raw(l).fg(theme.muted_fg))
             .collect();
     }
-
-    let width = diff.number_width;
-    let number = |n: Option<NonZeroU32>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
 
     diff.rows
         .iter()
         .skip(range.start)
         .take(range.len())
-        .map(|row| {
-            if row.kind == DiffRowKind::File {
-                let path = format!("{} ", diff.row_text(row));
-                let fill =
-                    (panel_width as usize).saturating_sub(3 + Span::raw(path.as_str()).width());
-                return Line::from(vec![
-                    Span::raw("── ").fg(theme.divider_fg),
-                    Span::raw(path).fg(theme.detail_file_change_modify_fg),
-                    divider(fill, theme),
-                ]);
-            }
-            let gutter = format!("{} {} ", number(row.old), number(row.new));
-            let text_color = match row.kind {
-                DiffRowKind::Hunk => theme.diff_hunk_fg,
-                DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Context => theme.fg,
-                DiffRowKind::Meta | DiffRowKind::File => dim,
-            };
-            let mut line = Line::from(vec![
-                Span::raw(gutter).fg(dim),
-                Span::raw(diff.row_text(row)).fg(text_color),
-            ]);
-            // added and removed lines on a background across the panel, what changed in them
-            // on a stronger one
-            let (bg, word_bg) = match row.kind {
-                DiffRowKind::Added => (theme.diff_add_bg, theme.diff_add_word_bg),
-                DiffRowKind::Removed => (theme.diff_delete_bg, theme.diff_delete_word_bg),
-                _ => return line,
-            };
-            for range in diff.row_emphasis(row) {
-                patch_range(&mut line, range.clone(), Style::default().bg(word_bg));
-            }
-            line.bg(bg)
-        })
+        .map(|row| diff_line(diff, row, Gutter::Both, theme, panel_width))
         .collect()
+}
+
+// The line numbers a line of a diff shows: of both sides, or of the side it is drawn on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gutter {
+    Both,
+    Old,
+    New,
+}
+
+// The line displaying `row` of `diff`, see `diff_lines`, its numbers as `gutter` says.
+fn diff_line<'a>(
+    diff: &'a ParsedDiff,
+    row: &DiffRow,
+    gutter: Gutter,
+    theme: &ColorTheme,
+    panel_width: u16,
+) -> Line<'a> {
+    let dim = theme.muted_fg;
+    if row.kind == DiffRowKind::File {
+        let path = format!("{} ", diff.row_text(row));
+        let fill = (panel_width as usize).saturating_sub(3 + Span::raw(path.as_str()).width());
+        return Line::from(vec![
+            Span::raw("── ").fg(theme.divider_fg),
+            Span::raw(path).fg(theme.detail_file_change_modify_fg),
+            divider(fill, theme),
+        ]);
+    }
+    let width = diff.number_width;
+    let number = |n: Option<NonZeroU32>| n.map_or(" ".repeat(width), |n| format!("{n:>width$}"));
+    let gutter = match gutter {
+        Gutter::Both => format!("{} {} ", number(row.old), number(row.new)),
+        Gutter::Old => format!("{} ", number(row.old)),
+        Gutter::New => format!("{} ", number(row.new)),
+    };
+    let text_color = match row.kind {
+        DiffRowKind::Hunk => theme.diff_hunk_fg,
+        DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Context => theme.fg,
+        DiffRowKind::Meta | DiffRowKind::File => dim,
+    };
+    let mut line = Line::from(vec![
+        Span::raw(gutter).fg(dim),
+        Span::raw(diff.row_text(row)).fg(text_color),
+    ]);
+    // added and removed lines on a background across the panel, what changed in them on a
+    // stronger one
+    let (bg, word_bg) = match row.kind {
+        DiffRowKind::Added => (theme.diff_add_bg, theme.diff_add_word_bg),
+        DiffRowKind::Removed => (theme.diff_delete_bg, theme.diff_delete_word_bg),
+        _ => return line,
+    };
+    for range in diff.row_emphasis(row) {
+        patch_range(&mut line, range.clone(), Style::default().bg(word_bg));
+    }
+    line.bg(bg)
 }
 
 // Marks a line of `diff_lines` selected on its line numbers, keeping the colors of the change.
@@ -1338,6 +1654,110 @@ pub fn render_diff_lines<'a>(
         }
     }
     render_visual_rows(visual, selected, theme, area, buf);
+}
+
+// Draws the screen rows `screen` of `diff` side by side, see `ParsedDiff::split_rows`: the old
+// side left of a divider, the new side right of it, a file or hunk header across both; otherwise
+// like `render_diff_lines`, each line made changed by `restyle` (the matches of a search). Returns
+// the rows of the diff on each screen row drawn, of the old side and of the new side.
+#[expect(clippy::too_many_arguments)]
+pub fn render_split_rows(
+    diff: &ParsedDiff,
+    map: &WrapMap,
+    screen: Range<usize>,
+    selected: impl Fn(usize) -> bool,
+    restyle: impl Fn(&mut Line),
+    wrap: bool,
+    theme: &ColorTheme,
+    area: Rect,
+    buf: &mut Buffer,
+) -> Vec<[Option<usize>; 2]> {
+    let (old_width, new_width) = split_widths(area.width);
+    let make = |row: usize, gutter, width: u16| -> Vec<Line<'static>> {
+        let mut line = diff_line(diff, &diff.rows[row], gutter, theme, width);
+        if selected(row) {
+            select_diff_line(&mut line, theme);
+        }
+        restyle(&mut line);
+        match wrap {
+            true => wrap_line(line, width as usize),
+            false => vec![owned(line)],
+        }
+    };
+    // each screen row: the rows of the diff on it, and the lines of its sides, or across both
+    struct Drawn {
+        rows: [Option<usize>; 2],
+        lines: [Option<Line<'static>>; 2],
+        whole: bool,
+    }
+    let shown = map.shown_rows(screen.clone());
+    let skip = screen.start - map.shown_start(shown.start);
+    let mut drawn = Vec::new();
+    for split_row in &map.split_rows()[shown] {
+        match *split_row {
+            SplitRow::Whole(row) => drawn.extend(
+                make(row, Gutter::Both, area.width)
+                    .into_iter()
+                    .map(|line| Drawn {
+                        rows: [Some(row); 2],
+                        lines: [Some(line), None],
+                        whole: true,
+                    }),
+            ),
+            SplitRow::Sides(old, new) => {
+                let side = |row: Option<usize>, gutter, width| {
+                    row.map_or_else(Vec::new, |row| make(row, gutter, width))
+                };
+                let mut old_lines = side(old, Gutter::Old, old_width).into_iter();
+                let mut new_lines = side(new, Gutter::New, new_width).into_iter();
+                let height = old_lines.len().max(new_lines.len());
+                drawn.extend((0..height).map(|_| Drawn {
+                    rows: [old, new],
+                    lines: [old_lines.next(), new_lines.next()],
+                    whole: false,
+                }));
+            }
+        }
+    }
+    let draw = |line: Line, area: Rect, buf: &mut Buffer| {
+        if let Some(bg) = line.style.bg {
+            buf.set_style(area, Style::default().bg(bg));
+        }
+        Paragraph::new(line).fg(theme.fg).render(area, buf);
+    };
+    let mut hits = Vec::new();
+    for (y, Drawn { rows, lines, whole }) in (area.y..)
+        .zip(drawn.into_iter().skip(skip))
+        .take(screen.len())
+    {
+        let [old_line, new_line] = lines;
+        if whole {
+            if let Some(line) = old_line {
+                draw(line, Rect::new(area.x, y, area.width, 1), buf);
+            }
+        } else {
+            if let Some(line) = old_line {
+                draw(line, Rect::new(area.x, y, old_width, 1), buf);
+            }
+            let new_x = area.x.saturating_add(old_width).saturating_add(1);
+            if let Some(line) = new_line {
+                draw(line, Rect::new(new_x, y, new_width, 1), buf);
+            }
+            if old_width < area.width {
+                buf.set_string(
+                    area.x + old_width,
+                    y,
+                    "│",
+                    Style::default().fg(theme.divider_fg),
+                );
+            }
+        }
+        if area.x > 0 && rows.iter().flatten().any(|&row| selected(row)) {
+            mark_selected_bar(buf, area.x - 1, y, true, theme);
+        }
+        hits.push(rows);
+    }
+    hits
 }
 
 // The screen rows `screen` of `lines` with their logical row, wrapped at the width of `area` when
@@ -1707,7 +2127,7 @@ mod tests {
         let changed: Vec<usize> = changed_rows(&diff).collect();
         let mut cursor = DiffCursor::default();
         cursor.scroll.height = 20;
-        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false));
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false, false));
         cursor.select_line(&diff, changed[0]);
 
         assert!(cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Line));
@@ -1728,7 +2148,7 @@ mod tests {
         };
         let mut cursor = DiffCursor::default();
         cursor.scroll.height = 8;
-        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false));
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false, false));
         cursor.select_line(&diff, a);
         let mut jump = |event| {
             assert!(cursor.jump_page(&diff, event, DiffPart::Line));
@@ -1761,7 +2181,7 @@ mod tests {
         };
         let mut cursor = DiffCursor::default();
         cursor.scroll.height = 4;
-        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 20, true));
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 20, true, false));
         cursor.select_line(&diff, long);
         let offset = cursor.scroll.offset;
 
@@ -1796,7 +2216,7 @@ mod tests {
         // the first hunk is short: the page moves to the second
         let mut cursor = DiffCursor::default();
         cursor.scroll.height = 4;
-        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false));
+        cursor.set_wrap_map(WrapMap::of(&diff, &ColorTheme::default(), 80, false, false));
         cursor.select_hunk(&diff, 0);
         assert!(cursor.jump_page(&diff, UserEvent::PageDown, DiffPart::Hunk));
         assert_eq!(cursor.hunk, 1);
@@ -1854,6 +2274,49 @@ mod tests {
         let actual = hunk.partial_patch(&[1], PatchDirection::Reverse);
         let expected = "diff --git a/f b/f\nindex 0000000..1234567\n--- a/f\n+++ b/f\n@@ -1,1 +1,2 @@\n a\n+b\n";
         assert_eq!(actual, expected);
+    }
+
+    // Side by side, a removed line sits beside the first added line after the last one paired
+    // that is alike, like delta's: the added lines passed on their own rows before it, a removed
+    // line alike to none on its own row, a note on the side of the line it follows.
+    #[test]
+    fn test_split_rows_pair_alike_lines() {
+        let diff = parse_diff(concat!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,5 +1,5 @@\n ctx\n",
+            "-call(a, 1);\n-zzz qqq\n-foo bar baz\n",
+            "+totally new\n+call(b, 1);\n+foo bar qux\n\\ No newline at end of file\n",
+        ));
+        let texts: Vec<_> = diff.rows.iter().map(|r| diff.row_text(r)).collect();
+        let text = |row: Option<usize>| row.map_or("", |row| texts[row].as_ref());
+        let rows: Vec<_> = diff
+            .split_rows()
+            .into_iter()
+            .map(|row| match row {
+                SplitRow::Whole(row) => (text(Some(row)), "*"),
+                SplitRow::Sides(old, new) => (text(old), text(new)),
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("@@ -1,5 +1,5 @@", "*"),
+                ("ctx", "ctx"),
+                ("", "totally new"),
+                ("call(a, 1);", "call(b, 1);"),
+                ("zzz qqq", ""),
+                ("foo bar baz", "foo bar qux"),
+                ("", "\\ No newline at end of file"),
+            ]
+        );
+        // the scroll counts them: the change's rows are on the screen rows of their pair
+        let map = WrapMap::of(&diff, &ColorTheme::default(), 40, false, true);
+        assert_eq!(map.total(), 7);
+        // "call(b, 1);", row 6, beside "call(a, 1);"
+        assert_eq!(map.visual_range(6..7), 3..4);
+        assert_eq!(map.visual_range(2..3), 3..4);
+        // the hunk, from its header to its last row
+        assert_eq!(map.visual_range(0..9), 0..7);
+        assert_eq!(map.logical_at(2), 5);
     }
 
     #[test]

@@ -106,6 +106,12 @@ impl<'a> LocalChangesView<'a> {
             return;
         }
 
+        if let UserEvent::NavigateLeft | UserEvent::NavigateRight = event {
+            if self.local_changes_state.switch_diff_side(event) {
+                return;
+            }
+        }
+
         if self.local_changes_state.is_conflict_focused() {
             // the sides are side by side, the tools below them
             let direction = match event {
@@ -236,6 +242,9 @@ impl<'a> LocalChangesView<'a> {
             }
             UserEvent::NavigateLeft => {
                 self.local_changes_state.collapse();
+            }
+            UserEvent::ToggleTreeView if self.local_changes_state.is_diff_focused() => {
+                self.ctx.split.set(!self.ctx.split.get());
             }
             UserEvent::ToggleTreeView => {
                 self.local_changes_state.toggle_tree_view();

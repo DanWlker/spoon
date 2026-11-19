@@ -38,6 +38,8 @@ pub struct AppContext {
     pub layout: RefCell<PanelLayout>,
     // long lines of the diffs and file previews wrapped, see `UserEvent::ToggleWrap`
     pub wrap: Cell<bool>,
+    // the diffs shown side by side, see `ParsedDiff::split_rows`
+    pub split: Cell<bool>,
     // the lines shown around each change in a diff, see `AppContext::adjust_diff_context`
     pub diff_context: Cell<usize>,
     // the options of every search, toggled while typing any of them, shared with the commit list

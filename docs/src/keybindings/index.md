@@ -168,6 +168,8 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>T</kbd>                         | Show the commits changing the selected file (see below); only with one file selected | `timeline` |
 | <kbd>e</kbd>                         | Open the selected files as they are in the working tree in `$VISUAL` or `$EDITOR`, in the changes and files tabs, from the diff or preview too | `edit` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
+| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them; or in one column (one setting for every diff) | `toggle_tree_view` |
+| <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 
 The commit detail has three tabs:
 
@@ -321,6 +323,8 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>/</kbd>                         | Filter files<br>Search the diff, while it has the focus      | `search`                        |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the relative/absolute paths of the selected files, one per line<br>Copy the line, selected lines or hunk (<kbd>y</kbd><kbd>y</kbd>), or the file's absolute path (<kbd>y</kbd><kbd>f</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
+| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them; or in one column (one setting for every diff) | `toggle_tree_view` |
+| <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 | <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below) | `ignore`         |
 | <kbd>B</kbd>                         | Blame the file as of the last commit (see below); the local changes aren't blamed, and only one file may be picked | `blame`     |
 | <kbd>T</kbd>                         | Show the commits changing the file (see below); only one file may be picked | `timeline`                      |
@@ -378,13 +382,15 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | ------------------------------------ | ------------------------------------------------------------ | ------------------------------- |
 | <kbd>Esc</kbd>  | Clear the search, back out of the lines and hunks, then close | `cancel`               |
 | <kbd>1</kbd> <kbd>2</kbd> <kbd>Ctrl-Left/Right</kbd> | Focus the commits/the diff                    | `focus_panel_1` `focus_panel_2` `focus_left` `focus_right` |
-| <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Into the diff (its hunks)/back out of it                     | `navigate_right` `navigate_left` |
+| <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Into the diff (its hunks)/back out of it; side by side, <kbd>h</kbd> on the new side goes to the old side first | `navigate_right` `navigate_left` |
 | <kbd>[</kbd> <kbd>]</kbd>            | Select the older/newer commit, from the diff too, staying in it | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
 | <kbd>v</kbd>                         | While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>Space</kbd>                     | Check out the commit, after confirming, closing the timeline<br>In the diff, apply the selected hunk, line or lines to the working tree, as in the details | `select`            |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the hunk or line, in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes | `increase_diff_context` `decrease_diff_context` |
+| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them; or in one column (one setting for every diff) | `toggle_tree_view` |
+| <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd> | Open the commit, or from the diff the file at the selected lines, on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR` | `edit` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the commits (by hash, date or subject), or the diff while it has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |

@@ -14,8 +14,8 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, parse_diff, render_diff_lines, row_matches, DiffCursor, DiffHunk, DiffPart,
-            ParsedDiff, Step, WrapMap,
+            diff_lines, parse_diff, render_diff_lines, render_split_rows, row_matches,
+            split_widths, DiffCursor, DiffHunk, DiffPart, DiffRowKind, ParsedDiff, Step, WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -386,6 +386,31 @@ impl DiffPane {
         }
     }
 
+    // The line h (the old side) or l (the new side) selects while selecting lines side by side,
+    // see `DiffCursor::other_side`.
+    fn other_side(&self, event: UserEvent) -> Option<usize> {
+        let kind = match event {
+            UserEvent::NavigateLeft => DiffRowKind::Removed,
+            UserEvent::NavigateRight => DiffRowKind::Added,
+            _ => return None,
+        };
+        let diff = shown(&self.state).filter(|_| self.focus == Some(DiffPart::Line))?;
+        self.cursor.other_side(diff, kind)
+    }
+
+    pub fn can_switch_side(&self, event: UserEvent) -> bool {
+        self.other_side(event).is_some()
+    }
+
+    // Selects the line on the other side for h or l, see `other_side`; false when there is none.
+    pub fn switch_side(&mut self, event: UserEvent) -> bool {
+        let (Some(row), Some(diff)) = (self.other_side(event), shown(&self.state)) else {
+            return false;
+        };
+        self.cursor.select_line(diff, row);
+        true
+    }
+
     // Moves the selected hunk or line.
     pub fn step(&mut self, step: Step) {
         let Some(diff) = shown(&self.state) else {
@@ -480,15 +505,16 @@ impl DiffPane {
     ) {
         let theme = &ctx.color_theme;
         let wrap = ctx.wrap.get();
+        let split = ctx.split.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let Some(diff) = drawn(&self.state) else {
             ctx.layout.borrow_mut().record(target, area, RowMap::None);
             return;
         };
-        // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
-        // the rows are measured again, showing the selection again with them
-        if !self.cursor.wrap().matches(area.width, wrap) {
-            let map = WrapMap::of(diff, theme, area.width, wrap);
+        // the scroll counts screen rows while wrapping or split, see `WrapMap`; at another width,
+        // wrap or split the rows are measured again, showing the selection again with them
+        if !self.cursor.wrap().matches(area.width, wrap, split) {
+            let map = WrapMap::of(diff, theme, area.width, wrap, split);
             self.cursor.set_wrap_map(map);
             if self.focus.is_some() {
                 let rows = self.cursor.highlighted(diff, self.selected_part());
@@ -502,6 +528,26 @@ impl DiffPane {
             .fit(total, area.height as usize, scrolloff);
         let thumb = render_scrollbar(buf, scrollbar, total, range.start, focused, theme);
         ctx.layout.borrow_mut().record_thumb(target, thumb);
+        // a hunk selects only its changed lines, the context around them staying as it is
+        let selected = |row: usize| {
+            self.focus
+                .is_some_and(|part| self.cursor.is_highlighted(diff, part, row))
+        };
+        let restyle = |line: &mut Line| {
+            if let Some(query) = search {
+                highlight_match(line, query, ctx.search_options.get(), theme);
+            }
+        };
+        if !self.cursor.wrap().split_rows().is_empty() {
+            let map = self.cursor.wrap();
+            let lines =
+                render_split_rows(diff, map, range, selected, restyle, wrap, theme, area, buf);
+            let split = split_widths(area.width).0 as usize;
+            ctx.layout
+                .borrow_mut()
+                .record(target, area, RowMap::Sides { lines, split });
+            return;
+        }
         let lines = (range.start..range.start + area.height as usize)
             .map(|screen| (screen < total).then(|| self.cursor.wrap().logical_at(screen)))
             .collect();
@@ -512,16 +558,7 @@ impl DiffPane {
         let rows = self.cursor.wrap().logical_rows(range.clone());
         let skip = range.start - self.cursor.wrap().visual_start(rows.start);
         let mut lines = diff_lines(diff, theme, rows.clone(), area.width);
-        // a hunk selects only its changed lines, the context around them staying as it is
-        let selected = |row: usize| {
-            self.focus
-                .is_some_and(|part| self.cursor.is_highlighted(diff, part, row))
-        };
-        if let Some(query) = search {
-            for line in lines.iter_mut() {
-                highlight_match(line, query, ctx.search_options.get(), theme);
-            }
-        }
+        lines.iter_mut().for_each(restyle);
         render_diff_lines(
             rows.zip(lines),
             skip..skip + range.len(),
@@ -586,6 +623,22 @@ pub fn register_diff_keys<T: ?Sized>(
         }
         .into()
     });
+    // side by side, j and k move along a side, h and l across
+    k.add(
+        &[NavigateLeft, NavigateRight],
+        "old/new side",
+        "In a diff side by side, select the nearest line on the old/new side, in the hunk",
+    )
+    .when(move |v| {
+        pane(v).is_some_and(|p| p.can_switch_side(NavigateLeft) || p.can_switch_side(NavigateRight))
+    });
+    // like the files in their folders or as a list, how the files are shown
+    k.add(
+        &[ToggleTreeView],
+        "split/unified",
+        "Show the diffs side by side, or in one column",
+    )
+    .when(|v| pane(v).is_some());
     // a diff of several files has no one file to show more or less context of
     let single_file = |v: &T| pane(v).is_some_and(DiffPane::is_single_file);
     k.add(
@@ -710,6 +763,140 @@ mod tests {
             pane.cursor.scroll.offset,
             2 * crate::widget::style::WHEEL_ROWS
         );
+    }
+
+    // Split, the old side is left of the divider and the new side right of it, a removed line
+    // beside the added one replacing it; the selected line marked on its row, and a click takes
+    // the line on the side clicked.
+    #[test]
+    fn test_split_draws_the_sides_and_clicks_take_them() {
+        let ctx = test_ctx();
+        ctx.split.set(true);
+        // one column of the panel's padding, for the selection bar
+        let area = Rect::new(1, 0, 29, 4);
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(parse_diff(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-old one\n+new one\n",
+        )));
+        assert!(pane.enter() && pane.enter());
+        pane.step(Step::Next);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 4));
+        let scrollbar = Rect::new(area.right(), 0, 0, 4);
+        pane.render(
+            area,
+            Target::DetailPane,
+            scrollbar,
+            &mut buf,
+            &ctx,
+            true,
+            None,
+        );
+        let rows = dump(&buf);
+        let rows: Vec<_> = rows.lines().map(str::trim_end).collect();
+        assert_eq!(
+            rows,
+            [
+                "         @@ -1,2 +1,2 @@",
+                "   1 a         │  1 a",
+                "▌  2 old one   │  2 new one",
+                "",
+            ]
+        );
+        // the added line is selected: its number marked, the removed one's not
+        let selected = |x| buf[(x, 2)].style().bg == Some(ctx.color_theme.list_selected_bg);
+        assert!(selected(17) && !selected(3));
+        let layout = ctx.layout.borrow();
+        let row_at = |x, y| layout.hit(x, y).and_then(|hit| hit.row);
+        assert_eq!((row_at(2, 1), row_at(20, 1)), (Some(1), Some(1)));
+        assert_eq!((row_at(2, 2), row_at(20, 2)), (Some(2), Some(3)));
+        assert_eq!(row_at(2, 3), None);
+    }
+
+    // Side by side, j and k move along the side of the selected line, h and l to the nearest line
+    // on the other side, in the hunk; lines picked stay on their side. In one column h and l do
+    // nothing.
+    #[test]
+    fn test_split_moves_along_a_side_and_across() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 60, 10);
+        let mut pane = DiffPane::default();
+        // the rows side by side: (-, totally new), (call(a), call(b)), (zzz, -), (foo baz, foo qux)
+        pane.set_diff(Some(parse_diff(concat!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n",
+            "-call(a, 1);\n-zzz qqq\n-foo bar baz\n",
+            "+totally new\n+call(b, 1);\n+foo bar qux\n",
+        ))));
+        assert!(pane.enter() && pane.enter());
+        draw(&mut pane, &ctx, area);
+        assert_eq!(pane.selected_row(), 1);
+        assert!(!pane.can_switch_side(UserEvent::NavigateRight));
+
+        ctx.split.set(true);
+        draw(&mut pane, &ctx, area);
+        let mut moves = vec![];
+        for event in ["j", "j", "j", "l", "h", "l", "k", "k", "k", "h"] {
+            match event {
+                "j" => pane.step(Step::Next),
+                "k" => pane.step(Step::Prev),
+                "h" => assert!(pane.switch_side(UserEvent::NavigateLeft)),
+                _ => assert!(pane.switch_side(UserEvent::NavigateRight)),
+            }
+            moves.push(pane.selected_row());
+        }
+        assert_eq!(moves, [2, 3, 3, 6, 3, 6, 5, 4, 4, 1]);
+        // on the old side already
+        assert!(!pane.switch_side(UserEvent::NavigateLeft));
+
+        pane.toggle_range();
+        pane.step(Step::Next);
+        pane.step(Step::Next);
+        assert_eq!(pane.selected_row(), 3);
+        assert_eq!(
+            pane.selected_text().as_deref(),
+            Some("call(a, 1);\nzzz qqq\nfoo bar baz")
+        );
+        assert!(!pane.can_switch_side(UserEvent::NavigateRight));
+    }
+
+    // Side by side, on the new side, the page keys move the selected line a page along it, and
+    // ctrl-e pulls it to the first line shown: the added lines of a change come after its removed
+    // ones in the diff, beside them on screen. They used to jump to the end, and pull to the last.
+    #[test]
+    fn test_split_pages_along_the_new_side() {
+        let ctx = test_ctx();
+        ctx.split.set(true);
+        let area = Rect::new(0, 0, 60, 5);
+        let mut raw = String::from("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,40 +1,40 @@\n");
+        for i in 0..40 {
+            raw += &format!("-let a{i} = f(x, {i});\n");
+        }
+        for i in 0..40 {
+            raw += &format!("+let a{i} = f(y, {i});\n");
+        }
+        let start = |ctx: &AppContext| {
+            let mut pane = DiffPane::default();
+            pane.set_diff(Some(parse_diff(&raw)));
+            assert!(pane.enter() && pane.enter());
+            draw(&mut pane, ctx, area);
+            assert!(pane.switch_side(UserEvent::NavigateRight));
+            draw(&mut pane, ctx, area);
+            pane
+        };
+        let mut pane = start(&ctx);
+        let mut rows = vec![pane.selected_row()];
+        for event in [UserEvent::PageDown, UserEvent::PageDown, UserEvent::PageUp] {
+            pane.scroll(event);
+            draw(&mut pane, &ctx, area);
+            rows.push(pane.selected_row());
+        }
+        let mut pane = start(&ctx);
+        for _ in 0..3 {
+            pane.scroll(UserEvent::ScrollDown);
+            draw(&mut pane, &ctx, area);
+            rows.push(pane.selected_row());
+        }
+        // a page down, another, back up; then ctrl-e three times
+        assert_eq!(rows, [41, 46, 51, 46, 42, 43, 44]);
     }
 
     #[test]

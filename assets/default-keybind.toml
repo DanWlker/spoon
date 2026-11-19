@@ -61,7 +61,8 @@ select = ["space"]
 # select a range of items: commits in the commit list, files in local changes, lines of a file
 # preview or of a diff (inside one hunk); moving extends it, and again ends it, keeping them selected
 toggle_select = ["v"]
-# show the files of the focused file tree in their folders, or as a list of their paths, like lazygit
+# show the files of the focused file tree in their folders, or as a list of their paths, like lazygit;
+# in a focused diff, show the diffs side by side or in one column
 toggle_tree_view = ["`"]
 # show more or fewer lines around the changes of a diff of one file
 increase_diff_context = ["+"]

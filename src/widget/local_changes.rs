@@ -465,6 +465,12 @@ impl<'a> LocalChangesState<'a> {
         self.tree().is_visual()
     }
 
+    // Selects the nearest line on the other side of the diff side by side, for h or l; false when
+    // there is none, see `DiffPane::switch_side`.
+    pub fn switch_diff_side(&mut self, event: UserEvent) -> bool {
+        self.is_diff_focused() && self.pane.switch_side(event)
+    }
+
     // Starts or ends a visual selection, picking the rows from where it started to the selected
     // one.
     pub fn toggle_visual(&mut self) {
