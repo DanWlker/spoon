@@ -189,9 +189,12 @@ enum DialogKind {
         commits: Vec<DialogCommit>,
         commit: Check,
     },
+    // `head` is HEAD's commit as loaded, which it must still be, see `GitTask::verify`; None
+    // on an unborn branch
     Reset {
         commit: DialogCommit,
         branch: String,
+        head: Option<CommitHash>,
         mode: Choose<ResetMode>,
     },
     // files as `changes` changed them in `commit`
@@ -2074,13 +2077,14 @@ impl GitDialog {
         dialog
     }
 
-    pub fn reset(branch: &str, commit: DialogCommit) -> Self {
+    pub fn reset(branch: &str, commit: DialogCommit, head: Option<CommitHash>) -> Self {
         let intro = vec![format!("Reset {branch} to"), format!("  {}", commit.line)];
         let mut form = Form::default();
         let mode = form.choose("Mode", ResetMode::Mixed);
         let kind = DialogKind::Reset {
             commit,
             branch: branch.to_string(),
+            head,
             mode,
         };
         Self::with(" Reset ", "reset", intro, kind, form)
@@ -2090,16 +2094,24 @@ impl GitDialog {
         &self,
         commit: &DialogCommit,
         branch: &str,
+        head: Option<&CommitHash>,
         mode: Choose<ResetMode>,
     ) -> Result<GitTask, String> {
         let mode = self.chosen(mode).flag();
         let short = commit.hash.as_short_hash();
-        Ok(GitTask::new(
-            GitCommand::Reset,
-            &[mode, commit.hash.as_str()],
-            format!("Resetting {branch} to {short}"),
-            format!("Reset {branch} to {short}"),
-        ))
+        Ok(GitTask {
+            // a commit made meanwhile would be dropped
+            verify: head
+                .map(|head| ("HEAD".into(), head.clone()))
+                .into_iter()
+                .collect(),
+            ..GitTask::new(
+                GitCommand::Reset,
+                &[mode, commit.hash.as_str()],
+                format!("Resetting {branch} to {short}"),
+                format!("Reset {branch} to {short}"),
+            )
+        })
     }
 
     // Resets files `commit` changed, in the index and the working tree, to how the commit left
@@ -2776,8 +2788,9 @@ impl GitDialog {
             K::Reset {
                 commit,
                 branch,
+                head,
                 mode,
-            } => self.reset_command(commit, branch, *mode),
+            } => self.reset_command(commit, branch, head.as_ref(), *mode),
             K::ResetFile {
                 commit,
                 changes,
@@ -4472,7 +4485,7 @@ mod tests {
         let dialog = GitDialog::revert("main", vec![commit('b')]);
         assert_eq!(args(&dialog), format!("revert --no-edit {b}"));
 
-        let mut dialog = GitDialog::reset("main", commit('a'));
+        let mut dialog = GitDialog::reset("main", commit('a'), None);
         assert_eq!(args(&dialog), format!("reset --mixed {a}"));
         press(&mut dialog, UserEvent::NavigateLeft);
         assert_eq!(args(&dialog), format!("reset --hard {a}"));
@@ -4523,6 +4536,25 @@ mod tests {
             message.contains("c2") && message.contains("c3"),
             "{message}"
         );
+    }
+
+    // A commit made after the popup opened isn't dropped by the reset: HEAD isn't what was shown.
+    #[test]
+    fn test_reset_refused_once_head_moved() {
+        let dir = test_repo();
+        let path = dir.path();
+        let rev = |r: &str| git(path, &["rev-parse", r]).trim().to_string();
+        let commit = DialogCommit {
+            hash: rev("HEAD~1").as_str().into(),
+            line: String::new(),
+        };
+        let dialog = GitDialog::reset("main", commit, Some(rev("HEAD").as_str().into()));
+        std::fs::write(path.join("f"), "new\n").unwrap();
+        git(path, &["commit", "-q", "-am", "made meanwhile"]);
+        let head = rev("HEAD");
+        let err = crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap_err();
+        assert!(err.contains("changed meanwhile"), "{err}");
+        assert_eq!(rev("HEAD"), head);
     }
 
     // Popping a stash that stops on conflicts keeps it, its changes not lost.
@@ -4642,7 +4674,8 @@ mod tests {
             hash: target.as_str().into(),
             line: String::new(),
         };
-        let mut dialog = GitDialog::reset("main", commit);
+        let head = git(path, &["rev-parse", "HEAD"]).trim().into();
+        let mut dialog = GitDialog::reset("main", commit, Some(head));
         // mixed, soft, hard
         for _ in 0..2 {
             dialog.handle_key(Some(UserEvent::NavigateRight), key(KeyCode::Null));

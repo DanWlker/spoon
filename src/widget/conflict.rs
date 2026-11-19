@@ -57,7 +57,9 @@ impl ConflictView {
         // the markers of a file only, not of what a symlink points at
         let editable = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
         if editable {
-            let content = std::fs::read_to_string(&file).unwrap_or_default();
+            // its bytes that aren't UTF-8 kept, like those of the sides from git
+            let content = std::fs::read(&file)
+                .map_or_else(|_| String::new(), |bytes| crate::git::text_from_git(&bytes));
             if let Some(view) = parse_conflict_markers(&content) {
                 return ConflictView { editable, ..view };
             }
@@ -334,6 +336,42 @@ end
         assert_eq!(rows(&base[9..11]), ["16|base 2|k", "||k"]);
 
         assert_eq!(parse_conflict_markers("no conflict\n"), None);
+    }
+
+    // A file that isn't UTF-8, like Latin-1, still shows its conflict.
+    #[test]
+    fn test_conflict_of_a_file_not_utf8() {
+        use crate::{
+            git::SortCommit,
+            test_support::git::{git, GitRepository},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("f"), b"caf\xe9\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        std::fs::write(path.join("f"), b"th\xe9\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), b"cr\xe8me\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("existing", "2024-01-03");
+        let merged = std::process::Command::new("git")
+            .args(["merge", "-q", "incoming"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(!merged.status.success());
+        assert!(git(path, &["diff", "--name-only", "--diff-filter=U"]).contains('f'));
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let view = ConflictView::load(&repository, "f");
+        assert_eq!(view.conflicts, 1);
     }
 
     #[test]

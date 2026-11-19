@@ -158,6 +158,7 @@ pub fn graph_command(
         UserEvent::Reset => Ok(GitDialog::reset(
             &branch_label,
             dialog_commit(repository, &selected),
+            repository.head_commit(),
         )),
         UserEvent::DropCommit => drop_commits(repository, &branch_label, targets),
         UserEvent::CreateTag => Ok(GitDialog::create_tag(StartPoint::Commit(selected))),

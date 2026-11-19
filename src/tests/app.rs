@@ -31,6 +31,7 @@ use crate::{
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
     widget::commit_tabs::DetailTab,
+    widget::file_tree::TreeView,
     widget::git_dialog::GitDialog,
     widget::ref_list::RefSelection,
     widget::style::WHEEL_ROWS,
@@ -1976,6 +1977,36 @@ fn test_page_keys_move_the_details_files() {
             assert!(first.borrow().is_some());
             assert_ne!(*jumped.borrow(), *first.borrow());
         }),
+    ]);
+}
+
+// The details show their files as they were left, as a list or a tree, once refreshed or opened
+// again.
+#[test]
+fn test_details_keep_their_tree_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let views = |app: &App| match &app.view {
+        View::Detail(view) => {
+            let views = view.tree_views();
+            (views.changes, views.files)
+        }
+        _ => panic!("not in the commit details"),
+    };
+    let both = (TreeView::List, TreeView::List);
+    harness.run(vec![
+        keys("4"),
+        keys("`"),
+        keys("5"),
+        keys("`"),
+        check(move |app| assert_eq!(views(app), both)),
+        keys("ctrl-r"),
+        check(move |app| assert_eq!(views(app), both)),
+        keys("esc"),
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+        keys("5"),
+        check(move |app| assert_eq!(views(app), both)),
     ]);
 }
 

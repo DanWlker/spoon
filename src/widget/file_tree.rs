@@ -98,12 +98,12 @@ impl FileTreeRow {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FileTree {
     root: DirNode,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct DirNode {
     dirs: BTreeMap<String, DirNode>,
     files: Vec<(String, usize)>,
@@ -175,7 +175,7 @@ pub enum TreeView {
 }
 
 // A tree whose directories can be expanded and collapsed, with a cursor on one of its rows.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileTreeState {
     tree: FileTree,
     folders: Folders,

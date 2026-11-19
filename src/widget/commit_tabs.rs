@@ -547,7 +547,8 @@ pub struct CommitFilesState<'a> {
     tree: Option<FileTreeState>,
     // the rows selected with v, which moving extends and esc clears
     picked: TreeSelection,
-    // the tree of the previously shown commit, whose expanded directories and selection are kept
+    // the tree of the previously shown commit, or one with no files at first, whose expanded
+    // directories, selection and view are kept
     previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
     // the preview shown before the one loading, drawn meanwhile with the lines still in `text`;
@@ -558,6 +559,14 @@ pub struct CommitFilesState<'a> {
 }
 
 impl<'a> CommitFilesState<'a> {
+    // As a tree or a list, that of the tree before while this one loads.
+    pub fn tree_view(&self) -> TreeView {
+        self.tree
+            .as_ref()
+            .or(self.previous_tree.as_ref())
+            .map_or(TreeView::Tree, FileTreeState::view)
+    }
+
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
         self.tree.as_ref()?.selected()
     }
@@ -674,7 +683,13 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    pub fn new(repository: &'a Repository, commit: &Commit, changes: &[FileChange]) -> Self {
+    // `view` is how the files show, as a tree or a list.
+    pub fn new(
+        repository: &'a Repository,
+        commit: &Commit,
+        changes: &[FileChange],
+        view: TreeView,
+    ) -> Self {
         Self {
             repository,
             commit_hash: commit.commit_hash.clone(),
@@ -686,7 +701,13 @@ impl<'a> CommitFilesState<'a> {
             tree_loading: None,
             tree: None,
             picked: TreeSelection::default(),
-            previous_tree: None,
+            // collapsed by default, a whole repository is too much to show at once
+            previous_tree: Some(FileTreeState::new(
+                FileTree::default(),
+                Folders::Closed,
+                Root::Hidden,
+                view,
+            )),
             preview: None,
             shown_before: None,
             text: FileText::default(),
@@ -834,11 +855,10 @@ impl<'a> CommitFilesState<'a> {
         if self.tree.is_none() {
             let paths = self.paths.get_or_insert_default();
             let tree = FileTree::new(paths.iter().map(String::as_str));
-            self.tree = Some(match self.previous_tree.take() {
-                Some(previous) => previous.with_tree(tree),
-                // collapsed by default, a whole repository is too much to show at once
-                None => FileTreeState::new(tree, Folders::Closed, Root::Hidden, TreeView::Tree),
-            });
+            self.tree = self
+                .previous_tree
+                .take()
+                .map(|previous| previous.with_tree(tree));
             self.replace_preview();
         }
     }
@@ -1322,7 +1342,7 @@ mod tests {
             repository_with_a_bumped_submodule(dir.path());
         let head = repository.head_commit().unwrap();
         let (commit, changes) = repository.commit_detail(&head);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
         state.ensure_loaded();
         state.update_tree(|tree| tree.select_path("sub"));
         state.ensure_loaded();
@@ -1547,7 +1567,8 @@ mod tests {
 
         // files: collapsed by default, with a preview of the selected file
         let (second_commit, second_changes) = repository.commit_detail(&second);
-        let mut state = CommitFilesState::new(&repository, &second_commit, &second_changes);
+        let mut state =
+            CommitFilesState::new(&repository, &second_commit, &second_changes, TreeView::Tree);
         state.ensure_loaded();
         let tree = state.tree.as_ref().unwrap();
         assert_eq!(visible(tree), vec!["src", "DOC.md", "image.bin"]);
@@ -1666,7 +1687,7 @@ mod tests {
         };
 
         let (commit, changes) = repository.commit_detail(&hashes[0]);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
         state.ensure_loaded();
         // down to the first commit, then back up, without listing the files again
         let order = (1..hashes.len()).chain((0..hashes.len() - 1).rev());
@@ -1818,7 +1839,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let commit = repository.all_commits()[0].clone();
         let (_, changes) = repository.commit_detail(&commit.commit_hash);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
         state.ensure_loaded();
 
         // enter focuses the preview on its first line, lines are copied as in the file

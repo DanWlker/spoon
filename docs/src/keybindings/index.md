@@ -158,7 +158,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> | Show info / changes / files tab | `focus_panel_3` `focus_panel_4` `focus_panel_5` |
 | <kbd>]</kbd> <kbd>[</kbd>            | Show the next/previous tab, around from files to info, while a tab has the focus | `next_tab` `previous_tab` |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd> | Expand/Collapse directory (changes and files tabs) | `navigate_right` `navigate_left` |
-| <kbd>`</kbd>                         | Show the files of the changes/files tab in their folders, or as a list of their paths (each tab keeps its own, from one commit to the next) | `toggle_tree_view` |
+| <kbd>`</kbd>                         | Show the files of the changes/files tab in their folders, or as a list of their paths (each tab keeps its own, from one commit to the next and when the details open again) | `toggle_tree_view` |
 | <kbd>/</kbd>                         | Filter files (changes and files tabs); search the diff or preview while it has the focus | `search` |
 | <kbd>Space</kbd>                     | Apply the selected hunk or line of the diff to the working tree (changes tab) | `select` |
 | <kbd>u</kbd>                         | Reset the selected files to how they were at the commit or before it, in the working tree and the index, after confirming (changes tab) | `reset_file` |

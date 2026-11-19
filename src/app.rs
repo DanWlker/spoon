@@ -20,6 +20,8 @@ use ratatui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use unicode_width::UnicodeWidthStr;
 
+use crate::view::TreeViews;
+use crate::widget::file_tree::TreeView;
 use crate::widget::tree_query::Toward;
 use crate::{
     background::{shows_loading, Job},
@@ -195,6 +197,8 @@ pub struct AppShell {
     parked_local_changes: Option<LocalChangesRefreshViewContext>,
     // the tab of the commit details while the local changes page is shown, to reopen them
     parked_detail_tab: Option<DetailTab>,
+    // how the commit details showed their files, for when they open again
+    detail_tree_views: TreeViews,
     // the popup confirming a git command, over any view
     dialog: Option<Popup>,
     // what the last frame showed, None before the first
@@ -624,6 +628,10 @@ impl<'a> App<'a> {
                 sidebar_mode: SidebarMode::Shown,
                 parked_local_changes: None,
                 parked_detail_tab: None,
+                detail_tree_views: TreeViews {
+                    changes: TreeView::Tree,
+                    files: TreeView::Tree,
+                },
                 dialog: None,
                 last_frame: None,
                 app_status: AppStatus::default(),
@@ -685,6 +693,9 @@ impl<'a> App<'a> {
 
     // Takes the page out, leaving none until the next one, built on its commit list, replaces it.
     fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
+        if let View::Detail(view) = &self.view {
+            self.shell.detail_tree_views = view.tree_views();
+        }
         std::mem::take(&mut self.view).into_list_state()
     }
 
@@ -1492,6 +1503,7 @@ impl App<'_> {
             commit,
             changes,
             refs,
+            self.shell.detail_tree_views,
             self.repository,
             self.ctx.clone(),
             self.ec.sender(),
@@ -3515,6 +3527,7 @@ impl App<'_> {
             commit,
             changes,
             refs,
+            self.shell.detail_tree_views,
             self.repository,
             self.ctx.clone(),
             self.ec.sender(),

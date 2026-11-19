@@ -146,6 +146,9 @@ pub struct LocalChangesSnapshot {
     pub commit_draft: Box<CommitDraft>,
     // what had the keys, put back once the page is loaded again
     focus: Focus,
+    // how each section shows its files: as a list or a tree, the folders opened or closed, the
+    // search and filter; over no files, the files loaded then go under it. Boxed like the draft
+    sections: Box<[(FileTreeState, TreeQuery); 2]>,
 }
 
 impl LocalChangesSnapshot {
@@ -163,6 +166,10 @@ impl Default for LocalChangesSnapshot {
             selected_path: None,
             commit_draft: Box::default(),
             focus: Focus::Files,
+            sections: Box::new([(); 2].map(|()| {
+                let section = Section::new(&[]);
+                (section.tree, section.query)
+            })),
         }
     }
 }
@@ -223,10 +230,18 @@ impl<'a> LocalChangesState<'a> {
     ) -> Self {
         let changes = repository.stage_resolved_conflicts(repository.take_loaded_local_changes());
         let files_stamp = repository.files_stamp(&changes);
-        let sections = [
-            Section::new(&changes.unstaged),
-            Section::new(&changes.staged),
-        ];
+        let files = [&changes.unstaged, &changes.staged];
+        let sections = match &snapshot {
+            Some(snapshot) => std::array::from_fn(|i| {
+                let (tree, query) = &snapshot.sections[i];
+                Section {
+                    tree: tree.with_tree(file_tree(files[i])),
+                    query: query.clone(),
+                    picked: TreeSelection::default(),
+                }
+            }),
+            None => files.map(|files| Section::new(files)),
+        };
         let section = snapshot
             .as_ref()
             .map_or(LocalChangesSection::Unstaged, |s| s.section);
@@ -294,6 +309,11 @@ impl<'a> LocalChangesState<'a> {
             selected_path: self.selected_path(),
             commit_draft: Box::new(self.draft.clone()),
             focus: self.focus(),
+            sections: Box::new(
+                self.sections
+                    .each_ref()
+                    .map(|s| (s.tree.with_tree(FileTree::default()), s.query.applied())),
+            ),
         }
     }
 
@@ -3424,6 +3444,31 @@ mod tests {
         Ok(())
     }
 
+    // A commit made before the next reload isn't the one amended: its message would be replaced.
+    #[test]
+    fn test_amend_refused_once_head_moved() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::write(repo_path.join("a.txt"), "a\n")?;
+        git.add(&["a.txt"]);
+        git.commit("first", "2024-01-01");
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        state.toggle_amend()?;
+        fs::write(repo_path.join("a.txt"), "b\n")?;
+        git.add(&["a.txt"]);
+        git.commit("made meanwhile", "2024-01-02");
+        let head = git_stdout(repo_path, &["rev-parse", "HEAD"]);
+
+        let err = crate::git::run_task(repo_path, &state.commit_task()?).unwrap_err();
+        assert!(err.contains("changed meanwhile"), "{err}");
+        assert_eq!(git_stdout(repo_path, &["rev-parse", "HEAD"]), head);
+        Ok(())
+    }
+
     #[test]
     fn test_edit_stop_amends_the_commit() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -3909,6 +3954,58 @@ mod tests {
             state.type_query_key(key(KeyCode::Char(c)));
         }
         state.type_query_key(key(KeyCode::Enter));
+    }
+
+    // Coming back to the page or refreshing it keeps how each section shows its files: as a list or
+    // a tree, its folders opened or closed, its search and filter.
+    #[test]
+    fn test_sections_shown_alike_once_restored() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::create_dir_all(repo_path.join("s"))?;
+        fs::create_dir_all(repo_path.join("u"))?;
+        fs::write(repo_path.join("s/x.txt"), "x\n")?;
+        git.add(&["s/x.txt"]);
+        fs::write(repo_path.join("u/a.txt"), "a\n")?;
+        fs::write(repo_path.join("u/b.txt"), "b\n")?;
+        fs::write(repo_path.join("top.txt"), "t\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        let visible = |state: &mut LocalChangesState, section| -> Vec<String> {
+            state.focus_section(section);
+            state.rows().iter().map(|r| r.path.clone()).collect()
+        };
+        state.toggle_tree_view();
+        type_query(&mut state, "a");
+        state.focus_section(LocalChangesSection::Staged);
+        select_row(&mut state, "s");
+        state.collapse();
+        let unstaged = visible(&mut state, LocalChangesSection::Unstaged);
+        let staged = visible(&mut state, LocalChangesSection::Staged);
+        assert_eq!(staged, vec![":/", "s"]);
+
+        let repository = reload(repo_path);
+        let mut state = LocalChangesState::restore(
+            &repository,
+            crate::test_support::ui::test_ctx(),
+            Some(state.snapshot()),
+            None,
+        );
+        assert_eq!(visible(&mut state, LocalChangesSection::Staged), staged);
+        assert_eq!(visible(&mut state, LocalChangesSection::Unstaged), unstaged);
+        assert_eq!(state.tree().view(), TreeView::List);
+        assert_eq!(
+            state
+                .query_of(LocalChangesSection::Unstaged)
+                .indicator()
+                .as_deref(),
+            Some("filter: a")
+        );
+        Ok(())
     }
 
     #[test]

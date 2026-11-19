@@ -58,6 +58,14 @@ pub enum DetailFocus {
     Pane,
 }
 
+// How the changes and the files tab show their files, which the app keeps for when the details
+// open again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeViews {
+    pub changes: TreeView,
+    pub files: TreeView,
+}
+
 // Two commits compared: only their changes are shown, under the comparison's title; or set aside,
 // with them, while the details of a commit in it are shown.
 #[derive(Debug, Default)]
@@ -99,11 +107,13 @@ pub struct DetailView<'a> {
 }
 
 impl<'a> DetailView<'a> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         commit_list_state: CommitListState<'a>,
         commit: Commit,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
+        views: TreeViews,
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -118,9 +128,9 @@ impl<'a> DetailView<'a> {
                 ctx.clone(),
                 hash,
                 &changes,
-                TreeView::Tree,
+                views.changes,
             ),
-            files_state: CommitFilesState::new(repository, &commit, &changes),
+            files_state: CommitFilesState::new(repository, &commit, &changes, views.files),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
             pane_query: TreeQuery::default(),
@@ -134,6 +144,14 @@ impl<'a> DetailView<'a> {
             repository,
             ctx,
             tx,
+        }
+    }
+
+    // How the changes and files tabs show their files, as a tree or a list.
+    pub fn tree_views(&self) -> TreeViews {
+        TreeViews {
+            changes: self.changes_state.tree_view(),
+            files: self.files_state.tree_view(),
         }
     }
 

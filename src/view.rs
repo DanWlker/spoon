@@ -6,7 +6,7 @@ mod common;
 mod views;
 
 mod detail;
-pub use detail::DetailFocus;
+pub use detail::{DetailFocus, TreeViews};
 mod help;
 pub use help::HelpView;
 mod list;

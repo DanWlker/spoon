@@ -338,6 +338,13 @@ impl LocalChangesState<'_> {
             input: Some(self.draft.message()),
             running: running.into(),
             done: done.into(),
+            // a commit made since the last reload isn't the one amended
+            verify: self
+                .draft
+                .amend
+                .iter()
+                .map(|amend| ("HEAD".into(), amend.head.clone()))
+                .collect(),
             ..Default::default()
         })
     }

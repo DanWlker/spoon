@@ -542,7 +542,7 @@ pub(super) fn run_logged(
             Some(output) => output,
             None => {
                 let error = format!("git {name} timed out after {timeout:?}");
-                log_command(args, false, &error, started);
+                log_command(args, Err(&error), started);
                 return Err(error);
             }
         },
@@ -553,7 +553,12 @@ pub(super) fn run_logged(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    log_command(args, output.status.success(), &text, started);
+    let logged = if output.status.success() {
+        Ok(text.as_str())
+    } else {
+        Err(text.as_str())
+    };
+    log_command(args, logged, started);
     if output.status.success() {
         return Ok(());
     }
@@ -792,7 +797,10 @@ const COMMAND_LOG_OUTPUT_LINES: usize = 200;
 
 static COMMAND_LOG: Mutex<VecDeque<LoggedCommand>> = Mutex::new(VecDeque::new());
 
-fn log_command(args: &[impl AsRef<str>], ok: bool, output: &str, started: Instant) {
+// `output` is what git printed, Err when the command failed.
+fn log_command(args: &[impl AsRef<str>], output: Result<&str, &str>, started: Instant) {
+    let ok = output.is_ok();
+    let output = output.unwrap_or_else(|failed| failed);
     let args: Vec<String> = args.iter().map(|a| hide_password(a.as_ref())).collect();
     let lines: Vec<&str> = output.lines().collect();
     let output = lines[lines.len().saturating_sub(COMMAND_LOG_OUTPUT_LINES)..].join("\n");

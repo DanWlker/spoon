@@ -23,7 +23,7 @@ pub enum QueryKind {
     Filter,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TreeQuery {
     // the query being typed, applied live
     editing: Option<(QueryKind, Input)>,
@@ -38,6 +38,15 @@ impl TreeQuery {
     pub fn with_search(search: String) -> Self {
         TreeQuery {
             search: Some(search),
+            ..Default::default()
+        }
+    }
+
+    // The search and filter applied, the one being typed kept as typed so far but no longer typed.
+    pub fn applied(&self) -> Self {
+        TreeQuery {
+            search: self.search.clone(),
+            filter: self.filter.clone(),
             ..Default::default()
         }
     }

@@ -11,7 +11,10 @@ use crate::{
     layout::{Direction, Panel, Size, Target},
     pointer::OnPicks,
     view::{
-        detail::DetailView, list::ListView, local_changes::LocalChangesView, RefreshViewContext,
+        detail::{DetailView, TreeViews},
+        list::ListView,
+        local_changes::LocalChangesView,
+        RefreshViewContext,
     },
     widget::{commit_list::CommitListState, local_changes::LocalChangesState},
 };
@@ -235,11 +238,13 @@ impl<'a> View<'a> {
         )))
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub fn of_detail(
         commit_list_state: CommitListState<'a>,
         commit: Commit,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
+        views: TreeViews,
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -249,6 +254,7 @@ impl<'a> View<'a> {
             commit,
             changes,
             refs,
+            views,
             repository,
             ctx,
             tx,
