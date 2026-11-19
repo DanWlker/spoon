@@ -20,7 +20,7 @@ use ratatui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use unicode_width::UnicodeWidthStr;
 
-use crate::view::TreeViews;
+use crate::view::{DetailQueries, TreeViews};
 use crate::widget::file_tree::TreeView;
 use crate::widget::tree_query::Toward;
 use crate::{
@@ -195,8 +195,9 @@ pub struct AppShell {
     sidebar_mode: SidebarMode,
     // the local changes page while the graph is shown, to come back to it as it was
     parked_local_changes: Option<LocalChangesRefreshViewContext>,
-    // the tab of the commit details while the local changes page is shown, to reopen them
-    parked_detail_tab: Option<DetailTab>,
+    // the tab of the commit details while the local changes page is shown, to reopen them with
+    // their searches and filters
+    parked_details: Option<(DetailTab, DetailQueries)>,
     // how the commit details showed their files, for when they open again
     detail_tree_views: TreeViews,
     // the popup confirming a git command, over any view
@@ -627,7 +628,7 @@ impl<'a> App<'a> {
                 },
                 sidebar_mode: SidebarMode::Shown,
                 parked_local_changes: None,
-                parked_detail_tab: None,
+                parked_details: None,
                 detail_tree_views: TreeViews {
                     changes: TreeView::Tree,
                     files: TreeView::Tree,
@@ -2153,7 +2154,7 @@ impl App<'_> {
             View::LocalChanges(_) => return,
             // they open again when coming back to the graph, but a comparison
             View::Detail(view) if !view.is_comparing() => {
-                self.shell.parked_detail_tab = Some(view.tab())
+                self.shell.parked_details = Some((view.tab(), view.queries()));
             }
             _ => {}
         }
@@ -2185,10 +2186,11 @@ impl App<'_> {
         if !self.show_list() {
             return;
         }
-        if let Some(tab) = self.shell.parked_detail_tab.take() {
+        if let Some((tab, queries)) = self.shell.parked_details.take() {
             self.open_detail(tab);
             // coming back to the graph, the commit list has the focus
             if let View::Detail(view) = &mut self.view {
+                view.restore_queries(queries);
                 view.focus_list();
             }
         }
@@ -2586,10 +2588,13 @@ impl App<'_> {
             if to_local_changes && !matches!(self.view, View::LocalChanges(_)) {
                 // the details open again when coming back to the graph
                 if let RefreshViewContext::Detail {
-                    tab, compare: None, ..
-                } = context
+                    tab,
+                    compare: None,
+                    queries,
+                    ..
+                } = &context
                 {
-                    self.shell.parked_detail_tab = Some(tab);
+                    self.shell.parked_details = Some((*tab, (**queries).clone()));
                 }
                 // the page opens once the repository is reloaded
                 let snapshot = self.shell.parked_local_changes.take().unwrap_or_default();
@@ -2846,6 +2851,7 @@ impl App<'_> {
             compare: Some(shown),
             // the changes of the comparison have it, like one opened from the graph
             focus: DetailFocus::Files,
+            queries: Box::default(),
         }));
     }
 
@@ -3548,14 +3554,20 @@ impl App<'_> {
             RefreshViewContext::Detail {
                 compare: Some(compare),
                 focus,
+                queries,
                 ..
             } => {
                 self.open_compare(compare);
-                self.restore_details_focus(focus);
+                self.restore_details(*queries, focus);
             }
-            RefreshViewContext::Detail { tab, focus, .. } => {
+            RefreshViewContext::Detail {
+                tab,
+                focus,
+                queries,
+                ..
+            } => {
                 self.open_detail(tab);
-                self.restore_details_focus(focus);
+                self.restore_details(*queries, focus);
             }
             RefreshViewContext::LocalChanges {
                 local_changes_context,
@@ -3567,9 +3579,11 @@ impl App<'_> {
         }
     }
 
-    // Puts the focus of the details back where it was before the page was reloaded.
-    fn restore_details_focus(&mut self, focus: DetailFocus) {
+    // Puts the searches, filters and focus of the details back as they were before the page was
+    // reloaded.
+    fn restore_details(&mut self, queries: DetailQueries, focus: DetailFocus) {
         if let View::Detail(view) = &mut self.view {
+            view.restore_queries(queries);
             view.restore_focus(focus);
         }
     }

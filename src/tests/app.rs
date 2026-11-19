@@ -2010,6 +2010,32 @@ fn test_details_keep_their_tree_view() {
     ]);
 }
 
+// The details keep their filter across a refresh, and while the local changes page shows.
+#[test]
+fn test_details_keep_their_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let filter = |app: &App| match &app.view {
+        View::Detail(view) => view.queries().changes.filter().map(String::from),
+        _ => panic!("not in the commit details"),
+    };
+    let kept = || Some("f".to_string());
+    harness.run(vec![
+        keys("4"),
+        keys("/"),
+        keys("f"),
+        keys("enter"),
+        check(move |app| assert_eq!(filter(app), kept())),
+        keys("ctrl-r"),
+        check(move |app| assert_eq!(filter(app), kept())),
+        keys("tab"),
+        check(|app| assert!(matches!(app.view, View::LocalChanges(_)))),
+        keys("tab"),
+        check(move |app| assert_eq!(filter(app), kept())),
+    ]);
+}
+
 #[test]
 fn test_fold_merge() {
     let dir = tempfile::tempdir().unwrap();

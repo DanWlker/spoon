@@ -544,12 +544,9 @@ pub struct CommitFilesState<'a> {
     // the files of the commit loading on another thread, see `ensure_loaded_in_background`
     tree_loading: Option<Job<crate::git::CommitTree>>,
     // loaded lazily, only once the tab is shown
-    tree: Option<FileTreeState>,
+    tree: FilesTree,
     // the rows selected with v, which moving extends and esc clears
     picked: TreeSelection,
-    // the tree of the previously shown commit, or one with no files at first, whose expanded
-    // directories, selection and view are kept
-    previous_tree: Option<FileTreeState>,
     preview: Option<FilePreview>,
     // the preview shown before the one loading, drawn meanwhile with the lines still in `text`;
     // no key acts on it
@@ -558,17 +555,55 @@ pub struct CommitFilesState<'a> {
     text: FileText,
 }
 
+// The tree of the files of the commit once loaded, else the one they are to be shown like: of the
+// commit shown before, or with no files at first, whose expanded directories, selection and view
+// are kept.
+#[derive(Debug)]
+enum FilesTree {
+    Loaded(FileTreeState),
+    Waiting(FileTreeState),
+}
+
+impl FilesTree {
+    fn loaded(&self) -> Option<&FileTreeState> {
+        match self {
+            FilesTree::Loaded(tree) => Some(tree),
+            FilesTree::Waiting(_) => None,
+        }
+    }
+
+    fn loaded_mut(&mut self) -> Option<&mut FileTreeState> {
+        match self {
+            FilesTree::Loaded(tree) => Some(tree),
+            FilesTree::Waiting(_) => None,
+        }
+    }
+
+    // Keeps the files loaded to show the next ones like them.
+    fn unload(&mut self) {
+        if let FilesTree::Loaded(tree) = self {
+            // moved rather than copied, a tree can have 100k files; one with none meanwhile
+            let none = FileTreeState::new(
+                FileTree::default(),
+                Folders::Closed,
+                Root::Hidden,
+                TreeView::Tree,
+            );
+            *self = FilesTree::Waiting(std::mem::replace(tree, none));
+        }
+    }
+}
+
 impl<'a> CommitFilesState<'a> {
     // As a tree or a list, that of the tree before while this one loads.
     pub fn tree_view(&self) -> TreeView {
-        self.tree
-            .as_ref()
-            .or(self.previous_tree.as_ref())
-            .map_or(TreeView::Tree, FileTreeState::view)
+        match &self.tree {
+            FilesTree::Loaded(tree) | FilesTree::Waiting(tree) => tree.view(),
+        }
     }
 
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
-        self.tree.as_ref()?.selected()
+        self.tree.loaded()?.selected()
     }
 
     pub fn preview_selected_row(&self) -> usize {
@@ -582,7 +617,7 @@ impl<'a> CommitFilesState<'a> {
 
     // Whether the files are being selected from where the visual selection started.
     pub fn is_tree_visual(&self) -> bool {
-        self.tree.as_ref().is_some_and(FileTreeState::is_visual)
+        self.tree.loaded().is_some_and(FileTreeState::is_visual)
     }
 
     // Whether files are selected, while the visual selection or after it ended.
@@ -626,14 +661,14 @@ impl<'a> CommitFilesState<'a> {
     // The entries to act on: the picked files and directories, or the selected row.
     pub fn picked_entries(&self) -> Vec<Entry<'_>> {
         self.tree
-            .as_ref()
+            .loaded()
             .map_or_else(Vec::new, |tree| self.picked.entries(tree))
     }
 
     // Clears the files and the lines picked but in the panel of `target`, see `App::clear_picks_off`.
     pub fn clear_picks_off(&mut self, target: Option<Target>) {
         if target != Some(Target::DetailFiles) {
-            match &mut self.tree {
+            match self.tree.loaded_mut() {
                 Some(tree) => self.picked.clear(tree),
                 None => self.picked.clear_picks(),
             }
@@ -647,7 +682,7 @@ impl<'a> CommitFilesState<'a> {
     pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
         self.back();
         let Self { tree, picked, .. } = self;
-        if let Some(tree) = tree {
+        if let Some(tree) = tree.loaded_mut() {
             picked.prepare_point(tree, row, picks);
         }
         if let Some(row) = row {
@@ -670,14 +705,14 @@ impl<'a> CommitFilesState<'a> {
     // one.
     pub fn toggle_tree_visual(&mut self) {
         let Self { tree, picked, .. } = self;
-        if let Some(tree) = tree {
+        if let Some(tree) = tree.loaded_mut() {
             picked.toggle_visual(tree);
         }
     }
 
     pub fn cancel_tree_visual(&mut self) {
         let Self { tree, picked, .. } = self;
-        match tree {
+        match tree.loaded_mut() {
             Some(tree) => picked.clear(tree),
             None => picked.clear_picks(),
         }
@@ -699,15 +734,14 @@ impl<'a> CommitFilesState<'a> {
             gitlinks: FxHashSet::default(),
             gitlinks_for: None,
             tree_loading: None,
-            tree: None,
-            picked: TreeSelection::default(),
             // collapsed by default, a whole repository is too much to show at once
-            previous_tree: Some(FileTreeState::new(
+            tree: FilesTree::Waiting(FileTreeState::new(
                 FileTree::default(),
                 Folders::Closed,
                 Root::Hidden,
                 view,
             )),
+            picked: TreeSelection::default(),
             preview: None,
             shown_before: None,
             text: FileText::default(),
@@ -754,14 +788,12 @@ impl<'a> CommitFilesState<'a> {
         self.commit_hash = hash.clone();
         self.first_parent = first_parent.cloned();
         self.changes = changes.to_vec();
-        if let Some(tree) = self.tree.as_mut() {
+        if let Some(tree) = self.tree.loaded_mut() {
             tree.cancel_visual();
         }
         self.picked.clear_picks();
         if !same_paths {
-            if let Some(tree) = self.tree.take() {
-                self.previous_tree = Some(tree);
-            }
+            self.tree.unload();
         }
         self.replace_preview();
     }
@@ -852,13 +884,10 @@ impl<'a> CommitFilesState<'a> {
     // The tree of the files loaded, keeping the directories expanded before.
     fn show_tree(&mut self) {
         self.ensure_gitlinks();
-        if self.tree.is_none() {
+        if let FilesTree::Waiting(before) = &self.tree {
             let paths = self.paths.get_or_insert_default();
             let tree = FileTree::new(paths.iter().map(String::as_str));
-            self.tree = self
-                .previous_tree
-                .take()
-                .map(|previous| previous.with_tree(tree));
+            self.tree = FilesTree::Loaded(before.with_tree(tree));
             self.replace_preview();
         }
     }
@@ -866,13 +895,13 @@ impl<'a> CommitFilesState<'a> {
     // Applies a tree operation; None before the tree is loaded.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> Option<R> {
         let (result, selected_changed) = {
-            let tree = self.tree.as_mut()?;
+            let tree = self.tree.loaded_mut()?;
             let before = tree.selected().map(|r| r.path.clone());
             let result = f(tree);
             let changed = tree.selected().map(|r| &r.path) != before.as_ref();
             (result, changed)
         };
-        if let Some(tree) = self.tree.as_ref() {
+        if let Some(tree) = self.tree.loaded() {
             self.picked.sync_visual(tree);
         }
         if selected_changed {
@@ -889,7 +918,7 @@ impl<'a> CommitFilesState<'a> {
 
     // The filter the files are shown with once they are loaded, None before.
     pub fn loaded_filter(&self) -> Option<Option<&str>> {
-        self.tree.as_ref().map(FileTreeState::filter)
+        self.tree.loaded().map(FileTreeState::filter)
     }
 
     pub fn is_preview_focused(&self) -> bool {
@@ -990,7 +1019,7 @@ impl<'a> CommitFilesState<'a> {
         &mut self,
     ) -> Option<impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static> {
         self.ensure_gitlinks();
-        let Some(row) = self.tree.as_ref().and_then(|t| t.selected()) else {
+        let Some(row) = self.tree.loaded().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
             return None;
         };
@@ -1130,7 +1159,7 @@ impl CommitTab {
         let theme = &self.ctx.color_theme;
         let [tree_area, preview_area] = split_tree_and_side(&self.ctx, area, buf);
 
-        if let Some(tree) = &state.tree {
+        if let Some(tree) = state.tree.loaded() {
             // a commit always has files, they can only be filtered out
             let focused = !state.is_preview_focused();
             let cursor = if focused {
@@ -1570,14 +1599,14 @@ mod tests {
         let mut state =
             CommitFilesState::new(&repository, &second_commit, &second_changes, TreeView::Tree);
         state.ensure_loaded();
-        let tree = state.tree.as_ref().unwrap();
+        let tree = state.tree.loaded().unwrap();
         assert_eq!(visible(tree), vec!["src", "DOC.md", "image.bin"]);
         assert!(matches!(state.preview, Some(FilePreview::Directory)));
         state.update_tree(FileTreeState::toggle);
         state.update_tree(|tree| {
             tree.navigate(UserEvent::NavigateDown);
         });
-        assert_eq!(selected(state.tree.as_ref().unwrap()), "src/a.rs");
+        assert_eq!(selected(state.tree.loaded().unwrap()), "src/a.rs");
         // loaded once used: before drawing on another thread, said meanwhile, and waited for
         // before a key acts on it
         assert!(state.preview.is_none());
@@ -1634,7 +1663,7 @@ mod tests {
         let (first_commit, first_changes) = repository.commit_detail(&first);
         state.set_commit(&first_commit, &first_changes);
         state.ensure_loaded();
-        let tree = state.tree.as_ref().unwrap();
+        let tree = state.tree.loaded().unwrap();
         assert_eq!(
             visible(tree),
             vec!["src", "src/a.rs", "README", "image.bin"]
@@ -1696,7 +1725,7 @@ mod tests {
             state.set_commit(&commit, &changes);
             state.ensure_loaded();
             assert_eq!(files(&state), listed(&hashes[i]), "at commit {i}");
-            let tree = state.tree.as_ref().unwrap();
+            let tree = state.tree.loaded().unwrap();
             assert!(tree
                 .rows()
                 .iter()

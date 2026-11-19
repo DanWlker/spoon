@@ -18,7 +18,7 @@ use crate::{
     keybind::UserEvent,
     keys::{Availability, Keys},
     search::{SearchKind, SearchOptions, SearchOutcome},
-    view::detail::DetailFocus,
+    view::detail::{DetailFocus, DetailQueries},
     widget::{
         commit_list::format_date,
         commit_list::{CommitListState, SearchRefreshContext},
@@ -429,6 +429,8 @@ pub enum RefreshViewContext {
         compare: Option<Compare>,
         // what had the focus, which reloading the page puts back
         focus: DetailFocus,
+        // boxed to keep the refresh context small
+        queries: Box<DetailQueries>,
     },
     LocalChanges {
         list_context: ListRefreshViewContext,

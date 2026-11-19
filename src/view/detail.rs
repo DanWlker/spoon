@@ -66,6 +66,15 @@ pub struct TreeViews {
     pub files: TreeView,
 }
 
+// The searches and filters of the changes and files tabs and of the pane beside them, kept across
+// a refresh and while the local changes page shows.
+#[derive(Debug, Default, Clone)]
+pub struct DetailQueries {
+    pub changes: TreeQuery,
+    pub files: TreeQuery,
+    pub pane: TreeQuery,
+}
+
 // Two commits compared: only their changes are shown, under the comparison's title; or set aside,
 // with them, while the details of a commit in it are shown.
 #[derive(Debug, Default)]
@@ -145,6 +154,24 @@ impl<'a> DetailView<'a> {
             ctx,
             tx,
         }
+    }
+
+    // The searches and filters applied, not the one being typed.
+    pub fn queries(&self) -> DetailQueries {
+        DetailQueries {
+            changes: self.changes_query.applied(),
+            files: self.files_query.applied(),
+            pane: self.pane_query.applied(),
+        }
+    }
+
+    // Puts back the searches and filters of `queries`, the filter applied to the tab shown and,
+    // see `load_tab`, to the other once shown.
+    pub fn restore_queries(&mut self, queries: DetailQueries) {
+        self.changes_query = queries.changes;
+        self.files_query = queries.files;
+        self.pane_query = queries.pane;
+        self.apply_query_change(Some(QueryKind::Filter));
     }
 
     // How the changes and files tabs show their files, as a tree or a list.
@@ -1695,6 +1722,7 @@ impl<'a> DetailView<'a> {
             tab: self.tab,
             compare,
             focus: self.focus(),
+            queries: Box::new(self.queries()),
         }
     }
 }
