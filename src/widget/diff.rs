@@ -1,11 +1,5 @@
 use std::{
-    borrow::Cow,
-    cell::OnceCell,
-    collections::BTreeSet,
-    num::NonZeroU32,
-    ops::Range,
-    rc::Rc,
-    time::{Duration, Instant},
+    borrow::Cow, cell::OnceCell, collections::BTreeSet, num::NonZeroU32, ops::Range, sync::Arc,
 };
 
 use similar::DiffTag;
@@ -41,7 +35,7 @@ pub const CONVERTED_DIFF: &str =
 #[derive(Debug, Default)]
 pub struct ParsedDiff {
     // shared with the hunks, which are parts of it
-    pub raw: Rc<str>,
+    pub raw: Arc<str>,
     pub rows: Vec<DiffRow>,
     // the words changed in the rows, all in one list rather than one per row, see `DiffRow`
     emphasis: Vec<Range<usize>>,
@@ -83,7 +77,7 @@ pub struct DiffHunk {
     // rows of `ParsedDiff::rows` displaying this hunk, the header first and then one row per line
     pub rows: Range<usize>,
     // the whole diff, the parts below are byte ranges of
-    diff: Rc<str>,
+    diff: Arc<str>,
     // the "diff --git" line up to the "+++" line of the file this hunk belongs to
     file_header: Range<usize>,
     // the "@@ ... @@" line
@@ -1242,7 +1236,7 @@ fn shown(text: &str) -> Cow<'_, str> {
 }
 
 pub fn parse_diff(diff: &str) -> ParsedDiff {
-    let shared: Rc<str> = Rc::from(diff);
+    let shared: Arc<str> = Arc::from(diff);
     // file names are only shown when the diff spans multiple files (a directory)
     let multiple_files_count = diff
         .lines()
@@ -1379,8 +1373,6 @@ fn pair_changes(rows: &mut [DiffRow], diff: &str) -> (Vec<Range<usize>>, Vec<(us
     // shortcut: an added line more than this many past the last one paired isn't tried, as each
     // try diffs two lines; raise it when lines further apart should pair
     const LOOKAHEAD: usize = 16;
-    // a change too long to diff in time is marked coarser from there, not waited for
-    const BUDGET: Duration = Duration::from_millis(50);
     let mut emphasis = Vec::new();
     let mut pairs = Vec::new();
     // the rows of `kind` from `from` on, past "\ No newline" notes, and where they end
@@ -1405,7 +1397,6 @@ fn pair_changes(rows: &mut [DiffRow], diff: &str) -> (Vec<Range<usize>>, Vec<(us
             continue;
         }
         let (added, end) = run(rows, end, DiffRowKind::Added);
-        let deadline = Instant::now() + BUDGET;
         // the lines, removed then added, split into words when first compared: a big change
         // compares few of its lines
         let spans: Vec<_> = (removed.iter().chain(&added))
@@ -1422,7 +1413,7 @@ fn pair_changes(rows: &mut [DiffRow], diff: &str) -> (Vec<Range<usize>>, Vec<(us
         for (old, &r) in removed.iter().enumerate() {
             let found = (next..added.len()).take(LOOKAHEAD).find_map(|new| {
                 let (old, new_line) = (line(old), line(removed.len() + new));
-                let ranges = changed_ranges(old, new_line, deadline)?;
+                let ranges = changed_ranges(old, new_line)?;
                 Some((new, ranges))
             });
             let Some((new, [old, new_ranges])) = found else {
@@ -1495,19 +1486,15 @@ fn common_text(old: &Words, new: &Words) -> usize {
     kept
 }
 
-// The bytes of the words of `old` and `new` that differ, by a diff of their words, coarser past
-// `deadline`; None when the lines aren't `alike`, or alike only in blanks.
-fn changed_ranges(old: &Words, new: &Words, deadline: Instant) -> Option<[Vec<Range<usize>>; 2]> {
+// The bytes of the words of `old` and `new` that differ, by a diff of their words, as long as it
+// takes: the diff is parsed on another thread, see `DiffPane::load_in_background`. None when the
+// lines aren't `alike`, or alike only in blanks.
+fn changed_ranges(old: &Words, new: &Words) -> Option<[Vec<Range<usize>>; 2]> {
     // what they have in common bounds what the diff keeps, which is quicker to tell
     if !alike(common_text(old, new), old, new) {
         return None;
     }
-    let ops = similar::capture_diff_slices_deadline(
-        similar::Algorithm::Myers,
-        &old.words,
-        &new.words,
-        Some(deadline),
-    );
+    let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &old.words, &new.words);
     let kept: usize = ops
         .iter()
         .map(|op| op.as_tag_tuple())

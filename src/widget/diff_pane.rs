@@ -44,7 +44,7 @@ enum DiffState {
     // loading in the background, shown once loaded, see `load_in_background`; the diff before
     // drawn meanwhile, and what to select once it is shown, see `restore` and `enter`
     Loading {
-        job: Job<String>,
+        job: Job<ParsedDiff>,
         previous: Option<ParsedDiff>,
         pending: Option<DiffSelection>,
     },
@@ -96,8 +96,9 @@ impl DiffPane {
     }
 
     // Loads another diff with `work`, the git command giving it, on another thread, the focus
-    // beside it; the one before is only drawn meanwhile, where it was scrolled, so no key acts on
-    // it. See `poll_loading`.
+    // beside it, parsed there too, which pairing the lines of a big change can take a while for;
+    // the one before is only drawn meanwhile, where it was scrolled, so no key acts on it. See
+    // `poll_loading`.
     pub fn load_in_background(
         &mut self,
         tx: Sender,
@@ -109,7 +110,7 @@ impl DiffPane {
             _ => None,
         };
         self.state = DiffState::Loading {
-            job: Job::spawn(tx, work),
+            job: Job::spawn(tx, move || parse_diff(&work())),
             previous,
             pending: None,
         };
@@ -120,10 +121,10 @@ impl DiffPane {
         let DiffState::Loading { job, .. } = &self.state else {
             return false;
         };
-        let Some(raw) = job.try_take() else {
+        let Some(diff) = job.try_take() else {
             return false;
         };
-        self.show_loaded(&raw, repository);
+        self.show(diff, repository, self.pending());
         true
     }
 
@@ -133,18 +134,22 @@ impl DiffPane {
             return;
         }
         if let DiffState::Loading { job, pending, .. } = std::mem::take(&mut self.state) {
-            self.show(&job.wait(), repository, pending);
+            self.show(job.wait(), repository, pending);
         }
     }
 
     // Shows the diff `raw`, the output of the git command giving it, in place of the one loading.
     pub fn show_loaded(&mut self, raw: &str, repository: &Repository) {
-        self.show(raw, repository, self.pending());
+        self.show(parse_diff(raw), repository, self.pending());
     }
 
-    // Shows the diff `raw`, selecting `pending` in it, see `restore`.
-    fn show(&mut self, raw: &str, repository: &Repository, pending: Option<DiffSelection>) {
-        let mut diff = parse_diff(raw);
+    // Shows `diff`, selecting `pending` in it, see `restore`.
+    fn show(
+        &mut self,
+        mut diff: ParsedDiff,
+        repository: &Repository,
+        pending: Option<DiffSelection>,
+    ) {
         diff.drop_converted(repository);
         self.set_diff(Some(diff));
         if let Some(selection) = pending {
