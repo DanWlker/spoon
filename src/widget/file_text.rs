@@ -17,7 +17,7 @@ use crate::{
     pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::{
-        diff::{render_visual_rows, wrapped_rows, Step, WrapMap},
+        diff::{render_visual_rows, wrapped_rows, DiffLayout, Step, WrapMap},
         style::{
             picked_style, render_scrollbar, scroll_to, tabs_shown, ScrollState, VisualSelection,
         },
@@ -294,7 +294,7 @@ impl FileText {
         let wrap = ctx.wrap.get();
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
         // the lines are measured again, showing the selection again with them
-        if !self.wrap.matches(area.width, wrap, false) {
+        if !self.wrap.matches(area.width, wrap, DiffLayout::Unified) {
             let rows = self.lines.len();
             self.wrap = WrapMap::from_lines(rows, || self.plain_lines(), area.width, wrap);
             self.scroll_to(self.selected..self.selected + 1);

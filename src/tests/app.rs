@@ -31,6 +31,7 @@ use crate::{
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
     widget::commit_tabs::DetailTab,
+    widget::diff::DiffLayout,
     widget::file_tree::TreeView,
     widget::git_dialog::GitDialog,
     widget::ref_list::RefSelection,
@@ -727,9 +728,9 @@ fn test_split_diff_toggles_in_the_diff_only() {
     let mut harness = Harness::new(&path, launch);
     harness.run(vec![
         keys("`"),
-        check(|app| assert!(!app.ctx.split.get())),
+        check(|app| assert_eq!(app.ctx.diff_layout.get(), DiffLayout::Unified)),
         keys("j enter `"),
-        check(|app| assert!(app.ctx.split.get())),
+        check(|app| assert_eq!(app.ctx.diff_layout.get(), DiffLayout::Split)),
         // the removed line beside the added one replacing it
         screen(|screen| {
             let row = screen

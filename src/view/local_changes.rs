@@ -244,7 +244,9 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.collapse();
             }
             UserEvent::ToggleTreeView if self.local_changes_state.is_diff_focused() => {
-                self.ctx.split.set(!self.ctx.split.get());
+                self.ctx
+                    .diff_layout
+                    .set(self.ctx.diff_layout.get().toggled());
             }
             UserEvent::ToggleTreeView => {
                 self.local_changes_state.toggle_tree_view();

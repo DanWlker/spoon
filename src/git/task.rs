@@ -670,6 +670,11 @@ pub fn text_from_git(bytes: &[u8]) -> String {
     text
 }
 
+// Whether a file of `bytes` is binary, as git tells it: by a NUL in its first 8000 bytes.
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|&b| b == 0)
+}
+
 // Whether `c` is a byte `text_from_git` kept as a character.
 pub fn is_kept_byte(c: char) -> bool {
     (BYTE_CHARS + 0x80..=BYTE_CHARS + 0xFF).contains(&u32::from(c))

@@ -505,16 +505,16 @@ impl DiffPane {
     ) {
         let theme = &ctx.color_theme;
         let wrap = ctx.wrap.get();
-        let split = ctx.split.get();
+        let layout = ctx.diff_layout.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let Some(diff) = drawn(&self.state) else {
             ctx.layout.borrow_mut().record(target, area, RowMap::None);
             return;
         };
         // the scroll counts screen rows while wrapping or split, see `WrapMap`; at another width,
-        // wrap or split the rows are measured again, showing the selection again with them
-        if !self.cursor.wrap().matches(area.width, wrap, split) {
-            let map = WrapMap::of(diff, theme, area.width, wrap, split);
+        // wrap or layout the rows are measured again, showing the selection again with them
+        if !self.cursor.wrap().matches(area.width, wrap, layout) {
+            let map = WrapMap::of(diff, theme, area.width, wrap, layout);
             self.cursor.set_wrap_map(map);
             if self.focus.is_some() {
                 let rows = self.cursor.highlighted(diff, self.selected_part());
@@ -538,7 +538,7 @@ impl DiffPane {
                 highlight_match(line, query, ctx.search_options.get(), theme);
             }
         };
-        if !self.cursor.wrap().split_rows().is_empty() {
+        if self.cursor.wrap().split_rows().is_some() {
             let map = self.cursor.wrap();
             let lines =
                 render_split_rows(diff, map, range, selected, restyle, wrap, theme, area, buf);
@@ -623,15 +623,19 @@ pub fn register_diff_keys<T: ?Sized>(
         }
         .into()
     });
-    // side by side, j and k move along a side, h and l across
+    // side by side, j and k move along a side, h and l across, each only where it switches
     k.add(
-        &[NavigateLeft, NavigateRight],
-        "old/new side",
-        "In a diff side by side, select the nearest line on the old/new side, in the hunk",
+        &[NavigateLeft],
+        "old side",
+        "In a diff side by side, select the nearest line on the old side, in the hunk",
     )
-    .when(move |v| {
-        pane(v).is_some_and(|p| p.can_switch_side(NavigateLeft) || p.can_switch_side(NavigateRight))
-    });
+    .when(|v| pane(v).is_some_and(|p| p.can_switch_side(NavigateLeft)));
+    k.add(
+        &[NavigateRight],
+        "new side",
+        "In a diff side by side, select the nearest line on the new side, in the hunk",
+    )
+    .when(|v| pane(v).is_some_and(|p| p.can_switch_side(NavigateRight)));
     // like the files in their folders or as a list, how the files are shown
     k.add(
         &[ToggleTreeView],
@@ -660,7 +664,7 @@ mod tests {
     use super::*;
     use crate::{
         test_support::ui::{dump, test_ctx},
-        widget::diff::parse_diff,
+        widget::diff::{parse_diff, DiffLayout},
     };
 
     // A diff whose rows fit the panel unwrapped, so only their wrapping makes it scroll.
@@ -771,7 +775,7 @@ mod tests {
     #[test]
     fn test_split_draws_the_sides_and_clicks_take_them() {
         let ctx = test_ctx();
-        ctx.split.set(true);
+        ctx.diff_layout.set(DiffLayout::Split);
         // one column of the panel's padding, for the selection bar
         let area = Rect::new(1, 0, 29, 4);
         let mut pane = DiffPane::default();
@@ -831,7 +835,7 @@ mod tests {
         assert_eq!(pane.selected_row(), 1);
         assert!(!pane.can_switch_side(UserEvent::NavigateRight));
 
-        ctx.split.set(true);
+        ctx.diff_layout.set(DiffLayout::Split);
         draw(&mut pane, &ctx, area);
         let mut moves = vec![];
         for event in ["j", "j", "j", "l", "h", "l", "k", "k", "k", "h"] {
@@ -864,7 +868,7 @@ mod tests {
     #[test]
     fn test_split_pages_along_the_new_side() {
         let ctx = test_ctx();
-        ctx.split.set(true);
+        ctx.diff_layout.set(DiffLayout::Split);
         let area = Rect::new(0, 0, 60, 5);
         let mut raw = String::from("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,40 +1,40 @@\n");
         for i in 0..40 {

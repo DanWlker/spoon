@@ -1272,7 +1272,10 @@ impl<'a> DetailView<'a> {
                     UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                         self.adjust_diff_context(event)
                     }
-                    UserEvent::ToggleTreeView => self.ctx.split.set(!self.ctx.split.get()),
+                    UserEvent::ToggleTreeView => self
+                        .ctx
+                        .diff_layout
+                        .set(self.ctx.diff_layout.get().toggled()),
                     UserEvent::NavigateLeft | UserEvent::NavigateRight => {
                         state.switch_side(event);
                     }

@@ -250,7 +250,10 @@ impl TimelineView {
             UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                 self.adjust_diff_context(event, repository)
             }
-            UserEvent::ToggleTreeView => self.ctx.split.set(!self.ctx.split.get()),
+            UserEvent::ToggleTreeView => self
+                .ctx
+                .diff_layout
+                .set(self.ctx.diff_layout.get().toggled()),
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
                     self.tx
@@ -559,6 +562,7 @@ mod tests {
             git::{git, GitRepository},
             ui::test_ctx,
         },
+        widget::diff::DiffLayout,
     };
 
     #[test]
@@ -672,6 +676,57 @@ mod tests {
             loaded.contains("first") && !loaded.contains("second") && !loaded.contains("loading…"),
             "{loaded}"
         );
+    }
+
+    // Side by side, h and l each show only where they switch sides; h backs out of the diff from
+    // the old side, which the hints say.
+    #[test]
+    fn test_side_keys_show_where_they_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        for (text, date) in [("first", "2024-01-01"), ("second", "2024-01-02")] {
+            fs::write(path.join("a"), format!("{text}\n")).unwrap();
+            repo.add(&["a"]);
+            repo.commit(text, date);
+        }
+        let head = CommitHash::from(repo.rev_parse_head().as_str());
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let ctx = test_ctx();
+        ctx.diff_layout.set(DiffLayout::Split);
+        let mut view = TimelineView::new(&repository, &head, "a", ctx, ec.sender()).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+        let mut press = |view: &mut TimelineView, event| {
+            view.handle_event(event, key, &repository);
+            terminal.draw(|f| view.render(f, f.area())).unwrap();
+        };
+        let hint = |view: &TimelineView, event| {
+            let hints = view.keys().hints();
+            hints
+                .into_iter()
+                .find(|(events, _)| events.contains(&event))
+                .map(|(_, text)| text)
+        };
+        press(&mut view, UserEvent::NavigateRight);
+        press(&mut view, UserEvent::Confirm);
+        // on the old side, "-first"
+        assert_eq!(
+            hint(&view, UserEvent::NavigateLeft).as_deref(),
+            Some("back")
+        );
+        assert_eq!(
+            hint(&view, UserEvent::NavigateRight).as_deref(),
+            Some("new side")
+        );
+        press(&mut view, UserEvent::NavigateRight);
+        assert_eq!(
+            hint(&view, UserEvent::NavigateLeft).as_deref(),
+            Some("old side")
+        );
+        assert_eq!(hint(&view, UserEvent::NavigateRight), None);
     }
 
     #[test]

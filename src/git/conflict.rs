@@ -4,8 +4,9 @@
 use std::path::Path;
 
 use super::{
-    git_arg, git_command, git_output, git_output_bytes, git_output_with_status, pathspecs,
-    run_logged, text_from_git, work_path, CommitHash, LocalChangeStatus, LocalChanges, Repository,
+    git_arg, git_command, git_output, git_output_bytes, git_output_with_status, is_binary,
+    pathspecs, run_logged, text_from_git, work_path, CommitHash, LocalChangeStatus, LocalChanges,
+    Repository,
 };
 
 impl Repository {
@@ -119,8 +120,7 @@ impl Repository {
             let Ok(content) = std::fs::read(&file) else {
                 return false;
             };
-            // binary as git tells it, by a NUL in its first 8000 bytes
-            let binary = content.iter().take(8000).any(|&b| b == 0);
+            let binary = is_binary(&content);
             let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
             regular
                 && !binary

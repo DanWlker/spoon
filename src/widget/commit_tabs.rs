@@ -1039,8 +1039,7 @@ impl<'a> CommitFilesState<'a> {
 
     fn show_content(&mut self, content: Result<Vec<u8>, String>) {
         let preview = match content {
-            // the same heuristic as git: a NUL byte near the start means binary
-            Ok(bytes) if bytes.iter().take(8000).any(|b| *b == 0) => FilePreview::Binary,
+            Ok(bytes) if crate::git::is_binary(&bytes) => FilePreview::Binary,
             // as in the file, to copy; tabs are expanded when shown
             Ok(bytes) => {
                 let text = crate::git::text_from_git(&bytes);

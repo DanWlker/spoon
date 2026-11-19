@@ -56,11 +56,12 @@ impl ConflictView {
         let file = crate::git::work_path(repository.path(), path);
         // the markers of a file only, not of what a symlink points at
         let editable = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
-        if editable {
+        // a binary file has no markers, and would take long to convert
+        let content = (editable.then(|| std::fs::read(&file).ok()).flatten())
+            .filter(|bytes| !crate::git::is_binary(bytes));
+        if let Some(bytes) = content {
             // its bytes that aren't UTF-8 kept, like those of the sides from git
-            let content = std::fs::read(&file)
-                .map_or_else(|_| String::new(), |bytes| crate::git::text_from_git(&bytes));
-            if let Some(view) = parse_conflict_markers(&content) {
+            if let Some(view) = parse_conflict_markers(&crate::git::text_from_git(&bytes)) {
                 return ConflictView { editable, ..view };
             }
         }
@@ -372,6 +373,40 @@ end
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let view = ConflictView::load(&repository, "f");
         assert_eq!(view.conflicts, 1);
+    }
+
+    // A binary file in the work tree isn't read for markers, even holding lines like them.
+    #[test]
+    fn test_binary_file_shows_the_sides() {
+        use crate::{git::SortCommit, test_support::git::GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("f"), "base\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        std::fs::write(path.join("f"), "theirs\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), "ours\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("existing", "2024-01-03");
+        let merged = std::process::Command::new("git")
+            .args(["merge", "-q", "incoming"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(!merged.status.success());
+        std::fs::write(path.join("f"), "\0\n<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n").unwrap();
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let view = ConflictView::load(&repository, "f");
+        assert_eq!(view.conflicts, 0);
+        assert_eq!(rows(&view.ours), ["|ours|k"]);
     }
 
     #[test]
