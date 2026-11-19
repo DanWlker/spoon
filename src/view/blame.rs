@@ -172,12 +172,17 @@ impl BlameView {
         self.query.is_editing()
     }
 
-    pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
-        // stepping to another commit replaces the blame loading, the others may act on it
+    // Whether `event` waits for the blame loading: stepping to another commit replaces it, the
+    // others may act on it.
+    pub fn waits_for(&self, event: UserEvent) -> bool {
         let steps = matches!(event, UserEvent::OlderCommit | UserEvent::NewerCommit)
             || (self.focus == BlameFocus::Revision
                 && matches!(event, UserEvent::NavigateLeft | UserEvent::NavigateRight));
-        if self.query.is_editing() || !steps {
+        (self.query.is_editing() || !steps) && self.loading.is_some()
+    }
+
+    pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
+        if self.waits_for(event) {
             self.wait_loading();
         }
         if self.query.is_editing() {

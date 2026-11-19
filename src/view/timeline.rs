@@ -104,22 +104,21 @@ impl TimelineView {
         repository.commit_diff_work(&revision.commit, &paths, context)
     }
 
-    // The diff of the commit selected now: from the diff, it stays in the diff of that one, loaded
-    // right away for that; from the commits, it loads on another thread, the screen keeping up with
-    // the keys meanwhile, see `poll_loading`.
+    // The diff of the commit selected now, loading on another thread, the screen keeping up with
+    // the keys meanwhile, see `poll_loading`; from the diff, it stays in the diff of that one.
     pub fn show_selected(&mut self, repository: &Repository) {
-        if self.pane.is_focused() {
-            self.load(repository);
+        let in_diff = self.pane.is_focused();
+        let work = self.diff_work(repository);
+        self.pane
+            .load_in_background(self.tx.clone(), repository.converted_paths(), work);
+        if in_diff {
             self.pane.enter();
-        } else {
-            let work = self.diff_work(repository);
-            self.pane.load_in_background(self.tx.clone(), work);
         }
     }
 
     // Before drawing: the diff loaded in the background, once it is.
-    pub fn poll_loading(&mut self, repository: &Repository) {
-        self.pane.poll_loading(repository);
+    pub fn poll_loading(&mut self) {
+        self.pane.poll_loading();
     }
 
     #[cfg(test)]
@@ -142,6 +141,17 @@ impl TimelineView {
         &self.history[self.cursor.selected()].path
     }
 
+    // Whether `event` waits for the diff loading, see `handle_event`: on the diff, or going into
+    // it; typed into the search of the commits, or acting on them, it doesn't.
+    pub fn waits_for(&self, event: UserEvent) -> bool {
+        use UserEvent::*;
+        let into = matches!(event, Confirm | NavigateRight | FocusPanel(2) | FocusRight);
+        !self.query.is_editing()
+            && !event.moves_selection()
+            && (self.pane.is_focused() || into)
+            && self.pane.loading_since().is_some()
+    }
+
     // While typing a search, every key goes to it as is.
     pub fn is_diff_focused(&self) -> bool {
         self.pane.is_focused()
@@ -161,8 +171,8 @@ impl TimelineView {
             return;
         }
         // the keys moving the selection leave its diff loading, the others may act on it
-        if !event.moves_selection() {
-            self.pane.wait_loading(repository);
+        if self.waits_for(event) {
+            self.pane.wait_loading();
         }
         let in_diff = self.pane.is_focused();
         match event {
@@ -599,7 +609,9 @@ mod tests {
         press(&mut view, UserEvent::Confirm);
         assert!(view.pane.is_selecting_lines());
         press(&mut view, UserEvent::OlderCommit);
-        // the rename, from the path before it; with no hunk, back on the commits
+        // loading in the background, entered once loaded: the rename, from the path before it;
+        // with no hunk, back on the commits
+        view.pane.wait_loading();
         assert!(raw(&view).contains("rename from a"));
         assert!(!view.pane.is_focused());
         // nothing to go into there, and the commits already have the focus
@@ -610,10 +622,14 @@ mod tests {
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
-        // from the commits, the diff loads in the background, the key into it shown meanwhile
+        // from the commits, the diff loads in the background, the key into it shown meanwhile;
+        // it waits for it, moving between the commits doesn't
         assert!(view.pane.loading_since().is_some());
         assert!(view.keys().takes(UserEvent::NavigateRight));
-        view.pane.wait_loading(&repository);
+        assert!(view.waits_for(UserEvent::NavigateRight));
+        assert!(!view.waits_for(UserEvent::NavigateDown));
+        assert!(!view.waits_for(UserEvent::ShortCopy));
+        view.pane.wait_loading();
         assert!(raw(&view).contains("+two"));
         assert!(view.keys().takes(UserEvent::FocusPanel(2)));
 
@@ -670,7 +686,7 @@ mod tests {
             loading.contains("second") && !loading.contains("loading…"),
             "{loading}"
         );
-        view.pane.wait_loading(&repository);
+        view.pane.wait_loading();
         let loaded = diff(&mut view);
         assert!(
             loaded.contains("first") && !loaded.contains("second") && !loaded.contains("loading…"),

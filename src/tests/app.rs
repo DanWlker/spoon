@@ -15,8 +15,8 @@ use ratatui::{
 };
 
 use super::{
-    App, AppContext, AppEvent, GraphFilter, InitialSelection, Launch, PendingClear, Ret, StartPage,
-    StatusLine,
+    App, AppContext, AppEvent, GraphFilter, InitialSelection, Kept, Launch, PendingClear, Ret,
+    StartPage, StatusLine,
 };
 use crate::{
     color::GraphColorSet,
@@ -711,6 +711,52 @@ fn test_a_key_after_moving_acts_on_the_diff_moved_to() {
     );
 }
 
+// Keys pressed while what they act on loads are kept, see `Kept`, rather than waiting with the
+// screen frozen: a key after them follows them, and they run in order once it is loaded; esc drops
+// them, and ctrl-c still quits.
+#[test]
+fn test_keys_kept_run_in_order_and_esc_drops_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    std::fs::write(path.join("f.txt"), "F\n").unwrap();
+    std::fs::write(path.join("g.txt"), "G\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let key = |name: &str| AppEvent::Key(parse_key_event(name).unwrap());
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        // as if j j waited: space follows them, staging g.txt, not the root row
+        vec![Step::Act(Box::new(move |app| {
+            let kept = &mut app.shell.app_status.kept;
+            kept.extend(["j", "j"].map(|j| Kept::Key(parse_key_event(j).unwrap())));
+            app.handle_event(key("space")).unwrap();
+            assert_eq!(app.shell.app_status.kept.len(), 3);
+        }))],
+        check(|app| assert!(app.shell.app_status.kept.is_empty())),
+        // esc drops them: nothing more staged
+        vec![Step::Act(Box::new(move |app| {
+            let kept = &mut app.shell.app_status.kept;
+            kept.extend(["k", "space"].map(|k| Kept::Key(parse_key_event(k).unwrap())));
+            app.handle_event(key("esc")).unwrap();
+            assert!(app.shell.app_status.kept.is_empty());
+        }))],
+    ]);
+    assert_eq!(staged(&path).trim(), "g.txt");
+    // ctrl-c quits past them
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![vec![Step::Act(Box::new(move |app| {
+        let kept = &mut app.shell.app_status.kept;
+        kept.push_back(Kept::Key(parse_key_event("j").unwrap()));
+        app.handle_event(key("ctrl-c")).unwrap();
+    }))]]);
+    assert!(harness.quit);
+}
+
 // ` in a diff shows every diff side by side, or in one column; on the files it still shows them
 // in their folders or as a list. A line staged while split is the line selected, on its side.
 #[test]
@@ -748,6 +794,40 @@ fn test_split_diff_toggles_in_the_diff_only() {
         staged.contains("+let x = 2;") && !staged.contains("-let x = 1;"),
         "{staged}"
     );
+}
+
+// In the changes tab, the keys on the files act while the diff of the one moved to loads; those
+// going into it wait for it.
+#[test]
+fn test_keys_on_the_details_files_dont_wait_for_the_diff() {
+    use UserEvent::*;
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // the newest commit, the first row, changing two files: each has a diff of its own
+    std::fs::write(path.join("g.txt"), "g\n").unwrap();
+    std::fs::write(path.join("h.txt"), "h\n").unwrap();
+    git(&path, &["add", "g.txt", "h.txt"]);
+    let commit = crate::git::git_command()
+        .args(["commit", "-q", "-m", "gh"])
+        .env("GIT_COMMITTER_DATE", "@4000000000 +0000")
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "{commit:?}");
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("4"),
+        vec![Step::Act(Box::new(|app| {
+            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()))
+                .unwrap();
+            // as drawing does, before it polls what loads
+            app.view.load_in_background();
+            assert!(app.view.waits_for(Confirm) && app.view.waits_for(FocusRight));
+            for event in [ShortCopy, ToggleSelect, Search, Unknown] {
+                assert!(!app.view.waits_for(event), "{event:?}");
+            }
+        }))],
+    ]);
 }
 
 #[test]

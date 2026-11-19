@@ -333,7 +333,7 @@ impl<'a> CommitChangesState<'a> {
             submodule.wait(&self.ctx);
         }
         if self.pane.loading_since().is_some() {
-            self.pane.wait_loading(self.repository);
+            self.pane.wait_loading();
             return;
         }
         if let Some(work) = self.diff_work(None) {
@@ -356,11 +356,12 @@ impl<'a> CommitChangesState<'a> {
         if let Some(submodule) = &mut self.submodule {
             submodule.poll(&self.ctx);
         }
-        if self.pane.poll_loading(self.repository) || self.pane.loading_since().is_some() {
+        if self.pane.poll_loading() || self.pane.loading_since().is_some() {
             return;
         }
         if let Some(work) = self.diff_work(Some(tx)) {
-            self.pane.load_in_background(tx.clone(), work);
+            self.pane
+                .load_in_background(tx.clone(), self.repository.converted_paths(), work);
         }
     }
 
@@ -525,7 +526,30 @@ enum FilePreview {
     Submodule,
     Error(String),
     // the file's contents loading on another thread, see `ensure_loaded_in_background`
-    Loading(Job<Result<Vec<u8>, String>>),
+    Loading(Job<FileContent>),
+}
+
+// A file's contents as the preview shows them, made on the thread loading them: a big file takes a
+// while to convert.
+#[derive(Debug)]
+enum FileContent {
+    // as in the file, to copy; tabs are expanded when shown
+    Lines(Vec<String>),
+    Binary,
+    Error(String),
+}
+
+impl FileContent {
+    fn of(bytes: Result<Vec<u8>, String>) -> Self {
+        match bytes {
+            Ok(bytes) if crate::git::is_binary(&bytes) => FileContent::Binary,
+            Ok(bytes) => {
+                let text = crate::git::text_from_git(&bytes);
+                FileContent::Lines(text.lines().map(String::from).collect())
+            }
+            Err(err) => FileContent::Error(err),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -801,15 +825,7 @@ impl<'a> CommitFilesState<'a> {
     // Loads the files and the preview of the selected one, or waits for those loading in the
     // background: before a key acts on them.
     pub fn ensure_loaded(&mut self) {
-        let tree = match self.tree_loading.take() {
-            Some(job) => job.wait(),
-            None if self.paths.is_none() => self.repository.commit_tree(&self.commit_hash),
-            None => Default::default(),
-        };
-        if self.paths.is_none() {
-            self.set_tree(tree);
-        }
-        self.show_tree();
+        self.ensure_tree();
         match self.preview.take() {
             Some(FilePreview::Loading(job)) => self.show_content(job.wait()),
             None => {
@@ -819,6 +835,24 @@ impl<'a> CommitFilesState<'a> {
             }
             preview => self.preview = preview,
         }
+    }
+
+    // Loads the files, or waits for them loading in the background: before a key acts on them.
+    pub fn ensure_tree(&mut self) {
+        let tree = match self.tree_loading.take() {
+            Some(job) => job.wait(),
+            None if self.paths.is_none() => self.repository.commit_tree(&self.commit_hash),
+            None => Default::default(),
+        };
+        if self.paths.is_none() {
+            self.set_tree(tree);
+        }
+        self.show_tree();
+    }
+
+    // Whether the files load in the background.
+    pub fn is_tree_loading(&self) -> bool {
+        self.tree_loading.is_some()
     }
 
     // Before drawing: starts loading the files, then the preview of the selected one, on another
@@ -1015,9 +1049,7 @@ impl<'a> CommitFilesState<'a> {
 
     // The preview of the selected row, a directory and a submodule right away, else the work
     // loading the file's contents.
-    fn preview_work(
-        &mut self,
-    ) -> Option<impl FnOnce() -> Result<Vec<u8>, String> + Send + 'static> {
+    fn preview_work(&mut self) -> Option<impl FnOnce() -> FileContent + Send + 'static> {
         self.ensure_gitlinks();
         let Some(row) = self.tree.loaded().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
@@ -1031,23 +1063,20 @@ impl<'a> CommitFilesState<'a> {
             self.preview = Some(FilePreview::Submodule);
             return None;
         }
-        Some(
-            self.repository
-                .commit_file_content_work(&self.commit_hash, &row.path),
-        )
+        let work = self
+            .repository
+            .commit_file_content_work(&self.commit_hash, &row.path);
+        Some(move || FileContent::of(work()))
     }
 
-    fn show_content(&mut self, content: Result<Vec<u8>, String>) {
+    fn show_content(&mut self, content: FileContent) {
         let preview = match content {
-            Ok(bytes) if crate::git::is_binary(&bytes) => FilePreview::Binary,
-            // as in the file, to copy; tabs are expanded when shown
-            Ok(bytes) => {
-                let text = crate::git::text_from_git(&bytes);
-                self.text
-                    .set_lines(text.lines().map(String::from).collect());
+            FileContent::Lines(lines) => {
+                self.text.set_lines(lines);
                 FilePreview::Text(LineCursor::Hidden)
             }
-            Err(err) => FilePreview::Error(err),
+            FileContent::Binary => FilePreview::Binary,
+            FileContent::Error(err) => FilePreview::Error(err),
         };
         self.preview = Some(preview);
     }

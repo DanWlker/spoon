@@ -6,7 +6,7 @@ use crate::{
     background::Job,
     context::AppContext,
     event::Sender,
-    git::{PatchDirection, Repository},
+    git::{ConvertedPaths, PatchDirection, Repository},
     keybind::UserEvent,
     keys::Keys,
     layout::{RowMap, Target},
@@ -102,6 +102,7 @@ impl DiffPane {
     pub fn load_in_background(
         &mut self,
         tx: Sender,
+        converted: ConvertedPaths,
         work: impl FnOnce() -> String + Send + 'static,
     ) {
         self.outdate();
@@ -110,47 +111,47 @@ impl DiffPane {
             _ => None,
         };
         self.state = DiffState::Loading {
-            job: Job::spawn(tx, move || parse_diff(&work())),
+            job: Job::spawn(tx, move || {
+                let mut diff = parse_diff(&work());
+                diff.drop_converted(&converted);
+                diff
+            }),
             previous,
             pending: None,
         };
     }
 
     // Shows the diff loading in the background once it is loaded; returns whether it was.
-    pub fn poll_loading(&mut self, repository: &Repository) -> bool {
+    pub fn poll_loading(&mut self) -> bool {
         let DiffState::Loading { job, .. } = &self.state else {
             return false;
         };
         let Some(diff) = job.try_take() else {
             return false;
         };
-        self.show(diff, repository, self.pending());
+        self.show(diff, self.pending());
         true
     }
 
     // Shows the diff loading in the background, waiting for it, before a key acts on it.
-    pub fn wait_loading(&mut self, repository: &Repository) {
+    pub fn wait_loading(&mut self) {
         if !matches!(self.state, DiffState::Loading { .. }) {
             return;
         }
         if let DiffState::Loading { job, pending, .. } = std::mem::take(&mut self.state) {
-            self.show(job.wait(), repository, pending);
+            self.show(job.wait(), pending);
         }
     }
 
     // Shows the diff `raw`, the output of the git command giving it, in place of the one loading.
     pub fn show_loaded(&mut self, raw: &str, repository: &Repository) {
-        self.show(parse_diff(raw), repository, self.pending());
+        let mut diff = parse_diff(raw);
+        diff.drop_converted(&repository.converted_paths());
+        self.show(diff, self.pending());
     }
 
     // Shows `diff`, selecting `pending` in it, see `restore`.
-    fn show(
-        &mut self,
-        mut diff: ParsedDiff,
-        repository: &Repository,
-        pending: Option<DiffSelection>,
-    ) {
-        diff.drop_converted(repository);
+    fn show(&mut self, diff: ParsedDiff, pending: Option<DiffSelection>) {
         self.set_diff(Some(diff));
         if let Some(selection) = pending {
             self.restore(selection);
@@ -701,7 +702,7 @@ mod tests {
     fn test_diff_set_while_loading_drops_what_was_to_be_selected() {
         let ec = crate::event::EventController::without_terminal();
         let mut pane = DiffPane::default();
-        pane.load_in_background(ec.sender(), String::new);
+        pane.load_in_background(ec.sender(), Default::default(), String::new);
         assert!(pane.enter());
         assert!(pane.is_focused());
         pane.set_diff(None);
@@ -961,7 +962,7 @@ mod tests {
         assert!(pane.is_focused());
 
         let next = "diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-gone\n+new\n";
-        pane.load_in_background(ec.sender(), move || next.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move || next.to_string());
         let shown = dump(&draw(&mut pane, &ctx, area));
         assert!(shown.contains("old"), "{shown}");
         assert!(!pane.is_focused());
@@ -976,48 +977,37 @@ mod tests {
 
     #[test]
     fn test_selects_once_the_diff_loading_is_shown() {
-        use crate::{
-            event::EventController,
-            git::{Repository, SortCommit},
-            test_support::git::GitRepository,
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let git = GitRepository::new(dir.path());
-        git.init();
-        git.commit("init", "2024-01-01");
-        let repository =
-            Repository::load(dir.path(), SortCommit::Chronological, None, false).unwrap();
-        let ec = EventController::without_terminal();
+        let ec = crate::event::EventController::without_terminal();
         let raw =
             "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n@@ -5 +5 @@\n-c\n+d\n";
 
         // the hunk selected before a reload, while the reloaded diff still loads
         let mut pane = DiffPane::default();
-        pane.load_in_background(ec.sender(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
         let selection = DiffSelection {
             focus: Some(DiffPart::Hunk),
             hunk: 1,
             line: 0,
         };
         pane.restore(selection);
-        pane.wait_loading(&repository);
+        pane.wait_loading();
         assert!(pane.is_focused());
         assert_eq!(pane.cursor.hunk, 1);
 
         // entering, its first hunk
-        pane.load_in_background(ec.sender(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
         assert!(pane.enter());
         // its keys taken meanwhile, see `focused_part`
         assert!(pane.is_focused());
-        pane.wait_loading(&repository);
+        pane.wait_loading();
         assert!(pane.is_focused());
         assert_eq!(pane.cursor.hunk, 0);
 
         // another diff loading instead drops what was to be selected
-        pane.load_in_background(ec.sender(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
         pane.restore(selection);
-        pane.load_in_background(ec.sender(), move || raw.to_string());
-        pane.wait_loading(&repository);
+        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
+        pane.wait_loading();
         assert!(!pane.is_focused());
     }
 }

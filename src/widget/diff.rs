@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::{
     color::ColorTheme,
-    git::{PatchDirection, Repository},
+    git::{ConvertedPaths, PatchDirection},
     keybind::UserEvent,
     pointer::OnPicks,
     search::SearchOptions,
@@ -60,10 +60,10 @@ impl ParsedDiff {
     // Leaves out the hunks of files git diffs as text converted from them, like a .docx with a
     // textconv driver: the text isn't in the file, so they can't be staged or applied. Bytes that
     // aren't UTF-8 are kept, see `text_from_git`.
-    pub fn drop_converted(&mut self, repository: &Repository) {
+    pub fn drop_converted(&mut self, converted: &ConvertedPaths) {
         let mut paths: Vec<&str> = self.hunks.iter().map(DiffHunk::path).collect();
         paths.dedup();
-        let converted = repository.converted_paths(&paths);
+        let converted = converted.of(&paths);
         if converted.is_empty() {
             return;
         }

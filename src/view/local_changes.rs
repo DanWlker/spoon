@@ -54,20 +54,30 @@ impl<'a> LocalChangesView<'a> {
         self.local_changes_state.is_diff_loading()
     }
 
-    // Before drawing: the diff of the row the cursor moved to.
-    pub fn update_layout(&mut self, area: Rect) {
+    // Whether `event` waits for what loads in the background, see `LocalChangesState::needs`.
+    pub fn waits_for(&self, event: UserEvent) -> bool {
+        self.local_changes_state.waits_for(event)
+    }
+
+    // Starts loading the diff of the row the cursor moved to on another thread, or shows it once
+    // loaded.
+    pub fn load_in_background(&mut self) {
         self.local_changes_state
             .load_stale_diff_in_background(&self.tx);
+    }
+
+    // Before drawing: the diff of the row the cursor moved to.
+    pub fn update_layout(&mut self, area: Rect) {
+        self.load_in_background();
         self.local_changes_state.update_submodule_height(area);
         // the commit offered once the files loaded resolve the last conflict, see `reload_with`
         self.send_request();
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
-        // the keys moving the cursor leave its diff to load in the background, see `update_layout`
-        if !event.moves_selection() {
-            self.local_changes_state.load_stale_diff();
-        }
+        // the keys moving the cursor leave its diff to load in the background, see `update_layout`;
+        // the others wait for what they act on, see `LocalChangesState::needs`
+        self.local_changes_state.load_for(event);
         self.handle_event_inner(event, key);
         self.send_request();
     }

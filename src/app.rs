@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::{self, Write},
     rc::Rc,
     sync::{mpsc::RecvTimeoutError, Arc},
@@ -172,10 +173,22 @@ struct AppStatus {
     status_line: StatusLine,
     // the keys pressed so far of a key sequence, like "]" of "]m"
     pending_keys: Vec<KeyEvent>,
+    // the keys pressed while what they act on loads, in order, see `App::run_kept`
+    kept: VecDeque<Kept>,
     view_area: Rect,
     pending_clear: PendingClear,
     // where the graph images were drawn in the last frame, see `App::draw`
     images: Vec<(u16, u16, u16)>,
+}
+
+// A key kept while what it acts on loads in the background, rather than waiting for it with the
+// screen frozen, see `App::must_wait`: as the event it is, typed into a search or a message, or
+// pressed after one kept, to follow it.
+#[derive(Debug)]
+enum Kept {
+    Event(UserEvent, KeyEvent),
+    Typed(KeyEvent),
+    Key(KeyEvent),
 }
 
 // A scrollbar's thumb being dragged from the line `from`, its panel showing from `shown` since.
@@ -337,6 +350,14 @@ impl FileWindow {
         }
     }
 
+    // Whether `event` waits for what the window loads in the background before acting on it.
+    fn waits_for(&self, event: UserEvent) -> bool {
+        match self {
+            FileWindow::Blame(blame) => blame.waits_for(event),
+            FileWindow::Timeline(timeline) => timeline.waits_for(event),
+        }
+    }
+
     fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
         match self {
             FileWindow::Blame(blame) => blame.handle_event(event, key, repository),
@@ -418,10 +439,10 @@ impl FileWindow {
 
     // Before drawing: what loads in the background, once loaded: the blame of another commit,
     // the diff of the timeline.
-    fn update(&mut self, repository: &Repository) {
+    fn update(&mut self) {
         match self {
             FileWindow::Blame(blame) => blame.poll_loading(),
-            FileWindow::Timeline(timeline) => timeline.poll_loading(repository),
+            FileWindow::Timeline(timeline) => timeline.poll_loading(),
         }
     }
 }
@@ -795,75 +816,12 @@ impl App<'_> {
             self.ctx.layout.borrow_mut().clear_hits();
         }
         match event {
-            AppEvent::Key(key) => {
-                match self.shell.app_status.status_line {
-                    StatusLine::None | StatusLine::Input { .. } => {
-                        // do nothing
-                    }
-                    StatusLine::Transient(_)
-                    | StatusLine::SearchResult { .. }
-                    | StatusLine::NotificationSuccess(_) => {
-                        // Clear message and pass key input as is
-                        self.clear_status_line();
-                    }
-                }
-
-                // typed text, in a popup, a window or the page, takes the keys as they are
-                if self.is_typing() {
-                    if !self.force_quit(&key) {
-                        self.type_key(key);
-                    }
-                    return Ok(None);
-                }
-                // the key that opened a popup runs it, in the part of the app it belongs to
-                if let Some(trigger) = self.dialog_trigger(&key) {
-                    self.handle_dialog_event(Some(trigger), key);
-                    return Ok(None);
-                }
-
-                let scope = self.current_scope();
-
-                // key sequences wait for their next key; the focused scope decides, like ]
-                // cycling the tabs of the details where elsewhere it does nothing
-                let had_pending = !self.shell.app_status.pending_keys.is_empty();
-                self.shell.app_status.pending_keys.push(key);
-                match self
-                    .ctx
-                    .keybind
-                    .resolve(scope, &self.shell.app_status.pending_keys)
-                {
-                    SequenceMatch::Partial => {
-                        // a sequence finishing in nothing working here, like m with no rebase in
-                        // progress, does nothing
-                        if self.next_keys().is_empty() {
-                            self.shell.app_status.pending_keys.clear();
-                        }
-                        return Ok(None);
-                    }
-                    SequenceMatch::Complete(ue) => {
-                        self.shell.app_status.pending_keys.clear();
-                        self.dispatch(ue, key);
-                        return Ok(None);
-                    }
-                    SequenceMatch::None => {
-                        self.shell.app_status.pending_keys.clear();
-                        // Esc only cancels the started sequence
-                        if had_pending
-                            && self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel)
-                        {
-                            return Ok(None);
-                        }
-                        // otherwise the key goes on as usual
-                    }
-                }
-
-                match self.ctx.keybind.event_in(scope, &key) {
-                    Some(event) => self.dispatch(event, key),
-                    // a popup handles the keys bound to nothing too, see `GitDialog::handle_key`
-                    None if self.shell.dialog.is_some() => self.handle_dialog_event(None, key),
-                    None => {}
+            AppEvent::Key(key) if !self.shell.app_status.kept.is_empty() => {
+                if !self.force_quit(&key) {
+                    self.keep_after(key);
                 }
             }
+            AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
             AppEvent::Quit => {
                 // quitting would kill the git command half done (a stash never popped), so it
@@ -1061,7 +1019,8 @@ impl App<'_> {
         Ok(())
     }
 
-    // Lays the page out in the screen's `area` before handling the next events and drawing.
+    // Lays the page out in the screen's `area` before handling the next events and drawing; the
+    // keys kept run once what they act on is loaded, see `Kept`.
     fn prepare_render(&mut self, area: Rect) {
         let [_, view_area, _] = split_app_areas(area);
         let [sidebar_area, view_area] = self.split_sidebar(view_area);
@@ -1075,7 +1034,11 @@ impl App<'_> {
             popup.dialog.poll_conflicts();
         }
         if let Some(Overlay::File(window)) = &mut self.shell.overlay {
-            window.update(self.repository);
+            window.update();
+        }
+        // the keys kept, once what they act on is loaded, laid out again after them
+        if self.run_kept() {
+            self.prepare_render(area);
         }
     }
 
@@ -1535,7 +1498,94 @@ impl App<'_> {
     // Hands the event to the app, when it is one of its keys (see `register_app_keys`), else to
     // the window over everything, the focused sidebar or the page, when one of their keys works
     // there: no key works without being listed in the hints and the help.
+    // A key after keys kept, see `Kept`: it follows them; esc drops them, a way out of a slow
+    // load, as it cancels a key sequence.
+    fn keep_after(&mut self, key: KeyEvent) {
+        let scope = self.current_scope();
+        if self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel) {
+            self.shell.app_status.kept.clear();
+        } else {
+            self.shell.app_status.kept.push_back(Kept::Key(key));
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        match self.shell.app_status.status_line {
+            StatusLine::None | StatusLine::Input { .. } => {
+                // do nothing
+            }
+            StatusLine::Transient(_)
+            | StatusLine::SearchResult { .. }
+            | StatusLine::NotificationSuccess(_) => {
+                // Clear message and pass key input as is
+                self.clear_status_line();
+            }
+        }
+
+        // typed text, in a popup, a window or the page, takes the keys as they are
+        if self.is_typing() {
+            if !self.force_quit(&key) {
+                self.type_key(key);
+            }
+            return;
+        }
+        // the key that opened a popup runs it, in the part of the app it belongs to
+        if let Some(trigger) = self.dialog_trigger(&key) {
+            self.handle_dialog_event(Some(trigger), key);
+            return;
+        }
+
+        let scope = self.current_scope();
+
+        // key sequences wait for their next key; the focused scope decides, like ]
+        // cycling the tabs of the details where elsewhere it does nothing
+        let had_pending = !self.shell.app_status.pending_keys.is_empty();
+        self.shell.app_status.pending_keys.push(key);
+        match self
+            .ctx
+            .keybind
+            .resolve(scope, &self.shell.app_status.pending_keys)
+        {
+            SequenceMatch::Partial => {
+                // a sequence finishing in nothing working here, like m with no rebase in
+                // progress, does nothing
+                if self.next_keys().is_empty() {
+                    self.shell.app_status.pending_keys.clear();
+                }
+                return;
+            }
+            SequenceMatch::Complete(ue) => {
+                self.shell.app_status.pending_keys.clear();
+                self.dispatch(ue, key);
+                return;
+            }
+            SequenceMatch::None => {
+                self.shell.app_status.pending_keys.clear();
+                // Esc only cancels the started sequence
+                if had_pending && self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel)
+                {
+                    return;
+                }
+                // otherwise the key goes on as usual
+            }
+        }
+
+        match self.ctx.keybind.event_in(scope, &key) {
+            Some(event) => self.dispatch(event, key),
+            // a popup handles the keys bound to nothing too, see `GitDialog::handle_key`
+            None if self.shell.dialog.is_some() => self.handle_dialog_event(None, key),
+            None => {}
+        }
+    }
+
     fn dispatch(&mut self, event: UserEvent, key: KeyEvent) {
+        if self.must_wait(event) {
+            self.shell
+                .app_status
+                .kept
+                .push_back(Kept::Event(event, key));
+            return;
+        }
         if self.shell.dialog.is_some() {
             self.handle_dialog_event(Some(event), key);
             return;
@@ -2351,6 +2401,10 @@ impl App<'_> {
 
     // Types the key where `is_typing` says.
     fn type_key(&mut self, key: KeyEvent) {
+        if self.must_wait(UserEvent::Unknown) {
+            self.shell.app_status.kept.push_back(Kept::Typed(key));
+            return;
+        }
         match (&mut self.shell.dialog, &mut self.shell.overlay) {
             (Some(popup), _) => {
                 // the filter of its files, else its text field
@@ -2858,6 +2912,10 @@ impl App<'_> {
     // The mouse: a border pressed is dragged, as drawn in the last frame; else what it does, see
     // `handle_gesture`.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // what it points at may move once the keys waiting act, see `Kept`
+        if !self.shell.app_status.kept.is_empty() {
+            return;
+        }
         let (x, y) = (mouse.column, mouse.row);
         let over = self.shell.dialog.is_some() || self.shell.menu.is_some();
         if self.drag_thumb(mouse, over) {
@@ -3311,8 +3369,65 @@ impl App<'_> {
     }
 
     // Runs `event` where the focus is, as its key would.
+    // What the mouse does, as the keys would: nothing on what still loads, rather than acting
+    // once it is loaded on what moved there meanwhile.
     fn run_event(&mut self, event: UserEvent) {
+        if self.must_wait(event) {
+            return;
+        }
         self.dispatch(event, KeyEvent::new(KeyCode::Null, KeyModifiers::NONE));
+    }
+
+    // Whether `event` waits for what the page or the window it goes to loads in the background:
+    // kept until then, see `Kept`. After keys kept, it follows them; the force quit doesn't wait.
+    fn must_wait(&mut self, event: UserEvent) -> bool {
+        use UserEvent::*;
+        if event == ForceQuit {
+            return false;
+        }
+        if !self.shell.app_status.kept.is_empty() {
+            return true;
+        }
+        if self.shell.dialog.is_some() || self.shell.menu.is_some() {
+            return false;
+        }
+        // the app's own keys act on no page, but moving the focus in it
+        let focus = matches!(event, FocusLeft | FocusRight | FocusUp | FocusDown);
+        if self.app_keys().takes(event) && !focus {
+            return false;
+        }
+        match &self.shell.overlay {
+            Some(Overlay::File(window)) => return window.waits_for(event),
+            Some(_) => return false,
+            None => {}
+        }
+        if self.shell.sidebar_focused() {
+            return false;
+        }
+        // what a key moving the selection left to load starts loading
+        self.view.load_in_background();
+        self.view.waits_for(event)
+    }
+
+    // Runs the keys kept, see `Kept`, while what they act on is loaded; returns whether it ran one.
+    fn run_kept(&mut self) -> bool {
+        let mut ran = false;
+        while let Some(first) = self.shell.app_status.kept.pop_front() {
+            // kept again, it goes back in front of the others
+            let rest = std::mem::take(&mut self.shell.app_status.kept);
+            match first {
+                Kept::Event(event, key) => self.dispatch(event, key),
+                Kept::Typed(key) => self.type_key(key),
+                Kept::Key(key) => self.handle_key(key),
+            }
+            let waits = !self.shell.app_status.kept.is_empty();
+            self.shell.app_status.kept.extend(rest);
+            if waits {
+                break;
+            }
+            ran = true;
+        }
+        ran
     }
 
     fn run_graph_command(

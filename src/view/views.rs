@@ -82,6 +82,24 @@ impl<'a> View<'a> {
         on_page!(self, view => view.update_layout(area), {})
     }
 
+    // Whether `event` waits for what the page loads in the background before acting on it.
+    pub fn waits_for(&self, event: UserEvent) -> bool {
+        match self {
+            View::Detail(view) => view.waits_for(event),
+            View::LocalChanges(view) => view.waits_for(event),
+            View::Default | View::List(_) => false,
+        }
+    }
+
+    // Starts loading what the page shows on another thread, as drawing does.
+    pub fn load_in_background(&mut self) {
+        match self {
+            View::Detail(view) => view.load_in_background(),
+            View::LocalChanges(view) => view.load_in_background(),
+            View::Default | View::List(_) => {}
+        }
+    }
+
     // Whether what the page shows loads in the background, see `Job`.
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {

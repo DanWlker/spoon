@@ -66,6 +66,8 @@ pub enum LocalChangesSection {
 #[derive(Debug)]
 enum Beside<'a> {
     Diff,
+    // loading on another thread, see `load_conflict`
+    ConflictLoading(Job<ConflictView>),
     Conflict(ConflictPanel),
     Submodule(Box<SubmodulePanel<'a>>),
 }
@@ -94,6 +96,16 @@ pub enum CommitField {
     #[default]
     Summary,
     Description,
+}
+
+// What a key needs loaded before it acts on it, see `LocalChangesState::needs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Needs {
+    Nothing,
+    // the files, reloading after staging or a change outside the app
+    Files,
+    // the files, and the diff, conflict or submodule beside them
+    Beside,
 }
 
 // Where the keys go on the page.
@@ -1676,28 +1688,82 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // Loads the diff of the selected row, when the cursor moved since it was, or waits for the
-    // one loading in the background: before a key acts on it.
-    pub fn load_stale_diff(&mut self) {
+    // What `event` acts on, so what it waits for while that loads: the files, and what is beside
+    // them for the keys on it, going into it (enter, ctrl-l) or resolving the conflict shown there
+    // (space); moving, and typing into the message or the filter of the files, act on neither.
+    pub fn needs(&self, event: UserEvent) -> Needs {
+        use UserEvent::*;
+        let beside = match self.focus() {
+            Focus::Side | Focus::Submodule => true,
+            Focus::Commit(_) | Focus::Typing(_) => false,
+            Focus::Files => {
+                matches!(event, Confirm | FocusRight)
+                    || (event == Select && self.selected_conflict().is_some())
+            }
+        };
+        match event {
+            _ if event.moves_selection() => Needs::Nothing,
+            _ if beside => Needs::Beside,
+            Unknown => Needs::Nothing,
+            _ => Needs::Files,
+        }
+    }
+
+    // Whether `event` waits for what loads in the background, see `needs`.
+    pub fn waits_for(&self, event: UserEvent) -> bool {
+        match self.needs(event) {
+            Needs::Nothing => false,
+            Needs::Files => self.files_loading.is_some(),
+            Needs::Beside => self.files_loading.is_some() || self.is_beside_loading(),
+        }
+    }
+
+    // Loads what `event` needs before it acts, see `needs`: waits for it while it loads.
+    pub fn load_for(&mut self, event: UserEvent) {
+        match self.needs(event) {
+            Needs::Nothing => {}
+            Needs::Files => self.load_stale_files(),
+            Needs::Beside => self.load_stale_diff(),
+        }
+    }
+
+    // Waits for the files reloading; what is beside the row the cursor moved to starts loading,
+    // so the keys know what it is (a conflict, a submodule).
+    fn load_stale_files(&mut self) {
         if let Some(job) = self.files_loading.take() {
             self.reload_with(job.wait());
         }
         if std::mem::take(&mut self.diff_stale) {
             self.load_diff();
         }
-        self.pane.wait_loading(self.repository);
+    }
+
+    // Loads the diff of the selected row, when the cursor moved since it was, or waits for the
+    // one loading in the background: before a key acts on it.
+    pub fn load_stale_diff(&mut self) {
+        self.load_stale_files();
+        self.pane.wait_loading();
+        self.show_conflict(true);
         if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.wait(&self.ctx);
         }
     }
 
+    // Whether the files, the diff, the conflict or the submodule beside them load in the
+    // background.
     #[cfg(test)]
     pub fn is_diff_loading(&self) -> bool {
+        self.files_loading.is_some() || self.is_beside_loading()
+    }
+
+    // Whether the diff, the conflict or the submodule beside the files loads in the background.
+    fn is_beside_loading(&self) -> bool {
         let submodule = self
             .submodule()
             .and_then(SubmodulePanel::loading_since)
             .is_some();
-        self.pane.loading_since().is_some() || self.files_loading.is_some() || submodule
+        let conflict = matches!(self.beside, Beside::ConflictLoading(_));
+        self.pane.loading_since().is_some() || submodule || conflict
     }
 
     // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
@@ -1707,11 +1773,13 @@ impl<'a> LocalChangesState<'a> {
             self.files_loading = None;
             self.reload_with(changes);
         }
-        if std::mem::take(&mut self.diff_stale) && self.prepare_diff() {
+        if std::mem::take(&mut self.diff_stale) && self.prepare_diff(Some(tx)) {
             let work = self.diff_work();
-            self.pane.load_in_background(tx.clone(), work);
+            self.pane
+                .load_in_background(tx.clone(), self.repository.converted_paths(), work);
         }
-        self.pane.poll_loading(self.repository);
+        self.pane.poll_loading();
+        self.show_conflict(false);
         if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.poll(&self.ctx);
         }
@@ -1725,10 +1793,13 @@ impl<'a> LocalChangesState<'a> {
     // screen; the one shown before is drawn meanwhile, and a key waits for it, see `load_stale_diff`.
     fn load_diff(&mut self) {
         self.diff_stale = false;
-        if self.prepare_diff() {
+        if self.prepare_diff(self.background.clone().as_ref()) {
             let work = self.diff_work();
             match &self.background {
-                Some(tx) => self.pane.load_in_background(tx.clone(), work),
+                Some(tx) => {
+                    let converted = self.repository.converted_paths();
+                    self.pane.load_in_background(tx.clone(), converted, work)
+                }
                 None => self.pane.show_loaded(&work(), self.repository),
             }
         }
@@ -1778,13 +1849,13 @@ impl<'a> LocalChangesState<'a> {
 
     // Shows the conflict or the submodule of the selected row beside the files, else its diff:
     // returns whether the diff is to be loaded, as it is for a conflict too.
-    fn prepare_diff(&mut self) -> bool {
+    fn prepare_diff(&mut self, tx: Option<&Sender>) -> bool {
         // park the submodule panel shown before, to reuse it when it is selected again
         if let Beside::Submodule(panel) = std::mem::replace(&mut self.beside, Beside::Diff) {
             self.submodule_cache = Some((panel.key().to_string(), *panel));
         }
-        self.beside = match self.load_conflict() {
-            Some(conflict) => Beside::Conflict(conflict),
+        self.beside = match self.load_conflict(tx) {
+            Some(conflict) => conflict,
             None => self
                 .load_submodule()
                 .map_or(Beside::Diff, |panel| Beside::Submodule(Box::new(panel))),
@@ -1898,7 +1969,7 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         let areas = local_changes_areas(&self.ctx, area);
         self.render_file_section(state, LocalChangesSection::Unstaged, areas.unstaged, buf);
         self.render_file_section(state, LocalChangesSection::Staged, areas.staged, buf);
-        if state.conflict().is_some() {
+        if let Beside::Conflict(_) | Beside::ConflictLoading(_) = state.beside {
             self.render_conflict(state, areas.diff, buf);
         } else if state.submodule().is_some() {
             self.render_submodule(state, areas.diff, buf);
@@ -5170,6 +5241,74 @@ mod tests {
         state.move_conflict_item(Direction::Down);
         state.move_conflict_item(Direction::Down);
         assert_eq!(state.conflict().unwrap().item, ConflictItem::MergeTool);
+        Ok(())
+    }
+
+    // In the app, the sides of a conflicted file load on another thread, a big file taking a
+    // while: the panel says which file meanwhile, and a key waits for them.
+    #[test]
+    fn test_conflict_loads_in_the_background() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let ec = crate::event::EventController::without_terminal();
+        let mut state =
+            LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
+        let pos = state.rows().iter().position(|r| r.path == "a.txt").unwrap();
+        state.move_cursor(pos);
+        // as drawing does, before it polls what loads
+        state.prepare_diff(Some(&ec.sender()));
+        assert!(matches!(state.beside, Beside::ConflictLoading(_)));
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(test_ctx(), true).render(area, &mut buf, &mut state);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains(" a.txt  conflicted ")),
+            "{rows:#?}"
+        );
+
+        // as the next key does
+        state.load_stale_diff();
+        let conflict = &state.conflict().unwrap().view;
+        assert_eq!(conflict.theirs_label, "feature");
+        Ok(())
+    }
+
+    // While what is beside the files loads, the keys on the files act at once, a drag picking
+    // them too; those going into it wait for it, and space on a conflict, resolved through it.
+    #[test]
+    fn test_keys_on_the_files_dont_wait_for_the_diff() -> Result<(), Box<dyn std::error::Error>> {
+        use UserEvent::*;
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+        fs::write(repo_path.join("new.txt"), "new\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let ec = crate::event::EventController::without_terminal();
+        let mut state =
+            LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
+        let select = |state: &mut LocalChangesState, path: &str| {
+            let pos = state.rows().iter().position(|r| r.path == path).unwrap();
+            state.move_cursor(pos);
+            // starts loading what is beside it, not polled yet
+            state.load_diff();
+        };
+        select(&mut state, "new.txt");
+        assert!(state.pane.loading_since().is_some());
+        for event in [Select, ToggleSelect, Discard, Search, Unknown, NavigateDown] {
+            assert!(!state.waits_for(event), "{event:?}");
+        }
+        assert!(state.waits_for(Confirm) && state.waits_for(FocusRight));
+        select(&mut state, "a.txt");
+        assert!(state.waits_for(Select));
         Ok(())
     }
 

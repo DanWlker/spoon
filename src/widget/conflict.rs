@@ -1,9 +1,9 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::Path};
 
 use rustc_hash::FxHashSet;
 
 use crate::{
-    git::{is_conflict_marker, ConflictSide, Operation, Repository, SideContent},
+    git::{conflict_side, is_conflict_marker, ConflictSide, Operation, Repository, SideContent},
     widget::style::tabs_shown,
 };
 
@@ -51,9 +51,19 @@ pub struct ConflictView {
 
 impl ConflictView {
     // The conflicting blocks of the file in the working tree, or the whole content of each side when
-    // the file has no conflict markers (when one side deleted it, or it is binary).
-    pub fn load(repository: &Repository, path: &str) -> Self {
-        let file = crate::git::work_path(repository.path(), path);
+    // the file has no conflict markers (when one side deleted it, or it is binary); as work to run on
+    // another thread, as a big file takes a while.
+    pub fn load_work(
+        repository: &Repository,
+        path: &str,
+    ) -> impl FnOnce() -> Self + Send + 'static {
+        let (repository, path) = (repository.path().to_path_buf(), path.to_string());
+        move || ConflictView::load(&repository, &path)
+    }
+
+    // See `load_work`, in the repository at `repository`.
+    pub fn load(repository: &Path, path: &str) -> Self {
+        let file = crate::git::work_path(repository, path);
         // the markers of a file only, not of what a symlink points at
         let editable = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
         // a binary file has no markers, and would take long to convert
@@ -66,7 +76,7 @@ impl ConflictView {
             }
         }
         let side = |side| {
-            let lines = match repository.conflict_side(path, side) {
+            let lines = match conflict_side(repository, path, side) {
                 SideContent::File(content) => content
                     .lines()
                     .map(|l| tabs_shown(l).into_owned())
@@ -371,7 +381,7 @@ end
         assert!(git(path, &["diff", "--name-only", "--diff-filter=U"]).contains('f'));
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let view = ConflictView::load(&repository, "f");
+        let view = ConflictView::load(repository.path(), "f");
         assert_eq!(view.conflicts, 1);
     }
 
@@ -404,7 +414,7 @@ end
         std::fs::write(path.join("f"), "\0\n<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n").unwrap();
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let view = ConflictView::load(&repository, "f");
+        let view = ConflictView::load(repository.path(), "f");
         assert_eq!(view.conflicts, 0);
         assert_eq!(rows(&view.ours), ["|ours|k"]);
     }

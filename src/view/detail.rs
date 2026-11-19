@@ -563,12 +563,8 @@ impl<'a> DetailView<'a> {
             Target::DetailPane => {
                 self.list_focused = false;
                 match self.tab {
-                    DetailTab::Changes => {
-                        if row.is_some() {
-                            self.changes_state.ensure_loaded();
-                        }
-                        self.changes_state.pane.point(row, picks);
-                    }
+                    // a click on the diff loading does nothing
+                    DetailTab::Changes => self.changes_state.pane.point(row, picks),
                     DetailTab::Files => self.files_state.point_preview(row, picks),
                     DetailTab::Info => {}
                 }
@@ -595,10 +591,15 @@ impl<'a> DetailView<'a> {
         match focus {
             DetailFocus::List => self.focus_list(),
             DetailFocus::Pane => match self.tab {
+                // entered once loaded in the background
                 DetailTab::Changes => {
+                    self.changes_state.ensure_loaded_in_background(&self.tx);
                     self.changes_state.pane.enter();
                 }
+                // shortcut: the preview has no focus to take once loaded, so it loads right away;
+                // load it in the background when a preview takes long to load after a refresh
                 DetailTab::Files => {
+                    self.files_state.ensure_loaded();
                     self.files_state.enter();
                 }
                 DetailTab::Info => {}
@@ -713,22 +714,47 @@ impl<'a> DetailView<'a> {
         self.load_tab();
     }
 
+    // Whether `event` moves to another commit, leaving the details of the one selected to load.
+    fn moves_commit(&self, event: UserEvent) -> bool {
+        matches!(event, UserEvent::SelectDown | UserEvent::SelectUp)
+            || (self.list_focused && event.moves_selection())
+    }
+
+    // Whether `event` acts on the diff or preview beside the files: on it, or going into it.
+    fn needs_pane(&self, event: UserEvent) -> bool {
+        let into =
+            !self.list_focused && matches!(event, UserEvent::Confirm | UserEvent::FocusRight);
+        !event.moves_selection() && (self.is_pane_focused() || into)
+    }
+
+    // Whether `event` waits for what loads in the background, see `handle_event`.
+    pub fn waits_for(&self, event: UserEvent) -> bool {
+        let pane = match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => self.changes_state.loading_since(),
+            DetailTab::Files => self.files_state.loading_since(),
+        };
+        let tree = self.tab == DetailTab::Files && self.files_state.is_tree_loading();
+        (!self.moves_commit(event) && self.loading.is_some())
+            || (!event.moves_selection() && tree)
+            || (self.needs_pane(event) && pane.is_some())
+    }
+
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         // the keys moving the selection leave what it shows to load once drawn, see
         // `update_layout`; the others may act on it, so it is loaded first: the details of the
         // commit for all but those moving to another commit, the diff for all but those moving
         // in the files
-        let moves_commit = matches!(event, UserEvent::SelectDown | UserEvent::SelectUp)
-            || (self.list_focused && event.moves_selection());
-        if !moves_commit {
+        if !self.moves_commit(event) {
             self.load_selected();
         }
-        if !event.moves_selection() {
-            match self.tab {
-                DetailTab::Info => {}
-                DetailTab::Changes => self.changes_state.ensure_loaded(),
-                DetailTab::Files => self.files_state.ensure_loaded(),
-            }
+        match self.tab {
+            DetailTab::Info => {}
+            _ if event.moves_selection() => {}
+            DetailTab::Changes if self.needs_pane(event) => self.changes_state.ensure_loaded(),
+            DetailTab::Changes => {}
+            DetailTab::Files if self.needs_pane(event) => self.files_state.ensure_loaded(),
+            DetailTab::Files => self.files_state.ensure_tree(),
         }
         // typing a search or filter, keys arrive unmapped, see App::run
         if self.is_typing_query() {
@@ -1120,7 +1146,9 @@ impl<'a> DetailView<'a> {
             || self.files_state.loading_since().is_some()
     }
 
-    pub fn update_layout(&mut self, area: Rect) {
+    // Starts loading the details of the commit selected and what its tab shows on another
+    // thread, or shows them once loaded.
+    pub fn load_in_background(&mut self) {
         self.load_selected_in_background();
         match self.tab {
             _ if self.loading.is_some() => {}
@@ -1128,6 +1156,10 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => self.changes_state.ensure_loaded_in_background(&self.tx),
             DetailTab::Files => self.files_state.ensure_loaded_in_background(&self.tx),
         }
+    }
+
+    pub fn update_layout(&mut self, area: Rect) {
+        self.load_in_background();
         let [list_area, panel_area] = self.split_areas(area);
         self.as_mut_list_state()
             .update_height(commit_list_inner_height(list_area.height));
@@ -1437,13 +1469,9 @@ impl<'a> DetailView<'a> {
         true
     }
 
-    // The changes and files of a commit are only loaded once their tab is shown.
+    // The changes and files of a commit are only loaded once their tab is shown, in the background
+    // once drawn, see `load_in_background`.
     fn load_tab(&mut self) {
-        match self.tab {
-            DetailTab::Info => {}
-            DetailTab::Changes => self.changes_state.ensure_loaded(),
-            DetailTab::Files => self.files_state.ensure_loaded(),
-        }
         // the states of another commit start without the filter
         self.apply_query_change(Some(QueryKind::Filter));
     }

@@ -19,9 +19,10 @@ mod submodule;
 mod task;
 
 pub use conflict::{
-    is_conflict_marker, Conflict, ConflictSide, ConflictWork, SideContent, MAX_CONFLICT_STEPS,
+    conflict_side, is_conflict_marker, Conflict, ConflictSide, ConflictWork, SideContent,
+    MAX_CONFLICT_STEPS,
 };
-pub use diff::{DiffOf, FileChange, PatchDirection, DEFAULT_DIFF_CONTEXT};
+pub use diff::{ConvertedPaths, DiffOf, FileChange, PatchDirection, DEFAULT_DIFF_CONTEXT};
 pub use history::{Blame, CommitTree, FileBlameResult, FileHistoryResult, FileRevision};
 use load::parse_iso_date;
 pub use load::{read_head_commit, read_operation, refs_snapshot, LoadOptions, Loaded};

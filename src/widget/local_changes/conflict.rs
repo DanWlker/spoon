@@ -20,7 +20,16 @@ pub(super) struct ConflictPanel {
     pub(super) item: ConflictItem,
 }
 
-impl LocalChangesState<'_> {
+impl ConflictPanel {
+    fn new(view: ConflictView) -> Self {
+        ConflictPanel {
+            view,
+            item: ConflictItem::Existing,
+        }
+    }
+}
+
+impl<'a> LocalChangesState<'a> {
     pub fn is_conflict_focused(&self) -> bool {
         self.focus() == Focus::Side && self.conflict().is_some()
     }
@@ -66,16 +75,40 @@ impl LocalChangesState<'_> {
         result
     }
 
-    // The two sides of the selected file, when it is conflicted.
-    pub(super) fn load_conflict(&self) -> Option<ConflictPanel> {
+    // The two sides of the selected file, when it is conflicted: loading on another thread with
+    // `tx`, as a big file takes a while, else right away.
+    pub(super) fn load_conflict(&self, tx: Option<&Sender>) -> Option<Beside<'a>> {
+        let file = self.selected_conflict()?;
+        let work = ConflictView::load_work(self.repository, &file.path);
+        Some(match tx {
+            Some(tx) => Beside::ConflictLoading(Job::spawn(tx.clone(), work)),
+            None => Beside::Conflict(ConflictPanel::new(work())),
+        })
+    }
+
+    // The selected file, when it is conflicted.
+    pub(super) fn selected_conflict(&self) -> Option<&LocalChangeFile> {
         self.selected_row()
             .and_then(FileTreeRow::file_index)
             .and_then(|i| self.files().get(i))
             .filter(|f| f.status == LocalChangeStatus::Conflicted)
-            .map(|f| ConflictPanel {
-                view: ConflictView::load(self.repository, &f.path),
-                item: ConflictItem::Existing,
-            })
+    }
+
+    // Shows the conflict loading once loaded, waiting for it when `wait`: before a key acts on it.
+    pub(super) fn show_conflict(&mut self, wait: bool) {
+        let Beside::ConflictLoading(job) = &self.beside else {
+            return;
+        };
+        let view = match wait {
+            true => match std::mem::replace(&mut self.beside, Beside::Diff) {
+                Beside::ConflictLoading(job) => Some(job.wait()),
+                _ => None,
+            },
+            false => job.try_take(),
+        };
+        if let Some(view) = view {
+            self.beside = Beside::Conflict(ConflictPanel::new(view));
+        }
     }
 
     // The conflict shown beside the files, see `Beside`.
@@ -101,21 +134,28 @@ impl LocalChangesPanel<'_> {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        let Beside::Conflict(conflict) = &state.beside else {
-            return;
-        };
         let theme = &self.ctx.color_theme;
         let path = state.selected_path().unwrap_or_default();
+        let loading = match &state.beside {
+            Beside::ConflictLoading(job) => loading_note(Some(job.started())),
+            _ => None,
+        };
+        let title = [
+            Span::raw(format!(" {path} ")).fg(theme.fg),
+            badge(" conflicted ", theme.status_error_fg, theme),
+        ];
+        let loading = loading.map(|note| Span::raw(format!(" {note} ")).fg(theme.highlight_fg));
         let inner = render_panel(
             buf,
             area,
-            Line::from(vec![
-                Span::raw(format!(" {path} ")).fg(theme.fg),
-                badge(" conflicted ", theme.status_error_fg, theme),
-            ]),
+            Line::from_iter(title.into_iter().chain(loading)),
             self.focused && state.is_conflict_focused(),
             theme,
         );
+        // its sides once loaded
+        let Beside::Conflict(conflict) = &state.beside else {
+            return;
+        };
 
         // the sides to pick from, side by side over half the height (the common ancestor between
         // them when the markers have it), then what Enter does, then the tools with a line between

@@ -48,41 +48,6 @@ impl Repository {
         })
     }
 
-    // The content of a conflicted file on one side, None when that side deleted it.
-    // What a side of a conflicted file is in the index: a file, a symlink, a submodule or nothing.
-    pub fn conflict_side(&self, path: &str, side: ConflictSide) -> SideContent {
-        let stage = self.unmerged(path).ok().and_then(|stages| {
-            stages
-                .into_iter()
-                .find_map(|(stage, mode, object)| (stage == side.stage()).then_some((mode, object)))
-        });
-        let Some((mode, object)) = stage else {
-            return SideContent::Deleted;
-        };
-        let blob = || {
-            git_output_bytes(&self.path, &["cat-file", "blob", &object])
-                .map(|blob| text_from_git(&blob))
-                .unwrap_or_default()
-        };
-        match mode.as_str() {
-            // its short hash and subject, from the submodule when it is checked out
-            "160000" => {
-                let submodule = self.path.join(path);
-                let summary = submodule
-                    .join(".git")
-                    .exists()
-                    .then(|| git_output(&submodule, &["log", "-1", "--format=%h %s", &object]).ok())
-                    .flatten()
-                    .map(|summary| summary.trim().to_string());
-                SideContent::Submodule(
-                    summary.unwrap_or_else(|| object.get(..7).unwrap_or(&object).into()),
-                )
-            }
-            "120000" => SideContent::Symlink(blob()),
-            _ => SideContent::File(blob()),
-        }
-    }
-
     // `changes`, with the conflicts resolved by hand staged like lazygit does (see
     // `resolved_conflicts`), loaded again then; not while a git command runs, which `stage_paths`
     // refuses.
@@ -107,7 +72,7 @@ impl Repository {
     // is resolved by picking a side instead.
     fn resolved_conflicts(&self, paths: &[&str]) -> Vec<String> {
         let text_sides = |path: &str| {
-            self.unmerged(path).is_ok_and(|stages| {
+            unmerged(&self.path, path).is_ok_and(|stages| {
                 [2, 3].iter().all(|side| {
                     stages.iter().any(|(stage, mode, _)| {
                         stage == side && matches!(mode.as_str(), "100644" | "100755")
@@ -135,24 +100,6 @@ impl Repository {
             .collect()
     }
 
-    // The stage (1 the base, 2 ours, 3 theirs), mode and object of each side git has of the
-    // conflicted `path`; none when it isn't conflicted.
-    fn unmerged(&self, path: &str) -> std::result::Result<Vec<(u8, String, String)>, String> {
-        // literal, so `x*.txt` isn't `xa.txt`
-        let spec = pathspecs(&[path]);
-        // "<mode> <object> <stage>\t<path>"
-        let out = git_output(&self.path, &["ls-files", "-u", "-z", "--", &spec[0]])?;
-        Ok(out
-            .split('\0')
-            .filter_map(|entry| {
-                let mut fields = entry.split_once('\t')?.0.split(' ');
-                let (mode, object) = (fields.next()?, fields.next()?);
-                let stage = fields.next()?.parse().ok()?;
-                Some((stage, mode.to_string(), object.to_string()))
-            })
-            .collect())
-    }
-
     // Resolves a conflicted file by taking one side whole, removing the file when that side
     // deleted it; choosing conflict by conflict is left to the merge tool.
     pub fn resolve_conflict(
@@ -165,7 +112,7 @@ impl Repository {
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
-        let stages = self.unmerged(path)?;
+        let stages = unmerged(&self.path, path)?;
         // a file with no stage of a conflict would be removed below, by `git rm`
         if stages.is_empty() {
             return Err(format!("{path} has no conflict to resolve"));
@@ -201,7 +148,62 @@ impl Repository {
     }
 }
 
-// A side of a conflicted file, see `Repository::conflict_side`: a file's content, where a symlink
+// What a side of a conflicted file is in the index of `repository`: a file, a symlink, a submodule or nothing.
+pub fn conflict_side(repository: &Path, path: &str, side: ConflictSide) -> SideContent {
+    let stage = unmerged(repository, path).ok().and_then(|stages| {
+        stages
+            .into_iter()
+            .find_map(|(stage, mode, object)| (stage == side.stage()).then_some((mode, object)))
+    });
+    let Some((mode, object)) = stage else {
+        return SideContent::Deleted;
+    };
+    let blob = || {
+        git_output_bytes(repository, &["cat-file", "blob", &object])
+            .map(|blob| text_from_git(&blob))
+            .unwrap_or_default()
+    };
+    match mode.as_str() {
+        // its short hash and subject, from the submodule when it is checked out
+        "160000" => {
+            let submodule = repository.join(path);
+            let summary = submodule
+                .join(".git")
+                .exists()
+                .then(|| git_output(&submodule, &["log", "-1", "--format=%h %s", &object]).ok())
+                .flatten()
+                .map(|summary| summary.trim().to_string());
+            SideContent::Submodule(
+                summary.unwrap_or_else(|| object.get(..7).unwrap_or(&object).into()),
+            )
+        }
+        "120000" => SideContent::Symlink(blob()),
+        _ => SideContent::File(blob()),
+    }
+}
+
+// The stage (1 the base, 2 ours, 3 theirs), mode and object of each side git has of the
+// conflicted `path`; none when it isn't conflicted.
+fn unmerged(
+    repository: &Path,
+    path: &str,
+) -> std::result::Result<Vec<(u8, String, String)>, String> {
+    // literal, so `x*.txt` isn't `xa.txt`
+    let spec = pathspecs(&[path]);
+    // "<mode> <object> <stage>\t<path>"
+    let out = git_output(repository, &["ls-files", "-u", "-z", "--", &spec[0]])?;
+    Ok(out
+        .split('\0')
+        .filter_map(|entry| {
+            let mut fields = entry.split_once('\t')?.0.split(' ');
+            let (mode, object) = (fields.next()?, fields.next()?);
+            let stage = fields.next()?.parse().ok()?;
+            Some((stage, mode.to_string(), object.to_string()))
+        })
+        .collect())
+}
+
+// A side of a conflicted file, see `conflict_side`: a file's content, where a symlink
 // points, a submodule's commit (its short hash and subject), or nothing, the side deleting it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SideContent {

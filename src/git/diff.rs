@@ -1,23 +1,30 @@
 // The diffs of commits and of the local changes, the files they change, and applying a patch.
 
 use rustc_hash::FxHashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{
     git_output, git_output_bytes, git_output_with_status, parse_name_status, pathspecs, Commit,
     CommitHash, LocalChangeStatus, Repository,
 };
 
-impl Repository {
-    // The paths among `paths` whose diff shows text converted from them (a diff driver with a
-    // `textconv`, set in .gitattributes), which can't be applied back as a patch.
-    pub fn converted_paths(&self, paths: &[&str]) -> FxHashSet<String> {
+// Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
+// .gitattributes), which can't be applied back as a patch; on the thread loading the diff.
+#[derive(Debug, Default, Clone)]
+pub struct ConvertedPaths {
+    repository: PathBuf,
+    textconv_drivers: Vec<String>,
+}
+
+impl ConvertedPaths {
+    // Those of `paths`.
+    pub fn of(&self, paths: &[&str]) -> FxHashSet<String> {
         if self.textconv_drivers.is_empty() || paths.is_empty() {
             return FxHashSet::default();
         }
         let mut args = vec!["check-attr", "-z", "diff", "--"];
         args.extend_from_slice(paths);
-        let out = git_output(&self.path, &args).unwrap_or_default();
+        let out = git_output(&self.repository, &args).unwrap_or_default();
         // path, attribute, value, each ended by a NUL
         let fields: Vec<&str> = out.split('\0').collect();
         fields
@@ -27,6 +34,15 @@ impl Repository {
             .filter(|[_, _, driver]| self.textconv_drivers.iter().any(|d| d == driver))
             .map(|[path, _, _]| path.to_string())
             .collect()
+    }
+}
+
+impl Repository {
+    pub fn converted_paths(&self) -> ConvertedPaths {
+        ConvertedPaths {
+            repository: self.path.clone(),
+            textconv_drivers: self.textconv_drivers.clone(),
+        }
     }
 
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
