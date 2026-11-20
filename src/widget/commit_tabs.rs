@@ -891,6 +891,7 @@ impl<'a> CommitFilesState<'a> {
     // Before drawing: starts loading the files, then the preview of the selected one, on another
     // thread, the screen keeping up with the keys meanwhile, or shows them once loaded.
     pub fn ensure_loaded_in_background(&mut self, tx: &Sender) {
+        self.text.measure_in_background(tx);
         if self.paths.is_none() {
             let job = self.tree_loading.get_or_insert_with(|| {
                 Job::spawn(

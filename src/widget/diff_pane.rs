@@ -15,9 +15,9 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, matching_rows, parse_diff, render_diff_lines, render_split_rows,
-            split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart, DiffRowKind, ParsedDiff,
-            Step, WrapMap,
+            diff_lines, matching_rows, parse_diff, render_diff_lines, render_split_rows, rewrap,
+            split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart, DiffRowKind, Measuring,
+            ParsedDiff, Step, WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -64,20 +64,11 @@ pub struct DiffPane {
     // the app's, from the last diff loaded in the background, see `load_in_background`, to measure
     // a big diff's wrapped rows on another thread too; without it, as in the tests, right away
     tx: Option<Sender>,
-    // the wrapped rows of a big diff measuring on another thread, see `measure`
+    // the wrapped rows of a big diff measuring on another thread, see `rewrap`
     measuring: Option<Measuring>,
     // the rows of the diff shown matching the last search, with its query and options, see
     // `search`: searched once for the letter typed and how many match, then for n and N
     matches: Option<(String, SearchOptions, Vec<usize>)>,
-}
-
-// The screen rows of a big diff wrapped at `width` side by side or not, measuring on another
-// thread, see `DiffPane::measure`.
-#[derive(Debug)]
-struct Measuring {
-    width: u16,
-    layout: DiffLayout,
-    job: Job<WrapMap>,
 }
 
 impl DiffPane {
@@ -618,40 +609,20 @@ impl DiffPane {
         wrap: bool,
         layout: DiffLayout,
     ) {
-        // shortcut: wrapped right away up to this many rows, a few milliseconds, rather than
-        // drawn unwrapped first; lower it when wrapping them holds up the screen
-        const MEASURED_RIGHT_AWAY: usize = 20_000;
-        let measured = match self.measuring.take() {
-            Some(m) if wrap && (m.width, m.layout) == (width, layout) => match m.job.try_take() {
-                Some(map) => Some(map),
-                None => {
-                    self.measuring = Some(m);
-                    None
-                }
-            },
-            // measuring for another width or layout
-            _ => None,
+        let work = || {
+            let (shared, colors) = (diff.clone(), theme.clone());
+            move || WrapMap::of(&shared, &colors, width, wrap, layout)
         };
-        let map = match measured {
-            Some(map) => map,
-            None if self.cursor.wrap().matches(width, wrap, layout) => return,
-            // drawn unwrapped while measuring, see above
-            None if self.measuring.is_some() => {
-                if self.cursor.wrap().matches(width, false, layout) {
-                    return;
-                }
-                WrapMap::of(diff, theme, width, false, layout)
-            }
-            None => match &self.tx {
-                Some(tx) if wrap && diff.rows.len() > MEASURED_RIGHT_AWAY => {
-                    let (shared, colors) = (diff.clone(), theme.clone());
-                    let work = move || WrapMap::of(&shared, &colors, width, wrap, layout);
-                    let job = Job::spawn(tx.clone(), work);
-                    self.measuring = Some(Measuring { width, layout, job });
-                    WrapMap::of(diff, theme, width, false, layout)
-                }
-                _ => WrapMap::of(diff, theme, width, wrap, layout),
-            },
+        let Some(map) = rewrap(
+            self.cursor.wrap(),
+            &mut self.measuring,
+            self.tx.as_ref(),
+            diff.rows.len(),
+            (width, wrap, layout),
+            |wrap| WrapMap::of(diff, theme, width, wrap, layout),
+            work,
+        ) else {
+            return;
         };
         self.cursor.set_wrap_map(map);
         if self.focus.is_some() {

@@ -119,6 +119,7 @@ impl BlameView {
             ctx,
             tx,
         };
+        view.text.measure_in_background(&view.tx);
         view.show(blame);
         if let Some(line) = line {
             view.text.select_line(line);

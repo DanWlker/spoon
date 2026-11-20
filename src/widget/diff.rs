@@ -14,7 +14,9 @@ use ratatui::{
 };
 
 use crate::{
+    background::Job,
     color::ColorTheme,
+    event::Sender,
     git::{ConvertedPaths, PatchDirection},
     keybind::UserEvent,
     pointer::OnPicks,
@@ -558,6 +560,63 @@ impl WrapMap {
             .min(self.prefix.len().saturating_sub(1));
         start..end
     }
+}
+
+// The screen rows of many rows wrapped at `width`, side by side or not, measuring on another
+// thread, see `rewrap`.
+#[derive(Debug)]
+pub struct Measuring {
+    width: u16,
+    layout: DiffLayout,
+    job: Job<WrapMap>,
+}
+
+// The map of `rows` rows at `width`, `wrap` and `layout`, when `current` isn't it, see `WrapMap`:
+// many rows wrapped take a while to measure, so with `tx` they are measured on another thread by
+// `work` (see `measuring`), shown unwrapped meanwhile; else `map` makes it, wrapped or not. A diff
+// and the lines of a file are measured so.
+pub fn rewrap<W: FnOnce() -> WrapMap + Send + 'static>(
+    current: &WrapMap,
+    measuring: &mut Option<Measuring>,
+    tx: Option<&Sender>,
+    rows: usize,
+    (width, wrap, layout): (u16, bool, DiffLayout),
+    map: impl FnOnce(bool) -> WrapMap,
+    work: impl FnOnce() -> W,
+) -> Option<WrapMap> {
+    // shortcut: wrapped right away up to this many rows, a few milliseconds, rather than drawn
+    // unwrapped first; lower it when wrapping them holds up the screen
+    const MEASURED_RIGHT_AWAY: usize = 20_000;
+    let measured = match measuring.take() {
+        Some(m) if wrap && (m.width, m.layout) == (width, layout) => match m.job.try_take() {
+            Some(map) => Some(map),
+            None => {
+                *measuring = Some(m);
+                None
+            }
+        },
+        // measuring for another width or layout
+        _ => None,
+    };
+    Some(match measured {
+        Some(map) => map,
+        None if current.matches(width, wrap, layout) => return None,
+        // unwrapped while measuring
+        None if measuring.is_some() => {
+            if current.matches(width, false, layout) {
+                return None;
+            }
+            map(false)
+        }
+        None => match tx {
+            Some(tx) if wrap && rows > MEASURED_RIGHT_AWAY => {
+                let job = Job::spawn(tx.clone(), work());
+                *measuring = Some(Measuring { width, layout, job });
+                map(false)
+            }
+            _ => map(wrap),
+        },
+    })
 }
 
 // The widths of the old and the new side of a diff `width` wide, a divider between them.
