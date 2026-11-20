@@ -5,7 +5,7 @@ use std::{
     collections::VecDeque,
     ffi::OsStr,
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::Mutex,
     time::{Duration, Instant},
@@ -21,6 +21,41 @@ impl Repository {
         git_output(&self.path, &["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_string())
     }
 
+    // See `WorkTree::run`.
+    pub(super) fn run(
+        &self,
+        args: &[&str],
+        stdin: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        self.work_tree().run(args, stdin)
+    }
+
+    // See `WorkTree::check_idle`.
+    pub(super) fn check_idle(&self) -> std::result::Result<(), String> {
+        self.work_tree().check_idle()
+    }
+
+    // What running git in the work tree needs, to run it on another thread.
+    pub fn work_tree(&self) -> WorkTree {
+        WorkTree {
+            path: self.path.clone(),
+            git_dir: self.git_dir.clone(),
+            running: self.running.clone(),
+        }
+    }
+}
+
+// The work tree of a repository, the git directory and the app's git command running in the
+// background: what running git commands changing the work tree or the index needs, without the
+// commits, to run them on another thread, see `Repository::work_tree`.
+#[derive(Debug, Clone)]
+pub struct WorkTree {
+    pub(super) path: PathBuf,
+    pub(super) git_dir: PathBuf,
+    pub(super) running: SharedTask,
+}
+
+impl WorkTree {
     // Runs a git command changing the repository, unless one runs in the background, see
     // `check_idle`.
     pub(super) fn run(
@@ -47,7 +82,9 @@ impl Repository {
             None => Ok(()),
         }
     }
+}
 
+impl Repository {
     // Whether a rebase stopped to edit a commit (rather than on conflicts), which is amended then.
     pub fn rebase_stopped_to_edit(&self) -> bool {
         self.git_dir.join("rebase-merge/amend").exists()
@@ -911,11 +948,11 @@ mod tests {
         // while a git command runs in the background
         *repository.running.lock() = Some(running("Pushing main"));
         assert_eq!(
-            repository.stage_paths(&["a"]),
+            repository.work_tree().stage_paths(&["a"]),
             Err("Pushing main, wait for it to finish".into())
         );
         *repository.running.lock() = None;
-        repository.stage_paths(&["a"]).unwrap();
+        repository.work_tree().stage_paths(&["a"]).unwrap();
     }
 
     #[test]
@@ -1209,6 +1246,7 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         // the log is shared by the tests running at the same time, so this one is found by name
         assert!(repository
+            .work_tree()
             .stage_paths(&["no-such-file-for-the-log"])
             .is_err());
         let log = command_log();

@@ -34,7 +34,7 @@ use crate::{
         commit_list::{commit_list_inner_height, render_commit_list_panel, CommitListState},
         commit_tabs::{
             changes_side_area, render_compare_title, render_tab_titles, CommitChangesState,
-            CommitFilesState, CommitTab, DetailTab,
+            CommitFiles, CommitFilesState, CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
         file_tree::{path_contains, Entry, FileTreeRow, FileTreeState, TreeView},
@@ -108,7 +108,7 @@ pub struct DetailView<'a> {
     stale: bool,
     // the files the commit selected changed, loading on another thread, the details saying so
     // meanwhile, see `load_selected_in_background`
-    loading: Option<Job<Vec<FileChange>>>,
+    loading: Option<Job<CommitFiles>>,
     repository: &'a Repository,
 
     ctx: Rc<AppContext>,
@@ -1350,7 +1350,7 @@ impl<'a> DetailView<'a> {
     // Shows more or less of the file around the changes, loading the diff again.
     fn adjust_diff_context(&mut self, event: UserEvent) {
         if self.ctx.adjust_diff_context(event) {
-            self.changes_state.reload_diff();
+            self.changes_state.reload_diff(&self.tx);
         }
     }
 
@@ -1700,7 +1700,8 @@ impl<'a> DetailView<'a> {
             self.loading = None;
             let selected = self.as_list_state().selected_commit_hash().clone();
             let changes = self.repository.commit_changes_work(&selected)();
-            self.show_selected(changes);
+            let view = self.changes_state.tree_view();
+            self.show_selected(CommitFiles::of(changes, view));
         } else if let Some(job) = self.loading.take() {
             self.show_selected(job.wait());
         }
@@ -1712,6 +1713,9 @@ impl<'a> DetailView<'a> {
         if std::mem::take(&mut self.stale) {
             let selected = self.as_list_state().selected_commit_hash().clone();
             let work = self.repository.commit_changes_work(&selected);
+            // its files' tree made there too, see `CommitFiles`
+            let view = self.changes_state.tree_view();
+            let work = move || CommitFiles::of(work(), view);
             self.loading = Some(Job::spawn(self.tx.clone(), work));
         }
         if let Some(changes) = self.loading.as_ref().and_then(Job::try_take) {
@@ -1720,15 +1724,15 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    // The details of the commit selected, which changed `changes`.
-    fn show_selected(&mut self, changes: Vec<FileChange>) {
+    // The details of the commit selected, which changed `files`.
+    fn show_selected(&mut self, mut files: CommitFiles) {
         let repository = self.repository;
         let selected = self.as_list_state().selected_commit_hash().clone();
         let commit = repository.commit(&selected).unwrap().clone();
         let refs = repository.refs(&selected).into_iter().cloned().collect();
-        let view = self.changes_state.tree_view();
+        let changes = std::mem::take(&mut files.changes);
         self.changes_state =
-            CommitChangesState::new(repository, self.ctx.clone(), selected, &changes, view);
+            CommitChangesState::with_files(repository, self.ctx.clone(), None, selected, files);
         self.files_state.set_commit(&commit, &changes);
         self.commit = commit;
         self.changes = changes;

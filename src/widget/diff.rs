@@ -24,7 +24,7 @@ use crate::{
             divider, mark_selected_bar, placeholder, scroll_to, tabs_shown, ScrollState,
             VisualSelection,
         },
-        tree_query::{find_around, match_range, patch_range, SearchDirection},
+        tree_query::{match_range, patch_range, SearchDirection},
     },
 };
 
@@ -441,6 +441,12 @@ impl WrapMap {
         }
     }
 
+    // Whether the rows are wrapped, which drawing them follows: a big diff's are drawn unwrapped
+    // while measured wrapped, see `DiffPane::measure`.
+    pub fn wraps(&self) -> bool {
+        self.wrap
+    }
+
     // Whether this is the map for `width`, `wrap` and `layout`.
     pub fn matches(&self, width: u16, wrap: bool, layout: DiffLayout) -> bool {
         self.width == width && self.wrap == wrap && self.layout == layout
@@ -560,6 +566,52 @@ pub fn split_widths(width: u16) -> (u16, u16) {
     (sides / 2, sides - sides / 2)
 }
 
+// The rows of `diff` a search matches, see `row_matches`, in order: a big diff's searched on all
+// the cores, a part at a time, as each letter typed searches it again.
+pub fn matching_rows(diff: &ParsedDiff, query: &str, options: SearchOptions) -> Vec<usize> {
+    // a millisecond or two on one core, each core taking the next part when done with one, so the
+    // slower cores take fewer
+    const PART: usize = 16 * 1024;
+    let rows = diff.rows.len();
+    let matching = |part: usize| -> Vec<usize> {
+        let rows = part * PART..rows.min((part + 1) * PART);
+        rows.filter(|&row| row_matches(diff, row, query, options))
+            .collect()
+    };
+    let parts = rows.div_ceil(PART);
+    if parts <= 1 {
+        return matching(0);
+    }
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut found: Vec<(usize, Vec<usize>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..cores.min(parts))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut found = Vec::new();
+                    loop {
+                        let part = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if part >= parts {
+                            return found;
+                        }
+                        found.push((part, matching(part)));
+                    }
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
+    found.sort_unstable_by_key(|(part, _)| *part);
+    found.into_iter().flat_map(|(_, rows)| rows).collect()
+}
+
 // Whether the row of `diff` at `row` is one a search matches.
 // Whether the text of `row` matches, as it is in the file, like a file preview's lines.
 pub fn row_matches(diff: &ParsedDiff, row: usize, query: &str, options: SearchOptions) -> bool {
@@ -660,14 +712,22 @@ impl DiffCursor {
     pub fn search(
         &mut self,
         diff: &ParsedDiff,
-        query: &str,
+        matches: &[usize],
         from: usize,
         direction: SearchDirection,
-        options: SearchOptions,
     ) -> Option<DiffPart> {
-        let row = find_around(diff.rows.len(), from, direction, |r| {
-            row_matches(diff, r, query, options)
-        })?;
+        // the first match from `from` in `direction`, round
+        let after = |row: usize| matches.partition_point(|&m| m < row);
+        let row = match direction {
+            SearchDirection::Current => matches.get(after(from)),
+            SearchDirection::Next => matches.get(after(from + 1)),
+            SearchDirection::Previous => after(from).checked_sub(1).and_then(|i| matches.get(i)),
+        };
+        let round = match direction {
+            SearchDirection::Previous => matches.last(),
+            _ => matches.first(),
+        };
+        let row = *row.or(round)?;
         // the row the next search goes on from, in the hunk it is in; the lines picked stay, but
         // in their own hunk only, which staging them takes them from
         self.line = row;
@@ -2121,13 +2181,8 @@ mod tests {
         assert_eq!(highlighted(&cursor), 1);
         // a search ends the selection
         cursor.toggle_range();
-        cursor.search(
-            &diff,
-            "a",
-            0,
-            SearchDirection::Next,
-            SearchOptions::default(),
-        );
+        let matches = matching_rows(&diff, "a", SearchOptions::default());
+        cursor.search(&diff, &matches, 0, SearchDirection::Next);
         assert!(!cursor.has_range());
     }
 
@@ -2385,6 +2440,22 @@ mod tests {
     // Side by side, a removed line sits beside the first added line after the last one paired
     // that is alike, like delta's: the added lines passed on their own rows before it, a removed
     // line alike to none on its own row, a note on the side of the line it follows.
+    // A big diff is searched on several threads, a part each, its matches in order as on one.
+    #[test]
+    fn test_matching_rows_of_a_big_diff_in_order() {
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,50000 @@\n".to_string();
+        for i in 0..50_000 {
+            raw += &format!("+{}\n", if i % 3 == 0 { "hit" } else { "miss" });
+        }
+        let diff = parse_diff(&raw);
+        let options = SearchOptions::default();
+        let one_by_one: Vec<usize> = (0..diff.rows.len())
+            .filter(|&row| row_matches(&diff, row, "hit", options))
+            .collect();
+        assert_eq!(one_by_one.len(), 16_667);
+        assert_eq!(matching_rows(&diff, "hit", options), one_by_one);
+    }
+
     #[test]
     fn test_split_rows_pair_alike_lines() {
         let diff = parse_diff(concat!(
@@ -2455,9 +2526,19 @@ mod tests {
         assert!(cursor.enter_lines(&diff));
         cursor.toggle_range();
         assert!(cursor.has_range());
-        cursor.search(&diff, "dos", 0, SearchDirection::Next, options);
+        cursor.search(
+            &diff,
+            &matching_rows(&diff, "dos", options),
+            0,
+            SearchDirection::Next,
+        );
         assert!(cursor.has_range());
-        cursor.search(&diff, "diez", 0, SearchDirection::Next, options);
+        cursor.search(
+            &diff,
+            &matching_rows(&diff, "diez", options),
+            0,
+            SearchDirection::Next,
+        );
         assert!(!cursor.has_range());
         assert_eq!(cursor.hunk, 1);
     }

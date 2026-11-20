@@ -8,7 +8,7 @@ use std::{
 
 use super::{
     git_bytes, git_output, git_output_bytes, lock, pathspec_parts, pathspecs, text_from_git,
-    work_path, GitArgs, GitCommand, Repository,
+    work_path, GitArgs, GitCommand, Repository, WorkTree,
 };
 
 impl Repository {
@@ -27,11 +27,11 @@ impl Repository {
         let mut loaded = lock(&self.loaded_local_changes);
         let taken = *lock(&self.taken_count);
         match (loaded.as_ref(), taken) {
-            (Some(changes), _) => changes.count(),
+            (Some(files), _) => files.changes.count(),
             (None, Some(count)) => count,
             (None, None) => {
                 *lock(&self.local_changes_started) = Instant::now();
-                loaded.insert(self.local_changes()).count()
+                loaded.insert(self.work_tree().load_files()).changes.count()
             }
         }
     }
@@ -41,7 +41,13 @@ impl Repository {
     // The local changes loaded again after the working tree changed, for the local changes page to
     // show them; dropped when they started loading before those it has, which a reload after a
     // command of the app can load meanwhile.
+    // One with conflicts is dropped too, as the conflicts resolved by hand in it aren't staged,
+    // see `WorkTree::load_files`: the page reloads once it shows the files they changed, see
+    // `LocalChangesState::reload_if_changed`.
     pub fn set_local_changes(&self, files: FilesSnapshot) {
+        if files.changes.has_conflicts() {
+            return;
+        }
         {
             let mut started = lock(&self.local_changes_started);
             if files.started < *started {
@@ -49,22 +55,17 @@ impl Repository {
             }
             *started = files.started;
         }
-        *lock(&self.loaded_local_changes) = Some(files.changes);
+        *lock(&self.loaded_local_changes) = Some(files);
     }
 
-    // See `files_stamp`.
-    pub fn files_stamp(&self, changes: &LocalChanges) -> u64 {
-        files_stamp(&self.path, &self.git_dir, changes)
-    }
-
-    pub fn take_loaded_local_changes(&self) -> LocalChanges {
+    pub fn take_loaded_local_changes(&self) -> FilesSnapshot {
         let loaded = lock(&self.loaded_local_changes).take();
-        let changes = loaded.unwrap_or_else(|| {
+        let files = loaded.unwrap_or_else(|| {
             *lock(&self.local_changes_started) = Instant::now();
-            self.local_changes()
+            self.work_tree().load_files()
         });
-        *lock(&self.taken_count) = Some(changes.count());
-        changes
+        *lock(&self.taken_count) = Some(files.changes.count());
+        files
     }
 
     // Changes between `base` and the index, i.e. what would be committed when amending.
@@ -73,32 +74,6 @@ impl Repository {
         git_output(&self.path, &args)
             .map(|out| parse_name_status(out.as_bytes()))
             .unwrap_or_default()
-    }
-
-    // Stages the paths: `git add -- <paths>`, the command a user would type. It records the
-    // deletions and finds the new files under a directory already, `--all` would add nothing.
-    pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {
-        pathspec_parts(paths).iter().try_for_each(|part| {
-            let mut args = vec!["add", "--"];
-            args.extend(part.iter().map(String::as_str));
-            self.run(&args, None)
-        })
-    }
-
-    // Resets the index entries of `paths` to `staged_base`, HEAD when None: `git reset --quiet
-    // [HEAD^] -- <paths>`, the command a user would type, leaving out the name where git means it.
-    pub fn unstage_paths(
-        &self,
-        paths: &[&str],
-        staged_base: Option<&str>,
-    ) -> std::result::Result<(), String> {
-        pathspec_parts(paths).iter().try_for_each(|part| {
-            let mut args = vec!["reset", "--quiet"];
-            args.extend(staged_base);
-            args.push("--");
-            args.extend(part.iter().map(String::as_str));
-            self.run(&args, None)
-        })
     }
 
     // The commands discarding the unstaged changes of `tracked` files (restoring them from the
@@ -326,6 +301,13 @@ pub struct LocalChanges {
 }
 
 impl LocalChanges {
+    // Whether a file is conflicted.
+    pub fn has_conflicts(&self) -> bool {
+        self.unstaged
+            .iter()
+            .any(|f| f.status == LocalChangeStatus::Conflicted)
+    }
+
     // Number of distinct paths with uncommitted changes, counting a path that is both staged and unstaged once.
     pub fn count(&self) -> usize {
         let mut paths: Vec<&str> = self
@@ -436,6 +418,44 @@ pub(super) fn parse_name_status(bytes: &[u8]) -> Vec<LocalChangeFile> {
         });
     }
     files
+}
+
+impl WorkTree {
+    // The local changes of the work tree with a stamp of their files, see `FilesSnapshot`, the
+    // conflicts resolved by hand staged first, see `stage_resolved_conflicts`.
+    pub fn load_files(&self) -> FilesSnapshot {
+        let files = FilesSnapshot::load(&self.path, &self.git_dir);
+        match self.stage_resolved_conflicts(&files.changes) {
+            true => FilesSnapshot::load(&self.path, &self.git_dir),
+            false => files,
+        }
+    }
+
+    // Stages the paths: `git add -- <paths>`, the command a user would type. It records the
+    // deletions and finds the new files under a directory already, `--all` would add nothing.
+    pub fn stage_paths(&self, paths: &[&str]) -> std::result::Result<(), String> {
+        pathspec_parts(paths).iter().try_for_each(|part| {
+            let mut args = vec!["add", "--"];
+            args.extend(part.iter().map(String::as_str));
+            self.run(&args, None)
+        })
+    }
+
+    // Resets the index entries of `paths` to `staged_base`, HEAD when None: `git reset --quiet
+    // [HEAD^] -- <paths>`, the command a user would type, leaving out the name where git means it.
+    pub fn unstage_paths(
+        &self,
+        paths: &[&str],
+        staged_base: Option<&str>,
+    ) -> std::result::Result<(), String> {
+        pathspec_parts(paths).iter().try_for_each(|part| {
+            let mut args = vec!["reset", "--quiet"];
+            args.extend(staged_base);
+            args.push("--");
+            args.extend(part.iter().map(String::as_str));
+            self.run(&args, None)
+        })
+    }
 }
 
 // The local changes and a fingerprint of their files, loaded in the background every few seconds
@@ -629,7 +649,7 @@ mod tests {
         assert_eq!(read("important.log").as_deref(), Some("keep\n"));
 
         // the root, all of them
-        repository.stage_paths(&[":/"]).unwrap();
+        repository.work_tree().stage_paths(&[":/"]).unwrap();
         let staged = git_output(path, &["diff", "--cached", "--name-only"]).unwrap();
         assert_eq!(staged, "foo1.txt\nimportant.log\n");
     }
@@ -726,7 +746,7 @@ mod tests {
             Repository::load(&path.join("sub"), SortCommit::Chronological, None, false).unwrap();
         let changes = repository.local_changes();
         assert_eq!(changes.unstaged[0].path, "sub/f");
-        repository.stage_paths(&["sub/f"]).unwrap();
+        repository.work_tree().stage_paths(&["sub/f"]).unwrap();
         assert_eq!(repository.local_changes().staged[0].path, "sub/f");
         assert_eq!(repository.operation_in_progress(), None);
     }

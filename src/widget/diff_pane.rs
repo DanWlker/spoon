@@ -1,9 +1,10 @@
-use std::{ops::RangeInclusive, time::Instant};
+use std::{ops::RangeInclusive, sync::Arc, time::Instant};
 
 use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use crate::{
     background::Job,
+    color::ColorTheme,
     context::AppContext,
     event::Sender,
     git::{ConvertedPaths, PatchDirection, Repository},
@@ -14,8 +15,9 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, parse_diff, render_diff_lines, render_split_rows, row_matches,
-            split_widths, DiffCursor, DiffHunk, DiffPart, DiffRowKind, ParsedDiff, Step, WrapMap,
+            diff_lines, matching_rows, parse_diff, render_diff_lines, render_split_rows,
+            split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart, DiffRowKind, ParsedDiff,
+            Step, WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -37,15 +39,15 @@ enum DiffState {
     #[default]
     Nothing,
     // the one selected, which the keys act on
-    Shown(ParsedDiff),
+    Shown(Arc<ParsedDiff>),
     // no longer the one selected: drawn until the next one is shown, where it was scrolled; no
     // key acts on it
-    Outdated(ParsedDiff),
+    Outdated(Arc<ParsedDiff>),
     // loading in the background, shown once loaded, see `load_in_background`; the diff before
     // drawn meanwhile, and what to select once it is shown, see `restore` and `enter`
     Loading {
         job: Job<ParsedDiff>,
-        previous: Option<ParsedDiff>,
+        previous: Option<Arc<ParsedDiff>>,
         pending: Option<DiffSelection>,
     },
 }
@@ -59,12 +61,31 @@ pub struct DiffPane {
     // files of the changes tab, the commits of the timeline)
     focus: Option<DiffPart>,
     cursor: DiffCursor,
+    // the app's, from the last diff loaded in the background, see `load_in_background`, to measure
+    // a big diff's wrapped rows on another thread too; without it, as in the tests, right away
+    tx: Option<Sender>,
+    // the wrapped rows of a big diff measuring on another thread, see `measure`
+    measuring: Option<Measuring>,
+    // the rows of the diff shown matching the last search, with its query and options, see
+    // `search`: searched once for the letter typed and how many match, then for n and N
+    matches: Option<(String, SearchOptions, Vec<usize>)>,
+}
+
+// The screen rows of a big diff wrapped at `width` side by side or not, measuring on another
+// thread, see `DiffPane::measure`.
+#[derive(Debug)]
+struct Measuring {
+    width: u16,
+    layout: DiffLayout,
+    job: Job<WrapMap>,
 }
 
 impl DiffPane {
     // Shows another diff, from the top, the focus beside it.
     pub fn set_diff(&mut self, diff: Option<ParsedDiff>) {
-        self.state = diff.map_or(DiffState::Nothing, DiffState::Shown);
+        self.state = diff.map_or(DiffState::Nothing, |diff| DiffState::Shown(Arc::new(diff)));
+        self.measuring = None;
+        self.matches = None;
         self.focus = None;
         self.cursor.reset();
     }
@@ -84,7 +105,7 @@ impl DiffPane {
     }
 
     pub fn diff(&self) -> Option<&ParsedDiff> {
-        shown(&self.state)
+        shown(&self.state).map(Arc::as_ref)
     }
 
     // What to select in the diff loading, once it is shown.
@@ -110,6 +131,7 @@ impl DiffPane {
             DiffState::Outdated(diff) => Some(diff),
             _ => None,
         };
+        self.tx = Some(tx.clone());
         self.state = DiffState::Loading {
             job: Job::spawn(tx, move || {
                 let mut diff = parse_diff(&work());
@@ -169,7 +191,7 @@ impl DiffPane {
     // Whether the diff is of one file, which shows more or less context around its changes.
     // Of the diff drawn while another loads too, the keys being those of the diff reloading.
     pub fn is_single_file(&self) -> bool {
-        drawn(&self.state).is_some_and(ParsedDiff::is_single_file)
+        drawn(&self.state).is_some_and(|diff| diff.is_single_file())
     }
 
     // What is selected, to select it again in the diff reloaded, see `restore`.
@@ -457,7 +479,13 @@ impl DiffPane {
         let Some(diff) = shown(&self.state) else {
             return false;
         };
-        let found = self.cursor.search(diff, query, from, direction, options);
+        let searched = matches!(&self.matches, Some((q, o, _)) if q == query && *o == options);
+        if !searched {
+            let rows = matching_rows(diff, query, options);
+            self.matches = Some((query.to_string(), options, rows));
+        }
+        let matches = self.matches.as_ref().map_or(&[][..], |(_, _, rows)| rows);
+        let found = self.cursor.search(diff, matches, from, direction);
         if found.is_some() {
             self.focus = found;
         }
@@ -471,9 +499,17 @@ impl DiffPane {
 
     // How the search for `query` went over the rows of the diff, None without one.
     pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
-        let diff = self.diff()?;
-        let matched = (0..diff.rows.len()).map(|row| row_matches(diff, row, query, options));
-        Some(SearchOutcome::of(query, self.selected_row(), matched))
+        let selected = self.selected_row();
+        Some(match &self.matches {
+            Some((q, o, rows)) if q == query && *o == options => {
+                SearchOutcome::of_matches(query, selected, rows)
+            }
+            _ => SearchOutcome::of_matches(
+                query,
+                selected,
+                &matching_rows(self.diff()?, query, options),
+            ),
+        })
     }
 
     // Draws the diff in a panel titled `title`, like the timeline and the local changes do: the
@@ -513,20 +549,13 @@ impl DiffPane {
         let wrap = ctx.wrap.get();
         let layout = ctx.diff_layout.get();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
-        let Some(diff) = drawn(&self.state) else {
+        let Some(diff) = drawn(&self.state).cloned() else {
             ctx.layout.borrow_mut().record(target, area, RowMap::None);
             return;
         };
-        // the scroll counts screen rows while wrapping or split, see `WrapMap`; at another width,
-        // wrap or layout the rows are measured again, showing the selection again with them
-        if !self.cursor.wrap().matches(area.width, wrap, layout) {
-            let map = WrapMap::of(diff, theme, area.width, wrap, layout);
-            self.cursor.set_wrap_map(map);
-            if self.focus.is_some() {
-                let rows = self.cursor.highlighted(diff, self.selected_part());
-                self.cursor.scroll_to(rows);
-            }
-        }
+        self.measure(&diff, theme, area.width, wrap, layout);
+        let diff = diff.as_ref();
+        let wrap = self.cursor.wrap().wraps();
         let total = self.cursor.wrap().total();
         let range = self
             .cursor
@@ -577,8 +606,63 @@ impl DiffPane {
     }
 }
 
+impl DiffPane {
+    // The scroll counts screen rows while wrapping or split, see `WrapMap`: at another width, wrap
+    // or layout the rows are measured again, showing the selection again with them. A big diff's
+    // take a while to wrap: they are measured on another thread, drawn unwrapped meanwhile.
+    fn measure(
+        &mut self,
+        diff: &Arc<ParsedDiff>,
+        theme: &ColorTheme,
+        width: u16,
+        wrap: bool,
+        layout: DiffLayout,
+    ) {
+        // shortcut: wrapped right away up to this many rows, a few milliseconds, rather than
+        // drawn unwrapped first; lower it when wrapping them holds up the screen
+        const MEASURED_RIGHT_AWAY: usize = 20_000;
+        let measured = match self.measuring.take() {
+            Some(m) if wrap && (m.width, m.layout) == (width, layout) => match m.job.try_take() {
+                Some(map) => Some(map),
+                None => {
+                    self.measuring = Some(m);
+                    None
+                }
+            },
+            // measuring for another width or layout
+            _ => None,
+        };
+        let map = match measured {
+            Some(map) => map,
+            None if self.cursor.wrap().matches(width, wrap, layout) => return,
+            // drawn unwrapped while measuring, see above
+            None if self.measuring.is_some() => {
+                if self.cursor.wrap().matches(width, false, layout) {
+                    return;
+                }
+                WrapMap::of(diff, theme, width, false, layout)
+            }
+            None => match &self.tx {
+                Some(tx) if wrap && diff.rows.len() > MEASURED_RIGHT_AWAY => {
+                    let (shared, colors) = (diff.clone(), theme.clone());
+                    let work = move || WrapMap::of(&shared, &colors, width, wrap, layout);
+                    let job = Job::spawn(tx.clone(), work);
+                    self.measuring = Some(Measuring { width, layout, job });
+                    WrapMap::of(diff, theme, width, false, layout)
+                }
+                _ => WrapMap::of(diff, theme, width, wrap, layout),
+            },
+        };
+        self.cursor.set_wrap_map(map);
+        if self.focus.is_some() {
+            let rows = self.cursor.highlighted(diff, self.selected_part());
+            self.cursor.scroll_to(rows);
+        }
+    }
+}
+
 // The diff shown, which the keys act on.
-fn shown(state: &DiffState) -> Option<&ParsedDiff> {
+fn shown(state: &DiffState) -> Option<&Arc<ParsedDiff>> {
     match state {
         DiffState::Shown(diff) => Some(diff),
         _ => None,
@@ -586,7 +670,7 @@ fn shown(state: &DiffState) -> Option<&ParsedDiff> {
 }
 
 // The diff drawn: the one shown, else the one before while the next loads.
-fn drawn(state: &DiffState) -> Option<&ParsedDiff> {
+fn drawn(state: &DiffState) -> Option<&Arc<ParsedDiff>> {
     match state {
         DiffState::Shown(diff) | DiffState::Outdated(diff) => Some(diff),
         DiffState::Loading { previous, .. } => previous.as_ref(),
@@ -670,7 +754,7 @@ mod tests {
     use super::*;
     use crate::{
         test_support::ui::{dump, test_ctx},
-        widget::diff::{parse_diff, DiffLayout},
+        widget::diff::parse_diff,
     };
 
     // A diff whose rows fit the panel unwrapped, so only their wrapping makes it scroll.
@@ -907,6 +991,36 @@ mod tests {
         }
         // a page down, another, back up; then ctrl-e three times
         assert_eq!(rows, [41, 46, 51, 46, 42, 43, 44]);
+    }
+
+    // A big diff's rows are wrapped on another thread, as measuring them takes a while: drawn
+    // unwrapped meanwhile, wrapped once measured.
+    #[test]
+    fn test_big_diff_wraps_in_the_background() {
+        let ctx = test_ctx();
+        ctx.wrap.set(true);
+        let area = Rect::new(0, 0, 20, 5);
+        let long = "x".repeat(40);
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,30000 @@\n".to_string();
+        for _ in 0..30_000 {
+            raw += &format!("+{long}\n");
+        }
+        let ec = crate::event::EventController::without_terminal();
+        let mut pane = DiffPane::default();
+        pane.load_in_background(ec.sender(), Default::default(), move || raw);
+        pane.wait_loading();
+
+        draw(&mut pane, &ctx, area);
+        assert!(pane.measuring.is_some());
+        assert!(!pane.cursor.wrap().wraps());
+        let measured = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !pane.cursor.wrap().wraps() {
+            assert!(std::time::Instant::now() < measured, "never wrapped");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            draw(&mut pane, &ctx, area);
+        }
+        assert!(pane.measuring.is_none());
+        assert!(pane.cursor.wrap().total() > 30_000);
     }
 
     #[test]

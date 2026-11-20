@@ -41,6 +41,22 @@ impl SearchOutcome {
     }
 }
 
+impl SearchOutcome {
+    // `of` the rows `matches`, in order.
+    pub fn of_matches(query: &str, selected: usize, matches: &[usize]) -> Self {
+        if matches.is_empty() {
+            return SearchOutcome::NotFound {
+                query: query.to_string(),
+            };
+        }
+        SearchOutcome::Found {
+            index: matches.binary_search(&selected).map_or(0, |i| i + 1),
+            total: matches.len(),
+            query: query.to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for SearchOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

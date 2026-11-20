@@ -32,7 +32,7 @@ use submodule::{load_submodules, SubmoduleRepositories};
 pub use task::{
     command_log, fits_a_command_line, git_arg, git_bytes, git_command, is_binary, is_kept_byte,
     pathspecs, run_task, stash_args, text_from_git, todo_action, work_path, AfterTask,
-    BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, SharedTask,
+    BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, SharedTask, WorkTree,
 };
 use task::{
     git_output, git_output_bytes, git_output_with_status, lock, pathspec_parts, run_logged,
@@ -265,7 +265,7 @@ pub struct Repository {
     git_dir: PathBuf,
     // the local changes when loaded, for the sidebar count and the first local changes page
     // to share one `git status`; taken by the page, which shows them as they are after that
-    loaded_local_changes: Mutex<Option<LocalChanges>>,
+    loaded_local_changes: Mutex<Option<FilesSnapshot>>,
     // when the last ones it holds or handed over started loading, see `set_local_changes`
     local_changes_started: Mutex<Instant>,
     // their count once the page took them, for the page bar not to run `git status` again

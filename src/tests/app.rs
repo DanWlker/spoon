@@ -830,6 +830,28 @@ fn test_keys_on_the_details_files_dont_wait_for_the_diff() {
     ]);
 }
 
+// More context in the changes tab loads the diff again on another thread, its selection kept.
+#[test]
+fn test_more_context_in_the_details_loads_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("4 enter"),
+        vec![Step::Act(Box::new(|app| {
+            app.handle_event(AppEvent::Key(parse_key_event("+").unwrap()))
+                .unwrap();
+            assert!(app.view.is_loading());
+        }))],
+        check(|app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details")
+            };
+            assert_eq!(view.focus(), DetailFocus::Pane);
+        }),
+    ]);
+}
+
 #[test]
 fn test_a_key_after_moving_in_the_details_acts_on_the_diff_moved_to() {
     let dir = tempfile::tempdir().unwrap();
@@ -1587,10 +1609,10 @@ fn test_repository_refuses_changes_while_the_app_runs_a_command() {
         keys("ctrl-r"),
         check(move |app| {
             running(app, true);
-            let refused = app.repository.stage_paths(&["f.txt"]);
+            let refused = app.repository.work_tree().stage_paths(&["f.txt"]);
             running(app, false);
             assert_eq!(refused, Err("Pushing master, wait for it to finish".into()));
-            app.repository.stage_paths(&["f.txt"]).unwrap();
+            app.repository.work_tree().stage_paths(&["f.txt"]).unwrap();
         }),
     ]);
 }

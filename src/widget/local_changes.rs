@@ -16,10 +16,11 @@ use crate::{
     background::Job,
     color::ColorTheme,
     context::AppContext,
-    event::Sender,
+    event::{AppEvent, Sender},
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
+        WorkTree,
     },
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
@@ -215,8 +216,9 @@ pub struct LocalChangesState<'a> {
     // the app's, set by the view, to load the files on another thread after a change, the screen
     // keeping up meanwhile; without it, as in the tests, they load right away. See `reload`.
     background: Option<Sender>,
-    // the files loading after a change, shown once loaded
-    files_loading: Option<Job<LocalChanges>>,
+    // the files loading after a change (staging, unstaging) made on the same thread before them,
+    // with its error; shown once loaded, see `change_files`
+    files_loading: Option<Job<(Result<(), String>, FilesSnapshot)>>,
     // when the files last started loading after a change, see `reload_if_changed`
     reloaded: Instant,
     // what shows beside the files, see `prepare_diff`
@@ -240,8 +242,11 @@ impl<'a> LocalChangesState<'a> {
         snapshot: Option<LocalChangesSnapshot>,
         background: Option<Sender>,
     ) -> Self {
-        let changes = repository.stage_resolved_conflicts(repository.take_loaded_local_changes());
-        let files_stamp = repository.files_stamp(&changes);
+        let FilesSnapshot {
+            changes,
+            stamp: files_stamp,
+            ..
+        } = repository.take_loaded_local_changes();
         let files = [&changes.unstaged, &changes.staged];
         let sections = match &snapshot {
             Some(snapshot) => std::array::from_fn(|i| {
@@ -1272,14 +1277,16 @@ impl<'a> LocalChangesState<'a> {
 
     // Space: stages the selected line, hunk, file or directory, or unstages it in the staged
     // section; runs the choice of the conflict panel; types in the commit section.
+    // The files reload after a change, even on failure, since git may have changed part of the
+    // index, see `change_files`.
     pub fn select(&mut self) -> Result<(), String> {
-        let result = match self.focus() {
+        match self.focus() {
             Focus::Commit(_) | Focus::Typing(_) => {
                 self.edit_message();
-                return Ok(());
+                Ok(())
             }
             Focus::Side if let Some(conflict) = self.conflict() => {
-                return self.activate_conflict_item(conflict.item);
+                self.activate_conflict_item(conflict.item)
             }
             // the submodule panel is read-only
             Focus::Submodule => Ok(()),
@@ -1287,22 +1294,22 @@ impl<'a> LocalChangesState<'a> {
                 // the patch is made and applied the same way
                 let direction = self.patch_direction();
                 match self.pane.selected_patch(direction) {
-                    Some(patch) => self.repository.apply_patch(&patch, direction),
+                    Some(patch) => {
+                        self.change_files(move |tree| tree.apply_patch(&patch, direction))
+                    }
                     None => Ok(()),
                 }
             }
             // like lazygit, a conflicted file is never staged with its markers: it is resolved in
-            // the conflict panel, and staged once resolved, see `reload_with`
-            Focus::Files if self.picked().is_empty() && self.conflict().is_some() => {
-                return self.enter();
-            }
+            // the conflict panel, and staged once resolved, see `WorkTree::load_files`
+            Focus::Files if self.picked().is_empty() && self.conflict().is_some() => self.enter(),
             Focus::Files
                 if self
                     .target_files()
                     .iter()
                     .any(|f| f.status == LocalChangeStatus::Conflicted) =>
             {
-                return Err("Cannot stage files with merge conflicts, resolve them first".into());
+                Err("Cannot stage files with merge conflicts, resolve them first".into())
             }
             Focus::Files => {
                 let result = self.toggle_stage_row();
@@ -1311,13 +1318,12 @@ impl<'a> LocalChangesState<'a> {
                 }
                 result
             }
-        };
-        // reload even on failure, since git may have changed part of the index
-        self.reload();
-        result
+        }
     }
 
-    fn toggle_stage_row(&self) -> Result<(), String> {
+    // Stages the selected or picked files, or unstages them in the staged section, see
+    // `change_files`.
+    fn toggle_stage_row(&mut self) -> Result<(), String> {
         let Some(row) = self.selected_row() else {
             return Ok(());
         };
@@ -1333,12 +1339,16 @@ impl<'a> LocalChangesState<'a> {
         }
         // a rename is only fully (un)staged together with its source path
         paths.extend(targets.iter().filter_map(|f| f.orig_path.as_deref()));
-        match self.section {
-            LocalChangesSection::Unstaged => self.repository.stage_paths(&paths),
-            LocalChangesSection::Staged => self
-                .repository
-                .unstage_paths(&paths, self.draft.amend_base()),
-        }
+        let paths: Vec<String> = paths.into_iter().map(String::from).collect();
+        let staged_base = self.draft.amend_base().map(String::from);
+        let section = self.section;
+        self.change_files(move |tree| {
+            let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+            match section {
+                LocalChangesSection::Unstaged => tree.stage_paths(&paths),
+                LocalChangesSection::Staged => tree.unstage_paths(&paths, staged_base.as_deref()),
+            }
+        })
     }
 
     // Reloads with `files`, loaded in the background, for changes made outside the app, leaving the
@@ -1347,32 +1357,60 @@ impl<'a> LocalChangesState<'a> {
     pub fn reload_if_changed(&mut self, files: FilesSnapshot) -> bool {
         let stale = files.started < self.reloaded || self.files_loading.is_some();
         let changed = !stale && files.stamp != self.files_stamp;
-        if changed {
-            self.reload_with(files.changes);
+        match changed {
+            // the conflicts resolved by hand are staged first, see `WorkTree::load_files`
+            true if files.changes.has_conflicts() => self.reload(),
+            true => self.reload_with(files),
+            false => {}
         }
         changed
     }
 
-    // Loads the files on another thread with the app's `tx`, after a change, see `reload`.
     // Reloads the changes, keeping each section's selection on the same path if it still exists,
-    // otherwise on the same position, like lazygit does after staging: on another thread when the
-    // view set it up, see `poll_files` and `load_stale_diff`.
+    // otherwise on the same position, like lazygit does after staging, see `change_files`.
     pub fn reload(&mut self) {
+        // nothing changed, nothing to fail
+        let _ = self.change_files(|_| Ok(()));
+    }
+
+    // Makes `change` to the files (staging, unstaging) and loads them again: on another thread
+    // when the view set it up, the screen keeping up meanwhile (its error shown once done, see
+    // `show_files`), else right away, returning its error.
+    fn change_files(
+        &mut self,
+        change: impl FnOnce(&WorkTree) -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
         self.reloaded = Instant::now();
+        let work_tree = self.repository.work_tree();
+        let work = move || {
+            let result = change(&work_tree);
+            (result, work_tree.load_files())
+        };
         match &self.background {
             Some(tx) => {
-                let work = self.repository.local_changes_work();
                 self.files_loading = Some(Job::spawn(tx.clone(), work));
+                Ok(())
             }
-            None => self.reload_with(self.repository.local_changes()),
+            None => {
+                let (result, files) = work();
+                self.reload_with(files);
+                result
+            }
         }
     }
 
-    fn reload_with(&mut self, changes: LocalChanges) {
-        let selected_path = self.selected_path();
-        let changes = self.repository.stage_resolved_conflicts(changes);
+    // The files loaded after a change, the error of the change shown.
+    fn show_files(&mut self, (result, files): (Result<(), String>, FilesSnapshot)) {
+        if let (Err(err), Some(tx)) = (result, &self.background) {
+            tx.send(AppEvent::NotifyError(err));
+        }
+        self.reload_with(files);
+    }
 
-        self.files_stamp = self.repository.files_stamp(&changes);
+    fn reload_with(&mut self, files: FilesSnapshot) {
+        let selected_path = self.selected_path();
+        let FilesSnapshot { changes, stamp, .. } = files;
+        self.files_stamp = stamp;
         self.changes = self.with_amend(changes);
         self.prepare_message();
         self.sync_amend();
@@ -1731,7 +1769,7 @@ impl<'a> LocalChangesState<'a> {
     // so the keys know what it is (a conflict, a submodule).
     fn load_stale_files(&mut self) {
         if let Some(job) = self.files_loading.take() {
-            self.reload_with(job.wait());
+            self.show_files(job.wait());
         }
         if std::mem::take(&mut self.diff_stale) {
             self.load_diff();
@@ -1769,9 +1807,9 @@ impl<'a> LocalChangesState<'a> {
     // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
     // the screen keeping up with the keys meanwhile, or shows it once loaded.
     pub fn load_stale_diff_in_background(&mut self, tx: &Sender) {
-        if let Some(changes) = self.files_loading.as_ref().and_then(Job::try_take) {
+        if let Some(loaded) = self.files_loading.as_ref().and_then(Job::try_take) {
             self.files_loading = None;
-            self.reload_with(changes);
+            self.show_files(loaded);
         }
         if std::mem::take(&mut self.diff_stale) && self.prepare_diff(Some(tx)) {
             let work = self.diff_work();
@@ -5309,6 +5347,40 @@ mod tests {
         assert!(state.waits_for(Confirm) && state.waits_for(FocusRight));
         select(&mut state, "a.txt");
         assert!(state.waits_for(Select));
+        Ok(())
+    }
+
+    // In the app, space stages on another thread, the files reloading there after it, the screen
+    // keeping up; an error shows once done, as a notice.
+    #[test]
+    fn test_stage_in_the_background() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        git.commit("init", "2024-01-01");
+        fs::write(repo_path.join("new.txt"), "new\n")?;
+        fs::write(repo_path.join("gone.txt"), "gone\n")?;
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let ec = crate::event::EventController::without_terminal();
+        let mut state =
+            LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
+        select_row(&mut state, "new.txt");
+        state.select()?;
+        assert!(state.files_loading.is_some());
+        // as the next key does
+        state.load_stale_diff();
+        assert_eq!(paths(&state.changes.staged), ["new.txt"]);
+
+        // gone before git adds it: the key acts, the error comes once done
+        select_row(&mut state, "gone.txt");
+        fs::remove_file(repo_path.join("gone.txt"))?;
+        state.select()?;
+        state.load_stale_diff();
+        let notified = std::iter::from_fn(|| ec.try_recv())
+            .any(|event| matches!(event, AppEvent::NotifyError(err) if err.contains("gone.txt")));
+        assert!(notified);
         Ok(())
     }
 

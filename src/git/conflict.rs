@@ -6,7 +6,7 @@ use std::path::Path;
 use super::{
     git_arg, git_command, git_output, git_output_bytes, git_output_with_status, is_binary,
     pathspecs, run_logged, text_from_git, work_path, CommitHash, LocalChangeStatus, LocalChanges,
-    Repository,
+    Repository, WorkTree,
 };
 
 impl Repository {
@@ -46,58 +46,6 @@ impl Repository {
                 .collect();
             first_conflict_at(&path, &onto, &steps)
         })
-    }
-
-    // `changes`, with the conflicts resolved by hand staged like lazygit does (see
-    // `resolved_conflicts`), loaded again then; not while a git command runs, which `stage_paths`
-    // refuses.
-    pub fn stage_resolved_conflicts(&self, changes: LocalChanges) -> LocalChanges {
-        let conflicted: Vec<&str> = changes
-            .unstaged
-            .iter()
-            .filter(|f| f.status == LocalChangeStatus::Conflicted)
-            .map(|f| f.path.as_str())
-            .collect();
-        let resolved = self.resolved_conflicts(&conflicted);
-        let paths: Vec<&str> = resolved.iter().map(String::as_str).collect();
-        if paths.is_empty() || self.stage_paths(&paths).is_err() {
-            return changes;
-        }
-        self.local_changes()
-    }
-
-    // The conflicted files of `paths` resolved by hand, to stage like lazygit does: both sides
-    // changed the text of the file, and the file in the working tree has no conflict marker left.
-    // A binary file, which git leaves without markers, a side deleted, a symlink or a submodule
-    // is resolved by picking a side instead.
-    fn resolved_conflicts(&self, paths: &[&str]) -> Vec<String> {
-        let text_sides = |path: &str| {
-            unmerged(&self.path, path).is_ok_and(|stages| {
-                [2, 3].iter().all(|side| {
-                    stages.iter().any(|(stage, mode, _)| {
-                        stage == side && matches!(mode.as_str(), "100644" | "100755")
-                    })
-                })
-            })
-        };
-        let no_markers = |path: &str| {
-            let file = work_path(&self.path, path);
-            let Ok(content) = std::fs::read(&file) else {
-                return false;
-            };
-            let binary = is_binary(&content);
-            let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
-            regular
-                && !binary
-                && !String::from_utf8_lossy(&content)
-                    .lines()
-                    .any(|line| is_conflict_marker(line, "<<<<<<<"))
-        };
-        paths
-            .iter()
-            .filter(|path| text_sides(path) && no_markers(path))
-            .map(|path| path.to_string())
-            .collect()
     }
 
     // Resolves a conflicted file by taking one side whole, removing the file when that side
@@ -145,6 +93,57 @@ impl Repository {
             Some(_) => self.run(&["checkout", side.option(), "--", spec], None)?,
         }
         self.run(&["add", "--", spec], None)
+    }
+}
+
+impl WorkTree {
+    // Stages the conflicts of `changes` resolved by hand like lazygit does (see
+    // `resolved_conflicts`); not while a git command runs, which `stage_paths` refuses. Returns
+    // whether it staged some.
+    pub fn stage_resolved_conflicts(&self, changes: &LocalChanges) -> bool {
+        let conflicted: Vec<&str> = changes
+            .unstaged
+            .iter()
+            .filter(|f| f.status == LocalChangeStatus::Conflicted)
+            .map(|f| f.path.as_str())
+            .collect();
+        let resolved = self.resolved_conflicts(&conflicted);
+        let paths: Vec<&str> = resolved.iter().map(String::as_str).collect();
+        !paths.is_empty() && self.stage_paths(&paths).is_ok()
+    }
+
+    // The conflicted files of `paths` resolved by hand, to stage like lazygit does: both sides
+    // changed the text of the file, and the file in the working tree has no conflict marker left.
+    // A binary file, which git leaves without markers, a side deleted, a symlink or a submodule
+    // is resolved by picking a side instead.
+    fn resolved_conflicts(&self, paths: &[&str]) -> Vec<String> {
+        let text_sides = |path: &str| {
+            unmerged(&self.path, path).is_ok_and(|stages| {
+                [2, 3].iter().all(|side| {
+                    stages.iter().any(|(stage, mode, _)| {
+                        stage == side && matches!(mode.as_str(), "100644" | "100755")
+                    })
+                })
+            })
+        };
+        let no_markers = |path: &str| {
+            let file = work_path(&self.path, path);
+            let Ok(content) = std::fs::read(&file) else {
+                return false;
+            };
+            let binary = is_binary(&content);
+            let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
+            regular
+                && !binary
+                && !String::from_utf8_lossy(&content)
+                    .lines()
+                    .any(|line| is_conflict_marker(line, "<<<<<<<"))
+        };
+        paths
+            .iter()
+            .filter(|path| text_sides(path) && no_markers(path))
+            .map(|path| path.to_string())
+            .collect()
     }
 }
 
@@ -422,11 +421,17 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let conflicted = ["text", "binary", "gone"];
         // the markers still there
-        assert!(repository.resolved_conflicts(&conflicted).is_empty());
+        assert!(repository
+            .work_tree()
+            .resolved_conflicts(&conflicted)
+            .is_empty());
         // the text edited: resolved. A binary file has no markers to remove, and a side deleted
         // nothing to edit: both are resolved by picking a side
         write("text", b"both\n");
-        assert_eq!(repository.resolved_conflicts(&conflicted), ["text"]);
+        assert_eq!(
+            repository.work_tree().resolved_conflicts(&conflicted),
+            ["text"]
+        );
     }
 
     #[test]

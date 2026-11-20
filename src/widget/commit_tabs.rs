@@ -132,6 +132,56 @@ struct ChangedFile {
     symbol: &'static str,
 }
 
+// The files a commit changed, as the changes tab lists them and in their tree, made on the thread
+// loading them: a big commit takes a while. See `CommitChangesState::with_files`.
+#[derive(Debug)]
+pub struct CommitFiles {
+    pub changes: Vec<FileChange>,
+    files: Vec<ChangedFile>,
+    tree: FileTreeState,
+}
+
+impl CommitFiles {
+    // The files of `changes`, shown in `view`, on the first file rather than its directory.
+    pub fn of(changes: Vec<FileChange>, view: TreeView) -> Self {
+        let files: Vec<ChangedFile> = changes
+            .iter()
+            .map(|change| {
+                let (path, from) = match change {
+                    FileChange::Add { path }
+                    | FileChange::Modify { path }
+                    | FileChange::Delete { path } => (path, None),
+                    FileChange::Move { from, to } => (to, Some(from.clone())),
+                };
+                ChangedFile {
+                    path: path.clone(),
+                    from,
+                    symbol: change.symbol(),
+                }
+            })
+            .collect();
+        let mut tree = FileTreeState::new(
+            FileTree::new(files.iter().map(|f| f.path.as_str())),
+            Folders::Open,
+            Root::Shown,
+            view,
+        );
+        if let Some(path) = tree
+            .rows()
+            .iter()
+            .find(|r| !r.is_dir())
+            .map(|r| r.path.clone())
+        {
+            tree.select_path(&path);
+        }
+        CommitFiles {
+            changes,
+            files,
+            tree,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct CommitChangesState<'a> {
     repository: &'a Repository,
@@ -272,37 +322,19 @@ impl<'a> CommitChangesState<'a> {
         changes: &[FileChange],
         view: TreeView,
     ) -> Self {
-        let files: Vec<ChangedFile> = changes
-            .iter()
-            .map(|change| {
-                let (path, from) = match change {
-                    FileChange::Add { path }
-                    | FileChange::Modify { path }
-                    | FileChange::Delete { path } => (path, None),
-                    FileChange::Move { from, to } => (to, Some(from.clone())),
-                };
-                ChangedFile {
-                    path: path.clone(),
-                    from,
-                    symbol: change.symbol(),
-                }
-            })
-            .collect();
-        let mut tree = FileTreeState::new(
-            FileTree::new(files.iter().map(|f| f.path.as_str())),
-            Folders::Open,
-            Root::Shown,
-            view,
-        );
-        // start on the first file rather than its directory
-        if let Some(path) = tree
-            .rows()
-            .iter()
-            .find(|r| !r.is_dir())
-            .map(|r| r.path.clone())
-        {
-            tree.select_path(&path);
-        }
+        let files = CommitFiles::of(changes.to_vec(), view);
+        Self::with_files(repository, ctx, base, commit_hash, files)
+    }
+
+    // The changes from `base` to the commit, of its `files` as loaded, see `CommitFiles`.
+    pub fn with_files(
+        repository: &'a Repository,
+        ctx: Rc<AppContext>,
+        base: Option<CommitHash>,
+        commit_hash: CommitHash,
+        files: CommitFiles,
+    ) -> Self {
+        let CommitFiles { files, tree, .. } = files;
         Self {
             repository,
             ctx,
@@ -317,12 +349,13 @@ impl<'a> CommitChangesState<'a> {
         }
     }
 
-    // Shows the diff again, the same file around the changes as the settings say.
-    pub fn reload_diff(&mut self) {
+    // Shows the diff again, the same file around the changes as the settings say, loading on
+    // another thread, the one before drawn meanwhile; selected again once loaded.
+    pub fn reload_diff(&mut self, tx: &Sender) {
         let selection = self.pane.selection();
-        self.pane.set_diff(None);
+        self.pane.outdate();
         self.submodule = None;
-        self.ensure_loaded();
+        self.ensure_loaded_in_background(tx);
         self.pane.restore(selection);
     }
 

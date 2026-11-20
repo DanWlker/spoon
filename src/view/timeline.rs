@@ -62,7 +62,8 @@ impl TimelineView {
     ) -> Result<Self, String> {
         let (history, selected) = repository.file_history(commit, path)?;
         let mut view = Self::of(history, selected, ctx, tx);
-        view.load(repository);
+        view.show_selected(repository);
+        view.pane.wait_loading();
         Ok(view)
     }
 
@@ -86,12 +87,8 @@ impl TimelineView {
         }
     }
 
-    // The file's changes in the selected commit, from the path it had before when it moved.
-    fn load(&mut self, repository: &Repository) {
-        let raw = self.diff_work(repository)();
-        self.pane.show_loaded(&raw, repository);
-    }
-
+    // The work loading the file's changes in the selected commit, from the path it had before
+    // when it moved.
     fn diff_work(&self, repository: &Repository) -> Box<dyn FnOnce() -> String + Send> {
         let revision = &self.history[self.cursor.selected()];
         let mut paths = vec![revision.path.as_str()];
@@ -288,8 +285,11 @@ impl TimelineView {
         if !self.ctx.adjust_diff_context(event) {
             return;
         }
+        // loading on another thread, selected again once loaded
         let selection = self.pane.selection();
-        self.load(repository);
+        let work = self.diff_work(repository);
+        self.pane
+            .load_in_background(self.tx.clone(), repository.converted_paths(), work);
         self.pane.restore(selection);
     }
 
@@ -608,6 +608,13 @@ mod tests {
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::Confirm);
         assert!(view.pane.is_selecting_lines());
+        // more context loads the diff again on another thread, the selection kept
+        press(&mut view, UserEvent::IncreaseDiffContext);
+        assert!(view.pane.loading_since().is_some());
+        view.pane.wait_loading();
+        assert!(view.pane.is_selecting_lines());
+        press(&mut view, UserEvent::DecreaseDiffContext);
+        view.pane.wait_loading();
         press(&mut view, UserEvent::OlderCommit);
         // loading in the background, entered once loaded: the rename, from the path before it;
         // with no hunk, back on the commits

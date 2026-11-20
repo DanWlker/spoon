@@ -15,8 +15,8 @@ use rustc_hash::FxHashMap;
 use crate::{background::joined, error::Result};
 
 use super::{
-    git_command, git_output, load_local_changes, load_submodules, Commit, CommitHash, CommitMap,
-    CommitsMap, Head, Operation, Ref, RefMap, Repository, SharedTask, SortCommit, Tracking,
+    git_command, git_output, load_submodules, Commit, CommitHash, CommitMap, CommitsMap, Head,
+    Operation, Ref, RefMap, Repository, SharedTask, SortCommit, Tracking, WorkTree,
 };
 use crate::git::text_from_git;
 
@@ -46,7 +46,12 @@ impl Repository {
         // what doesn't depend on the commits loads alongside them
         let local_changes_started = Instant::now();
         std::thread::scope(|scope| {
-            let local_changes = scope.spawn(|| load_local_changes(path));
+            let work_tree = WorkTree {
+                path: path.to_path_buf(),
+                git_dir: git_dir.clone(),
+                running: running.clone(),
+            };
+            let local_changes = scope.spawn(move || work_tree.load_files());
             let remotes = scope.spawn(|| load_remotes(path));
             let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
             let refs_snapshot = scope.spawn(|| refs_snapshot(path, &git_dir).ok());
@@ -774,10 +779,10 @@ mod tests {
         assert_eq!(repository.loaded_local_change_count(), 1);
         // taken by the page, the count stays as loaded, without running git status again
         std::fs::write(path.join("b"), "b\n").unwrap();
-        assert_eq!(repository.take_loaded_local_changes().count(), 1);
+        assert_eq!(repository.take_loaded_local_changes().changes.count(), 1);
         assert_eq!(repository.loaded_local_change_count(), 1);
         // taken again, they are as they are now
-        assert_eq!(repository.take_loaded_local_changes().count(), 2);
+        assert_eq!(repository.take_loaded_local_changes().changes.count(), 2);
         // a `git status` started before is older than them: dropped
         let older = crate::git::FilesSnapshot {
             changes: Default::default(),
@@ -785,6 +790,21 @@ mod tests {
             started: before,
         };
         repository.set_local_changes(older);
+        assert_eq!(repository.loaded_local_change_count(), 2);
+        // one with a conflict too, its conflicts resolved by hand not staged
+        let conflicted = crate::git::FilesSnapshot {
+            changes: crate::git::LocalChanges {
+                unstaged: vec![crate::git::LocalChangeFile {
+                    path: "c".into(),
+                    orig_path: None,
+                    status: crate::git::LocalChangeStatus::Conflicted,
+                }],
+                staged: vec![],
+            },
+            stamp: 0,
+            started: Instant::now(),
+        };
+        repository.set_local_changes(conflicted);
         assert_eq!(repository.loaded_local_change_count(), 2);
         assert_eq!(repository.remotes(), ["origin"]);
         assert_eq!(

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::{
     git_output, git_output_bytes, git_output_with_status, parse_name_status, pathspecs, Commit,
-    CommitHash, LocalChangeStatus, Repository,
+    CommitHash, LocalChangeStatus, Repository, WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -143,7 +143,9 @@ impl Repository {
     pub fn diff_summary_between(&self, base: &CommitHash, target: &CommitHash) -> Vec<FileChange> {
         diff_summary(&self.path, base.as_str(), target.as_str())
     }
+}
 
+impl WorkTree {
     // Applies `patch`, a diff produced by `local_change_diff`, to the index: forward stages it,
     // in reverse unstages it.
     pub fn apply_patch(
@@ -350,6 +352,7 @@ mod tests {
         // unstaging the second line keeps the file staged with the first
         let patch = diff.hunks[0].partial_patch(&[1], PatchDirection::Reverse);
         repository
+            .work_tree()
             .apply_patch(&patch, PatchDirection::Reverse)
             .unwrap();
         let staged = git_output(path, &["show", ":é.txt"]).unwrap();
@@ -385,6 +388,7 @@ mod tests {
         ));
         assert_eq!(staged.hunks.len(), 2);
         repository
+            .work_tree()
             .apply_patch(&staged.hunks[0].patch(), PatchDirection::Reverse)
             .unwrap();
         let index = git_output(path, &["show", ":new.txt"]).unwrap();
