@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::{
+    background::Cancel,
     context::AppContext,
     event::Sender,
     keybind::UserEvent,
@@ -314,7 +315,11 @@ impl FileText {
         let (width, rows) = (area.width, self.lines.len());
         let work = || {
             let lines = self.lines.clone();
-            move || WrapMap::from_lines(lines.len(), || plain_lines(&lines), width, true)
+            move |cancel: &Cancel| {
+                // stopped once measuring for another width or file, see `rewrap`
+                let measured = || plain_lines(&lines).take_while(|_| !cancel.is_cancelled());
+                WrapMap::from_lines(lines.len(), measured, width, true)
+            }
         };
         let map = rewrap(
             &self.wrap,

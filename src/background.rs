@@ -2,7 +2,10 @@
 // the screen keeps up with the keys meanwhile.
 
 use std::{
-    sync::{Arc, Condvar, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex, PoisonError,
+    },
     time::{Duration, Instant},
 };
 
@@ -24,27 +27,60 @@ pub fn shows_loading(since: Instant) -> bool {
     since.elapsed() >= LOADING_SHOWN_AFTER
 }
 
+// Whether the job some work runs for was dropped, replaced by another, nobody waiting for what it
+// makes: long work checks it now and then to stop early, see `Job::spawn_cancellable`. The default
+// is never cancelled, for the same work run right away.
+#[derive(Debug, Default, Clone)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    // One cancelled already, for the tests of the work stopping early.
+    #[cfg(test)]
+    pub fn cancelled() -> Self {
+        Cancel(Arc::new(AtomicBool::new(true)))
+    }
+}
+
 // The result of work running on another thread: taken when drawing once there, or waited for
-// before a key acts on what it is for. Dropped, its result goes unused.
+// before a key acts on what it is for. Dropped, its result goes unused, and the work is told to
+// stop, see `Cancel`.
 #[derive(Debug)]
 pub struct Job<T> {
     result: Arc<(Mutex<Option<T>>, Condvar)>,
     started: Instant,
+    cancel: Cancel,
+}
+
+impl<T> Drop for Job<T> {
+    fn drop(&mut self) {
+        self.cancel.0.store(true, Ordering::Relaxed);
+    }
 }
 
 impl<T: Send + 'static> Job<T> {
     // Runs `work`, then wakes the app up through `tx` to draw its result; also once it has run
     // long enough to be shown loading, see `shows_loading`. A panic in it stops the app, see
-    // `main`.
-    // shortcut: a thread per job, the work of one replaced still runs to its end; queue them on
-    // one worker if moving fast through big diffs piles up git processes.
+    // `main`. It runs to its end even once the job is dropped: what changes the repository, like
+    // staging, isn't stopped halfway.
     pub fn spawn(tx: Sender, work: impl FnOnce() -> T + Send + 'static) -> Self {
+        Self::spawn_cancellable(tx, |_| work())
+    }
+
+    // `spawn` for work reading only, which stops early once the job is dropped, as `Cancel`
+    // tells it: a load replaced by another, like the diff of a file the cursor moved past.
+    pub fn spawn_cancellable(tx: Sender, work: impl FnOnce(&Cancel) -> T + Send + 'static) -> Self {
+        let cancel = Cancel::default();
+        let cancelled = cancel.clone();
         let result: Arc<(Mutex<Option<T>>, Condvar)> = Arc::default();
         let shared = result.clone();
         let waiting = Arc::downgrade(&result);
         let wake = tx.clone();
         std::thread::spawn(move || {
-            let value = work();
+            let value = work(&cancelled);
             let (slot, done) = &*shared;
             *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
             done.notify_all();
@@ -61,6 +97,7 @@ impl<T: Send + 'static> Job<T> {
         Job {
             result,
             started: Instant::now(),
+            cancel,
         }
     }
 
@@ -92,6 +129,26 @@ impl<T: Send + 'static> Job<T> {
 mod tests {
     use super::*;
     use crate::event::EventController;
+
+    // A job dropped, replaced by another, tells its work to stop; one kept doesn't.
+    #[test]
+    fn test_dropped_job_cancels_its_work() {
+        let ec = EventController::without_terminal();
+        let (told, stopped) = std::sync::mpsc::channel();
+        let work = |told: std::sync::mpsc::Sender<bool>| {
+            move |cancel: &Cancel| {
+                let until = Instant::now() + Duration::from_secs(30);
+                while !cancel.is_cancelled() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                told.send(cancel.is_cancelled()).unwrap();
+            }
+        };
+        let kept = Job::spawn_cancellable(ec.sender(), work(told.clone()));
+        drop(Job::spawn_cancellable(ec.sender(), work(told)));
+        assert_eq!(stopped.recv_timeout(Duration::from_secs(10)), Ok(true));
+        assert!(kept.try_take().is_none());
+    }
 
     #[test]
     fn test_job_result_is_taken_once_done() {

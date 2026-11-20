@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
-    git::{FileRevision, Repository},
+    git::{DiffWork, FileRevision, Repository},
     keybind::UserEvent,
     keys::{register_moving_keys, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
@@ -89,7 +89,7 @@ impl TimelineView {
 
     // The work loading the file's changes in the selected commit, from the path it had before
     // when it moved.
-    fn diff_work(&self, repository: &Repository) -> Box<dyn FnOnce() -> String + Send> {
+    fn diff_work(&self, repository: &Repository) -> DiffWork {
         let revision = &self.history[self.cursor.selected()];
         let mut paths = vec![revision.path.as_str()];
         if let Some(older) = self.history.get(self.cursor.selected() + 1) {

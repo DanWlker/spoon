@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::{
-    background::Job,
+    background::{Cancel, Job},
     color::ColorTheme,
     event::Sender,
     git::{ConvertedPaths, PatchDirection},
@@ -364,6 +364,21 @@ impl WrapMap {
         wrap: bool,
         layout: DiffLayout,
     ) -> Self {
+        Self::of_until(diff, theme, width, wrap, layout, &Cancel::default())
+    }
+
+    // `of`, stopping once `cancel` says nobody waits for it any more, as measuring a big diff's
+    // rows wrapped on another thread does, see `rewrap`; its rows measured so far then.
+    pub fn of_until(
+        diff: &ParsedDiff,
+        theme: &ColorTheme,
+        width: u16,
+        wrap: bool,
+        layout: DiffLayout,
+        cancel: &Cancel,
+    ) -> Self {
+        // asked now and then, a few times a millisecond
+        const ASKED_EVERY: usize = 1024;
         let split_rows = match layout {
             DiffLayout::Split => diff.split_rows(),
             DiffLayout::Unified => Vec::new(),
@@ -371,11 +386,13 @@ impl WrapMap {
         if split_rows.is_empty() {
             let rows = diff_line_count(diff);
             // made a few at a time, the whole diff of lines would take as much memory again
-            const CHUNK: usize = 1024;
             let lines = || {
-                (0..rows).step_by(CHUNK).flat_map(move |start| {
-                    diff_lines(diff, theme, start..rows.min(start + CHUNK), width)
-                })
+                (0..rows)
+                    .step_by(ASKED_EVERY)
+                    .take_while(|_| !cancel.is_cancelled())
+                    .flat_map(move |start| {
+                        diff_lines(diff, theme, start..rows.min(start + ASKED_EVERY), width)
+                    })
             };
             return WrapMap {
                 layout,
@@ -395,7 +412,10 @@ impl WrapMap {
                 let line = diff_line(diff, &diff.rows[row as usize], gutter, theme, width);
                 wrapped_height(&line, width as usize)
             };
-            prefix = prefix_of(split_rows.iter().map(|split_row| match *split_row {
+            let asked =
+                |(i, _): &(usize, &SplitRow)| i % ASKED_EVERY != 0 || !cancel.is_cancelled();
+            let shown = split_rows.iter().enumerate().take_while(asked);
+            prefix = prefix_of(shown.map(|(_, split_row)| match *split_row {
                 SplitRow::Whole(row) => height(row, Gutter::Both, width),
                 SplitRow::Sides(old, new) => {
                     let old = old.map_or(1, |row| height(row, Gutter::Old, old_width));
@@ -575,7 +595,7 @@ pub struct Measuring {
 // many rows wrapped take a while to measure, so with `tx` they are measured on another thread by
 // `work` (see `measuring`), shown unwrapped meanwhile; else `map` makes it, wrapped or not. A diff
 // and the lines of a file are measured so.
-pub fn rewrap<W: FnOnce() -> WrapMap + Send + 'static>(
+pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
     current: &WrapMap,
     measuring: &mut Option<Measuring>,
     tx: Option<&Sender>,
@@ -610,7 +630,8 @@ pub fn rewrap<W: FnOnce() -> WrapMap + Send + 'static>(
         }
         None => match tx {
             Some(tx) if wrap && rows > MEASURED_RIGHT_AWAY => {
-                let job = Job::spawn(tx.clone(), work());
+                // stopped once measuring for another width or diff, see `Job::spawn_cancellable`
+                let job = Job::spawn_cancellable(tx.clone(), work());
                 *measuring = Some(Measuring { width, layout, job });
                 map(false)
             }
@@ -1355,6 +1376,12 @@ fn shown(text: &str) -> Cow<'_, str> {
 }
 
 pub fn parse_diff(diff: &str) -> ParsedDiff {
+    parse_diff_until(diff, &Cancel::default())
+}
+
+// `parse_diff`, stopping once `cancel` says nobody waits for it any more, with what it parsed so
+// far: a big diff takes a while, see `Job::spawn_cancellable`.
+pub fn parse_diff_until(diff: &str, cancel: &Cancel) -> ParsedDiff {
     let shared: Arc<str> = Arc::from(diff);
     // file names are only shown when the diff spans multiple files (a directory)
     let multiple_files_count = diff
@@ -1381,7 +1408,11 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 
     // keep the original line endings, the patch has to match the file byte for byte
     let mut end = 0;
-    for raw in diff.split_inclusive('\n') {
+    for (i, raw) in diff.split_inclusive('\n').enumerate() {
+        // asked now and then, a few times a millisecond
+        if i % 4096 == 0 && cancel.is_cancelled() {
+            break;
+        }
         let start = end;
         end += raw.len();
         let line = raw.trim_end_matches(['\n', '\r']);
@@ -1465,7 +1496,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
         rows.push(row);
     }
     finish_hunk(&mut current, &mut hunks, rows.len());
-    let (emphasis, pairs) = pair_changes(&mut rows, &shared);
+    let (emphasis, pairs) = pair_changes(&mut rows, &shared, cancel);
     let max_line = rows
         .iter()
         .flat_map(|r| [r.old, r.new])
@@ -1488,7 +1519,11 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 // Pairs each removed line of a change with the first added line after the last one paired that is
 // alike enough (see `alike`), like delta does, and marks in each pair the words that differ between
 // them, in the text as shown, the bytes of `diff`. Returns the marks and the pairs.
-fn pair_changes(rows: &mut [DiffRow], diff: &str) -> (Vec<Range<usize>>, Vec<(usize, usize)>) {
+fn pair_changes(
+    rows: &mut [DiffRow],
+    diff: &str,
+    cancel: &Cancel,
+) -> (Vec<Range<usize>>, Vec<(usize, usize)>) {
     // shortcut: an added line more than this many past the last one paired isn't tried, as each
     // try diffs two lines; raise it when lines further apart should pair
     const LOOKAHEAD: usize = 16;
@@ -1530,6 +1565,10 @@ fn pair_changes(rows: &mut [DiffRow], diff: &str) -> (Vec<Range<usize>>, Vec<(us
         // the first added line not passed yet
         let mut next = 0;
         for (old, &r) in removed.iter().enumerate() {
+            // a line diffed against a few others can take a while
+            if cancel.is_cancelled() {
+                return (emphasis, pairs);
+            }
             let found = (next..added.len()).take(LOOKAHEAD).find_map(|new| {
                 let (old, new_line) = (line(old), line(removed.len() + new));
                 let ranges = changed_ranges(old, new_line)?;
@@ -2513,6 +2552,15 @@ mod tests {
             .collect();
         assert_eq!(one_by_one.len(), 16_667);
         assert_eq!(matching_rows(&diff, "hit", options), one_by_one);
+    }
+
+    // Parsing stops once nobody waits for the diff any more, see `Job::spawn_cancellable`.
+    #[test]
+    fn test_parse_stops_once_cancelled() {
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n".to_string();
+        raw += "-old line\n+new line\n";
+        assert_eq!(parse_diff(&raw).rows.len(), 3);
+        assert!(parse_diff_until(&raw, &Cancel::cancelled()).rows.is_empty());
     }
 
     #[test]

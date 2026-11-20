@@ -12,11 +12,11 @@ use ratatui::{
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::Job,
+    background::{Cancel, Job},
     color::ColorTheme,
     context::AppContext,
     event::Sender,
-    git::{Commit, CommitHash, FileChange, PatchDirection, Repository},
+    git::{Commit, CommitHash, DiffWork, FileChange, PatchDirection, Repository},
     keybind::UserEvent,
     layout::{fit_size, Edge, Panel, RowMap, Target},
     pointer::OnPicks,
@@ -370,7 +370,8 @@ impl<'a> CommitChangesState<'a> {
             return;
         }
         if let Some(work) = self.diff_work(None) {
-            self.pane.show_loaded(&work(), self.repository);
+            self.pane
+                .show_loaded(&work(&Cancel::default()), self.repository);
         }
     }
 
@@ -400,7 +401,7 @@ impl<'a> CommitChangesState<'a> {
 
     // The work loading the diff of the selected row, None when it is loaded or a submodule shows
     // its commits instead, loading them with `tx` on another thread, see `SubmodulePanel::between`.
-    fn diff_work(&mut self, tx: Option<&Sender>) -> Option<Box<dyn FnOnce() -> String + Send>> {
+    fn diff_work(&mut self, tx: Option<&Sender>) -> Option<DiffWork> {
         self.ensure_gitlinks();
         if self.pane.diff().is_some() || self.submodule.is_some() {
             return None;
@@ -438,7 +439,7 @@ impl<'a> CommitChangesState<'a> {
                         .commit_diff_work(&self.commit_hash, &paths, context),
                 }
             }
-            None => Box::new(String::new),
+            None => Box::new(|_: &Cancel| String::new()),
         };
         Some(work)
     }
@@ -610,6 +611,8 @@ pub struct CommitFilesState<'a> {
     shown_before: Option<FilePreview>,
     // the lines of a file with text, see `FilePreview::Text`
     text: FileText,
+    // the preview entered while it or the files load, entered once loaded, see `enter`
+    enter_loaded: bool,
 }
 
 // The tree of the files of the commit once loaded, else the one they are to be shown like: of the
@@ -801,6 +804,7 @@ impl<'a> CommitFilesState<'a> {
             picked: TreeSelection::default(),
             preview: None,
             shown_before: None,
+            enter_loaded: false,
             text: FileText::default(),
         }
     }
@@ -809,6 +813,7 @@ impl<'a> CommitFilesState<'a> {
     // Stepping to the parent or a child of the commit works out its files from the changes
     // between them, keeping the tree when no file was added, deleted or moved.
     pub fn set_commit(&mut self, commit: &Commit, changes: &[FileChange]) {
+        self.enter_loaded = false;
         let hash = &commit.commit_hash;
         let first_parent = commit.parent_commit_hashes.first();
         let step = if first_parent == Some(&self.commit_hash) {
@@ -863,7 +868,7 @@ impl<'a> CommitFilesState<'a> {
             Some(FilePreview::Loading(job)) => self.show_content(job.wait()),
             None => {
                 if let Some(work) = self.preview_work() {
-                    self.show_content(work());
+                    self.show_content(work(&Cancel::default()));
                 }
             }
             preview => self.preview = preview,
@@ -913,7 +918,9 @@ impl<'a> CommitFilesState<'a> {
             },
             None => {
                 if let Some(work) = self.preview_work() {
-                    self.preview = Some(FilePreview::Loading(Job::spawn(tx.clone(), work)));
+                    // stopped once moved past, see `Job::spawn_cancellable`
+                    let job = Job::spawn_cancellable(tx.clone(), work);
+                    self.preview = Some(FilePreview::Loading(job));
                 }
             }
             preview => self.preview = preview,
@@ -973,6 +980,7 @@ impl<'a> CommitFilesState<'a> {
             self.picked.sync_visual(tree);
         }
         if selected_changed {
+            self.enter_loaded = false;
             self.replace_preview();
         }
         Some(result)
@@ -989,8 +997,9 @@ impl<'a> CommitFilesState<'a> {
         self.tree.loaded().map(FileTreeState::filter)
     }
 
+    // Entered once loaded too, see `enter`: the keys of the preview wait for it.
     pub fn is_preview_focused(&self) -> bool {
-        matches!(self.preview, Some(FilePreview::Text(LineCursor::Shown)))
+        self.enter_loaded || matches!(self.preview, Some(FilePreview::Text(LineCursor::Shown)))
     }
 
     // Whether the lines of the preview are being selected from where the visual selection started.
@@ -1019,11 +1028,14 @@ impl<'a> CommitFilesState<'a> {
         matches!(self.preview, Some(FilePreview::Text(_))) && !self.text.lines().is_empty()
     }
 
-    // Moves the focus into the preview of a file, on the first line shown; false when it has no text.
+    // Moves the focus into the preview of a file, on the first line shown; while it or the files
+    // load, once it is loaded, see `show_content`. False when it has no text.
     pub fn enter(&mut self) -> bool {
         if !self.has_text() {
-            return false;
+            self.enter_loaded = self.loading_since().is_some();
+            return self.enter_loaded;
         }
+        self.enter_loaded = false;
         if !self.is_preview_focused() {
             self.preview = Some(FilePreview::Text(LineCursor::Shown));
             self.text.select_shown();
@@ -1034,7 +1046,8 @@ impl<'a> CommitFilesState<'a> {
     // Moves the focus back to the files; false when it is there.
     pub fn back(&mut self) -> bool {
         let focused = self.is_preview_focused();
-        if focused {
+        self.enter_loaded = false;
+        if focused && self.has_text() {
             self.preview = Some(FilePreview::Text(LineCursor::Hidden));
         }
         focused
@@ -1083,8 +1096,10 @@ impl<'a> CommitFilesState<'a> {
 
     // The preview of the selected row, a directory and a submodule right away, else the work
     // loading the file's contents.
-    fn preview_work(&mut self) -> Option<impl FnOnce() -> FileContent + Send + 'static> {
+    fn preview_work(&mut self) -> Option<impl FnOnce(&Cancel) -> FileContent + Send + 'static> {
         self.ensure_gitlinks();
+        // a directory or a submodule has no text to enter, see `enter`
+        let entered = std::mem::take(&mut self.enter_loaded);
         let Some(row) = self.tree.loaded().and_then(|t| t.selected()) else {
             self.preview = Some(FilePreview::Directory);
             return None;
@@ -1100,7 +1115,8 @@ impl<'a> CommitFilesState<'a> {
         let work = self
             .repository
             .commit_file_content_work(&self.commit_hash, &row.path);
-        Some(move || FileContent::of(work()))
+        self.enter_loaded = entered;
+        Some(move |cancel: &Cancel| FileContent::of(work(cancel)))
     }
 
     fn show_content(&mut self, content: FileContent) {
@@ -1113,6 +1129,10 @@ impl<'a> CommitFilesState<'a> {
             FileContent::Error(err) => FilePreview::Error(err),
         };
         self.preview = Some(preview);
+        // entered while loading, see `enter`; a file without text isn't
+        if std::mem::take(&mut self.enter_loaded) {
+            self.enter();
+        }
     }
 }
 
@@ -1424,6 +1444,42 @@ mod tests {
         let again = panel(Some(&tx));
         assert!(again.loading_since().is_none());
         assert_eq!(again.subjects(), ["second"]);
+    }
+
+    // Entered while it loads, as after a refresh, the preview is entered once loaded, its keys
+    // waiting for it meanwhile.
+    #[test]
+    fn test_preview_entered_once_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("a.txt"), "a\n").unwrap();
+        std::fs::write(path.join("b.txt"), "one\ntwo\n").unwrap();
+        repo.add(&["a.txt", "b.txt"]);
+        repo.commit("c1", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let (commit, changes) = repository.commit_detail(&head);
+        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
+        state.ensure_loaded();
+        state.update_tree(|tree| tree.select_path("b.txt"));
+        let ec = crate::event::EventController::without_terminal();
+        state.ensure_loaded_in_background(&ec.sender());
+        assert!(matches!(state.preview, Some(FilePreview::Loading(_))));
+
+        assert!(state.enter());
+        assert!(state.is_preview_focused());
+        let loaded = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while matches!(state.preview, Some(FilePreview::Loading(_))) {
+            assert!(std::time::Instant::now() < loaded, "never loaded");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            state.ensure_loaded_in_background(&ec.sender());
+        }
+        assert!(matches!(
+            state.preview,
+            Some(FilePreview::Text(LineCursor::Shown))
+        ));
     }
 
     #[test]

@@ -301,7 +301,8 @@ impl BlameView {
         self.index = index;
         let revision = &self.history[index];
         let work = repository.blame_work(&revision.commit, &revision.path);
-        self.loading = Some((shown, Job::spawn(self.tx.clone(), work)));
+        // stopped once stepped past, see `Job::spawn_cancellable`
+        self.loading = Some((shown, Job::spawn_cancellable(self.tx.clone(), work)));
     }
 
     // Before drawing: the blame loaded on another thread, once it is.

@@ -22,7 +22,9 @@ pub use conflict::{
     conflict_side, is_conflict_marker, Conflict, ConflictSide, ConflictWork, SideContent,
     MAX_CONFLICT_STEPS,
 };
-pub use diff::{ConvertedPaths, DiffOf, FileChange, PatchDirection, DEFAULT_DIFF_CONTEXT};
+pub use diff::{
+    ConvertedPaths, DiffOf, DiffWork, FileChange, PatchDirection, DEFAULT_DIFF_CONTEXT,
+};
 pub use history::{Blame, CommitTree, FileBlameResult, FileHistoryResult, FileRevision};
 use load::parse_iso_date;
 pub use load::{read_head_commit, read_operation, refs_snapshot, LoadOptions, Loaded};
@@ -35,7 +37,8 @@ pub use task::{
     BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, SharedTask, WorkTree,
 };
 use task::{
-    git_output, git_output_bytes, git_output_with_status, lock, pathspec_parts, run_logged,
+    git_output, git_output_bytes, git_output_bytes_until, git_output_with_status, git_run_until,
+    lock, pathspec_parts, run_logged,
 };
 
 // One allocation for all the copies of a hash, which the maps of parents, children and the graph's

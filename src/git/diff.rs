@@ -3,9 +3,11 @@
 use rustc_hash::FxHashSet;
 use std::path::{Path, PathBuf};
 
+use crate::background::Cancel;
+
 use super::{
-    git_output, git_output_bytes, git_output_with_status, parse_name_status, pathspecs, Commit,
-    CommitHash, LocalChangeStatus, Repository, WorkTree,
+    git_output, git_output_bytes, git_output_bytes_until, git_run_until, parse_name_status,
+    pathspecs, text_from_git, Commit, CommitHash, LocalChangeStatus, Repository, WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -73,18 +75,13 @@ impl Repository {
 
     #[cfg(test)]
     pub fn local_change_diff(&self, paths: &[&str], of: DiffOf, context: usize) -> String {
-        self.local_change_diff_work(paths, of, context)()
+        self.local_change_diff_work(paths, of, context)(&Cancel::default())
     }
 
     // `local_change_diff` as work to run on another thread.
-    pub fn local_change_diff_work(
-        &self,
-        paths: &[&str],
-        of: DiffOf,
-        context: usize,
-    ) -> Box<dyn FnOnce() -> String + Send> {
+    pub fn local_change_diff_work(&self, paths: &[&str], of: DiffOf, context: usize) -> DiffWork {
         if paths.is_empty() {
-            return Box::new(String::new);
+            return Box::new(|_| String::new());
         }
         Box::new(local_change_diff_work(&self.path, paths, of, context))
     }
@@ -105,10 +102,10 @@ impl Repository {
         commit_hash: &CommitHash,
         paths: &[&str],
         context: usize,
-    ) -> Box<dyn FnOnce() -> String + Send> {
+    ) -> DiffWork {
         match self.commit_base(commit_hash) {
             Some(base) => self.diff_between_work(&base, commit_hash.as_str(), paths, context),
-            None => Box::new(String::new),
+            None => Box::new(|_| String::new()),
         }
     }
 
@@ -116,7 +113,7 @@ impl Repository {
     // lines around each change.
     #[cfg(test)]
     pub fn diff_between(&self, base: &str, target: &str, paths: &[&str], context: usize) -> String {
-        self.diff_between_work(base, target, paths, context)()
+        self.diff_between_work(base, target, paths, context)(&Cancel::default())
     }
 
     // `diff_between` as work to run on another thread.
@@ -126,16 +123,18 @@ impl Repository {
         target: &str,
         paths: &[&str],
         context: usize,
-    ) -> Box<dyn FnOnce() -> String + Send> {
+    ) -> DiffWork {
         let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
         args.extend(["-M", base, target].map(String::from));
         args.push(format!("--unified={context}"));
         args.push("--".into());
         args.extend(pathspecs(paths));
         let path = self.path.clone();
-        Box::new(move || {
+        Box::new(move |cancel| {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            git_output(&path, &args).unwrap_or_default()
+            git_output_bytes_until(&path, &args, cancel)
+                .map(|out| text_from_git(&out))
+                .unwrap_or_default()
         })
     }
 
@@ -248,13 +247,17 @@ pub enum DiffOf<'a> {
     Staged { base: Option<&'a str> },
 }
 
+// The work making a diff, stopping early once the job it runs for is dropped, see
+// `Job::spawn_cancellable`.
+pub type DiffWork = Box<dyn FnOnce(&Cancel) -> String + Send>;
+
 // The diff of the local changes of `targets`, see `Repository::local_change_diff_work`.
 fn local_change_diff_work(
     path: &Path,
     targets: &[&str],
     of: DiffOf,
     context: usize,
-) -> impl FnOnce() -> String + Send + 'static {
+) -> impl FnOnce(&Cancel) -> String + Send + 'static {
     let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
     args.push(format!("--unified={context}"));
     match of {
@@ -275,7 +278,10 @@ fn local_change_diff_work(
     }
     let path = path.to_path_buf();
     // `--no-index` exits with 1 when the files differ
-    move || git_output_with_status(&path, &args).map_or_else(String::new, |(_, out)| out)
+    move |cancel| {
+        git_run_until(&path, &args, cancel)
+            .map_or_else(String::new, |out| text_from_git(&out.stdout))
+    }
 }
 
 // The empty tree, as the base of a root commit.

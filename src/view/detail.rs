@@ -596,10 +596,9 @@ impl<'a> DetailView<'a> {
                     self.changes_state.ensure_loaded_in_background(&self.tx);
                     self.changes_state.pane.enter();
                 }
-                // shortcut: the preview has no focus to take once loaded, so it loads right away;
-                // load it in the background when a preview takes long to load after a refresh
+                // entered once loaded in the background
                 DetailTab::Files => {
-                    self.files_state.ensure_loaded();
+                    self.files_state.ensure_loaded_in_background(&self.tx);
                     self.files_state.enter();
                 }
                 DetailTab::Info => {}

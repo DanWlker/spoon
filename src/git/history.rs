@@ -5,20 +5,24 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::background::joined;
+use crate::background::{joined, Cancel};
 
-use super::{git_output, git_output_bytes, parse_iso_date, pathspecs, CommitHash, Repository};
+use super::{
+    git_output, git_output_bytes_until, parse_iso_date, pathspecs, text_from_git, CommitHash,
+    Repository,
+};
 
 impl Repository {
-    // The contents of a file at a commit, as work to run on another thread.
+    // The contents of a file at a commit, as work to run on another thread, stopping early once
+    // the job it runs for is dropped, see `Job::spawn_cancellable`.
     pub fn commit_file_content_work(
         &self,
         commit_hash: &CommitHash,
         path: &str,
-    ) -> impl FnOnce() -> std::result::Result<Vec<u8>, String> + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> std::result::Result<Vec<u8>, String> + Send + 'static {
         let object = format!("{}:{path}", commit_hash.as_str());
         let repository = self.path.clone();
-        move || git_output_bytes(&repository, &["cat-file", "blob", &object])
+        move |cancel| git_output_bytes_until(&repository, &["cat-file", "blob", &object], cancel)
     }
 
     pub fn commit_tree(&self, commit_hash: &CommitHash) -> CommitTree {
@@ -36,14 +40,15 @@ impl Repository {
     }
 
     // Who last changed each line of the file at `path` as of the commit, see `Blame`, as work to
-    // run on another thread.
+    // run on another thread, stopping early once the job it runs for is dropped, see
+    // `Job::spawn_cancellable`.
     pub fn blame_work(
         &self,
         commit_hash: &CommitHash,
         path: &str,
-    ) -> impl FnOnce() -> std::result::Result<Blame, String> + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> std::result::Result<Blame, String> + Send + 'static {
         let (repository, commit, path) = (self.path.clone(), commit_hash.clone(), path.to_string());
-        move || blame_at(&repository, &commit, &path)
+        move |cancel| blame_at(&repository, &commit, &path, cancel)
     }
 
     #[cfg(test)]
@@ -74,7 +79,12 @@ impl Repository {
         move || {
             let (history, index) = file_history_at(&repository, &start, &path)?;
             let revision = &history[index];
-            let blame = blame_at(&repository, &revision.commit, &revision.path)?;
+            let blame = blame_at(
+                &repository,
+                &revision.commit,
+                &revision.path,
+                &Cancel::default(),
+            )?;
             Ok((history, index, blame))
         }
     }
@@ -172,9 +182,10 @@ fn blame_at(
     repository: &Path,
     commit_hash: &CommitHash,
     path: &str,
+    cancel: &Cancel,
 ) -> std::result::Result<Blame, String> {
     let args = ["blame", "--porcelain", commit_hash.as_str(), "--", path];
-    git_output(repository, &args).map(|out| parse_blame(&out))
+    git_output_bytes_until(repository, &args, cancel).map(|out| parse_blame(&text_from_git(&out)))
 }
 
 // See `Repository::file_history_work`: its two walks of the history run side by side.
@@ -360,7 +371,7 @@ mod tests {
         let (history, _) = repository.file_history(&head, &name).unwrap();
         assert_eq!(history.len(), 2);
         assert!(history.iter().all(|r| r.path == name));
-        let blame = repository.blame_work(&head, &name)().unwrap();
+        let blame = repository.blame_work(&head, &name)(&Cancel::default()).unwrap();
         assert_eq!(blame.lines.len(), 2);
     }
 

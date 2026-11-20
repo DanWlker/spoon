@@ -3,7 +3,7 @@ use std::{ops::RangeInclusive, sync::Arc, time::Instant};
 use ratatui::{buffer::Buffer, layout::Rect, text::Line};
 
 use crate::{
-    background::Job,
+    background::{Cancel, Job},
     color::ColorTheme,
     context::AppContext,
     event::Sender,
@@ -15,9 +15,9 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, matching_rows, parse_diff, render_diff_lines, render_split_rows, rewrap,
-            split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart, DiffRowKind, Measuring,
-            ParsedDiff, Step, WrapMap,
+            diff_lines, matching_rows, parse_diff, parse_diff_until, render_diff_lines,
+            render_split_rows, rewrap, split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart,
+            DiffRowKind, Measuring, ParsedDiff, Step, WrapMap,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -115,7 +115,7 @@ impl DiffPane {
         &mut self,
         tx: Sender,
         converted: ConvertedPaths,
-        work: impl FnOnce() -> String + Send + 'static,
+        work: impl FnOnce(&Cancel) -> String + Send + 'static,
     ) {
         self.outdate();
         let previous = match std::mem::take(&mut self.state) {
@@ -124,9 +124,12 @@ impl DiffPane {
         };
         self.tx = Some(tx.clone());
         self.state = DiffState::Loading {
-            job: Job::spawn(tx, move || {
-                let mut diff = parse_diff(&work());
-                diff.drop_converted(&converted);
+            // stopped once replaced by another, see `Job::spawn_cancellable`
+            job: Job::spawn_cancellable(tx, move |cancel| {
+                let mut diff = parse_diff_until(&work(cancel), cancel);
+                if !cancel.is_cancelled() {
+                    diff.drop_converted(&converted);
+                }
                 diff
             }),
             previous,
@@ -611,7 +614,7 @@ impl DiffPane {
     ) {
         let work = || {
             let (shared, colors) = (diff.clone(), theme.clone());
-            move || WrapMap::of(&shared, &colors, width, wrap, layout)
+            move |cancel: &Cancel| WrapMap::of_until(&shared, &colors, width, wrap, layout, cancel)
         };
         let Some(map) = rewrap(
             self.cursor.wrap(),
@@ -757,7 +760,7 @@ mod tests {
     fn test_diff_set_while_loading_drops_what_was_to_be_selected() {
         let ec = crate::event::EventController::without_terminal();
         let mut pane = DiffPane::default();
-        pane.load_in_background(ec.sender(), Default::default(), String::new);
+        pane.load_in_background(ec.sender(), Default::default(), |_| String::new());
         assert!(pane.enter());
         assert!(pane.is_focused());
         pane.set_diff(None);
@@ -978,7 +981,7 @@ mod tests {
         }
         let ec = crate::event::EventController::without_terminal();
         let mut pane = DiffPane::default();
-        pane.load_in_background(ec.sender(), Default::default(), move || raw);
+        pane.load_in_background(ec.sender(), Default::default(), move |_| raw);
         pane.wait_loading();
 
         draw(&mut pane, &ctx, area);
@@ -1047,7 +1050,7 @@ mod tests {
         assert!(pane.is_focused());
 
         let next = "diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-gone\n+new\n";
-        pane.load_in_background(ec.sender(), Default::default(), move || next.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move |_| next.to_string());
         let shown = dump(&draw(&mut pane, &ctx, area));
         assert!(shown.contains("old"), "{shown}");
         assert!(!pane.is_focused());
@@ -1068,7 +1071,7 @@ mod tests {
 
         // the hunk selected before a reload, while the reloaded diff still loads
         let mut pane = DiffPane::default();
-        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move |_| raw.to_string());
         let selection = DiffSelection {
             focus: Some(DiffPart::Hunk),
             hunk: 1,
@@ -1080,7 +1083,7 @@ mod tests {
         assert_eq!(pane.cursor.hunk, 1);
 
         // entering, its first hunk
-        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move |_| raw.to_string());
         assert!(pane.enter());
         // its keys taken meanwhile, see `focused_part`
         assert!(pane.is_focused());
@@ -1089,9 +1092,9 @@ mod tests {
         assert_eq!(pane.cursor.hunk, 0);
 
         // another diff loading instead drops what was to be selected
-        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move |_| raw.to_string());
         pane.restore(selection);
-        pane.load_in_background(ec.sender(), Default::default(), move || raw.to_string());
+        pane.load_in_background(ec.sender(), Default::default(), move |_| raw.to_string());
         pane.wait_loading();
         assert!(!pane.is_focused());
     }

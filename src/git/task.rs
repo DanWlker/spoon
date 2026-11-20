@@ -7,13 +7,14 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use chrono::{DateTime, Local};
 
 use super::{CommitHash, Operation, Repository};
+use crate::background::Cancel;
 
 impl Repository {
     // The message of the commit at HEAD, of which git leaves out the name: `log -1 --format=%B`.
@@ -575,14 +576,17 @@ pub(super) fn run_logged(
     }
     let output = match timeout {
         None => child.wait_with_output().map_err(command_error)?,
-        Some(timeout) => match wait_with_timeout(child, timeout).map_err(command_error)? {
-            Some(output) => output,
-            None => {
-                let error = format!("git {name} timed out after {timeout:?}");
-                log_command(args, Err(&error), started);
-                return Err(error);
+        Some(timeout) => {
+            let deadline = Instant::now() + timeout;
+            match wait_or_stop(child, move || Instant::now() >= deadline).map_err(command_error)? {
+                Some(output) => output,
+                None => {
+                    let error = format!("git {name} timed out after {timeout:?}");
+                    log_command(args, Err(&error), started);
+                    return Err(error);
+                }
             }
-        },
+        }
     };
     // git reports progress and results of many commands on stderr
     let text = format!(
@@ -611,7 +615,13 @@ pub(super) fn run_logged(
 }
 
 // Like `Child::wait_with_output`, but stops the command once `timeout` passed, None then.
-fn wait_with_timeout(mut child: Child, timeout: Duration) -> std::io::Result<Option<Output>> {
+// The output of `child`, None when `stop` says so before it is done: it is stopped then. Waited
+// for as it runs, so it is back once done; `stop` is asked a few times a second meanwhile.
+fn wait_or_stop(
+    mut child: Child,
+    stop: impl Fn() -> bool + Send + 'static,
+) -> std::io::Result<Option<Output>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
     // read meanwhile, a command filling a pipe would wait for it to be read
     fn read(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
@@ -624,20 +634,33 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> std::io::Result<Opt
     }
     let stdout = read(child.stdout.take());
     let stderr = read(child.stderr.take());
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            // SIGTERM, not `Child::kill`'s SIGKILL: git then removes its lock files and the pack it
-            // was receiving, which would otherwise make the next fetch fail
-            let _ = Command::new("kill").arg(child.id().to_string()).status();
-            let _ = child.wait();
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let (done, stopped) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let watcher = {
+        let (done, stopped, id) = (done.clone(), stopped.clone(), child.id());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::Relaxed) {
+                if stop() {
+                    stopped.store(true, Ordering::Relaxed);
+                    // SIGTERM, not `Child::kill`'s SIGKILL: git then removes its lock files and
+                    // the pack it was receiving, which would otherwise make the next fetch fail
+                    let _ = Command::new("kill").arg(id.to_string()).status();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
     };
+    let status = child.wait();
+    done.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
+    let status = status?;
+    // the readers left to end on their own: what git started may hold the pipes open a while
+    if stopped.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
     Ok(Some(Output {
@@ -799,6 +822,37 @@ pub(super) fn git_output_with_status(
     Some((output.status.code(), text_from_git(&output.stdout)))
 }
 
+// What git reading the repository at `path` gave, stopped and None once `cancel` says the job it
+// runs for was dropped (or when it can't start): a diff of many files takes a while. See
+// `Job::spawn_cancellable`.
+pub(super) fn git_run_until(
+    path: &Path,
+    args: &[impl AsRef<OsStr>],
+    cancel: &Cancel,
+) -> Option<Output> {
+    let child = git_command()
+        .args(args.iter().map(|a| git_arg(&a.as_ref().to_string_lossy())))
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let cancel = cancel.clone();
+    wait_or_stop(child, move || cancel.is_cancelled()).ok()?
+}
+
+// `git_output_bytes` stopping once `cancel` says so, see `git_run_until`.
+pub(super) fn git_output_bytes_until(
+    path: &Path,
+    args: &[&str],
+    cancel: &Cancel,
+) -> std::result::Result<Vec<u8>, String> {
+    let output = git_run_until(path, args, cancel)
+        .ok_or_else(|| format!("git {} stopped or failed to run", args[0]))?;
+    output_result(args, output)
+}
+
 pub(super) fn git_output(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
     // a file name or a diff's line can be any bytes, see `text_from_git`
     git_output_bytes(path, args).map(|out| text_from_git(&out))
@@ -811,6 +865,11 @@ pub(super) fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Resul
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.join(" ")))?;
+    output_result(args, output)
+}
+
+// The output of git run with `args`, its error when it failed.
+fn output_result(args: &[&str], output: Output) -> std::result::Result<Vec<u8>, String> {
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -1320,6 +1379,20 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
         git_output(&work, &["config", "--unset", "remote.origin.uploadpack"]).unwrap();
         run_task(&work, &fetch(None)).unwrap();
+    }
+
+    // git reading the repository is stopped once nobody waits for what it gives, even when what it
+    // started holds its output open.
+    #[test]
+    fn test_git_stopped_once_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::test_support::git::GitRepository::new(dir.path()).init();
+        let args = ["-c", "alias.slow=!sleep 5", "slow"];
+        let started = Instant::now();
+        assert!(git_run_until(dir.path(), &args, &Cancel::cancelled()).is_none());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let done = git_run_until(dir.path(), &["rev-parse", "--git-dir"], &Cancel::default());
+        assert!(done.is_some_and(|out| out.status.success()));
     }
 
     #[test]

@@ -13,12 +13,12 @@ use rustc_hash::FxHashSet;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::Job,
+    background::{Cancel, Job},
     color::ColorTheme,
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
-        AfterTask, CommitHash, ConflictSide, DiffOf, FilesSnapshot, GitCommand, GitTask,
+        AfterTask, CommitHash, ConflictSide, DiffOf, DiffWork, FilesSnapshot, GitCommand, GitTask,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
         WorkTree,
     },
@@ -1838,7 +1838,9 @@ impl<'a> LocalChangesState<'a> {
                     let converted = self.repository.converted_paths();
                     self.pane.load_in_background(tx.clone(), converted, work)
                 }
-                None => self.pane.show_loaded(&work(), self.repository),
+                None => self
+                    .pane
+                    .show_loaded(&work(&Cancel::default()), self.repository),
             }
         }
     }
@@ -1856,7 +1858,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // The diff of the selected row, as work to run.
-    fn diff_work(&self) -> Box<dyn FnOnce() -> String + Send> {
+    fn diff_work(&self) -> DiffWork {
         let context = self.ctx.diff_context.get();
         let tracked_of = match self.section {
             LocalChangesSection::Staged => DiffOf::Staged {
@@ -1882,7 +1884,7 @@ impl<'a> LocalChangesState<'a> {
                 };
                 self.repository.local_change_diff_work(&paths, of, context)
             })
-            .unwrap_or_else(|| Box::new(String::new))
+            .unwrap_or_else(|| Box::new(|_| String::new()))
     }
 
     // Shows the conflict or the submodule of the selected row beside the files, else its diff:
