@@ -4,6 +4,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::widget::tree_query::Toward;
 use crate::{
+    background::Loads,
     context::AppContext,
     event::{AppEvent, Sender},
     external::{editor_command, merge_tool_command},
@@ -34,6 +35,16 @@ pub struct LocalChangesView<'a> {
     tx: Sender,
 }
 
+impl Loads for LocalChangesView<'_> {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        self.local_changes_state.acts_on_loading(event)
+    }
+
+    fn load_for(&mut self, event: UserEvent) {
+        self.local_changes_state.load_for(event);
+    }
+}
+
 impl<'a> LocalChangesView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
@@ -52,11 +63,6 @@ impl<'a> LocalChangesView<'a> {
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {
         self.local_changes_state.is_diff_loading()
-    }
-
-    // Whether `event` waits for what loads in the background, see `LocalChangesState::needs`.
-    pub fn waits_for(&self, event: UserEvent) -> bool {
-        self.local_changes_state.waits_for(event)
     }
 
     pub fn is_files_loading(&self) -> bool {
@@ -81,7 +87,7 @@ impl<'a> LocalChangesView<'a> {
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         // the keys moving the cursor leave its diff to load in the background, see `update_layout`;
         // the others wait for what they act on, see `LocalChangesState::needs`
-        self.local_changes_state.load_for(event);
+        self.local_changes_state.load_before(event);
         self.handle_event_inner(event, key);
         self.send_request();
     }

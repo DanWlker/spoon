@@ -23,13 +23,17 @@ pub use conflict::{
     MAX_CONFLICT_STEPS,
 };
 pub use diff::{
-    ConvertedPaths, DiffOf, DiffWork, FileChange, PatchDirection, DEFAULT_DIFF_CONTEXT,
+    ChangedGitlinks, CommitChanges, ConvertedPaths, DiffOf, DiffWork, FileChange, PatchDirection,
+    DEFAULT_DIFF_CONTEXT,
 };
 pub use history::{Blame, CommitTree, FileBlameResult, FileHistoryResult, FileRevision};
 use load::parse_iso_date;
 pub use load::{read_head_commit, read_operation, refs_snapshot, LoadOptions, Loaded};
+use local_changes::LoadedFiles;
 use local_changes::{load_local_changes, parse_name_status};
-pub use local_changes::{Entry, FilesSnapshot, LocalChangeFile, LocalChangeStatus, LocalChanges};
+pub use local_changes::{
+    Entry, FilesSnapshot, LocalChangeFile, LocalChangeStatus, LocalChanges, Seen,
+};
 use submodule::{load_submodules, SubmoduleRepositories};
 pub use task::{
     command_log, fits_a_command_line, git_arg, git_bytes, git_command, is_binary, is_kept_byte,
@@ -266,13 +270,11 @@ pub struct Repository {
     path: PathBuf,
     // the git directory, to find the state files of operations in without running git
     git_dir: PathBuf,
-    // the local changes when loaded, for the sidebar count and the first local changes page
-    // to share one `git status`; taken by the page, which shows them as they are after that
-    loaded_local_changes: Mutex<Option<FilesSnapshot>>,
-    // when the last ones it holds or handed over started loading, see `set_local_changes`
+    // the local changes last loaded, for the page bar to count and the local changes page to open
+    // with, see `take_loaded_local_changes`
+    loaded_local_changes: Mutex<LoadedFiles>,
+    // when the last ones it holds started loading, see `set_local_changes`
     local_changes_started: Mutex<Instant>,
-    // their count once the page took them, for the page bar not to run `git status` again
-    taken_count: Mutex<Option<usize>>,
     // the git command the app runs in the background, shared with it: the repository refuses to
     // be changed meanwhile, see `run`
     running: SharedTask,
@@ -301,6 +303,9 @@ pub struct Repository {
     commit_hashes: Vec<CommitHash>,
     // the loaded commits on the history of HEAD, walked once asked for, see `head_history`
     head_history: std::sync::OnceLock<FxHashSet<CommitHash>>,
+    // what a root commit is compared to, found when loaded, see `commit_base`; None for a
+    // repository loaded for its graph only, see `load_graph`
+    empty_tree: Option<String>,
 }
 
 impl Repository {

@@ -6,22 +6,24 @@ Some keys are sequences, pressed one after another, like <kbd>y</kbd> <kbd>y</kb
 The status bar shows the keys working everywhere, like push, pull and fetch, as many as fit.
 <kbd>H</kbd> shows the keys of the focused panel in a popup at the bottom right, and hides it again; while a popup has the focus or text is typed, the status bar shows their keys instead.
 
-A key acting on what still loads in the background (a diff, the files, a blame) is kept until it is loaded, the screen going on meanwhile; the keys pressed after it follow it in order, and <kbd>Esc</kbd> drops them. <kbd>Esc</kbd> never waits: it clears, steps back or closes at once, and what it closes stops loading; a git command running, like staging or a fetch, goes on. Keys moving the selection never wait, unless keys are kept before them; in a diff or preview still loading, they do nothing. The mouse does what the keys would, but nothing on what still loads, and nothing while keys are kept. Which keys wait:
+A key acting on what still loads in the background (a diff, the files, a blame, a window opening) is kept until it is loaded, the screen going on meanwhile; the keys pressed after it follow it in order, and <kbd>Esc</kbd> drops them. Moving through what loads waits too: the diff as it was before reloading, or the files of the commit moved from, aren't what the key moves through. Moving to another row of a list doesn't wait, what that row shows loading once drawn, and neither does moving through a list reloading in place, like the local changes after staging. <kbd>Esc</kbd> never waits: it clears, steps back or closes at once, and what it closes stops loading; a git command running, like staging or a fetch, goes on. The mouse does what the keys would, but nothing on what still loads, and nothing while keys are kept. Which keys wait:
 
 | Where | Waits for | Waits | Acts at once |
 | ----- | --------- | ----- | ------------ |
 | Local changes, the files | the diff, conflict or submodule beside them | <kbd>Enter</kbd> and <kbd>Ctrl-l</kbd>, going into it; <kbd>Space</kbd> on a conflicted file | every other key |
-| Local changes, the files | the files reloading, after staging or a change outside the app | every key acting on them | typing the filter |
+| Local changes, the files | the files reloading, after staging, a change outside the app or opening the page again | every key acting on them | moving the cursor, typing the filter |
 | Local changes, the app's keys (like <kbd>Tab</kbd> and <kbd>Ctrl-r</kbd>) and the sidebar | the files reloading | every key | |
-| Local changes, the diff, conflict or submodule | it | every key but those moving the selection | |
+| Local changes, the diff, conflict or submodule | it | every key | |
 | Local changes, the commit message | | | typing; committing waits for the files reloading |
 | Details, the changes or files tab | the diff or preview beside the files | <kbd>Enter</kbd> and <kbd>Ctrl-l</kbd>, going into it | every other key |
 | Details, the files tab | its files | every key acting on them | |
-| Details, after moving to another commit | its files | every key acting on them | |
-| Details, the diff or preview | it | every key but those moving the selection | |
+| Details, opened, moved to another commit or comparing | its changes | every key acting on them | moving to another commit |
+| Details, the diff or preview | it | every key | |
 | Timeline, the commits | the diff | <kbd>Enter</kbd>, <kbd>l</kbd>, <kbd>2</kbd> and <kbd>Ctrl-l</kbd>, going into it | every other key |
-| Timeline, the diff | it | every key but those moving the selection | |
+| Timeline, the diff | it | every key | |
 | Blame | the blame of the commit stepped to | every key but stepping again | |
+| The blame or timeline opening | its history | every key of the page under it | <kbd>Esc</kbd>, which stops it; the app's own keys |
+| A popup looking for conflicts | the check | <kbd>Enter</kbd>, which runs once none were found, else shows them first | every other key |
 
 
 The default key bindings can be overridden.
@@ -154,7 +156,7 @@ A merge commit is drawn as a ring, larger than a commit's dot, with a chevron in
 
 Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
-The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them. The popups of merge, rebase, cherry-pick, revert and drop warn of the first conflict the command would stop at, looked for in the background once the popup opens: "Checking for conflicts…" shows until it is found.
+The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them. The popups of merge, rebase, cherry-pick, revert and drop warn of the first conflict the command would stop at, looked for in the background once the popup opens: "Checking for conflicts…" shows until it is found, and <kbd>Enter</kbd> waits for it, showing the warning instead of running when there is one.
 
 These keys are bound for the commit graph only: the local changes page uses <kbd>d</kbd> <kbd>s</kbd> <kbd>m</kbd> for its own commands. While the commit details are open, they work with the commit list focused (<kbd>2</kbd>), not from the tabs of the details.
 

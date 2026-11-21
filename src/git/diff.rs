@@ -1,13 +1,13 @@
 // The diffs of commits and of the local changes, the files they change, and applying a patch.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::{Path, PathBuf};
 
 use crate::background::Cancel;
 
 use super::{
-    git_output, git_output_bytes_until, git_run_until, parse_name_status, pathspecs, text_from_git,
-    Commit, CommitHash, LocalChangeStatus, Repository, WorkTree,
+    git_output, git_output_bytes_until, git_run_until, parse_name_status, pathspecs,
+    submodule::gitlinks_at, text_from_git, CommitHash, LocalChangeStatus, Repository, WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -47,25 +47,44 @@ impl Repository {
         }
     }
 
-    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
+    #[cfg(test)]
+    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (super::Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
-        (
-            commit,
-            self.commit_changes_work(commit_hash)(&Cancel::default()),
-        )
+        let changes = self.changes_work(None, commit_hash)(&Cancel::default());
+        (commit, changes.changes)
     }
 
-    // The files a commit changed, see `commit_detail`, as work to run on another thread, stopping
-    // early once the job it runs for is dropped, see `Job::spawn_cancellable`.
-    pub fn commit_changes_work(
+    // What changed from `base` to the commit, from what it is compared to when None (see
+    // `commit_base`): its files, and the submodules among them. As work to run on another thread,
+    // stopping early once the job it runs for is dropped, see `Job::read`.
+    pub fn changes_work(
         &self,
+        base: Option<&CommitHash>,
         commit_hash: &CommitHash,
-    ) -> impl FnOnce(&Cancel) -> Vec<FileChange> + Send + 'static {
-        let base = self.commit_base(commit_hash);
+    ) -> impl FnOnce(&Cancel) -> CommitChanges + Send + 'static {
+        let base = match base {
+            Some(base) => Some(base.as_str().to_string()),
+            None => self.commit_base(commit_hash),
+        };
         let (path, target) = (self.path.clone(), commit_hash.as_str().to_string());
         move |cancel| {
-            base.map(|base| diff_summary(&path, &base, &target, cancel))
-                .unwrap_or_default()
+            let Some(base) = base else {
+                return CommitChanges::default();
+            };
+            let changes = diff_summary(&path, &base, &target, cancel);
+            // under its name before a rename too
+            let paths: Vec<&str> = changes
+                .iter()
+                .flat_map(|change| match change {
+                    FileChange::Move { from, to } => vec![from.as_str(), to.as_str()],
+                    change => vec![change.path()],
+                })
+                .collect();
+            let gitlinks = ChangedGitlinks {
+                commit: gitlinks_at(&path, &target, &paths, cancel),
+                base: gitlinks_at(&path, &base, &paths, cancel),
+            };
+            CommitChanges { changes, gitlinks }
         }
     }
 
@@ -73,7 +92,7 @@ impl Repository {
     fn commit_base(&self, commit_hash: &CommitHash) -> Option<String> {
         match self.parents_hash(commit_hash).first() {
             Some(parent) => Some(parent.as_str().to_string()),
-            None => empty_tree(&self.path).ok(),
+            None => self.empty_tree.clone(),
         }
     }
 
@@ -96,7 +115,11 @@ impl Repository {
     pub fn amend_base(&self) -> std::result::Result<String, String> {
         git_output(&self.path, &["rev-parse", "--verify", "--quiet", "HEAD^"])
             .map(|_| "HEAD^".to_string())
-            .or_else(|_| empty_tree(&self.path))
+            .or_else(|_| {
+                self.empty_tree
+                    .clone()
+                    .ok_or_else(|| "no empty tree".to_string())
+            })
     }
 
     // The diff of `paths` (all files when empty) made by a commit, against its first parent,
@@ -141,16 +164,6 @@ impl Repository {
                 .unwrap_or_default()
         })
     }
-
-    // The files changed from one commit to another.
-    pub fn diff_summary_between(&self, base: &CommitHash, target: &CommitHash) -> Vec<FileChange> {
-        diff_summary(
-            &self.path,
-            base.as_str(),
-            target.as_str(),
-            &Cancel::default(),
-        )
-    }
 }
 
 impl WorkTree {
@@ -176,6 +189,27 @@ impl WorkTree {
 pub enum PatchDirection {
     Forward,
     Reverse,
+}
+
+// The submodules (gitlinks) among the paths a commit changed, with the commit each records: in
+// it, and in what it is compared to, a submodule deleted being a gitlink in the base only.
+#[derive(Debug, Default, Clone)]
+pub struct ChangedGitlinks {
+    pub commit: FxHashMap<String, String>,
+    pub base: FxHashMap<String, String>,
+}
+
+impl ChangedGitlinks {
+    pub fn contains(&self, path: &str) -> bool {
+        self.commit.contains_key(path) || self.base.contains_key(path)
+    }
+}
+
+// What changed from one commit to another, see `Repository::changes_work`.
+#[derive(Debug, Default)]
+pub struct CommitChanges {
+    pub changes: Vec<FileChange>,
+    pub gitlinks: ChangedGitlinks,
 }
 
 #[derive(Debug, Clone)]
@@ -258,7 +292,7 @@ pub enum DiffOf<'a> {
 }
 
 // The work making a diff, stopping early once the job it runs for is dropped, see
-// `Job::spawn_cancellable`.
+// `Job::read`.
 pub type DiffWork = Box<dyn FnOnce(&Cancel) -> String + Send>;
 
 // The diff of the local changes of `targets`, see `Repository::local_change_diff_work`.
@@ -295,7 +329,7 @@ fn local_change_diff_work(
 }
 
 // The empty tree, as the base of a root commit.
-fn empty_tree(path: &Path) -> std::result::Result<String, String> {
+pub(super) fn empty_tree(path: &Path) -> std::result::Result<String, String> {
     git_output(path, &["hash-object", "-t", "tree", "/dev/null"]).map(|s| s.trim().to_string())
 }
 
@@ -323,7 +357,7 @@ mod tests {
         repo.commit("c1", "2024-01-01");
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let head = repository.head_commit().unwrap();
-        let changes = |cancel| repository.commit_changes_work(&head)(&cancel);
+        let changes = |cancel| repository.changes_work(None, &head)(&cancel).changes;
         assert_eq!(changes(Cancel::default()).len(), 1);
         assert!(changes(Cancel::cancelled()).is_empty());
         let files = |cancel| repository.commit_tree_work(&head)(&cancel).0;

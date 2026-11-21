@@ -88,7 +88,7 @@ pub enum AppEvent {
     // the repository loaded again, see `App::start_reload`
     Reloaded {
         generation: u64,
-        result: Result<Box<crate::app::Reloaded>, String>,
+        result: Result<Box<crate::app::Reloaded>, crate::app::ReloadFailed>,
     },
     // the blame of the file at `path` as of the commit, on `line` (from 0) when one is selected
     OpenBlame {

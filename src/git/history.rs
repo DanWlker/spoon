@@ -8,13 +8,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::background::{joined, Cancel};
 
 use super::{
-    git_output, git_output_bytes_until, parse_iso_date, pathspecs, text_from_git, CommitHash,
-    Repository,
+    git_output_bytes_until, parse_iso_date, pathspecs, text_from_git, CommitHash, Repository,
 };
 
 impl Repository {
     // The contents of a file at a commit, as work to run on another thread, stopping early once
-    // the job it runs for is dropped, see `Job::spawn_cancellable`.
+    // the job it runs for is dropped, see `Job::read`.
     pub fn commit_file_content_work(
         &self,
         commit_hash: &CommitHash,
@@ -31,7 +30,7 @@ impl Repository {
 
     // All file paths in the tree of a commit, and those of them that are gitlinks (submodules),
     // from their modes, in one listing; as work to run on another thread, stopping early once the
-    // job it runs for is dropped, see `Job::spawn_cancellable`.
+    // job it runs for is dropped, see `Job::read`.
     pub fn commit_tree_work(
         &self,
         commit_hash: &CommitHash,
@@ -42,7 +41,7 @@ impl Repository {
 
     // Who last changed each line of the file at `path` as of the commit, see `Blame`, as work to
     // run on another thread, stopping early once the job it runs for is dropped, see
-    // `Job::spawn_cancellable`.
+    // `Job::read`.
     pub fn blame_work(
         &self,
         commit_hash: &CommitHash,
@@ -54,19 +53,20 @@ impl Repository {
 
     #[cfg(test)]
     pub fn file_history(&self, start: &CommitHash, path: &str) -> FileHistoryResult {
-        self.file_history_work(start, path)()
+        self.file_history_work(start, path)(&Cancel::default())
     }
 
     // The commits changing the file at `path` in the history of HEAD and of `start`, renames
     // followed, the newest first; with the index of the last one changing it as of `start`. As
-    // work to run on another thread.
+    // work to run on another thread, stopping early once the job it runs for is dropped, see
+    // `Job::read`.
     pub fn file_history_work(
         &self,
         start: &CommitHash,
         path: &str,
-    ) -> impl FnOnce() -> FileHistoryResult + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> FileHistoryResult + Send + 'static {
         let (repository, start, path) = (self.path.clone(), start.clone(), path.to_string());
-        move || file_history_at(&repository, &start, &path)
+        move |cancel| file_history_at(&repository, &start, &path, cancel)
     }
 
     // The file's history with its blame as of the last commit changing it up to `start`, as work
@@ -75,17 +75,12 @@ impl Repository {
         &self,
         start: &CommitHash,
         path: &str,
-    ) -> impl FnOnce() -> FileBlameResult + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> FileBlameResult + Send + 'static {
         let (repository, start, path) = (self.path.clone(), start.clone(), path.to_string());
-        move || {
-            let (history, index) = file_history_at(&repository, &start, &path)?;
+        move |cancel| {
+            let (history, index) = file_history_at(&repository, &start, &path, cancel)?;
             let revision = &history[index];
-            let blame = blame_at(
-                &repository,
-                &revision.commit,
-                &revision.path,
-                &Cancel::default(),
-            )?;
+            let blame = blame_at(&repository, &revision.commit, &revision.path, cancel)?;
             Ok((history, index, blame))
         }
     }
@@ -195,7 +190,15 @@ fn blame_at(
 // `--follow` only follows a name back in time, so a file renamed after `start` is walked under its
 // name at HEAD, to list the commits from the rename on too; when git doesn't see the rename, or
 // the last commit as of `start` isn't on that walk, it is walked under `path` alone.
-fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHistoryResult {
+fn file_history_at(
+    repository: &Path,
+    start: &CommitHash,
+    path: &str,
+    cancel: &Cancel,
+) -> FileHistoryResult {
+    let output = |args: &[&str]| {
+        git_output_bytes_until(repository, args, cancel).map(|out| text_from_git(&out))
+    };
     let walk = |name: &str| {
         let format = "--format=%H%x00%aI%x00%s";
         let name = &pathspecs(&[name])[0];
@@ -212,7 +215,7 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
         ];
         // each field ends with a NUL, which git keeps out of them, then the file's name, on a
         // line of its own, which no field starts with
-        let out = git_output(repository, &args)?;
+        let out = output(&args)?;
         let mut fields = out.split('\0').peekable();
         let mut history = vec![];
         while let (Some(commit), Some(date), Some(subject)) =
@@ -233,7 +236,7 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
     // the file's name at HEAD, when it isn't there under `path`
     let renamed = || {
         let head_file = format!("HEAD:{path}");
-        git_output(repository, &["cat-file", "-e", &head_file]).err()?;
+        output(&["cat-file", "-e", &head_file]).err()?;
         let args = [
             "diff",
             "-M",
@@ -243,7 +246,7 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
             start.as_str(),
             "HEAD",
         ];
-        let out = git_output(repository, &args).ok()?;
+        let out = output(&args).ok()?;
         // "R<score>", the old path and the new one, of each rename
         let fields: Vec<&str> = out.split('\0').collect();
         fields
@@ -265,7 +268,7 @@ fn file_history_at(repository: &Path, start: &CommitHash, path: &str) -> FileHis
         spec,
     ];
     let (renamed, history, last) = std::thread::scope(|scope| {
-        let last = scope.spawn(|| git_output(repository, &last_args));
+        let last = scope.spawn(|| output(&last_args));
         let renamed = renamed();
         let history = walk(renamed.as_deref().unwrap_or(path));
         (renamed, history, joined(last))
@@ -324,6 +327,8 @@ mod tests {
         let (history, index) = repository.file_history(&head, "f").unwrap();
         assert!(!history.is_empty());
         assert!(index < history.len());
+        // stopped once the window opening is, see `Job::read`
+        assert!(repository.file_history_work(&head, "f")(&Cancel::cancelled()).is_err());
     }
 
     // A name with pattern characters used to be a pattern: the history of `[ab].txt` had the
@@ -364,7 +369,7 @@ mod tests {
         let file = path.join(std::ffi::OsStr::from_bytes(b"\xe9.txt"));
         for (text, date) in [("one\n", "2024-01-01"), ("one\ntwo\n", "2024-01-02")] {
             std::fs::write(&file, text).unwrap();
-            git_output(path, &["add", "-A"]).unwrap();
+            crate::git::git_output(path, &["add", "-A"]).unwrap();
             repo.commit(text.trim(), date);
         }
         let name = crate::git::text_from_git(b"\xe9.txt");

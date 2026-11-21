@@ -1,38 +1,48 @@
 // Submodules: what a gitlink points to, and the repository of a submodule, loaded once.
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::Path;
 
-use super::{git_output, load_local_changes, pathspecs, CommitHash, Repository};
+use crate::background::Cancel;
+
+use super::{
+    git_output, git_output_bytes_until, load_local_changes, pathspecs, text_from_git, Repository,
+};
+
+// The paths among `paths` that are gitlinks (submodules) in the tree of `commit` (a commit or a
+// tree) in the repository at `repository`, with the commit each records, from their modes: a
+// submodule path is otherwise listed as a file. Only those paths are listed, not the whole tree,
+// which is big in a big repository.
+pub(super) fn gitlinks_at(
+    repository: &Path,
+    commit: &str,
+    paths: &[&str],
+    cancel: &Cancel,
+) -> FxHashMap<String, String> {
+    if paths.is_empty() {
+        return FxHashMap::default();
+    }
+    let mut args = vec!["ls-tree", "-r", "-z", commit];
+    // past this many, the whole tree is listed, the command line staying short enough
+    let pathspecs = pathspecs(paths);
+    if paths.len() <= 1000 {
+        args.push("--");
+        args.extend(pathspecs.iter().map(String::as_str));
+    }
+    let out = git_output_bytes_until(repository, &args, cancel)
+        .map(|out| text_from_git(&out))
+        .unwrap_or_default();
+    out.split('\0')
+        .filter_map(|entry| {
+            let (meta, path) = entry.split_once('\t')?;
+            // "<mode> <type> <object>"
+            let object = meta.strip_prefix("160000 commit ")?;
+            Some((path.to_string(), object.to_string()))
+        })
+        .collect()
+}
 
 impl Repository {
-    // The paths among `paths` that are gitlinks (submodules) in the tree of a commit, from their
-    // modes: a submodule path is otherwise listed as a file. Only those
-    // paths are listed, not the whole tree, which is big in a big repository.
-    pub fn commit_gitlink_paths(
-        &self,
-        commit_hash: &CommitHash,
-        paths: &[&str],
-    ) -> FxHashSet<String> {
-        if paths.is_empty() {
-            return FxHashSet::default();
-        }
-        let mut args = vec!["ls-tree", "-r", "-z", commit_hash.as_str()];
-        // past this many, the whole tree is listed, the command line staying short enough
-        let pathspecs = pathspecs(paths);
-        if paths.len() <= 1000 {
-            args.push("--");
-            args.extend(pathspecs.iter().map(String::as_str));
-        }
-        let out = git_output(&self.path, &args).unwrap_or_default();
-        out.split('\0')
-            .filter_map(|entry| {
-                let (meta, path) = entry.split_once('\t')?;
-                meta.starts_with("160000 ").then(|| path.to_string())
-            })
-            .collect()
-    }
-
     // Whether `path` is a submodule tracked in the index, see `submodule_info`.
     pub fn is_submodule(&self, path: &str) -> bool {
         self.submodules.contains(path)
@@ -273,10 +283,16 @@ mod tests {
             repository.submodule_gitlink_at("HEAD", "sub"),
             Some(info.index.clone())
         );
+        let head_commit = repository.head_commit().unwrap();
         let gitlinks = |paths: &[&str]| {
-            repository.commit_gitlink_paths(&repository.head_commit().unwrap(), paths)
+            gitlinks_at(
+                repository.path(),
+                head_commit.as_str(),
+                paths,
+                &Cancel::default(),
+            )
         };
-        assert!(gitlinks(&["a.txt", "sub"]).contains("sub"));
+        assert_eq!(gitlinks(&["a.txt", "sub"])["sub"], info.index);
         assert!(gitlinks(&["a.txt"]).is_empty());
         // the commits the recorded gitlink doesn't have
         let sub_repository = repository

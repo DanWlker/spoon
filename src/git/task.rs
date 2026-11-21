@@ -796,7 +796,7 @@ pub(super) fn git_output_with_status(
 
 // What git reading the repository at `path` gave, stopped and None once `cancel` says the job it
 // runs for was dropped (or when it can't start): a diff of many files takes a while. See
-// `Job::spawn_cancellable`.
+// `Job::read`.
 pub(super) fn git_run_until(
     path: &Path,
     args: &[impl AsRef<OsStr>],

@@ -19,6 +19,7 @@ use super::{
     StartPage, StatusLine,
 };
 use crate::{
+    background::Loads,
     color::GraphColorSet,
     config::GraphColorConfig,
     event::EventController,
@@ -6081,4 +6082,181 @@ fn test_esc_acts_at_once_while_loading() {
         git(&path, &["status", "--porcelain", "n.txt"]),
         "A  n.txt\n"
     );
+}
+
+// A key while the blame opens waits for it, acting on the blame once open rather than on the page
+// under it; esc stops the opening. They used to act on the page, then the window opened over it.
+#[test]
+fn test_keys_wait_for_the_blame_opening() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let head = git(&path, &["rev-parse", "HEAD"]).trim().to_string();
+    let key = |name: &str| AppEvent::Key(parse_key_event(name).unwrap());
+    let open = move || AppEvent::OpenBlame {
+        commit: CommitHash::from(head.as_str()),
+        path: "f.txt".into(),
+        line: None,
+    };
+    let opened = open.clone();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(open()).unwrap();
+            app.handle_event(key("j")).unwrap();
+            assert_eq!(app.shell.app_status.kept.len(), 1);
+            let View::List(view) = &app.view else {
+                panic!("no commit list");
+            };
+            // still on the first commit
+            assert_eq!(view.as_list_state().position().0, 1);
+        }))],
+        overlay("blame"),
+        keys("esc esc"),
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(opened()).unwrap();
+            app.handle_event(key("esc")).unwrap();
+            assert!(app.shell.opening.is_none());
+        }))],
+        overlay("none"),
+    ]);
+}
+
+// Moving inside a diff while it reloads waits for it: space then stages the hunk moved to. The
+// move used to be dropped, and space staged the hunk before it.
+#[test]
+fn test_moving_in_a_diff_reloading_waits_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let lines: String = (0..40).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(path.join("g.txt"), &lines).unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    let changed = lines
+        .replace("line 5\n", "five\n")
+        .replace("line 30\n", "thirty\n");
+    std::fs::write(path.join("g.txt"), changed).unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    harness.run(vec![keys("enter"), keys_at_once("+ j space")]);
+    let staged = git(&path, &["diff", "--cached", "-U0"]);
+    assert!(
+        staged.contains("+thirty") && !staged.contains("+five"),
+        "{staged}"
+    );
+}
+
+// The details open, and the local changes open again, at once, what they show loading on another
+// thread; the keys acting on it wait for it. They used to load it before showing.
+#[test]
+fn test_details_and_local_changes_open_loading() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let key = |name: &str| AppEvent::Key(parse_key_event(name).unwrap());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        vec![Step::Act(Box::new(move |app| {
+            app.ec.send(key("enter"));
+            while let Some(event) = app.ec.try_recv() {
+                app.handle_event(event).unwrap();
+            }
+            app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
+            assert!(matches!(app.view, View::Detail(_)));
+            assert!(app.view.is_loading());
+        }))],
+        // the local changes shown once, then the graph again
+        keys("esc tab tab"),
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(key("tab")).unwrap();
+            // shown before, they may have changed since
+            assert!(matches!(app.view, View::LocalChanges(_)));
+            assert!(app.view.is_files_loading());
+        }))],
+    ]);
+}
+
+// Enter in a popup still looking for conflicts waits for them, and once they are found doesn't
+// run past the warning; the button can't be clicked meanwhile.
+#[test]
+fn test_popup_runs_once_its_conflicts_are_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let head = git(&path, &["rev-parse", "HEAD"]);
+    let key = |name: &str| AppEvent::Key(parse_key_event(name).unwrap());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("j"),
+        vec![Step::Act(Box::new(move |app| {
+            // cherry-picking feat1 onto master, which changed its line of f.txt too
+            app.handle_event(key("shift-c")).unwrap();
+            let dialog = app.visible_dialog().expect("the popup");
+            assert!(dialog.is_checking_conflicts() && !dialog.can_run());
+            app.handle_event(key("enter")).unwrap();
+            assert_eq!(app.shell.app_status.kept.len(), 1);
+        }))],
+        screen(|text| assert!(text.contains("Conflicts at"), "{text}")),
+        check(|app| {
+            assert!(app.visible_dialog().is_some());
+            assert!(app.shell.app_status.kept.is_empty());
+        }),
+        keys("esc"),
+    ]);
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
+}
+
+// Moving in the diff of the details while it reloads waits for it, as on the local changes page.
+#[test]
+fn test_moving_in_the_details_diff_reloading_waits_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let lines: String = (0..40).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(path.join("g.txt"), &lines).unwrap();
+    git(&path, &["add", "g.txt"]);
+    git(&path, &["commit", "-q", "-m", "g"]);
+    let changed = lines
+        .replace("line 5\n", "five\n")
+        .replace("line 30\n", "thirty\n");
+    std::fs::write(path.join("g.txt"), changed).unwrap();
+    git(&path, &["commit", "-q", "-am", "g2"]);
+    let row = |app: &App| match &app.view {
+        View::Detail(view) => view.focus_row(),
+        _ => panic!("no details"),
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("4"),
+        keys("enter"),
+        detail_focus(DetailFocus::Pane, DetailTab::Changes),
+        // on the second hunk, then back up to the first while the diff reloads
+        keys("j"),
+        check(move |app| assert!(row(app) > 10)),
+        keys_at_once("+ k"),
+        check(move |app| assert!(row(app) < 10, "{}", row(app))),
+    ]);
+}
+
+// While amending, the files changed outside the app load again with the last commit's: the
+// staged section kept showing them. It used to show the files loaded without it.
+#[test]
+fn test_amending_keeps_the_last_commit_staged_after_a_change_outside() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys("shift-a"),
+        screen(|text| assert!(text.contains("f.txt"), "{text}")),
+        outside(|path| std::fs::write(path.join("n.txt"), "new\n").unwrap()),
+        tick(),
+        screen(|text| assert!(text.contains("n.txt") && text.contains("f.txt"), "{text}")),
+    ]);
 }

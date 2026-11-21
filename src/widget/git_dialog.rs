@@ -12,7 +12,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::widget::tree_query::{type_query, typing_keys, QueryKind, Toward, TreeQuery};
 use crate::{
-    background::Job,
+    background::{Job, Loads},
     browse::{LinkAction, PageLink},
     color::ColorTheme,
     context::AppContext,
@@ -741,6 +741,17 @@ pub struct GitDialog {
     task: RefCell<Option<Box<Command>>>,
 }
 
+// Confirming waits for the conflicts to be checked, see `can_run`: the app keeps it meanwhile, and
+// drops it once they are found, for the warning to show first, see `App::prepare_render`.
+impl Loads for GitDialog {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        event == UserEvent::Confirm && self.is_checking_conflicts()
+    }
+
+    // Confirming does nothing until they are checked, see `handle_key`.
+    fn load_for(&mut self, _: UserEvent) {}
+}
+
 impl GitDialog {
     fn with(
         title: &'static str,
@@ -1040,20 +1051,24 @@ impl GitDialog {
             let Conflicts::Unchecked(work) = std::mem::take(&mut self.conflicts) else {
                 unreachable!("checked above")
             };
-            self.conflicts = Conflicts::Checking(Job::spawn(tx, work));
+            // stopped once the popup closes, see `Job::read`
+            self.conflicts = Conflicts::Checking(Job::read(tx, work));
         }
     }
 
-    // Shows the conflicts once found.
-    pub fn poll_conflicts(&mut self) {
-        if let Conflicts::Checking(job) = &self.conflicts {
-            if let Some(conflict) = job.try_take() {
-                self.conflicts = match conflict {
-                    Some(conflict) => Conflicts::Found(self.conflict_warning(conflict)),
-                    None => Conflicts::None,
-                };
-            }
-        }
+    // Shows the conflicts once found; returns whether some were found now.
+    pub fn poll_conflicts(&mut self) -> bool {
+        let Conflicts::Checking(job) = &self.conflicts else {
+            return false;
+        };
+        let Some(conflict) = job.try_take() else {
+            return false;
+        };
+        self.conflicts = match conflict {
+            Some(conflict) => Conflicts::Found(self.conflict_warning(conflict)),
+            None => Conflicts::None,
+        };
+        matches!(self.conflicts, Conflicts::Found(_))
     }
 
     // The warning of `conflict`, with the commit it stops at for the commands applying several
@@ -2412,6 +2427,8 @@ impl GitDialog {
                 }
                 DialogOutcome::None
             }
+            // nothing until its conflicts are checked, see `can_run`
+            Some(UserEvent::Confirm) if self.is_checking_conflicts() => DialogOutcome::None,
             // a required field still empty is typed into first
             Some(UserEvent::Confirm) => match self.missing_field() {
                 Some(index) => {
@@ -2425,9 +2442,12 @@ impl GitDialog {
         }
     }
 
-    // Whether confirming runs the command: no required field is empty and the fields make one.
+    // Whether confirming runs the command: no required field is empty, the fields make one and
+    // its conflicts are checked, so the warning shows before it runs.
     pub fn can_run(&self) -> bool {
-        self.missing_field().is_none() && !self.with_command(|task| matches!(task, Some(Err(_))))
+        self.missing_field().is_none()
+            && !self.is_checking_conflicts()
+            && !self.with_command(|task| matches!(task, Some(Err(_))))
     }
 
     // `f` of the command, see `task`.

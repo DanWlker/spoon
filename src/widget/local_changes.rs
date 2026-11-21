@@ -13,14 +13,14 @@ use rustc_hash::FxHashSet;
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{Cancel, Job},
+    background::{Cancel, Job, Loads},
     color::ColorTheme,
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
         AfterTask, CommitHash, ConflictSide, DiffOf, DiffWork, FilesSnapshot, GitCommand, GitTask,
         LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
-        WorkTree,
+        Seen, WorkTree,
     },
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
@@ -227,6 +227,26 @@ pub struct LocalChangesState<'a> {
     submodule_cache: Option<(String, SubmodulePanel<'a>)>,
 }
 
+// What the keys act on, see `LocalChangesState::needs`.
+impl Loads for LocalChangesState<'_> {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        match self.needs(event) {
+            Needs::Nothing => false,
+            Needs::Files => self.files_loading.is_some(),
+            Needs::Beside => self.files_loading.is_some() || self.is_beside_loading(),
+        }
+    }
+
+    // Waits for it while it loads, and loads the diff of a row moved to, which it doesn't yet.
+    fn load_for(&mut self, event: UserEvent) {
+        match self.needs(event) {
+            Needs::Nothing => {}
+            Needs::Files => self.load_stale_files(),
+            Needs::Beside => self.load_stale_diff(),
+        }
+    }
+}
+
 impl<'a> LocalChangesState<'a> {
     #[cfg(test)]
     pub fn load(repository: &'a Repository) -> Self {
@@ -242,11 +262,14 @@ impl<'a> LocalChangesState<'a> {
         snapshot: Option<LocalChangesSnapshot>,
         background: Option<Sender>,
     ) -> Self {
-        let FilesSnapshot {
-            changes,
-            stamp: files_stamp,
-            ..
-        } = repository.take_loaded_local_changes();
+        let (
+            FilesSnapshot {
+                changes,
+                stamp: files_stamp,
+                ..
+            },
+            seen,
+        ) = repository.take_loaded_local_changes();
         let files = [&changes.unstaged, &changes.staged];
         let sections = match &snapshot {
             Some(snapshot) => std::array::from_fn(|i| {
@@ -284,10 +307,6 @@ impl<'a> LocalChangesState<'a> {
         let focus = snapshot.as_ref().map(|snapshot| snapshot.focus);
         if let Some(snapshot) = snapshot {
             state.draft = *snapshot.commit_draft;
-            if state.draft.amend.is_some() {
-                // the staged section shows the last commit too
-                state.reload_staged();
-            }
             if let Some(path) = snapshot.selected_path {
                 state.tree_mut().select_path(&path);
             }
@@ -296,6 +315,10 @@ impl<'a> LocalChangesState<'a> {
         state.prepare_message();
         state.sync_amend();
         state.offer_resolved_commit();
+        // shown before, they may be out of date
+        if seen == Seen::Again || state.needs_reload(&state.changes) {
+            state.reload();
+        }
         state.load_diff();
         // the loaded diff and the submodule panel show what the focus may be on
         if let Some(focus) = focus {
@@ -1358,12 +1381,19 @@ impl<'a> LocalChangesState<'a> {
         let stale = files.started < self.reloaded || self.files_loading.is_some();
         let changed = !stale && files.stamp != self.files_stamp;
         match changed {
-            // the conflicts resolved by hand are staged first, see `WorkTree::load_files`
-            true if files.changes.has_conflicts() => self.reload(),
+            true if self.needs_reload(&files.changes) => self.reload(),
             true => self.reload_with(files),
             false => {}
         }
         changed
+    }
+
+    // Whether `changes`, loaded without the page, like by the refresher, aren't shown as they are
+    // but loaded again: the conflicts resolved by hand in them get staged, see
+    // `WorkTree::load_files`, and while amending the staged section shows the last commit too, see
+    // `change_files`.
+    fn needs_reload(&self, changes: &LocalChanges) -> bool {
+        changes.has_conflicts() || self.draft.amend.is_some()
     }
 
     // Reloads the changes, keeping each section's selection on the same path if it still exists,
@@ -1382,13 +1412,19 @@ impl<'a> LocalChangesState<'a> {
     ) -> Result<(), String> {
         self.reloaded = Instant::now();
         let work_tree = self.repository.work_tree();
+        // while amending, the staged section shows the last commit too, see `Amend`
+        let amend_base = self.draft.amend_base().map(String::from);
         let work = move || {
             let result = change(&work_tree);
-            (result, work_tree.load_files())
+            let mut files = work_tree.load_files();
+            if let Some(base) = amend_base {
+                files.changes.staged = work_tree.staged_changes_against(&base);
+            }
+            (result, files)
         };
         match &self.background {
             Some(tx) => {
-                self.files_loading = Some(Job::spawn(tx.clone(), work));
+                self.files_loading = Some(Job::command(tx.clone(), work));
                 Ok(())
             }
             None => {
@@ -1411,7 +1447,7 @@ impl<'a> LocalChangesState<'a> {
         let selected_path = self.selected_path();
         let FilesSnapshot { changes, stamp, .. } = files;
         self.files_stamp = stamp;
-        self.changes = self.with_amend(changes);
+        self.changes = changes;
         self.prepare_message();
         self.sync_amend();
         self.offer_resolved_commit();
@@ -1726,9 +1762,10 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // What `event` acts on, so what it waits for while that loads: the files, and what is beside
-    // them for the keys on it, going into it (enter, ctrl-l) or resolving the conflict shown there
-    // (space); moving, and typing into the message or the filter of the files, act on neither.
+    // What `event` acts on, so what it waits for while that loads: what is beside the files for
+    // the keys on it, moving through it too, going into it (enter, ctrl-l) or resolving the
+    // conflict shown there (space); else the files, but for moving through them, which reload in
+    // place, and typing into the message or the filter of the files.
     pub fn needs(&self, event: UserEvent) -> Needs {
         use UserEvent::*;
         let beside = match self.focus() {
@@ -1740,34 +1777,16 @@ impl<'a> LocalChangesState<'a> {
             }
         };
         match event {
-            _ if event.moves_selection() || event.never_waits() => Needs::Nothing,
             _ if beside => Needs::Beside,
+            _ if event.moves_selection() => Needs::Nothing,
             Unknown => Needs::Nothing,
             _ => Needs::Files,
-        }
-    }
-
-    // Whether `event` waits for what loads in the background, see `needs`.
-    pub fn waits_for(&self, event: UserEvent) -> bool {
-        match self.needs(event) {
-            Needs::Nothing => false,
-            Needs::Files => self.files_loading.is_some(),
-            Needs::Beside => self.files_loading.is_some() || self.is_beside_loading(),
         }
     }
 
     // Whether the files load again, after a change made on another thread, see `change_files`.
     pub fn is_files_loading(&self) -> bool {
         self.files_loading.is_some()
-    }
-
-    // Loads what `event` needs before it acts, see `needs`: waits for it while it loads.
-    pub fn load_for(&mut self, event: UserEvent) {
-        match self.needs(event) {
-            Needs::Nothing => {}
-            Needs::Files => self.load_stale_files(),
-            Needs::Beside => self.load_stale_diff(),
-        }
     }
 
     // Waits for the files reloading; what is beside the row the cursor moved to starts loading,
@@ -5340,6 +5359,9 @@ mod tests {
         let ec = crate::event::EventController::without_terminal();
         let mut state =
             LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
+        // opened on a conflict, the files load again to stage those resolved, see `needs_reload`
+        assert!(state.waits_for(Select));
+        state.load_before(Select);
         let select = |state: &mut LocalChangesState, path: &str| {
             let pos = state.rows().iter().position(|r| r.path == path).unwrap();
             state.move_cursor(pos);

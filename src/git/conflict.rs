@@ -23,7 +23,7 @@ impl Repository {
         steps: Vec<(Option<String>, String)>,
     ) -> ConflictWork {
         let (path, start) = (self.path.clone(), start.to_string());
-        Box::new(move || first_conflict_at(&path, &start, &steps))
+        Box::new(move |cancel| first_conflict_at(&path, &start, &steps, cancel))
     }
 
     // The first conflict replaying the commits of `range` (rev-list arguments) on `onto`, like a
@@ -37,7 +37,7 @@ impl Repository {
         let (path, onto) = (self.path.clone(), onto.to_string());
         let range: Vec<String> = range.iter().map(|r| r.to_string()).collect();
         let skip = skip.to_vec();
-        Box::new(move || {
+        Box::new(move |cancel| {
             let mut args = vec!["rev-list", "--reverse", "--no-merges"];
             args.extend(range.iter().map(String::as_str));
             let out = git_output(&path, &args).ok()?;
@@ -46,10 +46,12 @@ impl Repository {
                 .filter(|c| !skip.iter().any(|s| s.as_str() == *c))
                 .map(|c| (Some(format!("{c}^")), c.to_string()))
                 .collect();
-            first_conflict_at(&path, &onto, &steps)
+            first_conflict_at(&path, &onto, &steps, cancel)
         })
     }
+}
 
+impl WorkTree {
     // Resolves a conflicted file by taking one side whole, removing the file when that side
     // deleted it; choosing conflict by conflict is left to the merge tool.
     pub fn resolve_conflict(
@@ -57,9 +59,8 @@ impl Repository {
         path: &str,
         side: ConflictSide,
     ) -> std::result::Result<(), String> {
-        let work_tree = self.work_tree();
         // before the file is written, which `git add` would then be refused
-        work_tree.check_idle()?;
+        self.check_idle()?;
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
@@ -74,7 +75,7 @@ impl Repository {
             .map(|(_, mode, object)| (mode.as_str(), object.as_str()));
         match taken {
             // the side taken deleted it
-            None => return work_tree.run(&["rm", "--quiet", "--", spec], None),
+            None => return self.run(&["rm", "--quiet", "--", spec], None),
             // `checkout --ours` leaves a submodule as it is, so it is checked out at the commit
             // taken, then staged, like lazygit
             Some(("160000", commit)) => {
@@ -93,13 +94,11 @@ impl Repository {
                     None,
                 )?;
             }
-            Some(_) => work_tree.run(&["checkout", side.option(), "--", spec], None)?,
+            Some(_) => self.run(&["checkout", side.option(), "--", spec], None)?,
         }
-        work_tree.run(&["add", "--", spec], None)
+        self.run(&["add", "--", spec], None)
     }
-}
 
-impl WorkTree {
     // Stages the conflicts of `changes` resolved by hand like lazygit does (see
     // `resolved_conflicts`); not while a git command runs, which `stage_paths` refuses. Returns
     // whether it staged some.
@@ -254,16 +253,20 @@ pub fn is_conflict_marker(line: &str, marker: &str) -> bool {
 pub const MAX_CONFLICT_STEPS: usize = 100;
 
 // The work finding the first conflict of a command, see `Repository::first_conflict_work`.
-pub type ConflictWork = Box<dyn FnOnce() -> Option<Conflict> + Send>;
+pub type ConflictWork = Box<dyn FnOnce(&Cancel) -> Option<Conflict> + Send>;
 
 fn first_conflict_at(
     path: &Path,
     start: &str,
     steps: &[(Option<String>, String)],
+    cancel: &Cancel,
 ) -> Option<Conflict> {
     let mut tree = start.to_string();
-    // the first steps only, which bounds the work of a long rebase
+    // the first steps only, which bounds the work of a long rebase; stopped once the popup closes
     for (base, commit) in steps.iter().take(MAX_CONFLICT_STEPS) {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let base = base.as_ref().map(|b| format!("--merge-base={b}"));
         let mut args = vec![
             "merge-tree",
@@ -341,11 +344,18 @@ mod tests {
         git.commit("master", "2024-01-03");
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
 
-        let conflict = repository.first_conflict_work("HEAD", vec![(None, "feature".into())])();
+        let conflict = repository.first_conflict_work("HEAD", vec![(None, "feature".into())])(
+            &Cancel::default(),
+        );
         assert_eq!(
             conflict,
             Some(Conflict::At("feature".into(), vec![name.into()]))
         );
+        // stopped once the popup closes, before merging anything
+        let stopped = repository.first_conflict_work("HEAD", vec![(None, "feature".into())])(
+            &Cancel::cancelled(),
+        );
+        assert_eq!(stopped, None);
     }
 
     #[test]
@@ -375,11 +385,13 @@ mod tests {
         let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
         *repository.running.lock() = Some(running("Pushing master"));
         assert!(repository
+            .work_tree()
             .resolve_conflict("f", ConflictSide::Ours)
             .is_err());
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
         *repository.running.lock() = None;
         repository
+            .work_tree()
             .resolve_conflict("f", ConflictSide::Ours)
             .unwrap();
         // the file is ours, the change of the incoming side that merged cleanly left out too
@@ -389,6 +401,7 @@ mod tests {
         // once resolved and committed, taking a side again is refused instead of removing the file
         git_output(path, &["commit", "-q", "--no-edit"]).unwrap();
         assert!(repository
+            .work_tree()
             .resolve_conflict("f", ConflictSide::Theirs)
             .is_err());
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), content);
@@ -467,6 +480,7 @@ mod tests {
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         repository
+            .work_tree()
             .resolve_conflict("x*.txt", ConflictSide::Ours)
             .unwrap();
         // a file the name matches as a pattern keeps its changes
@@ -502,6 +516,7 @@ mod tests {
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         repository
+            .work_tree()
             .resolve_conflict("link", ConflictSide::Theirs)
             .unwrap();
         // the link is taken whole, the file it pointed at left alone
@@ -554,6 +569,7 @@ mod tests {
         // would then be refused, leaving it half resolved
         *repository.running.lock() = Some(running("Pushing master"));
         assert!(repository
+            .work_tree()
             .resolve_conflict("sub", ConflictSide::Theirs)
             .is_err());
         assert_eq!(
@@ -562,6 +578,7 @@ mod tests {
         );
         *repository.running.lock() = None;
         repository
+            .work_tree()
             .resolve_conflict("sub", ConflictSide::Theirs)
             .unwrap();
         // the submodule is checked out at the commit taken, which is staged
@@ -600,6 +617,7 @@ mod tests {
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let err = repository
+            .work_tree()
             .resolve_conflict("sub", ConflictSide::Theirs)
             .unwrap_err();
         assert!(err.contains("not checked out"), "{err}");

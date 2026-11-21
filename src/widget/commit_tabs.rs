@@ -16,7 +16,7 @@ use crate::{
     color::ColorTheme,
     context::AppContext,
     event::Sender,
-    git::{Commit, CommitHash, DiffWork, FileChange, PatchDirection, Repository},
+    git::{ChangedGitlinks, Commit, CommitHash, DiffWork, FileChange, PatchDirection, Repository},
     keybind::UserEvent,
     layout::{fit_size, Edge, Panel, RowMap, Target},
     pointer::OnPicks,
@@ -138,11 +138,14 @@ struct ChangedFile {
 pub struct CommitFiles {
     files: Vec<ChangedFile>,
     tree: FileTreeState,
+    // the submodules among them, in the commit or its base
+    gitlinks: ChangedGitlinks,
 }
 
 impl CommitFiles {
-    // The files of `changes`, shown in `view`, on the first file rather than its directory.
-    pub fn of(changes: &[FileChange], view: TreeView) -> Self {
+    // The files of `changes`, shown in `view`, on the first file rather than its directory; the
+    // submodules among them are `gitlinks`.
+    pub fn of(changes: &[FileChange], gitlinks: &ChangedGitlinks, view: TreeView) -> Self {
         let files: Vec<ChangedFile> = changes
             .iter()
             .map(|change| {
@@ -173,7 +176,17 @@ impl CommitFiles {
         {
             tree.select_path(&path);
         }
-        CommitFiles { files, tree }
+        let gitlinks = gitlinks.clone();
+        CommitFiles {
+            files,
+            tree,
+            gitlinks,
+        }
+    }
+
+    // None, while what a commit changed loads.
+    pub fn none(view: TreeView) -> Self {
+        CommitFiles::of(&[], &ChangedGitlinks::default(), view)
     }
 }
 
@@ -194,8 +207,9 @@ pub struct CommitChangesState<'a> {
     // the selected submodule's commits, shown instead of its gitlink diff
     submodule: Option<SubmodulePanel<'a>>,
     // paths that are gitlinks in the commit or its base, so one-file views don't take one for a
-    // file; loaded once, with the diff
-    gitlinks: Option<FxHashSet<String>>,
+    // file, and the submodule panel shows the commits between; loaded with the files, see
+    // `Repository::changes_work`
+    gitlinks: ChangedGitlinks,
 }
 
 impl<'a> CommitChangesState<'a> {
@@ -246,40 +260,8 @@ impl<'a> CommitChangesState<'a> {
         (!self.is_gitlink(path)).then_some(path)
     }
 
-    // The paths that are gitlinks in the commit or its base, read once.
-    fn ensure_gitlinks(&mut self) {
-        if self.gitlinks.is_some() {
-            return;
-        }
-        // a submodule is among the changed files, under its name before a rename too
-        let paths: Vec<&str> = self
-            .files
-            .iter()
-            .flat_map(|f| std::iter::once(f.path.as_str()).chain(f.from.as_deref()))
-            .collect();
-        let mut gitlinks = self
-            .repository
-            .commit_gitlink_paths(&self.commit_hash, &paths);
-        if let Some(base) = self.base_commit() {
-            gitlinks.extend(self.repository.commit_gitlink_paths(&base, &paths));
-        }
-        self.gitlinks = Some(gitlinks);
-    }
-
     fn is_gitlink(&self, path: &str) -> bool {
-        self.gitlinks
-            .as_ref()
-            .is_some_and(|gitlinks| gitlinks.contains(path))
-    }
-
-    fn base_commit(&self) -> Option<CommitHash> {
-        self.base.clone().or_else(|| {
-            self.repository
-                .commit(&self.commit_hash)?
-                .parent_commit_hashes
-                .first()
-                .cloned()
-        })
+        self.gitlinks.contains(path)
     }
 
     // The entries to act on: the picked files and directories, or the selected row.
@@ -297,28 +279,17 @@ impl<'a> CommitChangesState<'a> {
         self.picked.clear(&mut self.tree);
     }
 
+    // The changes of the commit, loaded right away, shown in `view`.
+    #[cfg(test)]
     pub fn new(
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         commit_hash: CommitHash,
-        changes: &[FileChange],
         view: TreeView,
     ) -> Self {
-        Self::between(repository, ctx, None, commit_hash, changes, view)
-    }
-
-    // The changes from `base` to the commit; from its parent when None; shown in `view`, as the
-    // tab showed the commit before.
-    pub fn between(
-        repository: &'a Repository,
-        ctx: Rc<AppContext>,
-        base: Option<CommitHash>,
-        commit_hash: CommitHash,
-        changes: &[FileChange],
-        view: TreeView,
-    ) -> Self {
-        let files = CommitFiles::of(changes, view);
-        Self::with_files(repository, ctx, base, commit_hash, files)
+        let changes = repository.changes_work(None, &commit_hash)(&Cancel::default());
+        let files = CommitFiles::of(&changes.changes, &changes.gitlinks, view);
+        Self::with_files(repository, ctx, None, commit_hash, files)
     }
 
     // The changes from `base` to the commit, of its `files` as loaded, see `CommitFiles`.
@@ -329,7 +300,11 @@ impl<'a> CommitChangesState<'a> {
         commit_hash: CommitHash,
         files: CommitFiles,
     ) -> Self {
-        let CommitFiles { files, tree } = files;
+        let CommitFiles {
+            files,
+            tree,
+            gitlinks,
+        } = files;
         Self {
             repository,
             ctx,
@@ -340,7 +315,7 @@ impl<'a> CommitChangesState<'a> {
             picked: TreeSelection::default(),
             pane: DiffPane::default(),
             submodule: None,
-            gitlinks: None,
+            gitlinks,
         }
     }
 
@@ -397,7 +372,6 @@ impl<'a> CommitChangesState<'a> {
     // The work loading the diff of the selected row, None when it is loaded or a submodule shows
     // its commits instead, loading them with `tx` on another thread, see `SubmodulePanel::between`.
     fn diff_work(&mut self, tx: Option<&Sender>) -> Option<DiffWork> {
-        self.ensure_gitlinks();
         if self.pane.diff().is_some() || self.submodule.is_some() {
             return None;
         }
@@ -451,18 +425,14 @@ impl<'a> CommitChangesState<'a> {
         if !self.is_gitlink(path) {
             return None;
         }
-        let to = self
-            .repository
-            .submodule_gitlink_at(self.commit_hash.as_str(), path)?;
-        let from = self
-            .base_commit()
-            .and_then(|base| self.repository.submodule_gitlink_at(base.as_str(), path))?;
+        let to = self.gitlinks.commit.get(path)?;
+        let from = self.gitlinks.base.get(path)?;
         Some(SubmodulePanel::between(
             self.repository,
             &self.ctx,
             path,
-            &from,
-            Some(&to),
+            from,
+            Some(to),
             None,
             tx,
         ))
@@ -591,9 +561,13 @@ pub struct CommitFilesState<'a> {
     changes: Vec<FileChange>,
     // the files of the commit once listed, or worked out
     paths: Option<BTreeSet<String>>,
-    // the gitlinks of the commit, which are not files to preview or act on
+    // the gitlinks of the commit, which are not files to preview or act on: listed with its
+    // paths, else stepped along with them, see `set_commit`
     gitlinks: FxHashSet<String>,
     gitlinks_for: Option<CommitHash>,
+    // the gitlinks among the paths the commit changed, to step to its parent with, see
+    // `Repository::changes_work`
+    changed_gitlinks: ChangedGitlinks,
     // the files of the commit loading on another thread, see `ensure_loaded_in_background`
     tree_loading: Option<Job<crate::git::CommitTree>>,
     // loaded lazily, only once the tab is shown
@@ -699,16 +673,6 @@ impl<'a> CommitFilesState<'a> {
         (!self.is_gitlink(path)).then_some(path)
     }
 
-    // The gitlinks of the commit, listed with its paths, else stepped along with them in
-    // `set_commit`.
-    fn ensure_gitlinks(&mut self) {
-        if self.gitlinks_for.as_ref() == Some(&self.commit_hash) {
-            return;
-        }
-        self.gitlinks = self.repository.commit_tree(&self.commit_hash).1;
-        self.gitlinks_for = Some(self.commit_hash.clone());
-    }
-
     fn is_gitlink(&self, path: &str) -> bool {
         self.gitlinks_for.as_ref() == Some(&self.commit_hash) && self.gitlinks.contains(path)
     }
@@ -773,21 +737,18 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    // `view` is how the files show, as a tree or a list.
-    pub fn new(
-        repository: &'a Repository,
-        commit: &Commit,
-        changes: &[FileChange],
-        view: TreeView,
-    ) -> Self {
+    // `view` is how the files show, as a tree or a list. The changes of the commit come with its
+    // gitlinks once loaded, see `set_commit`.
+    pub fn new(repository: &'a Repository, commit: &Commit, view: TreeView) -> Self {
         Self {
             repository,
             commit_hash: commit.commit_hash.clone(),
             first_parent: commit.parent_commit_hashes.first().cloned(),
-            changes: changes.to_vec(),
+            changes: Vec::new(),
             paths: None,
             gitlinks: FxHashSet::default(),
             gitlinks_for: None,
+            changed_gitlinks: ChangedGitlinks::default(),
             tree_loading: None,
             // collapsed by default, a whole repository is too much to show at once
             tree: FilesTree::Waiting(FileTreeState::new(
@@ -807,7 +768,13 @@ impl<'a> CommitFilesState<'a> {
     // Shows another commit's files, keeping the expanded directories and the selected path.
     // Stepping to the parent or a child of the commit works out its files from the changes
     // between them, keeping the tree when no file was added, deleted or moved.
-    pub fn set_commit(&mut self, commit: &Commit, changes: &[FileChange]) {
+    // `gitlinks` are those among its changes.
+    pub fn set_commit(
+        &mut self,
+        commit: &Commit,
+        changes: &[FileChange],
+        gitlinks: &ChangedGitlinks,
+    ) {
         self.enter_loaded = false;
         let hash = &commit.commit_hash;
         let first_parent = commit.parent_commit_hashes.first();
@@ -818,29 +785,34 @@ impl<'a> CommitFilesState<'a> {
         } else {
             None
         };
+        let known = self.gitlinks_for.as_ref() == Some(&self.commit_hash);
         let same_paths = match (self.paths.take(), step) {
-            (Some(mut paths), Some((changes, direction))) => {
+            (Some(mut paths), Some((changes, direction))) if known => {
                 let changed = apply_changes(&mut paths, changes, direction);
                 self.paths = Some(paths);
-                // only the changed paths can have become or stopped being gitlinks
-                if self.gitlinks_for.as_ref() == Some(&self.commit_hash) {
-                    let touched: Vec<&str> = changes
-                        .iter()
-                        .flat_map(|change| match change {
-                            FileChange::Move { from, to } => vec![from.as_str(), to.as_str()],
-                            change => vec![change.path()],
-                        })
-                        .collect();
-                    self.gitlinks
-                        .retain(|path| !touched.contains(&path.as_str()));
-                    let stepped = self.repository.commit_gitlink_paths(hash, &touched);
-                    self.gitlinks.extend(stepped);
-                    self.gitlinks_for = Some(hash.clone());
-                }
+                // only the changed paths can have become or stopped being gitlinks: those of the
+                // commit stepped to among them were found with its changes, or, stepping back to
+                // the parent, with those of the commit stepped from
+                let touched: FxHashSet<&str> = changes
+                    .iter()
+                    .flat_map(|change| match change {
+                        FileChange::Move { from, to } => vec![from.as_str(), to.as_str()],
+                        change => vec![change.path()],
+                    })
+                    .collect();
+                self.gitlinks
+                    .retain(|path| !touched.contains(path.as_str()));
+                let stepped = match direction {
+                    PatchDirection::Forward => &gitlinks.commit,
+                    PatchDirection::Reverse => &self.changed_gitlinks.base,
+                };
+                self.gitlinks.extend(stepped.keys().cloned());
+                self.gitlinks_for = Some(hash.clone());
                 !changed
             }
             _ => false,
         };
+        self.changed_gitlinks = gitlinks.clone();
 
         self.commit_hash = hash.clone();
         self.first_parent = first_parent.cloned();
@@ -896,8 +868,8 @@ impl<'a> CommitFilesState<'a> {
         self.text.measure_in_background(tx);
         if self.paths.is_none() {
             let job = self.tree_loading.get_or_insert_with(|| {
-                // stopped once replaced or dropped, see `Job::spawn_cancellable`
-                Job::spawn_cancellable(
+                // stopped once replaced or dropped, see `Job::read`
+                Job::read(
                     tx.clone(),
                     self.repository.commit_tree_work(&self.commit_hash),
                 )
@@ -916,8 +888,8 @@ impl<'a> CommitFilesState<'a> {
             },
             None => {
                 if let Some(work) = self.preview_work() {
-                    // stopped once moved past, see `Job::spawn_cancellable`
-                    let job = Job::spawn_cancellable(tx.clone(), work);
+                    // stopped once moved past, see `Job::read`
+                    let job = Job::read(tx.clone(), work);
                     self.preview = Some(FilePreview::Loading(job));
                 }
             }
@@ -956,7 +928,6 @@ impl<'a> CommitFilesState<'a> {
 
     // The tree of the files loaded, keeping the directories expanded before.
     fn show_tree(&mut self) {
-        self.ensure_gitlinks();
         if let FilesTree::Waiting(before) = &self.tree {
             let paths = self.paths.get_or_insert_default();
             let tree = FileTree::new(paths.iter().map(String::as_str));
@@ -1104,7 +1075,6 @@ impl<'a> CommitFilesState<'a> {
     // The preview of the selected row, a directory and a submodule right away, else the work
     // loading the file's contents.
     fn preview_work(&mut self) -> Option<impl FnOnce(&Cancel) -> FileContent + Send + 'static> {
-        self.ensure_gitlinks();
         // a directory or a submodule has no text to enter, see `enter`
         let entered = std::mem::take(&mut self.enter_loaded);
         let Some(row) = self.tree.loaded().and_then(|t| t.selected()) else {
@@ -1468,7 +1438,8 @@ mod tests {
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
         let head = repository.head_commit().unwrap();
         let (commit, changes) = repository.commit_detail(&head);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
+        let mut state = CommitFilesState::new(&repository, &commit, TreeView::Tree);
+        state.set_commit(&commit, &changes, &Default::default());
         state.ensure_loaded();
         state.update_tree(|tree| tree.select_path("b.txt"));
         let ec = crate::event::EventController::without_terminal();
@@ -1495,8 +1466,10 @@ mod tests {
         let (repository, _superproject, _first, _second) =
             repository_with_a_bumped_submodule(dir.path());
         let head = repository.head_commit().unwrap();
-        let (commit, changes) = repository.commit_detail(&head);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
+        let commit = repository.commit(&head).unwrap().clone();
+        let changes = repository.changes_work(None, &head)(&Cancel::default());
+        let mut state = CommitFilesState::new(&repository, &commit, TreeView::Tree);
+        state.set_commit(&commit, &changes.changes, &changes.gitlinks);
         state.ensure_loaded();
         state.update_tree(|tree| tree.select_path("sub"));
         state.ensure_loaded();
@@ -1509,8 +1482,13 @@ mod tests {
         // stepped to the parent, the tree isn't listed again: the gitlink is found again among
         // the paths the commit changed
         let parent = commit.parent_commit_hashes[0].clone();
-        let (parent_commit, parent_changes) = repository.commit_detail(&parent);
-        state.set_commit(&parent_commit, &parent_changes);
+        let parent_commit = repository.commit(&parent).unwrap().clone();
+        let parent_changes = repository.changes_work(None, &parent)(&Cancel::default());
+        state.set_commit(
+            &parent_commit,
+            &parent_changes.changes,
+            &parent_changes.gitlinks,
+        );
         state.ensure_loaded();
         state.update_tree(|tree| tree.select_path("sub"));
         state.ensure_loaded();
@@ -1536,9 +1514,7 @@ mod tests {
             .unwrap()
             .commit_hash
             .clone();
-        let (_, changes) = repository.commit_detail(&bump);
-        let mut state =
-            CommitChangesState::new(&repository, test_ctx(), bump, &changes, TreeView::Tree);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), bump, TreeView::Tree);
         state.ensure_loaded();
         let submodule = state.submodule.as_ref().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
@@ -1550,14 +1526,8 @@ mod tests {
         let (repository, _superproject, _first, _second) =
             repository_with_a_bumped_submodule(dir.path());
         let head = repository.head_commit().unwrap();
-        let (_, changes) = repository.commit_detail(&head);
-        let mut state = CommitChangesState::new(
-            &repository,
-            test_ctx(),
-            head.clone(),
-            &changes,
-            TreeView::Tree,
-        );
+        let mut state =
+            CommitChangesState::new(&repository, test_ctx(), head.clone(), TreeView::Tree);
         state.ensure_loaded();
         let submodule = state.submodule.as_ref().expect("the submodule panel");
         assert_eq!(submodule.subjects(), ["second"]);
@@ -1626,14 +1596,8 @@ mod tests {
 
         // changes: under the root row like the local changes, expanded, starts on the first file,
         // a rename shows its source too
-        let (_, changes) = repository.commit_detail(&second);
-        let mut state = CommitChangesState::new(
-            &repository,
-            test_ctx(),
-            second.clone(),
-            &changes,
-            TreeView::Tree,
-        );
+        let mut state =
+            CommitChangesState::new(&repository, test_ctx(), second.clone(), TreeView::Tree);
         state.ensure_loaded();
         assert_eq!(
             visible(&state.tree),
@@ -1708,21 +1672,15 @@ mod tests {
         assert!(raw.contains("+changed") && !raw.contains("rename from README"));
 
         // the root commit is compared to the empty tree
-        let (_, changes) = repository.commit_detail(&first);
-        let mut state = CommitChangesState::new(
-            &repository,
-            test_ctx(),
-            first.clone(),
-            &changes,
-            TreeView::Tree,
-        );
+        let mut state =
+            CommitChangesState::new(&repository, test_ctx(), first.clone(), TreeView::Tree);
         state.ensure_loaded();
         assert!(state.pane.diff().unwrap().raw.contains("+a"));
 
         // files: collapsed by default, with a preview of the selected file
         let (second_commit, second_changes) = repository.commit_detail(&second);
-        let mut state =
-            CommitFilesState::new(&repository, &second_commit, &second_changes, TreeView::Tree);
+        let mut state = CommitFilesState::new(&repository, &second_commit, TreeView::Tree);
+        state.set_commit(&second_commit, &second_changes, &Default::default());
         state.ensure_loaded();
         let tree = state.tree.loaded().unwrap();
         assert_eq!(visible(tree), vec!["src", "DOC.md", "image.bin"]);
@@ -1786,7 +1744,7 @@ mod tests {
             tree.navigate(UserEvent::NavigateDown);
         });
         let (first_commit, first_changes) = repository.commit_detail(&first);
-        state.set_commit(&first_commit, &first_changes);
+        state.set_commit(&first_commit, &first_changes, &Default::default());
         state.ensure_loaded();
         let tree = state.tree.loaded().unwrap();
         assert_eq!(
@@ -1841,13 +1799,14 @@ mod tests {
         };
 
         let (commit, changes) = repository.commit_detail(&hashes[0]);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
+        let mut state = CommitFilesState::new(&repository, &commit, TreeView::Tree);
+        state.set_commit(&commit, &changes, &Default::default());
         state.ensure_loaded();
         // down to the first commit, then back up, without listing the files again
         let order = (1..hashes.len()).chain((0..hashes.len() - 1).rev());
         for i in order {
             let (commit, changes) = repository.commit_detail(&hashes[i]);
-            state.set_commit(&commit, &changes);
+            state.set_commit(&commit, &changes, &Default::default());
             state.ensure_loaded();
             assert_eq!(files(&state), listed(&hashes[i]), "at commit {i}");
             let tree = state.tree.loaded().unwrap();
@@ -1880,13 +1839,14 @@ mod tests {
             .map(|c| c.commit_hash.clone())
             .collect();
         let (newest, changes) = repository.commit_detail(&hashes[0]);
-        let mut state = CommitFilesState::new(&repository, &newest, &changes, TreeView::Tree);
+        let mut state = CommitFilesState::new(&repository, &newest, TreeView::Tree);
+        state.set_commit(&newest, &changes, &Default::default());
         let ec = crate::event::EventController::without_terminal();
         state.ensure_loaded_in_background(&ec.sender());
         assert!(state.is_tree_loading());
         // its files listed, those of the commit before unknown yet
         let (oldest, changes) = repository.commit_detail(&hashes[1]);
-        state.set_commit(&oldest, &changes);
+        state.set_commit(&oldest, &changes, &Default::default());
         state.ensure_loaded();
         let files: Vec<&String> = state.paths.as_ref().unwrap().iter().collect();
         assert_eq!(files, ["a"]);
@@ -1906,9 +1866,7 @@ mod tests {
         git.commit("first", "2024-01-01");
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let first = repository.all_commits()[0].commit_hash.clone();
-        let (_, changes) = repository.commit_detail(&first);
-        let mut state =
-            CommitChangesState::new(&repository, test_ctx(), first, &changes, TreeView::Tree);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), first, TreeView::Tree);
         let ec = crate::event::EventController::without_terminal();
         let tx = ec.sender();
         state.update_tree(|tree| tree.select_path("a.txt"));
@@ -1938,9 +1896,7 @@ mod tests {
 
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let second = repository.all_commits()[0].commit_hash.clone();
-        let (_, changes) = repository.commit_detail(&second);
-        let mut state =
-            CommitChangesState::new(&repository, test_ctx(), second, &changes, TreeView::Tree);
+        let mut state = CommitChangesState::new(&repository, test_ctx(), second, TreeView::Tree);
         state.ensure_loaded();
 
         // enter goes into the hunks, then the lines of the selected one; back goes out
@@ -2026,7 +1982,8 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let commit = repository.all_commits()[0].clone();
         let (_, changes) = repository.commit_detail(&commit.commit_hash);
-        let mut state = CommitFilesState::new(&repository, &commit, &changes, TreeView::Tree);
+        let mut state = CommitFilesState::new(&repository, &commit, TreeView::Tree);
+        state.set_commit(&commit, &changes, &Default::default());
         state.ensure_loaded();
 
         // enter focuses the preview on its first line, lines are copied as in the file
@@ -2088,9 +2045,7 @@ mod tests {
         git.commit("second", "2024-01-02");
         let repository = Repository::load(path, SortCommit::Chronological, None, false)?;
         let head = repository.head_commit().unwrap();
-        let (_, changes) = repository.commit_detail(&head);
-        let state =
-            CommitChangesState::new(&repository, test_ctx(), head, &changes, TreeView::Tree);
+        let state = CommitChangesState::new(&repository, test_ctx(), head, TreeView::Tree);
         assert_eq!(names(state.tree.rows()), local_rows);
         Ok(())
     }

@@ -12,7 +12,7 @@ use rustc_hash::FxHashMap;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    background::Job,
+    background::{Job, Loads},
     context::AppContext,
     event::{AppEvent, Sender},
     git::{Blame, CommitHash, FileRevision, Repository},
@@ -80,6 +80,23 @@ pub struct BlameView {
     tx: Sender,
 }
 
+// The blame of the commit stepped to: stepping again replaces it, the other keys act on its
+// lines, moving through them too.
+impl Loads for BlameView {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        let steps = matches!(event, UserEvent::OlderCommit | UserEvent::NewerCommit)
+            || (self.focus == BlameFocus::Revision
+                && matches!(event, UserEvent::NavigateLeft | UserEvent::NavigateRight));
+        (self.query.is_editing() || !steps) && self.loading.is_some()
+    }
+
+    fn load_for(&mut self, event: UserEvent) {
+        if self.acts_on_loading(event) {
+            self.wait_loading();
+        }
+    }
+}
+
 impl BlameView {
     // The blame of the file as of the last commit changing it up to `commit`, on `line` (from 0).
     #[cfg(test)]
@@ -91,7 +108,8 @@ impl BlameView {
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Result<Self, String> {
-        let (history, index, blame) = repository.file_blame_work(commit, path)()?;
+        let (history, index, blame) =
+            repository.file_blame_work(commit, path)(&crate::background::Cancel::default())?;
         Ok(Self::of(history, index, blame, line, ctx, tx))
     }
 
@@ -173,19 +191,8 @@ impl BlameView {
         self.query.is_editing()
     }
 
-    // Whether `event` waits for the blame loading: stepping to another commit replaces it, the
-    // others may act on it.
-    pub fn waits_for(&self, event: UserEvent) -> bool {
-        let steps = matches!(event, UserEvent::OlderCommit | UserEvent::NewerCommit)
-            || (self.focus == BlameFocus::Revision
-                && matches!(event, UserEvent::NavigateLeft | UserEvent::NavigateRight));
-        !event.never_waits() && (self.query.is_editing() || !steps) && self.loading.is_some()
-    }
-
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
-        if self.waits_for(event) {
-            self.wait_loading();
-        }
+        self.load_before(event);
         if self.query.is_editing() {
             let kind = self.query_kind();
             if type_query(&self.ctx, &mut self.query, key, kind) == Some(QueryKind::Search) {
@@ -301,8 +308,8 @@ impl BlameView {
         self.index = index;
         let revision = &self.history[index];
         let work = repository.blame_work(&revision.commit, &revision.path);
-        // stopped once stepped past, see `Job::spawn_cancellable`
-        self.loading = Some((shown, Job::spawn_cancellable(self.tx.clone(), work)));
+        // stopped once stepped past, see `Job::read`
+        self.loading = Some((shown, Job::read(self.tx.clone(), work)));
     }
 
     // Before drawing: the blame loaded on another thread, once it is.

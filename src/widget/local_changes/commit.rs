@@ -397,13 +397,6 @@ impl LocalChangesState<'_> {
         Ok(())
     }
 
-    // Loads the changes again, after amending turned on or off changed the staged section.
-    pub(super) fn reload_staged(&mut self) {
-        self.changes = self.with_amend(self.repository.local_changes());
-        let tree = file_tree(&self.changes.staged);
-        self.sections[1].tree.set_tree(tree);
-    }
-
     // A rebase stopped to edit a commit turns amending on, with the message of that commit, and
     // amending goes off again once the rebase goes on or is aborted, or once HEAD moves, by a
     // checkout or a commit made outside the app.
@@ -441,17 +434,10 @@ impl LocalChangesState<'_> {
             } else {
                 false
             };
+        // the staged section shows the last commit, or no longer
         if changed {
-            self.reload_staged();
+            self.reload();
         }
-    }
-
-    // While amending, the staged section shows the changes of HEAD too, see `Amend`.
-    pub(super) fn with_amend(&self, mut changes: LocalChanges) -> LocalChanges {
-        if let Some(base) = self.draft.amend_base() {
-            changes.staged = self.repository.staged_changes_against(base);
-        }
-        changes
     }
 }
 

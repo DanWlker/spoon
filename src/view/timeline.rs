@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::{
+    background::Loads,
     context::AppContext,
     event::{AppEvent, Sender},
     git::{DiffWork, FileRevision, Repository},
@@ -48,6 +49,24 @@ pub struct TimelineView {
     query: TreeQuery,
     ctx: Rc<AppContext>,
     tx: Sender,
+}
+
+// The diff of the selected commit: the keys on it wait for it, moving through it too, and those
+// going into it; typed into the search of the commits, or acting on them, they don't.
+impl Loads for TimelineView {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        use UserEvent::*;
+        let into = matches!(event, Confirm | NavigateRight | FocusPanel(2) | FocusRight);
+        !self.query.is_editing()
+            && (self.pane.is_focused() || into)
+            && self.pane.loading_since().is_some()
+    }
+
+    fn load_for(&mut self, event: UserEvent) {
+        if self.acts_on_loading(event) {
+            self.pane.wait_loading();
+        }
+    }
 }
 
 impl TimelineView {
@@ -138,18 +157,6 @@ impl TimelineView {
         &self.history[self.cursor.selected()].path
     }
 
-    // Whether `event` waits for the diff loading, see `handle_event`: on the diff, or going into
-    // it; typed into the search of the commits, or acting on them, it doesn't.
-    pub fn waits_for(&self, event: UserEvent) -> bool {
-        use UserEvent::*;
-        let into = matches!(event, Confirm | NavigateRight | FocusPanel(2) | FocusRight);
-        !self.query.is_editing()
-            && !event.moves_selection()
-            && !event.never_waits()
-            && (self.pane.is_focused() || into)
-            && self.pane.loading_since().is_some()
-    }
-
     // While typing a search, every key goes to it as is.
     pub fn is_diff_focused(&self) -> bool {
         self.pane.is_focused()
@@ -168,10 +175,7 @@ impl TimelineView {
             self.update_query_status();
             return;
         }
-        // the keys moving the selection leave its diff loading, the others may act on it
-        if self.waits_for(event) {
-            self.pane.wait_loading();
-        }
+        self.load_before(event);
         let in_diff = self.pane.is_focused();
         match event {
             // the search, then out of the lines and hunks, then closes
@@ -609,6 +613,8 @@ mod tests {
         // more context loads the diff again on another thread, the selection kept
         press(&mut view, UserEvent::IncreaseDiffContext);
         assert!(view.pane.loading_since().is_some());
+        // moving in the diff waits for it too
+        assert!(view.waits_for(UserEvent::NavigateDown));
         view.pane.wait_loading();
         assert!(view.pane.is_selecting_lines());
         press(&mut view, UserEvent::DecreaseDiffContext);

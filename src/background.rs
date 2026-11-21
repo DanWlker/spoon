@@ -9,7 +9,35 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::event::{AppEvent, Sender};
+use crate::{
+    event::{AppEvent, Sender},
+    keybind::UserEvent,
+};
+
+// Where keys act on what loads in the background: a page, a window, a popup. A key acting on what
+// still loads is kept until it is loaded, see `App::must_wait`, and loads it before it acts; esc
+// and the force quit act at once, see `UserEvent::never_waits`.
+pub trait Loads {
+    // Whether what `event` acts on still loads: not shown yet, or shown as it was before, like
+    // the files of the commit moved from or the diff before a reload. A list reloading in place
+    // stays shown, the keys moving through it acting on it; moving to another row leaves what that
+    // row shows to load once drawn.
+    fn acts_on_loading(&self, event: UserEvent) -> bool;
+
+    // Loads what `event` acts on, waiting for what loads.
+    fn load_for(&mut self, event: UserEvent);
+
+    fn waits_for(&self, event: UserEvent) -> bool {
+        !event.never_waits() && self.acts_on_loading(event)
+    }
+
+    // Before `event` acts.
+    fn load_before(&mut self, event: UserEvent) {
+        if !event.never_waits() {
+            self.load_for(event);
+        }
+    }
+}
 
 // The value of work on a scoped thread, see `std::thread::scope`. A panic in it stops the app in
 // the hook of `main` before it gets here; without that hook, in the tests, it goes on here.
@@ -28,7 +56,7 @@ pub fn shows_loading(since: Instant) -> bool {
 }
 
 // Whether the job some work runs for was dropped, replaced by another, nobody waiting for what it
-// makes: long work checks it now and then to stop early, see `Job::spawn_cancellable`. The default
+// makes: long work checks it now and then to stop early, see `Job::read`. The default
 // is never cancelled, for the same work run right away.
 #[derive(Debug, Default, Clone)]
 pub struct Cancel(Arc<AtomicBool>);
@@ -62,17 +90,17 @@ impl<T> Drop for Job<T> {
 }
 
 impl<T: Send + 'static> Job<T> {
-    // Runs `work`, then wakes the app up through `tx` to draw its result; also once it has run
-    // long enough to be shown loading, see `shows_loading`. A panic in it stops the app, see
-    // `main`. It runs to its end even once the job is dropped: what changes the repository, like
-    // staging, isn't stopped halfway.
-    pub fn spawn(tx: Sender, work: impl FnOnce() -> T + Send + 'static) -> Self {
-        Self::spawn_cancellable(tx, |_| work())
+    // Runs `work` changing the repository, like staging, which runs to its end even once the job
+    // is dropped: it isn't stopped halfway. See `read`.
+    pub fn command(tx: Sender, work: impl FnOnce() -> T + Send + 'static) -> Self {
+        Self::read(tx, |_| work())
     }
 
-    // `spawn` for work reading only, which stops early once the job is dropped, as `Cancel`
-    // tells it: a load replaced by another, like the diff of a file the cursor moved past.
-    pub fn spawn_cancellable(tx: Sender, work: impl FnOnce(&Cancel) -> T + Send + 'static) -> Self {
+    // Runs `work` reading only, then wakes the app up through `tx` to draw its result; also once
+    // it has run long enough to be shown loading, see `shows_loading`. It stops early once the job
+    // is dropped, as `Cancel` tells it: a load replaced by another, like the diff of a file the
+    // cursor moved past, or of what was closed. A panic in it stops the app, see `main`.
+    pub fn read(tx: Sender, work: impl FnOnce(&Cancel) -> T + Send + 'static) -> Self {
         let cancel = Cancel::default();
         let cancelled = cancel.clone();
         let result: Arc<(Mutex<Option<T>>, Condvar)> = Arc::default();
@@ -144,8 +172,8 @@ mod tests {
                 told.send(cancel.is_cancelled()).unwrap();
             }
         };
-        let kept = Job::spawn_cancellable(ec.sender(), work(told.clone()));
-        drop(Job::spawn_cancellable(ec.sender(), work(told)));
+        let kept = Job::read(ec.sender(), work(told.clone()));
+        drop(Job::read(ec.sender(), work(told)));
         assert_eq!(stopped.recv_timeout(Duration::from_secs(10)), Ok(true));
         assert!(kept.try_take().is_none());
     }
@@ -154,7 +182,7 @@ mod tests {
     fn test_job_result_is_taken_once_done() {
         let ec = EventController::without_terminal();
         let (start, started) = std::sync::mpsc::channel::<()>();
-        let job = Job::spawn(ec.sender(), move || {
+        let job = Job::command(ec.sender(), move || {
             started.recv().unwrap();
             Ok::<_, String>(42)
         });
@@ -170,9 +198,9 @@ mod tests {
     fn test_job_wakes_the_app_once_it_runs_long_enough_to_show() {
         let ec = EventController::without_terminal();
         let wait = Duration::from_secs(5);
-        let quick = Job::spawn(ec.sender(), || Ok::<_, String>(1));
+        let quick = Job::command(ec.sender(), || Ok::<_, String>(1));
         let (finish, finished) = std::sync::mpsc::channel::<()>();
-        let slow = Job::spawn(ec.sender(), move || {
+        let slow = Job::command(ec.sender(), move || {
             finished.recv().unwrap();
             Ok::<_, String>(())
         });

@@ -329,7 +329,9 @@ impl Loader {
         ec: &event::EventController,
         terminal: &mut ratatui::DefaultTerminal,
     ) -> Result<Option<(git::Repository, graph::GraphLayout)>> {
-        let job = background::Job::spawn(ec.sender(), self.load_work(&ctx.running_task));
+        // dropped only by quitting, which ends the work with the app
+        let work = self.load_work(&ctx.running_task);
+        let job = background::Job::read(ec.sender(), move |_| work());
         let path = std::fs::canonicalize(&self.options.path).unwrap_or(self.options.path.clone());
         let message = format!("Loading {}…", path.display());
         loop {

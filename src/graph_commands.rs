@@ -633,6 +633,7 @@ fn compare(
 mod tests {
     use super::*;
     use crate::{
+        background::Cancel,
         git::{AfterTask, Conflict, GitCommand, GitTask, SortCommit},
         test_support::git::GitRepository,
     };
@@ -684,24 +685,27 @@ mod tests {
 
         // on master: merging feature, or rebasing onto it, conflicts in f, at f1 when rebasing
         assert_eq!(
-            merge_conflict(&repository, "feature")(),
+            merge_conflict(&repository, "feature")(&Cancel::default()),
             Some(Conflict::At("feature".into(), vec!["f".into()]))
         );
         assert_eq!(
-            rebase_conflict(&repository, "feature")(),
+            rebase_conflict(&repository, "feature")(&Cancel::default()),
             Some(Conflict::At(rev("master~1"), vec!["f".into()]))
         );
         // reverting m1 or m2 is clean, no later commit changed their files
-        let first_conflict =
-            |steps: Vec<(Option<String>, String)>| repository.first_conflict_work("HEAD", steps)();
+        let first_conflict = |steps: Vec<(Option<String>, String)>| {
+            repository.first_conflict_work("HEAD", steps)(&Cancel::default())
+        };
         let revert = |c: &str| first_conflict(vec![(Some(rev(c)), rev(&format!("{c}^")))]);
         assert!(revert("master~1").is_none());
         assert!(revert("master").is_none());
         // dropping m1 replays m2 on base, which is clean; cherry-picking f1 is not
         let m1 = CommitHash::from(rev("master~1").as_str());
         assert!(
-            repository.replay_conflict_work(&rev("master~2"), &["master~2..HEAD"], &[m1])()
-                .is_none()
+            repository.replay_conflict_work(&rev("master~2"), &["master~2..HEAD"], &[m1])(
+                &Cancel::default()
+            )
+            .is_none()
         );
         let f1 = rev("feature~1");
         let pick = first_conflict(vec![(Some(format!("{f1}^")), f1.clone())]);

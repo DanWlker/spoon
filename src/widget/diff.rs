@@ -630,8 +630,8 @@ pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
         }
         None => match tx {
             Some(tx) if wrap && rows > MEASURED_RIGHT_AWAY => {
-                // stopped once measuring for another width or diff, see `Job::spawn_cancellable`
-                let job = Job::spawn_cancellable(tx.clone(), work());
+                // stopped once measuring for another width or diff, see `Job::read`
+                let job = Job::read(tx.clone(), work());
                 *measuring = Some(Measuring { width, layout, job });
                 map(false)
             }
@@ -1380,7 +1380,7 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 }
 
 // `parse_diff`, stopping once `cancel` says nobody waits for it any more, with what it parsed so
-// far: a big diff takes a while, see `Job::spawn_cancellable`.
+// far: a big diff takes a while, see `Job::read`.
 pub fn parse_diff_until(diff: &str, cancel: &Cancel) -> ParsedDiff {
     let shared: Arc<str> = Arc::from(diff);
     // file names are only shown when the diff spans multiple files (a directory)
@@ -2575,7 +2575,7 @@ mod tests {
         assert_eq!(matching_rows(&diff, "hit", options), one_by_one);
     }
 
-    // Parsing stops once nobody waits for the diff any more, see `Job::spawn_cancellable`.
+    // Parsing stops once nobody waits for the diff any more, see `Job::read`.
     #[test]
     fn test_parse_stops_once_cancelled() {
         let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n".to_string();

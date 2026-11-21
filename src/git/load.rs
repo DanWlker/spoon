@@ -18,7 +18,7 @@ use super::{
     git_command, git_output, load_submodules, Commit, CommitHash, CommitMap, CommitsMap, Head,
     Operation, Ref, RefMap, Repository, SharedTask, SortCommit, Tracking, WorkTree,
 };
-use crate::git::text_from_git;
+use crate::git::{diff::empty_tree, text_from_git, FilesSnapshot, LoadedFiles, Seen};
 
 impl Repository {
     #[cfg(test)]
@@ -58,17 +58,22 @@ impl Repository {
             let operation = scope.spawn(|| read_operation(&git_dir));
             let tracking = scope.spawn(|| load_branch_tracking(path));
             let submodules = scope.spawn(|| load_submodules(path));
+            let empty_tree = scope.spawn(|| empty_tree(path).ok());
             let mut repository =
                 Self::load_commits(path, git_dir.clone(), sort, max_count, mailmap, revisions)?;
             repository.running = running;
             repository.remotes = joined(remotes);
             repository.textconv_drivers = joined(textconv_drivers);
-            repository.loaded_local_changes = Mutex::new(Some(joined(local_changes)));
+            repository.loaded_local_changes = Mutex::new(LoadedFiles {
+                files: joined(local_changes),
+                seen: Seen::First,
+            });
             repository.local_changes_started = Mutex::new(local_changes_started);
             repository.refs_snapshot = joined(refs_snapshot);
             repository.operation = joined(operation);
             repository.tracking = joined(tracking);
             repository.submodules = joined(submodules);
+            repository.empty_tree = joined(empty_tree);
             // walked here, off the thread drawing, which needs it for the first frame's keys
             repository.head_history();
             Ok(repository)
@@ -144,9 +149,16 @@ impl Repository {
         Self {
             path,
             git_dir,
-            loaded_local_changes: Default::default(),
+            // none for a repository loaded for its graph only, see `load_graph`
+            loaded_local_changes: Mutex::new(LoadedFiles {
+                files: FilesSnapshot {
+                    changes: Default::default(),
+                    stamp: 0,
+                    started: Instant::now(),
+                },
+                seen: Seen::First,
+            }),
             local_changes_started: Mutex::new(Instant::now()),
-            taken_count: Default::default(),
             running: Default::default(),
             refs_snapshot: None,
             operation: None,
@@ -162,6 +174,7 @@ impl Repository {
             textconv_drivers: Vec::new(),
             commit_hashes,
             head_history: Default::default(),
+            empty_tree: None,
         }
     }
 }
@@ -779,10 +792,16 @@ mod tests {
         assert_eq!(repository.loaded_local_change_count(), 1);
         // taken by the page, the count stays as loaded, without running git status again
         std::fs::write(path.join("b"), "b\n").unwrap();
-        assert_eq!(repository.take_loaded_local_changes().changes.count(), 1);
+        let taken = |repository: &Repository| {
+            let (files, seen) = repository.take_loaded_local_changes();
+            (files.changes.count(), seen)
+        };
+        assert_eq!(taken(&repository), (1, Seen::First));
         assert_eq!(repository.loaded_local_change_count(), 1);
-        // taken again, they are as they are now
-        assert_eq!(repository.take_loaded_local_changes().changes.count(), 2);
+        // taken again, the page loads them again, see `LocalChangesState::restore`
+        assert_eq!(taken(&repository), (1, Seen::Again));
+        repository.set_local_changes(crate::git::FilesSnapshot::load(path, &path.join(".git")));
+        assert_eq!(taken(&repository), (2, Seen::First));
         // a `git status` started before is older than them: dropped
         let older = crate::git::FilesSnapshot {
             changes: Default::default(),

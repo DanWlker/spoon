@@ -124,8 +124,8 @@ impl DiffPane {
         };
         self.tx = Some(tx.clone());
         self.state = DiffState::Loading {
-            // stopped once replaced by another, see `Job::spawn_cancellable`
-            job: Job::spawn_cancellable(tx, move |cancel| {
+            // stopped once replaced by another, see `Job::read`
+            job: Job::read(tx, move |cancel| {
                 let mut diff = parse_diff_until(&work(cancel), cancel);
                 if !cancel.is_cancelled() {
                     diff.drop_converted(&converted);

@@ -54,7 +54,7 @@ impl ConflictView {
     // The conflicting blocks of the file in the working tree, or the whole content of each side when
     // the file has no conflict markers (when one side deleted it, or it is binary); as work to run on
     // another thread, as a big file takes a while, stopping early once the job it runs for is
-    // dropped, see `Job::spawn_cancellable`.
+    // dropped, see `Job::read`.
     pub fn load_work(
         repository: &Repository,
         path: &str,

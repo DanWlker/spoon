@@ -25,7 +25,7 @@ use crate::view::{DetailQueries, TreeViews};
 use crate::widget::file_tree::TreeView;
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{shows_loading, Job},
+    background::{shows_loading, Job, Loads},
     browse::{self, LinkAction, LinkTarget},
     config::CursorType,
     config::InitialSelection,
@@ -33,10 +33,9 @@ use crate::{
     event::{AppEvent, EventController, Sender},
     external::{copy_to_clipboard, exec_interactive},
     git::{
-        read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, Commit, CommitHash,
-        FileBlameResult, FileChange, FileHistoryResult, FilesSnapshot, GitCommand, GitTask, Head,
-        LoadOptions, Loaded, NamedRef, Ref, RemoteBranch, RemoteInfo, Repository, Rev, RunningTask,
-        SharedTask,
+        read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, CommitHash,
+        FileBlameResult, FileHistoryResult, FilesSnapshot, GitCommand, GitTask, Head, LoadOptions,
+        Loaded, NamedRef, RemoteBranch, RemoteInfo, Repository, Rev, RunningTask, SharedTask,
     },
     graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
     graph_commands::{
@@ -272,6 +271,14 @@ pub struct Reloaded {
     layout: GraphLayout,
 }
 
+// Why loading the repository again failed, with its refs as they are now, else the change that
+// made it fail would reload again and again, see `App::land_reload`.
+#[derive(Debug)]
+pub struct ReloadFailed {
+    error: String,
+    refs_snapshot: Option<String>,
+}
+
 // A window over everything whose file history loads on another thread, see `App::open_window`.
 #[derive(Debug)]
 struct Opening {
@@ -341,20 +348,29 @@ enum FileWindow {
     Timeline(Box<TimelineView>),
 }
 
+// What the window loads in the background for its keys.
+impl Loads for FileWindow {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        match self {
+            FileWindow::Blame(blame) => blame.acts_on_loading(event),
+            FileWindow::Timeline(timeline) => timeline.acts_on_loading(event),
+        }
+    }
+
+    fn load_for(&mut self, event: UserEvent) {
+        match self {
+            FileWindow::Blame(blame) => blame.load_for(event),
+            FileWindow::Timeline(timeline) => timeline.load_for(event),
+        }
+    }
+}
+
 impl FileWindow {
     // While a search is typed, keys go to it as they are.
     fn is_typing(&self) -> bool {
         match self {
             FileWindow::Blame(blame) => blame.is_typing(),
             FileWindow::Timeline(timeline) => timeline.is_typing(),
-        }
-    }
-
-    // Whether `event` waits for what the window loads in the background before acting on it.
-    fn waits_for(&self, event: UserEvent) -> bool {
-        match self {
-            FileWindow::Blame(blame) => blame.waits_for(event),
-            FileWindow::Timeline(timeline) => timeline.waits_for(event),
         }
     }
 
@@ -889,7 +905,7 @@ impl App<'_> {
             // is loaded on another thread, see `open_window`
             AppEvent::OpenBlame { commit, path, line } => {
                 let work = self.repository.file_blame_work(&commit, &path);
-                let job = Job::spawn(self.ec.sender(), work);
+                let job = Job::read(self.ec.sender(), work);
                 self.shell.opening = Some(Opening {
                     window: OpeningWindow::Blame { job, line },
                     path,
@@ -899,7 +915,7 @@ impl App<'_> {
             AppEvent::OpenTimeline { commit, path } => {
                 let work = self.repository.file_history_work(&commit, &path);
                 self.shell.opening = Some(Opening {
-                    window: OpeningWindow::Timeline(Job::spawn(self.ec.sender(), work)),
+                    window: OpeningWindow::Timeline(Job::read(self.ec.sender(), work)),
                     path,
                     _spinning: spin(self.ec.sender()),
                 });
@@ -1030,8 +1046,14 @@ impl App<'_> {
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
         self.open_window();
-        if let Some(popup) = &mut self.shell.dialog {
-            popup.dialog.poll_conflicts();
+        // the keys pressed before the conflicts showed don't confirm past them
+        let warned = self
+            .shell
+            .dialog
+            .as_mut()
+            .is_some_and(|popup| popup.dialog.poll_conflicts());
+        if warned {
+            self.shell.app_status.kept.clear();
         }
         if let Some(Overlay::File(window)) = &mut self.shell.overlay {
             window.update();
@@ -1461,12 +1483,10 @@ impl App<'_> {
         let Some(commit_list_state) = self.take_list_state() else {
             return;
         };
-        let (commit, changes, refs) = selected_commit_details(self.repository, &commit_list_state);
+        let selected = commit_list_state.selected_commit_hash().clone();
         self.replace_view(View::of_detail(
             commit_list_state,
-            commit,
-            changes,
-            refs,
+            selected,
             self.shell.detail_tree_views,
             self.repository,
             self.ctx.clone(),
@@ -1593,6 +1613,10 @@ impl App<'_> {
         if let Some(menu) = self.shell.menu.as_mut() {
             let outcome = menu.handle_key(event);
             self.end_menu(outcome);
+            return;
+        }
+        // esc stops the blame or timeline opening, see `must_wait`
+        if event == UserEvent::Cancel && self.shell.opening.take().is_some() {
             return;
         }
         if self.app_keys().takes(event) {
@@ -3388,7 +3412,10 @@ impl App<'_> {
         if !self.shell.app_status.kept.is_empty() {
             return true;
         }
-        if self.shell.dialog.is_some() || self.shell.menu.is_some() {
+        if let Some(popup) = &self.shell.dialog {
+            return popup.dialog.waits_for(event);
+        }
+        if self.shell.menu.is_some() {
             return false;
         }
         // the app's own keys act on no page, but moving the focus in it; they and the sidebar's
@@ -3398,6 +3425,10 @@ impl App<'_> {
         let focus = matches!(event, FocusLeft | FocusRight | FocusUp | FocusDown);
         if self.app_keys().takes(event) && !focus {
             return staging;
+        }
+        // the keys of the page wait for the blame or timeline opening over it, which takes them
+        if self.shell.opening.is_some() {
+            return true;
         }
         match &self.shell.overlay {
             Some(Overlay::File(window)) => return window.waits_for(event),
@@ -3523,11 +3554,19 @@ impl App<'_> {
         let revisions = self.shell.graph_revisions();
         let running = self.ctx.running_task.clone();
         let folded = self.shell.folded_merges.clone();
+        let (path, git_dir) = (
+            self.repository.path().to_path_buf(),
+            self.repository.git_dir().to_path_buf(),
+        );
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
             let result = load_laid_out(&options, revisions.as_deref(), running, &folded)
-                .map(|(loaded, layout)| Box::new(Reloaded { loaded, layout }));
+                .map(|(loaded, layout)| Box::new(Reloaded { loaded, layout }))
+                .map_err(|error| ReloadFailed {
+                    error,
+                    refs_snapshot: refs_snapshot(&path, &git_dir).ok(),
+                });
             drop(spinning);
             // the app may have quit meanwhile
             tx.try_send(AppEvent::Reloaded { generation, result });
@@ -3539,7 +3578,7 @@ impl App<'_> {
     fn land_reload(
         &mut self,
         generation: u64,
-        result: std::result::Result<Box<Reloaded>, String>,
+        result: std::result::Result<Box<Reloaded>, ReloadFailed>,
     ) -> Option<Ret> {
         let pending = self
             .shell
@@ -3547,13 +3586,9 @@ impl App<'_> {
             .take_if(|pending| pending.generation == generation)?;
         let Reloaded { loaded, layout } = match result {
             Ok(reloaded) => *reloaded,
-            Err(err) => {
-                self.shell.notify_error(err);
-                // the refs as they are now, else the change that made it fail would reload again
-                // and again
-                let repository = self.repository;
-                self.shell.refs_snapshot =
-                    refs_snapshot(repository.path(), repository.git_dir()).ok();
+            Err(failed) => {
+                self.shell.notify_error(failed.error);
+                self.shell.refs_snapshot = failed.refs_snapshot;
                 return None;
             }
         };
@@ -3647,13 +3682,9 @@ impl App<'_> {
         let Some(commit_list_state) = self.take_list_state() else {
             return;
         };
-        let (commit, changes) = self.repository.commit_detail(&shown);
-        let refs = self.repository.refs(&shown).into_iter().cloned().collect();
         let mut view = View::of_detail(
             commit_list_state,
-            commit,
-            changes,
-            refs,
+            shown,
             self.shell.detail_tree_views,
             self.repository,
             self.ctx.clone(),
@@ -3813,16 +3844,6 @@ fn spin(tx: Sender) -> std::sync::mpsc::Sender<()> {
         }
     });
     spinning
-}
-
-fn selected_commit_details(
-    repository: &Repository,
-    commit_list_state: &CommitListState,
-) -> (Commit, Vec<FileChange>, Vec<Ref>) {
-    let selected = commit_list_state.selected_commit_hash().clone();
-    let (commit, changes) = repository.commit_detail(&selected);
-    let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
-    (commit, changes, refs)
 }
 
 #[cfg(test)]

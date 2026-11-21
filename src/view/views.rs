@@ -3,9 +3,10 @@ use std::rc::Rc;
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
+    background::Loads,
     context::AppContext,
     event::Sender,
-    git::{Commit, CommitHash, FileChange, Ref, Repository},
+    git::{CommitHash, Repository},
     keybind::UserEvent,
     keys::KeyList,
     layout::{Direction, Panel, Size, Target},
@@ -51,6 +52,25 @@ macro_rules! on_page {
     };
 }
 
+// What the page loads in the background for its keys.
+impl Loads for View<'_> {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        match self {
+            View::Detail(view) => view.acts_on_loading(event),
+            View::LocalChanges(view) => view.acts_on_loading(event),
+            View::Default | View::List(_) => false,
+        }
+    }
+
+    fn load_for(&mut self, event: UserEvent) {
+        match self {
+            View::Detail(view) => view.load_for(event),
+            View::LocalChanges(view) => view.load_for(event),
+            View::Default | View::List(_) => {}
+        }
+    }
+}
+
 impl<'a> View<'a> {
     pub fn handle_event(&mut self, event: UserEvent, key_event: KeyEvent) {
         on_page!(self, view => view.handle_event(event, key_event), {})
@@ -80,15 +100,6 @@ impl<'a> View<'a> {
 
     pub fn update_layout(&mut self, area: Rect) {
         on_page!(self, view => view.update_layout(area), {})
-    }
-
-    // Whether `event` waits for what the page loads in the background before acting on it.
-    pub fn waits_for(&self, event: UserEvent) -> bool {
-        match self {
-            View::Detail(view) => view.waits_for(event),
-            View::LocalChanges(view) => view.waits_for(event),
-            View::Default | View::List(_) => false,
-        }
     }
 
     // Whether the local changes are being staged or unstaged on another thread, which the app's
@@ -265,12 +276,9 @@ impl<'a> View<'a> {
         )))
     }
 
-    #[expect(clippy::too_many_arguments)]
     pub fn of_detail(
         commit_list_state: CommitListState<'a>,
-        commit: Commit,
-        changes: Vec<FileChange>,
-        refs: Vec<Ref>,
+        shown: CommitHash,
         views: TreeViews,
         repository: &'a Repository,
         ctx: Rc<AppContext>,
@@ -278,9 +286,7 @@ impl<'a> View<'a> {
     ) -> Self {
         View::Detail(Box::new(DetailView::new(
             commit_list_state,
-            commit,
-            changes,
-            refs,
+            shown,
             views,
             repository,
             ctx,

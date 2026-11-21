@@ -8,11 +8,11 @@ use ratatui::{
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{Cancel, Job},
+    background::{Cancel, Job, Loads},
     browse::{LinkAction, LinkTarget},
     context::AppContext,
     event::{AppEvent, Sender},
-    git::{Commit, CommitHash, FileChange, Ref, Repository},
+    git::{Commit, CommitChanges, CommitHash, FileChange, Ref, Repository},
     graph_commands::{dialog_commit, Compare},
     keybind::{Scope, UserEvent},
     keys::{Availability, KeyList, Keys},
@@ -85,6 +85,35 @@ enum Comparing<'a> {
     Parked(Compare, Box<CommitChangesState<'a>>),
 }
 
+// What the details load on another thread: the changes of the commit shown, and for a comparison
+// those between the two commits too.
+#[derive(Debug)]
+enum Load {
+    Commit(CommitHash),
+    Compare {
+        shown: CommitHash,
+        base: CommitHash,
+        target: CommitHash,
+    },
+}
+
+impl Load {
+    fn shown(&self) -> &CommitHash {
+        match self {
+            Load::Commit(shown) | Load::Compare { shown, .. } => shown,
+        }
+    }
+}
+
+// What `Load` loaded, the trees of its files made there too, see `CommitFiles`.
+#[derive(Debug)]
+struct Loaded {
+    changes: CommitChanges,
+    files: CommitFiles,
+    // those of the comparison
+    compared: Option<CommitFiles>,
+}
+
 #[derive(Debug)]
 pub struct DetailView<'a> {
     commit_list_state: CommitListState<'a>,
@@ -104,52 +133,87 @@ pub struct DetailView<'a> {
     compare: Comparing<'a>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
     list_focused: bool,
-    // the selection moved to another commit, whose details load once used, see `load_selected`
-    stale: bool,
-    // the files the commit selected changed, loading on another thread, the details saying so
-    // meanwhile, see `load_selected_in_background`
-    loading: Option<Job<(Vec<FileChange>, CommitFiles)>>,
+    // what to load once drawn or used, see `load_selected`: the commit opened or moved to, or a
+    // comparison
+    stale: Option<Load>,
+    // what loads on another thread, the details saying so meanwhile, see
+    // `load_selected_in_background`
+    loading: Option<(Load, Job<Loaded>)>,
+    // the focus to put back once that is loaded, see `restore_focus`; dropped by moving to
+    // another commit
+    focus_once_loaded: Option<DetailFocus>,
     repository: &'a Repository,
 
     ctx: Rc<AppContext>,
     tx: Sender,
 }
 
+// What the keys act on: the details of the commit for all but those moving to another commit,
+// which leave what it shows to load once drawn, see `update_layout`; the files of the files tab
+// too; the diff or preview for the keys on it, see `needs_pane`.
+impl Loads for DetailView<'_> {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        let pane = match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => self.changes_state.loading_since(),
+            DetailTab::Files => self.files_state.loading_since(),
+        };
+        let tree = self.tab == DetailTab::Files && self.files_state.is_tree_loading();
+        let commit = !self.moves_commit(event);
+        (commit && (self.loading.is_some() || tree)) || (self.needs_pane(event) && pane.is_some())
+    }
+
+    // Also loads them when the selection moved since, as a key moving it leaves them to load.
+    fn load_for(&mut self, event: UserEvent) {
+        if self.moves_commit(event) {
+            return;
+        }
+        self.load_selected();
+        match self.tab {
+            DetailTab::Info => {}
+            DetailTab::Changes if self.needs_pane(event) => self.changes_state.ensure_loaded(),
+            DetailTab::Changes => {}
+            DetailTab::Files if self.needs_pane(event) => self.files_state.ensure_loaded(),
+            DetailTab::Files => self.files_state.ensure_tree(),
+        }
+    }
+}
+
 impl<'a> DetailView<'a> {
-    #[expect(clippy::too_many_arguments)]
+    // The details of the commit `shown`, whose changes load on another thread once drawn.
     pub fn new(
         commit_list_state: CommitListState<'a>,
-        commit: Commit,
-        changes: Vec<FileChange>,
-        refs: Vec<Ref>,
+        shown: CommitHash,
         views: TreeViews,
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DetailView<'a> {
-        let hash = commit.commit_hash.clone();
+        let commit = repository.commit(&shown).unwrap().clone();
+        let refs = repository.refs(&shown).into_iter().cloned().collect();
         DetailView {
             commit_list_state,
             commit_detail_state: ScrollState::default(),
             tab: DetailTab::default(),
-            changes_state: CommitChangesState::new(
+            changes_state: CommitChangesState::with_files(
                 repository,
                 ctx.clone(),
-                hash,
-                &changes,
-                views.changes,
+                None,
+                shown.clone(),
+                CommitFiles::none(views.changes),
             ),
-            files_state: CommitFilesState::new(repository, &commit, &changes, views.files),
+            files_state: CommitFilesState::new(repository, &commit, views.files),
             changes_query: TreeQuery::default(),
             files_query: TreeQuery::default(),
             pane_query: TreeQuery::default(),
             commit,
-            changes,
+            changes: Vec::new(),
             refs,
             compare: Comparing::No,
             list_focused: false,
-            stale: false,
+            stale: Some(Load::Commit(shown)),
             loading: None,
+            focus_once_loaded: None,
             repository,
             ctx,
             tx,
@@ -183,18 +247,23 @@ impl<'a> DetailView<'a> {
     }
 
     // Shows the changes from `base` to `target` instead of the selected commit.
+    // Loads on another thread once drawn, with the commit shown, see `Load`.
     pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, compare: Compare) {
-        let repository = self.repository;
-        let changes = repository.diff_summary_between(&base, &target);
         let view = self.changes_state.tree_view();
-        self.changes_state = CommitChangesState::between(
-            repository,
+        self.changes_state = CommitChangesState::with_files(
+            self.repository,
             self.ctx.clone(),
-            Some(base),
-            target,
-            &changes,
-            view,
+            Some(base.clone()),
+            target.clone(),
+            CommitFiles::none(view),
         );
+        let shown = self.commit.commit_hash.clone();
+        self.loading = None;
+        self.stale = Some(Load::Compare {
+            shown,
+            base,
+            target,
+        });
         self.compare = Comparing::Shown(compare);
         self.show_tab(DetailTab::Changes);
     }
@@ -588,6 +657,10 @@ impl<'a> DetailView<'a> {
     // Puts the focus back where it was before the page was reloaded: on the commit list, in the
     // diff or preview, or on the files, where the tab leaves it.
     pub fn restore_focus(&mut self, focus: DetailFocus) {
+        if self.stale.is_some() || self.loading.is_some() {
+            self.focus_once_loaded = Some(focus);
+            return;
+        }
         match focus {
             DetailFocus::List => self.focus_list(),
             DetailFocus::Pane => match self.tab {
@@ -660,12 +733,12 @@ impl<'a> DetailView<'a> {
         let view = self.changes_state.tree_view();
         let changes = std::mem::replace(
             &mut self.changes_state,
-            CommitChangesState::new(
+            CommitChangesState::with_files(
                 self.repository,
                 self.ctx.clone(),
+                None,
                 self.commit.commit_hash.clone(),
-                &[],
-                view,
+                CommitFiles::none(view),
             ),
         );
         self.compare = Comparing::Parked(compare, Box::new(changes));
@@ -719,44 +792,16 @@ impl<'a> DetailView<'a> {
             || (self.list_focused && event.moves_selection())
     }
 
-    // Whether `event` acts on the diff or preview beside the files: on it, or going into it.
+    // Whether `event` acts on the diff or preview beside the files: on it, moving through it too,
+    // or going into it.
     fn needs_pane(&self, event: UserEvent) -> bool {
         let into =
             !self.list_focused && matches!(event, UserEvent::Confirm | UserEvent::FocusRight);
-        !event.moves_selection() && (self.is_pane_focused() || into)
-    }
-
-    // Whether `event` waits for what loads in the background, see `handle_event`.
-    pub fn waits_for(&self, event: UserEvent) -> bool {
-        let pane = match self.tab {
-            DetailTab::Info => None,
-            DetailTab::Changes => self.changes_state.loading_since(),
-            DetailTab::Files => self.files_state.loading_since(),
-        };
-        let tree = self.tab == DetailTab::Files && self.files_state.is_tree_loading();
-        let waits = (!self.moves_commit(event) && self.loading.is_some())
-            || (!event.moves_selection() && tree)
-            || (self.needs_pane(event) && pane.is_some());
-        waits && !event.never_waits()
+        !self.moves_commit(event) && (self.is_pane_focused() || into)
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
-        // the keys moving the selection leave what it shows to load once drawn, see
-        // `update_layout`; the others may act on it, so it is loaded first: the details of the
-        // commit for all but those moving to another commit, the diff for all but those moving
-        // in the files; esc acts on none of it, see `UserEvent::never_waits`
-        let loads = !event.never_waits();
-        if loads && !self.moves_commit(event) {
-            self.load_selected();
-        }
-        match self.tab {
-            DetailTab::Info => {}
-            _ if event.moves_selection() || !loads => {}
-            DetailTab::Changes if self.needs_pane(event) => self.changes_state.ensure_loaded(),
-            DetailTab::Changes => {}
-            DetailTab::Files if self.needs_pane(event) => self.files_state.ensure_loaded(),
-            DetailTab::Files => self.files_state.ensure_tree(),
-        }
+        self.load_before(event);
         // typing a search or filter, keys arrive unmapped, see App::run
         if self.is_typing_query() {
             let (ctx, kind) = (self.ctx.clone(), self.query_kind());
@@ -1105,7 +1150,7 @@ impl<'a> DetailView<'a> {
         let loading = self
             .loading
             .as_ref()
-            .map(Job::started)
+            .map(|(_, job)| job.started())
             .into_iter()
             .chain(tab)
             .min();
@@ -1613,7 +1658,7 @@ impl<'a> DetailView<'a> {
 
     // The selected row of the diff or the preview, from which a search starts; the files are
     // filtered, which goes from no row.
-    fn focus_row(&self) -> usize {
+    pub fn focus_row(&self) -> usize {
         match (self.tab, self.is_pane_focused()) {
             (DetailTab::Changes, true) => self.changes_state.pane.selected_row(),
             (DetailTab::Files, true) => self.files_state.preview_selected_row(),
@@ -1685,63 +1730,97 @@ impl<'a> DetailView<'a> {
             // the comparison stays, the selection only moves in the list
             return;
         }
-        self.stale = true;
+        let selected = self.as_list_state().selected_commit_hash().clone();
+        self.stale = Some(Load::Commit(selected));
+        self.focus_once_loaded = None;
     }
 
     // Loads the details of the selected commit, when the selection moved since they were.
     // Before a key acts on them, waiting for those loading in the background.
     pub fn load_selected(&mut self) {
-        if std::mem::take(&mut self.stale) {
+        if let Some(load) = self.stale.take() {
             self.loading = None;
-            let selected = self.as_list_state().selected_commit_hash().clone();
-            let changes = self.repository.commit_changes_work(&selected)(&Cancel::default());
-            let view = self.changes_state.tree_view();
-            let files = CommitFiles::of(&changes, view);
-            self.show_selected((changes, files));
-        } else if let Some(job) = self.loading.take() {
-            self.show_selected(job.wait());
+            let loaded = self.load_work(&load)(&Cancel::default());
+            self.show_loaded(load, loaded);
+        } else if let Some((load, job)) = self.loading.take() {
+            self.show_loaded(load, job.wait());
         }
     }
 
     // Before drawing: starts loading the details of the commit selected now on another thread,
     // the screen keeping up with the keys meanwhile, or shows them once loaded.
     fn load_selected_in_background(&mut self) {
-        if std::mem::take(&mut self.stale) {
-            let selected = self.as_list_state().selected_commit_hash().clone();
-            let work = self.repository.commit_changes_work(&selected);
-            // its files' tree made there too, see `CommitFiles`
-            let view = self.changes_state.tree_view();
-            let work = move |cancel: &Cancel| {
-                let changes = work(cancel);
-                let files = CommitFiles::of(&changes, view);
-                (changes, files)
-            };
-            // stopped once moved past or closed, see `Job::spawn_cancellable`
-            self.loading = Some(Job::spawn_cancellable(self.tx.clone(), work));
+        if let Some(load) = self.stale.take() {
+            let work = self.load_work(&load);
+            // stopped once moved past or closed, see `Job::read`
+            self.loading = Some((load, Job::read(self.tx.clone(), work)));
         }
-        if let Some(changes) = self.loading.as_ref().and_then(Job::try_take) {
-            self.loading = None;
-            self.show_selected(changes);
+        if let Some(loaded) = self.loading.as_ref().and_then(|(_, job)| job.try_take()) {
+            if let Some((load, _)) = self.loading.take() {
+                self.show_loaded(load, loaded);
+            }
         }
     }
 
-    // The details of the commit selected, of its `changes` and their `files`.
-    fn show_selected(&mut self, (changes, files): (Vec<FileChange>, CommitFiles)) {
+    // What `load` loads, as work to run on another thread.
+    fn load_work(&self, load: &Load) -> impl FnOnce(&Cancel) -> Loaded + Send + 'static {
+        let changes = self.repository.changes_work(None, load.shown());
+        let compared = match load {
+            Load::Commit(_) => None,
+            Load::Compare { base, target, .. } => {
+                Some(self.repository.changes_work(Some(base), target))
+            }
+        };
+        let view = self.changes_state.tree_view();
+        move |cancel| {
+            let changes = changes(cancel);
+            let files = CommitFiles::of(&changes.changes, &changes.gitlinks, view);
+            let compared = compared.map(|work| {
+                let compared = work(cancel);
+                CommitFiles::of(&compared.changes, &compared.gitlinks, view)
+            });
+            Loaded {
+                changes,
+                files,
+                compared,
+            }
+        }
+    }
+
+    // The details of the commit shown, see `Load`.
+    fn show_loaded(&mut self, load: Load, loaded: Loaded) {
+        let Loaded {
+            changes,
+            files,
+            compared,
+        } = loaded;
         let repository = self.repository;
-        let selected = self.as_list_state().selected_commit_hash().clone();
-        let commit = repository.commit(&selected).unwrap().clone();
-        let refs = repository.refs(&selected).into_iter().cloned().collect();
-        self.changes_state =
-            CommitChangesState::with_files(repository, self.ctx.clone(), None, selected, files);
-        self.files_state.set_commit(&commit, &changes);
+        let shown = load.shown().clone();
+        let commit = repository.commit(&shown).unwrap().clone();
+        let refs = repository.refs(&shown).into_iter().cloned().collect();
+        self.changes_state = match (load, compared) {
+            (Load::Compare { base, target, .. }, Some(compared)) => CommitChangesState::with_files(
+                repository,
+                self.ctx.clone(),
+                Some(base),
+                target,
+                compared,
+            ),
+            _ => CommitChangesState::with_files(repository, self.ctx.clone(), None, shown, files),
+        };
+        self.files_state
+            .set_commit(&commit, &changes.changes, &changes.gitlinks);
         self.commit = commit;
-        self.changes = changes;
+        self.changes = changes.changes;
         self.refs = refs;
 
         self.commit_detail_state.offset = 0;
         // the diff of the changes tab and the files load in the background, see `update_layout`
         // the states of another commit start without the filter
         self.apply_query_change(Some(QueryKind::Filter));
+        if let Some(focus) = self.focus_once_loaded.take() {
+            self.restore_focus(focus);
+        }
     }
 
     pub fn refresh(&self) {

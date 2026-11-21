@@ -12,36 +12,19 @@ use super::{
 };
 
 impl Repository {
+    #[cfg(test)]
     pub fn local_changes(&self) -> LocalChanges {
-        self.local_changes_work()()
+        load_local_changes(&self.path)
     }
 
-    // `local_changes` as work to run on another thread.
-    pub fn local_changes_work(&self) -> impl FnOnce() -> LocalChanges + Send + 'static {
-        let path = self.path.clone();
-        move || load_local_changes(&path)
-    }
-
-    // The number of local changes, as they were when the repository was loaded.
+    // The number of local changes, as they were last loaded.
     pub fn loaded_local_change_count(&self) -> usize {
-        let mut loaded = lock(&self.loaded_local_changes);
-        let taken = *lock(&self.taken_count);
-        match (loaded.as_ref(), taken) {
-            (Some(files), _) => files.changes.count(),
-            (None, Some(count)) => count,
-            (None, None) => {
-                *lock(&self.local_changes_started) = Instant::now();
-                loaded.insert(self.work_tree().load_files()).changes.count()
-            }
-        }
+        lock(&self.loaded_local_changes).files.changes.count()
     }
 
-    // The local changes as they were when the repository was loaded the first time it is called,
-    // so the sidebar and the page share one `git status`, and as they are now after that.
-    // The local changes loaded again after the working tree changed, for the local changes page to
-    // show them; dropped when they started loading before those it has, which a reload after a
-    // command of the app can load meanwhile. The conflicts resolved by hand in them are staged
-    // once the page takes them.
+    // The local changes loaded again after the working tree changed, for the page bar to count
+    // and the local changes page to show; dropped when they started loading before those it has,
+    // which a reload after a command of the app can load meanwhile.
     pub fn set_local_changes(&self, files: FilesSnapshot) {
         {
             let mut started = lock(&self.local_changes_started);
@@ -50,28 +33,19 @@ impl Repository {
             }
             *started = files.started;
         }
-        *lock(&self.loaded_local_changes) = Some(files);
-    }
-
-    pub fn take_loaded_local_changes(&self) -> FilesSnapshot {
-        let loaded = lock(&self.loaded_local_changes).take();
-        let files = match loaded {
-            Some(files) => self.work_tree().stage_resolved(files),
-            None => {
-                *lock(&self.local_changes_started) = Instant::now();
-                self.work_tree().load_files()
-            }
+        *lock(&self.loaded_local_changes) = LoadedFiles {
+            files,
+            seen: Seen::First,
         };
-        *lock(&self.taken_count) = Some(files.changes.count());
-        files
     }
 
-    // Changes between `base` and the index, i.e. what would be committed when amending.
-    pub fn staged_changes_against(&self, base: &str) -> Vec<LocalChangeFile> {
-        let args = ["diff", "--cached", "--name-status", "-z", "-M", base];
-        git_output(&self.path, &args)
-            .map(|out| parse_name_status(out.as_bytes()))
-            .unwrap_or_default()
+    // The local changes last loaded, for the local changes page to open with: as they were when
+    // the repository was loaded, so the page bar and the page share one `git status`, or since.
+    // `Seen::Again` when the page opened with them before, which may be out of date then.
+    pub fn take_loaded_local_changes(&self) -> (FilesSnapshot, Seen) {
+        let mut loaded = lock(&self.loaded_local_changes);
+        let seen = std::mem::replace(&mut loaded.seen, Seen::Again);
+        (loaded.files.clone(), seen)
     }
 
     // The commands discarding the unstaged changes of `tracked` files (restoring them from the
@@ -418,15 +392,33 @@ pub(super) fn parse_name_status(bytes: &[u8]) -> Vec<LocalChangeFile> {
     files
 }
 
+// The local changes last loaded, see `Repository::take_loaded_local_changes`.
+#[derive(Debug)]
+pub(super) struct LoadedFiles {
+    pub(super) files: FilesSnapshot,
+    pub(super) seen: Seen,
+}
+
+// Whether the local changes page opened with the local changes before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    First,
+    Again,
+}
+
 impl WorkTree {
+    // Changes between `base` and the index, i.e. what would be committed when amending.
+    pub fn staged_changes_against(&self, base: &str) -> Vec<LocalChangeFile> {
+        let args = ["diff", "--cached", "--name-status", "-z", "-M", base];
+        git_output(&self.path, &args)
+            .map(|out| parse_name_status(out.as_bytes()))
+            .unwrap_or_default()
+    }
+
     // The local changes of the work tree with a stamp of their files, see `FilesSnapshot`, the
     // conflicts resolved by hand staged first, see `stage_resolved_conflicts`.
     pub fn load_files(&self) -> FilesSnapshot {
-        self.stage_resolved(FilesSnapshot::load(&self.path, &self.git_dir))
-    }
-
-    // `files`, loaded again once the conflicts resolved by hand in them are staged.
-    fn stage_resolved(&self, files: FilesSnapshot) -> FilesSnapshot {
+        let files = FilesSnapshot::load(&self.path, &self.git_dir);
         match self.stage_resolved_conflicts(&files.changes) {
             true => FilesSnapshot::load(&self.path, &self.git_dir),
             false => files,

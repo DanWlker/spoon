@@ -69,10 +69,9 @@ impl<'a> LocalChangesState<'a> {
                 return Ok(());
             }
         };
-        let result = self.repository.resolve_conflict(&path, side);
         self.chosen = Focus::Files;
-        self.reload();
-        result
+        // like staging, see `change_files`
+        self.change_files(move |tree| tree.resolve_conflict(&path, side))
     }
 
     // The two sides of the selected file, when it is conflicted: loading on another thread with
@@ -81,8 +80,8 @@ impl<'a> LocalChangesState<'a> {
         let file = self.selected_conflict()?;
         let work = ConflictView::load_work(self.repository, &file.path);
         Some(match tx {
-            // stopped once moved past, see `Job::spawn_cancellable`
-            Some(tx) => Beside::ConflictLoading(Job::spawn_cancellable(tx.clone(), work)),
+            // stopped once moved past, see `Job::read`
+            Some(tx) => Beside::ConflictLoading(Job::read(tx.clone(), work)),
             None => Beside::Conflict(ConflictPanel::new(work(&Cancel::default()))),
         })
     }
