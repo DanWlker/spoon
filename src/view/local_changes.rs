@@ -59,6 +59,10 @@ impl<'a> LocalChangesView<'a> {
         self.local_changes_state.waits_for(event)
     }
 
+    pub fn is_files_loading(&self) -> bool {
+        self.local_changes_state.is_files_loading()
+    }
+
     // Starts loading the diff of the row the cursor moved to on another thread, or shows it once
     // loaded.
     pub fn load_in_background(&mut self) {
@@ -254,9 +258,7 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.collapse();
             }
             UserEvent::ToggleTreeView if self.local_changes_state.is_diff_focused() => {
-                self.ctx
-                    .diff_layout
-                    .set(self.ctx.diff_layout.get().toggled());
+                self.ctx.toggle_diff_layout();
             }
             UserEvent::ToggleTreeView => {
                 self.local_changes_state.toggle_tree_view();

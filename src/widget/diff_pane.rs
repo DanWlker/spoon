@@ -493,16 +493,13 @@ impl DiffPane {
 
     // How the search for `query` went over the rows of the diff, None without one.
     pub fn search_outcome(&self, query: &str, options: SearchOptions) -> Option<SearchOutcome> {
+        let diff = self.diff()?;
         let selected = self.selected_row();
         Some(match &self.matches {
             Some((q, o, rows)) if q == query && *o == options => {
                 SearchOutcome::of_matches(query, selected, rows)
             }
-            _ => SearchOutcome::of_matches(
-                query,
-                selected,
-                &matching_rows(self.diff()?, query, options),
-            ),
+            _ => SearchOutcome::of_matches(query, selected, &matching_rows(diff, query, options)),
         })
     }
 
@@ -765,6 +762,19 @@ mod tests {
         assert!(pane.is_focused());
         pane.set_diff(None);
         assert!(!pane.is_focused());
+    }
+
+    // How a search went is told of the diff shown only: it used to tell of the one before while
+    // the next was outdated or loading.
+    #[test]
+    fn test_search_outcome_of_the_diff_shown_only() {
+        let options = SearchOptions::default();
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(long_line_diff()));
+        assert!(pane.search("old", 0, SearchDirection::Next, options));
+        assert!(pane.search_outcome("old", options).is_some());
+        pane.outdate();
+        assert!(pane.search_outcome("old", options).is_none());
     }
 
     // ctrl-e and ctrl-y scroll the diff like vim: the selected line comes along once it would

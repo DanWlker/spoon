@@ -73,6 +73,11 @@ impl Default for GraphRender {
 }
 
 impl AppContext {
+    // Shows every diff side by side, or in one column.
+    pub fn toggle_diff_layout(&self) {
+        self.diff_layout.set(self.diff_layout.get().toggled());
+    }
+
     // Shows a line more or fewer around the changes of every diff, by `event`, at least one: git
     // applies no hunk staged without any. Returns whether it changed.
     pub fn adjust_diff_context(&self, event: UserEvent) -> bool {

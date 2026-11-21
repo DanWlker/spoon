@@ -1565,15 +1565,18 @@ fn pair_changes(
         // the first added line not passed yet
         let mut next = 0;
         for (old, &r) in removed.iter().enumerate() {
-            // a line diffed against a few others can take a while
             if cancel.is_cancelled() {
                 return (emphasis, pairs);
             }
-            let found = (next..added.len()).take(LOOKAHEAD).find_map(|new| {
-                let (old, new_line) = (line(old), line(removed.len() + new));
-                let ranges = changed_ranges(old, new_line)?;
-                Some((new, ranges))
-            });
+            // a line diffed against a few others can take a while
+            let tried = (next..added.len()).take(LOOKAHEAD);
+            let found = tried
+                .take_while(|_| !cancel.is_cancelled())
+                .find_map(|new| {
+                    let (old, new_line) = (line(old), line(removed.len() + new));
+                    let ranges = changed_ranges(old, new_line)?;
+                    Some((new, ranges))
+                });
             let Some((new, [old, new_ranges])) = found else {
                 continue;
             };
@@ -1644,10 +1647,16 @@ fn common_text(old: &Words, new: &Words) -> usize {
     kept
 }
 
-// The bytes of the words of `old` and `new` that differ, by a diff of their words, as long as it
-// takes: the diff is parsed on another thread, see `DiffPane::load_in_background`. None when the
-// lines aren't `alike`, or alike only in blanks.
+// The bytes of the words of `old` and `new` that differ, by a diff of their words: the diff is
+// parsed on another thread, see `DiffPane::load_in_background`. None when the lines aren't
+// `alike`, or alike only in blanks, or too long to diff quickly.
 fn changed_ranges(old: &Words, new: &Words) -> Option<[Vec<Range<usize>>; 2]> {
+    // shortcut: longer lines, like minified code, aren't marked, as diffing two of 100k words
+    // takes seconds; raise it if long lines of prose should be
+    const MAX_WORDS: usize = 1024;
+    if old.words.len() > MAX_WORDS || new.words.len() > MAX_WORDS {
+        return None;
+    }
     // what they have in common bounds what the diff keeps, which is quicker to tell
     if !alike(common_text(old, new), old, new) {
         return None;
@@ -1973,7 +1982,7 @@ pub fn render_split_rows(
                 }
                 if old_width < area.width {
                     buf.set_string(
-                        area.x + old_width,
+                        area.x.saturating_add(old_width),
                         y,
                         "│",
                         Style::default().fg(theme.divider_fg),
@@ -2351,6 +2360,18 @@ mod tests {
                 ("uno dos three cuatro", vec![]),
             ]
         );
+    }
+
+    // Lines too long to diff quickly by their words, like minified code, aren't marked.
+    #[test]
+    fn test_long_lines_unmarked() {
+        let line = |end: &str| format!("{}{end}", "w ".repeat(600));
+        let diff = parse_diff(&format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-{}\n+{}\n",
+            line("a"),
+            line("b"),
+        ));
+        assert!(diff.rows.iter().all(|r| diff.row_emphasis(r).is_empty()));
     }
 
     // A diff that fits the panel still moves the line to a change: only the window stays put.

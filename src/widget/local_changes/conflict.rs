@@ -94,20 +94,20 @@ impl<'a> LocalChangesState<'a> {
             .filter(|f| f.status == LocalChangeStatus::Conflicted)
     }
 
-    // Shows the conflict loading once loaded, waiting for it when `wait`: before a key acts on it.
-    pub(super) fn show_conflict(&mut self, wait: bool) {
-        let Beside::ConflictLoading(job) = &self.beside else {
-            return;
+    // Shows the conflict loading, waiting for it: before a key acts on it.
+    pub(super) fn wait_conflict(&mut self) {
+        self.beside = match std::mem::replace(&mut self.beside, Beside::Diff) {
+            Beside::ConflictLoading(job) => Beside::Conflict(ConflictPanel::new(job.wait())),
+            beside => beside,
         };
-        let view = match wait {
-            true => match std::mem::replace(&mut self.beside, Beside::Diff) {
-                Beside::ConflictLoading(job) => Some(job.wait()),
-                _ => None,
-            },
-            false => job.try_take(),
-        };
-        if let Some(view) = view {
-            self.beside = Beside::Conflict(ConflictPanel::new(view));
+    }
+
+    // Shows the conflict loading once loaded.
+    pub(super) fn poll_conflict(&mut self) {
+        if let Beside::ConflictLoading(job) = &self.beside {
+            if let Some(view) = job.try_take() {
+                self.beside = Beside::Conflict(ConflictPanel::new(view));
+            }
         }
     }
 

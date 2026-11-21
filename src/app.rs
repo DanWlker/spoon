@@ -3391,10 +3391,13 @@ impl App<'_> {
         if self.shell.dialog.is_some() || self.shell.menu.is_some() {
             return false;
         }
-        // the app's own keys act on no page, but moving the focus in it
+        // the app's own keys act on no page, but moving the focus in it; they and the sidebar's
+        // wait for the files staged meanwhile, which leaving the page or a command would get in
+        // the way of, see `WorkTree::check_idle`
+        let staging = self.view.is_files_loading();
         let focus = matches!(event, FocusLeft | FocusRight | FocusUp | FocusDown);
         if self.app_keys().takes(event) && !focus {
-            return false;
+            return staging;
         }
         match &self.shell.overlay {
             Some(Overlay::File(window)) => return window.waits_for(event),
@@ -3402,10 +3405,13 @@ impl App<'_> {
             None => {}
         }
         if self.shell.sidebar_focused() {
-            return false;
+            return staging;
         }
-        // what a key moving the selection left to load starts loading
-        self.view.load_in_background();
+        // what a key moving the selection left to load starts loading, unless this one moves it
+        // on too: a held key loads the row it stops on, once drawn
+        if !event.moves_selection() {
+            self.view.load_in_background();
+        }
         self.view.waits_for(event)
     }
 

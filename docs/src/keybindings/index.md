@@ -12,6 +12,7 @@ A key acting on what still loads in the background (a diff, the files, a blame) 
 | ----- | --------- | ----- | ------------ |
 | Local changes, the files | the diff, conflict or submodule beside them | <kbd>Enter</kbd> and <kbd>Ctrl-l</kbd>, going into it; <kbd>Space</kbd> on a conflicted file | every other key |
 | Local changes, the files | the files reloading, after staging or a change outside the app | every key acting on them | typing the filter |
+| Local changes, the app's keys (like <kbd>Tab</kbd> and <kbd>Ctrl-r</kbd>) and the sidebar | the files reloading | every key | |
 | Local changes, the diff, conflict or submodule | it | every key | |
 | Local changes, the commit message | | | typing; committing waits for the files reloading |
 | Details, the changes or files tab | the diff or preview beside the files | <kbd>Enter</kbd> and <kbd>Ctrl-l</kbd>, going into it | every other key |

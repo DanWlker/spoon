@@ -136,14 +136,13 @@ struct ChangedFile {
 // loading them: a big commit takes a while. See `CommitChangesState::with_files`.
 #[derive(Debug)]
 pub struct CommitFiles {
-    pub changes: Vec<FileChange>,
     files: Vec<ChangedFile>,
     tree: FileTreeState,
 }
 
 impl CommitFiles {
     // The files of `changes`, shown in `view`, on the first file rather than its directory.
-    pub fn of(changes: Vec<FileChange>, view: TreeView) -> Self {
+    pub fn of(changes: &[FileChange], view: TreeView) -> Self {
         let files: Vec<ChangedFile> = changes
             .iter()
             .map(|change| {
@@ -174,11 +173,7 @@ impl CommitFiles {
         {
             tree.select_path(&path);
         }
-        CommitFiles {
-            changes,
-            files,
-            tree,
-        }
+        CommitFiles { files, tree }
     }
 }
 
@@ -322,7 +317,7 @@ impl<'a> CommitChangesState<'a> {
         changes: &[FileChange],
         view: TreeView,
     ) -> Self {
-        let files = CommitFiles::of(changes.to_vec(), view);
+        let files = CommitFiles::of(changes, view);
         Self::with_files(repository, ctx, base, commit_hash, files)
     }
 
@@ -334,7 +329,7 @@ impl<'a> CommitChangesState<'a> {
         commit_hash: CommitHash,
         files: CommitFiles,
     ) -> Self {
-        let CommitFiles { files, tree, .. } = files;
+        let CommitFiles { files, tree } = files;
         Self {
             repository,
             ctx,
@@ -850,6 +845,8 @@ impl<'a> CommitFilesState<'a> {
         self.commit_hash = hash.clone();
         self.first_parent = first_parent.cloned();
         self.changes = changes.to_vec();
+        // the files of the commit before, loaded late
+        self.tree_loading = None;
         if let Some(tree) = self.tree.loaded_mut() {
             tree.cancel_visual();
         }
@@ -965,6 +962,15 @@ impl<'a> CommitFilesState<'a> {
             self.tree = FilesTree::Loaded(before.with_tree(tree));
             self.replace_preview();
         }
+    }
+
+    // Filters the files, those still loading too: the tree loaded keeps the filter of the one
+    // waiting, see `show_tree`.
+    pub fn set_filter(&mut self, filter: Option<&str>, options: SearchOptions) {
+        if let FilesTree::Waiting(tree) = &mut self.tree {
+            tree.set_filter(filter, options);
+        }
+        self.update_tree(|t| t.set_filter(filter, options));
     }
 
     // Applies a tree operation; None before the tree is loaded.
@@ -1850,6 +1856,39 @@ mod tests {
                 .all(|r| r.is_dir() || listed(&hashes[i]).contains(&r.path)));
         }
         Ok(())
+    }
+
+    // Moving to another commit while the files of the one before load shows the files of the
+    // commit moved to, not those loaded late.
+    #[test]
+    fn test_files_of_the_commit_moved_to_while_others_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        fs::write(path.join("a"), "a\n").unwrap();
+        git.add(&["a"]);
+        git.commit("add a", "2024-01-01");
+        fs::write(path.join("b"), "b\n").unwrap();
+        git.add(&["b"]);
+        git.commit("add b", "2024-01-02");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let hashes: Vec<CommitHash> = repository
+            .all_commits()
+            .iter()
+            .map(|c| c.commit_hash.clone())
+            .collect();
+        let (newest, changes) = repository.commit_detail(&hashes[0]);
+        let mut state = CommitFilesState::new(&repository, &newest, &changes, TreeView::Tree);
+        let ec = crate::event::EventController::without_terminal();
+        state.ensure_loaded_in_background(&ec.sender());
+        assert!(state.is_tree_loading());
+        // its files listed, those of the commit before unknown yet
+        let (oldest, changes) = repository.commit_detail(&hashes[1]);
+        state.set_commit(&oldest, &changes);
+        state.ensure_loaded();
+        let files: Vec<&String> = state.paths.as_ref().unwrap().iter().collect();
+        assert_eq!(files, ["a"]);
     }
 
     // Moving to another file while the diff of the one before loads shows the diff of the file

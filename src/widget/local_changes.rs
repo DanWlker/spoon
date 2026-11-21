@@ -1756,6 +1756,11 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // Whether the files load again, after a change made on another thread, see `change_files`.
+    pub fn is_files_loading(&self) -> bool {
+        self.files_loading.is_some()
+    }
+
     // Loads what `event` needs before it acts, see `needs`: waits for it while it loads.
     pub fn load_for(&mut self, event: UserEvent) {
         match self.needs(event) {
@@ -1781,7 +1786,7 @@ impl<'a> LocalChangesState<'a> {
     pub fn load_stale_diff(&mut self) {
         self.load_stale_files();
         self.pane.wait_loading();
-        self.show_conflict(true);
+        self.wait_conflict();
         if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.wait(&self.ctx);
         }
@@ -1817,7 +1822,7 @@ impl<'a> LocalChangesState<'a> {
                 .load_in_background(tx.clone(), self.repository.converted_paths(), work);
         }
         self.pane.poll_loading();
-        self.show_conflict(false);
+        self.poll_conflict();
         if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.poll(&self.ctx);
         }

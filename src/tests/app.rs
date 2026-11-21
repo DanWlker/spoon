@@ -5854,3 +5854,142 @@ fn test_esc_in_a_comparison_clears_the_search_first() {
         esc("close diff"),
     ]);
 }
+
+#[test]
+fn test_details_keep_the_filter_of_their_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("4 5 / x enter"),
+        keys("ctrl-r"),
+        check(|app| {
+            let View::Detail(view) = &app.view else {
+                panic!("not in the commit details");
+            };
+            assert_eq!(view.queries().files.filter(), Some("x"));
+        }),
+        // drawn with the files loaded, see the assert in `DetailView::render`
+        keys("j"),
+        keys("tab tab"),
+        keys("j"),
+    ]);
+}
+
+#[test]
+fn test_stage_while_the_index_is_locked_then_leave() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    std::fs::write(path.join(".git/index.lock"), "").unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    harness.run(vec![
+        keys_at_once("space tab"),
+        check(|app| assert_notice(app, "index.lock': File exists")),
+    ]);
+}
+
+// A held key loads the diff of the row it stops on, not of every row it passes.
+#[test]
+fn test_held_key_loads_where_it_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..20 {
+        std::fs::write(path.join(format!("n{i:02}.txt")), "x\n").unwrap();
+    }
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    harness.run(vec![vec![Step::Act(Box::new(|app| {
+        // the repeats of a held key, handled before the app draws again
+        for _ in 0..10 {
+            let j = AppEvent::Key(parse_key_event("j").unwrap());
+            app.handle_event(j).unwrap();
+        }
+        assert!(!app.view.is_loading());
+    }))]]);
+}
+
+// A conflict resolved by hand while the graph is shown is staged once the local changes page
+// opens, as when it opens right after the merge.
+#[test]
+fn test_conflict_resolved_on_the_graph_page_staged_on_the_local_changes_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let merge = crate::git::git_command()
+        .args(["merge", "-q", "feat"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success());
+    let mut harness = Harness::new(&path, launch());
+    let unmerged = |path: &Path| git(path, &["ls-files", "-u"]);
+    let checked = path.clone();
+    harness.run(vec![
+        vec![Step::Outside(Box::new(|path| {
+            std::fs::write(path.join("f.txt"), "a\nboth\nc\n").unwrap();
+            std::fs::write(path.join("new.txt"), "new\n").unwrap();
+        }))],
+        tick(),
+        keys("tab"),
+        check(move |app| {
+            assert!(matches!(app.view, View::LocalChanges(_)));
+            assert_eq!(unmerged(&checked), "");
+        }),
+    ]);
+}
+
+// The files staged on another thread, which `check_idle` doesn't know of, aren't written meanwhile
+// by a command or a reload started right after: leaving the page, refreshing and the sidebar's
+// keys wait for them. They used to run alongside, both writing the index.
+#[test]
+fn test_commands_wait_for_the_files_staged() {
+    // the keys, and the branch checked out after them
+    let cases = [
+        // feat checked out from the sidebar, focused once the graph shows
+        ("space tab shift-g k k k k space enter", "feat"),
+        // c1 checked out from the commit list, detaching HEAD
+        ("space tab 2 shift-g space enter", ""),
+        ("space ctrl-r", "master"),
+    ];
+    for (keys, branch) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("n.txt"), "new\n").unwrap();
+        let mut harness = Harness::new(
+            &path,
+            Launch {
+                page: StartPage::LocalChanges,
+                ..launch()
+            },
+        );
+        harness.run(vec![vec![Step::Act(Box::new(move |app| {
+            // pressed before the files are staged and shown, see `change_files`, handled with
+            // what they send in one batch, as `App::run` does before drawing again
+            for key in keys.split(' ') {
+                app.ec.send(AppEvent::Key(parse_key_event(key).unwrap()));
+            }
+            while let Some(event) = app.ec.try_recv() {
+                assert!(app.handle_event(event).unwrap().is_none(), "{keys}");
+            }
+            assert!(app.view.is_files_loading(), "{keys}");
+            let running = app.ctx.running_task.lock().is_some();
+            assert!(!running && !app.is_reloading(), "{keys}");
+        }))]]);
+        assert_eq!(
+            git(&path, &["status", "--porcelain", "n.txt"]),
+            "A  n.txt\n"
+        );
+        assert_eq!(git(&path, &["branch", "--show-current"]).trim(), branch);
+    }
+}

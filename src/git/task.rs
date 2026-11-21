@@ -7,7 +7,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -20,20 +20,6 @@ impl Repository {
     // The message of the commit at HEAD, of which git leaves out the name: `log -1 --format=%B`.
     pub fn head_commit_message(&self) -> std::result::Result<String, String> {
         git_output(&self.path, &["log", "-1", "--format=%B"]).map(|s| s.trim_end().to_string())
-    }
-
-    // See `WorkTree::run`.
-    pub(super) fn run(
-        &self,
-        args: &[&str],
-        stdin: Option<&str>,
-    ) -> std::result::Result<(), String> {
-        self.work_tree().run(args, stdin)
-    }
-
-    // See `WorkTree::check_idle`.
-    pub(super) fn check_idle(&self) -> std::result::Result<(), String> {
-        self.work_tree().check_idle()
     }
 
     // What running git in the work tree needs, to run it on another thread.
@@ -614,14 +600,10 @@ pub(super) fn run_logged(
     Err(format!("git {name} failed: {error}"))
 }
 
-// Like `Child::wait_with_output`, but stops the command once `timeout` passed, None then.
-// The output of `child`, None when `stop` says so before it is done: it is stopped then. Waited
-// for as it runs, so it is back once done; `stop` is asked a few times a second meanwhile.
-fn wait_or_stop(
-    mut child: Child,
-    stop: impl Fn() -> bool + Send + 'static,
-) -> std::io::Result<Option<Output>> {
-    use std::sync::atomic::{AtomicBool, Ordering};
+// The output of `child`, None when `stop` says so before it is done: it is stopped then. Polled
+// as it runs, more often at first, so a quick command is back at once; `stop` is asked meanwhile.
+// It is signalled before it is waited for, never once its process ID is free for another.
+fn wait_or_stop(mut child: Child, stop: impl Fn() -> bool) -> std::io::Result<Option<Output>> {
     // read meanwhile, a command filling a pipe would wait for it to be read
     fn read(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
@@ -634,33 +616,23 @@ fn wait_or_stop(
     }
     let stdout = read(child.stdout.take());
     let stderr = read(child.stderr.take());
-    let (done, stopped) = (
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(AtomicBool::new(false)),
-    );
-    let watcher = {
-        let (done, stopped, id) = (done.clone(), stopped.clone(), child.id());
-        std::thread::spawn(move || {
-            while !done.load(Ordering::Relaxed) {
-                if stop() {
-                    stopped.store(true, Ordering::Relaxed);
-                    // SIGTERM, not `Child::kill`'s SIGKILL: git then removes its lock files and
-                    // the pack it was receiving, which would otherwise make the next fetch fail
-                    let _ = Command::new("kill").arg(id.to_string()).status();
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        })
+    let mut pause = Duration::from_millis(1);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if stop() {
+            // SIGTERM, not `Child::kill`'s SIGKILL: git then removes its lock files and the pack
+            // it was receiving, which would otherwise make the next fetch fail
+            let _ = Command::new("kill").arg(child.id().to_string()).status();
+            child.wait()?;
+            // the readers left to end on their own: what git started may hold the pipes open a
+            // while
+            return Ok(None);
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(50));
     };
-    let status = child.wait();
-    done.store(true, Ordering::Relaxed);
-    let _ = watcher.join();
-    let status = status?;
-    // the readers left to end on their own: what git started may hold the pipes open a while
-    if stopped.load(Ordering::Relaxed) {
-        return Ok(None);
-    }
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
     Ok(Some(Output {
@@ -1379,6 +1351,22 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
         git_output(&work, &["config", "--unset", "remote.origin.uploadpack"]).unwrap();
         run_task(&work, &fetch(None)).unwrap();
+    }
+
+    // A quick command is back once done, not after a pause for the stop asked meanwhile: it was
+    // back 50ms later.
+    #[test]
+    fn test_quick_command_back_once_done() {
+        let started = Instant::now();
+        for _ in 0..10 {
+            let child = Command::new("true")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            assert!(wait_or_stop(child, || false).unwrap().is_some());
+        }
+        assert!(started.elapsed() < Duration::from_millis(250));
     }
 
     // git reading the repository is stopped once nobody waits for what it gives, even when what it

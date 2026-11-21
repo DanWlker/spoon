@@ -791,7 +791,7 @@ mod tests {
         };
         repository.set_local_changes(older);
         assert_eq!(repository.loaded_local_change_count(), 2);
-        // one with a conflict too, its conflicts resolved by hand not staged
+        // one with a conflict is kept, its conflicts resolved by hand staged once the page takes it
         let conflicted = crate::git::FilesSnapshot {
             changes: crate::git::LocalChanges {
                 unstaged: vec![crate::git::LocalChangeFile {
@@ -805,7 +805,7 @@ mod tests {
             started: Instant::now(),
         };
         repository.set_local_changes(conflicted);
-        assert_eq!(repository.loaded_local_change_count(), 2);
+        assert_eq!(repository.loaded_local_change_count(), 1);
         assert_eq!(repository.remotes(), ["origin"]);
         assert_eq!(
             repository.refs_snapshot(),

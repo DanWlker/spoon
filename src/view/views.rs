@@ -91,6 +91,15 @@ impl<'a> View<'a> {
         }
     }
 
+    // Whether the local changes are being staged or unstaged on another thread, which the app's
+    // `running` task doesn't cover, or load again.
+    pub fn is_files_loading(&self) -> bool {
+        match self {
+            View::LocalChanges(view) => view.is_files_loading(),
+            View::Default | View::List(_) | View::Detail(_) => false,
+        }
+    }
+
     // Starts loading what the page shows on another thread, as drawing does.
     pub fn load_in_background(&mut self) {
         match self {

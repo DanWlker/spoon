@@ -55,8 +55,9 @@ impl Repository {
         path: &str,
         side: ConflictSide,
     ) -> std::result::Result<(), String> {
+        let work_tree = self.work_tree();
         // before the file is written, which `git add` would then be refused
-        self.check_idle()?;
+        work_tree.check_idle()?;
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
@@ -71,7 +72,7 @@ impl Repository {
             .map(|(_, mode, object)| (mode.as_str(), object.as_str()));
         match taken {
             // the side taken deleted it
-            None => return self.run(&["rm", "--quiet", "--", spec], None),
+            None => return work_tree.run(&["rm", "--quiet", "--", spec], None),
             // `checkout --ours` leaves a submodule as it is, so it is checked out at the commit
             // taken, then staged, like lazygit
             Some(("160000", commit)) => {
@@ -90,9 +91,9 @@ impl Repository {
                     None,
                 )?;
             }
-            Some(_) => self.run(&["checkout", side.option(), "--", spec], None)?,
+            Some(_) => work_tree.run(&["checkout", side.option(), "--", spec], None)?,
         }
-        self.run(&["add", "--", spec], None)
+        work_tree.run(&["add", "--", spec], None)
     }
 }
 

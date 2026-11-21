@@ -40,14 +40,9 @@ impl Repository {
     // so the sidebar and the page share one `git status`, and as they are now after that.
     // The local changes loaded again after the working tree changed, for the local changes page to
     // show them; dropped when they started loading before those it has, which a reload after a
-    // command of the app can load meanwhile.
-    // One with conflicts is dropped too, as the conflicts resolved by hand in it aren't staged,
-    // see `WorkTree::load_files`: the page reloads once it shows the files they changed, see
-    // `LocalChangesState::reload_if_changed`.
+    // command of the app can load meanwhile. The conflicts resolved by hand in them are staged
+    // once the page takes them.
     pub fn set_local_changes(&self, files: FilesSnapshot) {
-        if files.changes.has_conflicts() {
-            return;
-        }
         {
             let mut started = lock(&self.local_changes_started);
             if files.started < *started {
@@ -60,10 +55,13 @@ impl Repository {
 
     pub fn take_loaded_local_changes(&self) -> FilesSnapshot {
         let loaded = lock(&self.loaded_local_changes).take();
-        let files = loaded.unwrap_or_else(|| {
-            *lock(&self.local_changes_started) = Instant::now();
-            self.work_tree().load_files()
-        });
+        let files = match loaded {
+            Some(files) => self.work_tree().stage_resolved(files),
+            None => {
+                *lock(&self.local_changes_started) = Instant::now();
+                self.work_tree().load_files()
+            }
+        };
         *lock(&self.taken_count) = Some(files.changes.count());
         files
     }
@@ -424,7 +422,11 @@ impl WorkTree {
     // The local changes of the work tree with a stamp of their files, see `FilesSnapshot`, the
     // conflicts resolved by hand staged first, see `stage_resolved_conflicts`.
     pub fn load_files(&self) -> FilesSnapshot {
-        let files = FilesSnapshot::load(&self.path, &self.git_dir);
+        self.stage_resolved(FilesSnapshot::load(&self.path, &self.git_dir))
+    }
+
+    // `files`, loaded again once the conflicts resolved by hand in them are staged.
+    fn stage_resolved(&self, files: FilesSnapshot) -> FilesSnapshot {
         match self.stage_resolved_conflicts(&files.changes) {
             true => FilesSnapshot::load(&self.path, &self.git_dir),
             false => files,

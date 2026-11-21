@@ -257,10 +257,7 @@ impl TimelineView {
             UserEvent::IncreaseDiffContext | UserEvent::DecreaseDiffContext => {
                 self.adjust_diff_context(event, repository)
             }
-            UserEvent::ToggleTreeView => self
-                .ctx
-                .diff_layout
-                .set(self.ctx.diff_layout.get().toggled()),
+            UserEvent::ToggleTreeView => self.ctx.toggle_diff_layout(),
             UserEvent::ShortCopy => {
                 if let Some(text) = self.pane.selected_text() {
                     self.tx
