@@ -158,7 +158,7 @@ impl Section {
 }
 
 fn file_tree(files: &[LocalChangeFile]) -> FileTree {
-    FileTree::new(files.iter().map(|f| f.path.as_str()))
+    FileTree::new(files.iter().map(|f| f.path.as_ref()))
 }
 
 // The files loaded again, with the trees of the sections built from them on the thread loading
@@ -421,11 +421,11 @@ impl<'a> LocalChangesState<'a> {
         self.files()
             .iter()
             .find(|file| file.path == path)
-            .map(|file| file.path.as_str())
+            .map(|file| file.path.as_ref())
     }
 
     pub fn selected_path(&self) -> Option<String> {
-        self.selected_row().map(|row| row.path.clone())
+        self.selected_row().map(|row| row.path.to_string())
     }
 
     pub fn is_editing(&self) -> bool {
@@ -606,7 +606,7 @@ impl<'a> LocalChangesState<'a> {
             if targets.is_empty() {
                 return Err("No local changes in the picked files".into());
             }
-            targets.iter().map(|f| f.path.as_str()).collect()
+            targets.iter().map(|f| f.path.as_ref()).collect()
         };
         // each file once, staged and unstaged
         let mut files: BTreeMap<&str, StashFile> = BTreeMap::new();
@@ -653,7 +653,7 @@ impl<'a> LocalChangesState<'a> {
             // the files the filter leaves, see `row_files`
             format!("the {} files filtered", self.target_files().len())
         } else {
-            row.path.clone()
+            row.path.to_string()
         };
         // the staged changes stay, see `discard_task`
         let target = if self.is_diff_focused() {
@@ -703,7 +703,7 @@ impl<'a> LocalChangesState<'a> {
                         LocalChangeStatus::Untracked | LocalChangeStatus::Conflicted
                     ),
                 })
-                .map(|f| f.path.as_str())
+                .map(|f| f.path.as_ref())
                 .collect()
         };
         let commands = self.repository.discard_commands(
@@ -741,7 +741,7 @@ impl<'a> LocalChangesState<'a> {
         if files.is_empty() {
             return Err("Select a file to edit".into());
         }
-        let files: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        let files: Vec<&str> = files.iter().map(|file| file.path.as_ref()).collect();
         let paths = self.repository.working_tree_paths(&files)?;
         self.request = Some(Request::External(ExternalRequest::Editor(paths)));
         Ok(())
@@ -1385,7 +1385,7 @@ impl<'a> LocalChangesState<'a> {
         // with picked rows or a filter, the files are given rather than the whole directory
         let targets = self.target_files();
         let mut paths = if self.picked().is_empty() && self.query().filter().is_none() {
-            vec![row.path.as_str()]
+            vec![row.path.as_ref()]
         } else {
             file_paths(&targets)
         };
@@ -1495,7 +1495,10 @@ impl<'a> LocalChangesState<'a> {
             section.tree.set_tree(tree);
             section.tree.cancel_visual();
             // the picks with no changes left, discarded or stashed, go: those that are no file nor
-            // directory of one, see `path_contains`
+            // directory of one, see `path_contains`; with none, there is nothing to look for
+            if section.picked.is_empty() {
+                continue;
+            }
             let kept: FxHashSet<&str> = files
                 .iter()
                 .flat_map(|f| {
@@ -1639,7 +1642,7 @@ impl<'a> LocalChangesState<'a> {
         let rows = self.tree().all_rows();
         let current = self
             .selected_path()
-            .and_then(|path| rows.iter().position(|row| row.path == path))
+            .and_then(|path| rows.iter().position(|row| *row.path == *path))
             .unwrap_or(0);
         let path = find_next(&rows, current, direction, |row| !row.is_dir());
         self.chosen = Focus::Files;
@@ -1661,7 +1664,7 @@ impl<'a> LocalChangesState<'a> {
         let rows = self.tree().all_rows();
         let selected = self
             .selected_path()
-            .and_then(|path| rows.iter().position(|row| row.path == path));
+            .and_then(|path| rows.iter().position(|row| *row.path == *path));
         let folder = match selected {
             // the root row, above everything: the first or the last folder at the top
             None => {
@@ -1670,7 +1673,7 @@ impl<'a> LocalChangesState<'a> {
                     Toward::Next => top.next(),
                     Toward::Previous => top.next_back(),
                 }
-                .map(|row| row.path.clone())
+                .map(|row| row.path.to_string())
             }
             Some(selected) => {
                 // a file goes from its folder; a file at the top from itself
@@ -1691,7 +1694,7 @@ impl<'a> LocalChangesState<'a> {
             true => rows
                 .iter()
                 .find(|row| !row.is_dir() && path_contains(&folder, &row.path))
-                .map_or(folder, |file| file.path.clone()),
+                .map_or(folder, |file| file.path.to_string()),
             false => folder,
         };
         self.chosen = Focus::Files;
@@ -1957,7 +1960,7 @@ impl<'a> LocalChangesState<'a> {
                 let paths = if row.is_dir() && self.query().filter().is_some() {
                     file_paths(&self.row_files(row))
                 } else {
-                    vec![row.path.as_str()]
+                    vec![row.path.as_ref()]
                 };
                 let of = if untracked {
                     DiffOf::Untracked
@@ -2106,7 +2109,7 @@ fn picked_files_label(count: usize) -> String {
 }
 
 fn file_paths<'f>(files: &[&'f LocalChangeFile]) -> Vec<&'f str> {
-    files.iter().map(|f| f.path.as_str()).collect()
+    files.iter().map(|f| f.path.as_ref()).collect()
 }
 
 pub struct LocalChangesPanel<'a> {
@@ -2261,7 +2264,7 @@ impl LocalChangesPanel<'_> {
     fn render_diff(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
         let title = match state.selected_row() {
             Some(row) if row.is_root() => "/".to_string(),
-            Some(row) => row.path.clone(),
+            Some(row) => row.path.to_string(),
             None => String::new(),
         };
         let diff_focused = self.focused && state.is_diff_focused();
@@ -2358,14 +2361,14 @@ mod tests {
     }
 
     fn select_row(state: &mut LocalChangesState, path: &str) {
-        let pos = state.rows().iter().position(|r| r.path == path).unwrap();
+        let pos = state.rows().iter().position(|r| *r.path == *path).unwrap();
         state.move_cursor(pos);
         // as the next key, or drawing, does
         state.load_stale_diff();
     }
 
     fn paths(files: &[LocalChangeFile]) -> Vec<&str> {
-        let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_ref()).collect();
         paths.sort_unstable();
         paths
     }
@@ -2464,7 +2467,7 @@ mod tests {
         let ec = crate::event::EventController::without_terminal();
         let mut state =
             LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
-        let pos = state.rows().iter().position(|r| r.path == "sub").unwrap();
+        let pos = state.rows().iter().position(|r| *r.path == *"sub").unwrap();
         state.move_cursor(pos);
         // as drawing does, before it polls what loads
         state.prepare_diff(Some(&ec.sender()));
@@ -2706,7 +2709,7 @@ mod tests {
 
         // like a held key, moving over the rows loads no diff
         for path in ["a.txt", "b.txt", "c.txt"] {
-            let pos = state.rows().iter().position(|r| r.path == path).unwrap();
+            let pos = state.rows().iter().position(|r| *r.path == *path).unwrap();
             state.move_cursor(pos);
             assert_eq!(diff(&state).raw, shown);
         }
@@ -2981,7 +2984,7 @@ mod tests {
             .all_rows()
             .iter()
             .filter(|r| !r.is_dir())
-            .map(|r| r.path.clone())
+            .map(|r| r.path.to_string())
             .collect();
         assert_eq!(files.len(), 3);
 
@@ -3981,7 +3984,7 @@ mod tests {
         let files: Vec<_> = preview
             .files
             .iter()
-            .map(|f| (f.status, f.path.as_str()))
+            .map(|f| (f.status, f.path.as_ref()))
             .collect();
         assert_eq!(files, vec![(LocalChangeStatus::Added, "a.txt")]);
         confirm(&mut state)?;
@@ -4199,7 +4202,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         let visible = |state: &LocalChangesState| -> Vec<String> {
-            state.rows().iter().map(|r| r.path.clone()).collect()
+            state.rows().iter().map(|r| r.path.to_string()).collect()
         };
         let selected = |state: &LocalChangesState| state.selected_path().unwrap();
         assert_eq!(
@@ -4276,7 +4279,7 @@ mod tests {
         let mut state = LocalChangesState::load(&repository);
         let visible = |state: &mut LocalChangesState, section| -> Vec<String> {
             state.focus_section(section);
-            state.rows().iter().map(|r| r.path.clone()).collect()
+            state.rows().iter().map(|r| r.path.to_string()).collect()
         };
         state.toggle_tree_view();
         type_query(&mut state, "a");
@@ -4323,7 +4326,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         let visible = |state: &LocalChangesState| -> Vec<String> {
-            state.rows().iter().map(|r| r.path.clone()).collect()
+            state.rows().iter().map(|r| r.path.to_string()).collect()
         };
 
         // / filters the files, then staging everything shown stages only the matching files
@@ -4424,7 +4427,7 @@ mod tests {
         state.toggle_visual();
         select_row(&mut state, "dir");
         state.collapse();
-        assert!(!state.tree().rows().iter().any(|r| r.path == "dir/u.txt"));
+        assert!(!state.tree().rows().iter().any(|r| *r.path == *"dir/u.txt"));
         state.ignore_selected()?;
         assert_eq!(
             fs::read_to_string(repo_path.join(".gitignore"))?,
@@ -5031,7 +5034,7 @@ mod tests {
         let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
         let mut state = LocalChangesState::load(&repository);
         // listed by git as `nested/`, a row named after it, not an empty name under it
-        let rows: Vec<String> = state.rows().iter().map(|r| r.name.clone()).collect();
+        let rows: Vec<String> = state.rows().iter().map(|r| r.name.to_string()).collect();
         assert_eq!(rows, vec!["/", "nested"]);
         // `clean -f` would skip it, saying it discarded it
         select_row(&mut state, "nested");
@@ -5479,7 +5482,11 @@ mod tests {
         let ec = crate::event::EventController::without_terminal();
         let mut state =
             LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
-        let pos = state.rows().iter().position(|r| r.path == "a.txt").unwrap();
+        let pos = state
+            .rows()
+            .iter()
+            .position(|r| *r.path == *"a.txt")
+            .unwrap();
         state.move_cursor(pos);
         // as drawing does, before it polls what loads
         state.prepare_diff(Some(&ec.sender()));
@@ -5521,7 +5528,7 @@ mod tests {
         assert!(state.waits_for(Select));
         state.load_before(Select);
         let select = |state: &mut LocalChangesState, path: &str| {
-            let pos = state.rows().iter().position(|r| r.path == path).unwrap();
+            let pos = state.rows().iter().position(|r| *r.path == *path).unwrap();
             state.move_cursor(pos);
             // starts loading what is beside it, not polled yet
             state.load_diff();

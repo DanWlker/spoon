@@ -163,7 +163,7 @@ impl CommitFiles {
             })
             .collect();
         let mut tree = FileTreeState::new(
-            FileTree::new(files.iter().map(|f| f.path.as_str())),
+            FileTree::new(files.iter().map(|f| f.path.as_ref())),
             Folders::Open,
             Root::Shown,
             view,
@@ -215,7 +215,7 @@ pub struct CommitChangesState<'a> {
 impl<'a> CommitChangesState<'a> {
     #[cfg(test)]
     pub fn paths(&self) -> Vec<&str> {
-        self.files.iter().map(|f| f.path.as_str()).collect()
+        self.files.iter().map(|f| f.path.as_ref()).collect()
     }
 
     pub fn selected_row(&self) -> Option<&FileTreeRow> {
@@ -391,8 +391,8 @@ impl<'a> CommitChangesState<'a> {
                     .filter(|f| self.tree.keeps(&f.path))
                     .collect();
                 let mut paths: Vec<&str> = match self.tree.filter() {
-                    Some(_) if row.is_dir() => files.iter().map(|f| f.path.as_str()).collect(),
-                    _ => vec![row.path.as_str()],
+                    Some(_) if row.is_dir() => files.iter().map(|f| f.path.as_ref()).collect(),
+                    _ => vec![row.path.as_ref()],
                 };
                 paths.extend(files.iter().filter_map(|f| f.from.as_deref()));
                 let context = self.ctx.diff_context.get();
@@ -420,7 +420,7 @@ impl<'a> CommitChangesState<'a> {
         if row.is_dir() {
             return None;
         }
-        let path = &row.path;
+        let path: &str = &row.path;
         // a plain file runs no git to tell
         if !self.is_gitlink(path) {
             return None;
@@ -1417,10 +1417,13 @@ mod tests {
         assert!(loading.subjects().is_empty());
         loading.wait(&ctx);
         assert_eq!(loading.subjects(), ["second"]);
-        // kept by the parent: shown right away the next time
-        let again = panel(Some(&tx));
-        assert!(again.loading_since().is_none());
+        // kept by the parent: the next time only its graph is laid out, on another thread too
+        let mut again = panel(Some(&tx));
+        assert!(again.loading_since().is_some());
+        again.wait(&ctx);
         assert_eq!(again.subjects(), ["second"]);
+        // without the app's sender, as in the tests, right away
+        assert_eq!(panel(None).subjects(), ["second"]);
     }
 
     // Entered while it loads, as after a refresh, the preview is entered once loaded, its keys
@@ -1541,7 +1544,7 @@ mod tests {
     }
 
     fn visible(tree: &FileTreeState) -> Vec<&str> {
-        tree.rows().iter().map(|r| r.path.as_str()).collect()
+        tree.rows().iter().map(|r| r.path.as_ref()).collect()
     }
 
     fn selected(tree: &FileTreeState) -> &str {
@@ -1813,7 +1816,7 @@ mod tests {
             assert!(tree
                 .rows()
                 .iter()
-                .all(|r| r.is_dir() || listed(&hashes[i]).contains(&r.path)));
+                .all(|r| r.is_dir() || listed(&hashes[i]).contains(&r.path.to_string())));
         }
         Ok(())
     }

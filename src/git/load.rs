@@ -23,6 +23,13 @@ use super::{
 };
 use crate::git::{diff::empty_tree, text_from_git, FilesSnapshot, IndexRefresh, LoadedFiles, Seen};
 
+// Run once the commits are listed while a repository loads on this thread, for a test to change
+// the repository then.
+#[cfg(test)]
+thread_local! {
+    static AFTER_LISTED: std::cell::Cell<Option<Box<dyn FnOnce()>>> = Default::default();
+}
+
 impl Repository {
     #[cfg(test)]
     pub fn load(
@@ -74,6 +81,8 @@ impl Repository {
                 revisions,
                 cancel,
             )?;
+            #[cfg(test)]
+            AFTER_LISTED.with(|hook| hook.take().map(|hook| hook()));
             repository.remotes = joined(remotes);
             repository.textconv_drivers = joined(textconv_drivers);
             repository.loaded_local_changes = Mutex::new(LoadedFiles {
@@ -204,7 +213,7 @@ pub struct LoadOptions {
     pub sort: SortCommit,
     pub max_count: Option<usize>,
     pub mailmap: bool,
-    // the branch the graph keeps in the first column, laid out with it, see `graph::calc_graph`
+    // the branch the graph keeps in the first column, laid out with it, see `graph::GraphLayout::calc`
     pub primary_branch: Option<String>,
 }
 
@@ -1022,4 +1031,26 @@ mod tests {
             .unwrap();
         assert_eq!(stash, "On master: st\x1fash");
     }
+}
+
+// A commit made while the repository loads, after its commits are listed, is seen by the next
+// check of the refs: the snapshot loaded with it is of before, not of after.
+#[cfg(test)]
+#[test]
+fn test_refs_changed_while_loading_are_seen_by_the_next_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let git = crate::test_support::git::GitRepository::new(&path);
+    git.init();
+    git.commit("one", "2024-01-01");
+    let outside = path.clone();
+    let commit =
+        move || crate::test_support::git::GitRepository::new(&outside).commit("two", "2024-01-02");
+    AFTER_LISTED.with(|hook| hook.set(Some(Box::new(commit))));
+    let repository = Repository::load(&path, SortCommit::Chronological, None, false).unwrap();
+    assert_eq!(repository.all_commits().len(), 1);
+    assert_ne!(
+        repository.refs_snapshot.as_deref(),
+        refs_snapshot(&path, &path.join(".git")).ok().as_deref()
+    );
 }

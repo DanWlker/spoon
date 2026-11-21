@@ -1,7 +1,7 @@
 // Submodules: what a gitlink points to, and the repository of a submodule, loaded once.
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use crate::background::Cancel;
 
@@ -60,22 +60,29 @@ impl Repository {
         from: &str,
         to: &str,
     ) -> std::result::Result<Option<&Repository>, String> {
-        if let Some(repository) = self.loaded_submodule_repository(path, from, to) {
+        if let Some(repository) = self
+            .submodule_repositories
+            .0
+            .get(&format!("{path}\0{from}..{to}"))
+        {
             return Ok(Some(repository));
         }
         let loaded = self.submodule_repository_work(path, from, to)(&Cancel::default())?;
-        Ok(loaded.map(|repository| self.keep_submodule_repository(path, from, to, repository)))
+        Ok(loaded
+            .map(|repository| self.keep_submodule_repository(path, from, to, Arc::new(repository))))
     }
 
-    // The submodule's repository of `from..to` when loaded already, see `submodule_repository`.
+    // The submodule's repository of `from..to` when loaded already, see `submodule_repository`;
+    // shared, to lay its graph out on another thread.
     pub fn loaded_submodule_repository(
         &self,
         path: &str,
         from: &str,
         to: &str,
-    ) -> Option<&Repository> {
+    ) -> Option<Arc<Repository>> {
         self.submodule_repositories
-            .get(&format!("{path}\0{from}..{to}"))
+            .0
+            .map_get(&format!("{path}\0{from}..{to}"), Arc::clone)
     }
 
     // Loads the submodule's repository of `from..to` on another thread, to keep with
@@ -105,32 +112,23 @@ impl Repository {
         path: &str,
         from: &str,
         to: &str,
-        repository: Repository,
+        repository: Arc<Repository>,
     ) -> &Repository {
         let key = format!("{path}\0{from}..{to}");
-        self.submodule_repositories.insert(key, repository)
+        // one loaded meanwhile stays, the references to it staying valid
+        self.submodule_repositories.0.insert(key, repository)
     }
 }
 
 // The submodule repositories loaded beside this one, kept append-only so the references handed
-// out by `submodule_repository` stay valid while more are loaded. The map boxes its values, so
-// their addresses don't change.
+// out by `submodule_repository` stay valid while more are loaded. The map holds them behind an
+// `Arc`, so their addresses don't change.
 #[derive(Default)]
-pub(super) struct SubmoduleRepositories(elsa::sync::FrozenMap<String, Box<Repository>>);
+pub(super) struct SubmoduleRepositories(elsa::sync::FrozenMap<String, Arc<Repository>>);
 
 impl std::fmt::Debug for SubmoduleRepositories {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SubmoduleRepositories({} loaded)", self.0.len())
-    }
-}
-
-impl SubmoduleRepositories {
-    fn get(&self, key: &str) -> Option<&Repository> {
-        self.0.get(key)
-    }
-
-    fn insert(&self, key: String, repository: Repository) -> &Repository {
-        self.0.insert(key, Box::new(repository))
     }
 }
 

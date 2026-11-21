@@ -863,7 +863,7 @@ impl GitDialog {
         let intro = vec!["Stash the changes of the checked files".to_string()];
         let mut form = Form::default();
         let message = form.text("Message", "", vec![], Need::Optional);
-        let paths = stashed.iter().map(|file| file.path.as_str());
+        let paths = stashed.iter().map(|file| file.path.as_ref());
         let tree = FileTreeState::new(
             FileTree::new(paths),
             Folders::Open,
@@ -3848,7 +3848,7 @@ mod tests {
             GitDialog::stash(vec![file("a", true, false), file("nested/", true, false)]);
         dialog.editing = false;
         dialog.selected = 1;
-        assert_eq!(files_of(&mut dialog).tree.rows()[1].path, "nested");
+        assert_eq!(&*files_of(&mut dialog).tree.rows()[1].path, "nested");
         files_of(&mut dialog).tree.select_index(1);
         let files = files_of(&mut dialog);
         assert!(files.checked.row_checked(&files.tree.rows()[1]));
@@ -3881,12 +3881,12 @@ mod tests {
             .tree
             .rows()
             .iter()
-            .map(|r| r.path.clone())
+            .map(|r| r.path.to_string())
             .collect();
         assert_eq!(shown, ["dir/a", "fa"]);
         // in their folders, the folder unchecks the files shown only
         press(&mut dialog, UserEvent::ToggleTreeView);
-        assert_eq!(files_of(&mut dialog).tree.rows()[0].path, "dir");
+        assert_eq!(&*files_of(&mut dialog).tree.rows()[0].path, "dir");
         files_of(&mut dialog).tree.select_index(0);
         press(&mut dialog, UserEvent::Select);
         assert!(

@@ -16,7 +16,29 @@ use crate::{
 // waits for that, like lazygit's refresher waiting for each refresh to finish, so none pile up
 // while the app is busy or gives the terminal to an editor. The tests send events with a default one.
 #[derive(Debug, Default)]
-pub struct Unhandled(#[expect(dead_code, reason = "held until handled")] Arc<()>);
+pub struct Unhandled(#[expect(dead_code, reason = "held until handled")] Arc<Handled>);
+
+// Wakes the refresher up once the last of the events holding it is handled, see `Wake::Handled`.
+#[derive(Debug, Default)]
+pub struct Handled(Option<mpsc::Sender<Wake>>);
+
+impl Drop for Handled {
+    fn drop(&mut self) {
+        if let Some(wake) = &self.0 {
+            // the refresher may have stopped with the app
+            let _ = wake.send(Wake::Handled);
+        }
+    }
+}
+
+// What wakes the refresher up before its interval passed.
+#[derive(Debug)]
+pub enum Wake {
+    // check right away, like on getting the focus back
+    Poke,
+    // what it sent last was handled: a poke meanwhile is checked now
+    Handled,
+}
 
 // Checks in the background, without holding up the app, for changes made outside it like lazygit's
 // refresher: the refs, HEAD and the operation in progress every `refs_interval`, the local changes every `files_interval`
@@ -28,8 +50,9 @@ pub fn spawn(
     git_dir: PathBuf,
     refs_interval: Duration,
     files_interval: Duration,
-) -> mpsc::Sender<()> {
+) -> mpsc::Sender<Wake> {
     let (poke, poked) = mpsc::channel();
+    let handled = poke.clone();
     // the files load every few ticks of the refs, at least every one
     let files_every = (files_interval.as_millis() / refs_interval.as_millis().max(1)).max(1);
     thread::spawn(move || {
@@ -39,16 +62,20 @@ pub fn spawn(
         // a poke while the app hadn't handled the last check, checked once it has
         let mut owed = false;
         loop {
-            owed |= match poked.recv_timeout(refs_interval) {
-                Ok(()) => true,
-                Err(mpsc::RecvTimeoutError::Timeout) => false,
+            let checks = match poked.recv_timeout(refs_interval) {
+                Ok(Wake::Poke) => {
+                    owed = true;
+                    true
+                }
+                Ok(Wake::Handled) => owed,
+                Err(mpsc::RecvTimeoutError::Timeout) => true,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
-            if sent.strong_count() > 0 {
+            if !checks || sent.strong_count() > 0 {
                 continue;
             }
             tick += 1;
-            let unhandled = Arc::new(());
+            let unhandled = Arc::new(Handled(Some(handled.clone())));
             sent = Arc::downgrade(&unhandled);
             // sent unless the app quit
             if let Ok(refs) = refs_snapshot(&work_tree, &git_dir) {
@@ -86,7 +113,7 @@ mod tests {
         files_interval: Duration,
     ) -> (
         tempfile::TempDir,
-        mpsc::Sender<()>,
+        mpsc::Sender<Wake>,
         mpsc::Receiver<AppEvent>,
     ) {
         let dir = tempfile::tempdir().unwrap();
@@ -131,7 +158,7 @@ mod tests {
         let (_dir, poke, rx) = refresher(ms(10), ms(3_600_000));
         let held = next(&rx);
         assert!(matches!(held, AppEvent::RefsSnapshot(..)));
-        poke.send(()).unwrap();
+        poke.send(Wake::Poke).unwrap();
         std::thread::sleep(ms(200));
         assert!(rx.try_recv().is_err());
         drop(held);
@@ -171,7 +198,7 @@ mod tests {
         let held = next(&rx);
         assert!(matches!(held, AppEvent::FilesTick(..)));
         assert_eq!(written(), before);
-        poke.send(()).unwrap();
+        poke.send(Wake::Poke).unwrap();
         drop(held);
         assert!(matches!(next(&rx), AppEvent::RefsSnapshot(..)));
         assert!(matches!(next(&rx), AppEvent::FilesTick(..)));
@@ -183,14 +210,31 @@ mod tests {
         // the intervals don't pass during the test, only a poke wakes it up
         let hour = Duration::from_secs(3600);
         let (_dir, poke, rx) = refresher(hour, hour);
-        poke.send(()).unwrap();
+        poke.send(Wake::Poke).unwrap();
         assert!(matches!(next(&rx), AppEvent::RefsSnapshot(..)));
         assert!(matches!(next(&rx), AppEvent::FilesTick(..)));
-        // it stops once the app no longer pokes it
-        drop(poke);
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(10)),
-            Err(mpsc::RecvTimeoutError::Disconnected)
-        ));
+        // it stops once the app quit, at its next check, no longer taking pokes
+        drop(rx);
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while poke.send(Wake::Poke).is_ok() {
+            assert!(std::time::Instant::now() < until, "still running");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // A poke while the last check isn't handled yet, like the focus coming back as an editor
+    // closes, checks as soon as it is, rather than once the interval passed.
+    #[test]
+    fn test_poke_checks_once_the_last_check_is_handled() {
+        let hour = Duration::from_secs(3600);
+        let (_dir, poke, rx) = refresher(hour, hour);
+        poke.send(Wake::Poke).unwrap();
+        let held = (next(&rx), next(&rx));
+        poke.send(Wake::Poke).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(rx.try_recv().is_err());
+        drop(held);
+        assert!(matches!(next(&rx), AppEvent::RefsSnapshot(..)));
+        assert!(matches!(next(&rx), AppEvent::FilesTick(..)));
     }
 }

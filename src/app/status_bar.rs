@@ -71,7 +71,10 @@ impl App<'_> {
         }
         let shell = &self.shell;
         let reload = shell.reload.as_ref().map(|r| (r.started, "Reloading"));
-        let regraph = shell.regraph.map(|s| (s, "Drawing the graph"));
+        let regraph = shell
+            .regraph
+            .as_ref()
+            .map(|r| (r.started, "Drawing the graph"));
         reload
             .into_iter()
             .chain(regraph)

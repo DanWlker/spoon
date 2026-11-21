@@ -1,4 +1,4 @@
-use std::{rc::Rc, time::Instant};
+use std::{rc::Rc, sync::Arc, time::Instant};
 
 use ratatui::{
     buffer::Buffer,
@@ -62,7 +62,7 @@ enum Shows<'a> {
 
 // The commits of a submodule between two gitlinks loading on another thread: the range that has
 // them (from..to, else to..from) with its repository and graph, None when neither has commits.
-type Loaded = Result<Option<((String, String), Repository, graph::GraphLayout)>, String>;
+type Loaded = Result<Option<((String, String), Arc<Repository>, graph::GraphLayout)>, String>;
 
 #[derive(Debug)]
 struct Loading<'a> {
@@ -101,34 +101,34 @@ impl<'a> SubmodulePanel<'a> {
             return panel(Shows::Message(NO_COMMITS.into()));
         }
         // the commits between the two gitlinks, in the direction they differ: the checked-out
-        // commit may be behind the recorded one, then its missing commits are listed
-        let loaded =
-            [(from, to), (to, from)]
-                .into_iter()
-                .enumerate()
-                .find_map(|(i, (from, to))| {
-                    let moved = if i == 1 { Moved::Back } else { Moved::Ahead };
-                    Some((
-                        repository.loaded_submodule_repository(path, from, to)?,
-                        moved,
-                    ))
-                });
-        if let Some((submodule, moved)) = loaded {
-            let graph = graph::calc_graph(submodule, None, &Default::default());
-            return panel(commits(ctx, submodule, graph, moved));
-        }
-        let ranges = [(from, to), (to, from)].map(|(from, to)| {
-            let work = repository.submodule_repository_work(path, from, to);
-            ((from.to_string(), to.to_string()), work)
+        // commit may be behind the recorded one, then its missing commits are listed; a range
+        // loaded before is only laid out again, on another thread too
+        let ranges = [(from, to), (to, from)].map(|(from, to)| (from.to_string(), to.to_string()));
+        let loaded = ranges.iter().find_map(|range| {
+            let submodule = repository.loaded_submodule_repository(path, &range.0, &range.1)?;
+            Some((range.clone(), submodule))
         });
-        let work = move |cancel: &Cancel| -> Loaded {
-            for (range, work) in ranges {
-                if let Some(submodule) = work(cancel)? {
-                    let layout = graph::GraphLayout::calc(&submodule, None, &Default::default());
-                    return Ok(Some((range, submodule, layout)));
-                }
+        let lay_out = |range, submodule: Arc<Repository>, cancel: &Cancel| -> Loaded {
+            let layout = graph::GraphLayout::calc(&submodule, None, &Default::default(), cancel)
+                .ok_or("stopped")?;
+            Ok(Some((range, submodule, layout)))
+        };
+        let work: Box<dyn FnOnce(&Cancel) -> Loaded + Send> = match loaded {
+            Some((range, submodule)) => Box::new(move |cancel| lay_out(range, submodule, cancel)),
+            None => {
+                let works = ranges.map(|range| {
+                    let work = repository.submodule_repository_work(path, &range.0, &range.1);
+                    (range, work)
+                });
+                Box::new(move |cancel| {
+                    for (range, work) in works {
+                        if let Some(submodule) = work(cancel)? {
+                            return lay_out(range, Arc::new(submodule), cancel);
+                        }
+                    }
+                    Ok(None)
+                })
             }
-            Ok(None)
         };
         let path = path.to_string();
         let forward = (from.to_string(), to.to_string());

@@ -714,7 +714,7 @@ impl<'a> DetailView<'a> {
     // The path selected in the file tree of the tab, for the tests.
     #[cfg(test)]
     pub fn selected_path(&self) -> Option<String> {
-        self.selected_row().map(|row| row.path.clone())
+        self.selected_row().map(|row| row.path.to_string())
     }
 
     // Whether the comparison is shown.

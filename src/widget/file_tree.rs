@@ -2,6 +2,7 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, HashSet},
     ops::Range,
+    sync::Arc,
 };
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -32,14 +33,16 @@ use crate::{
     },
 };
 
-// A row of a file tree as displayed: directories first, then files, each sorted by name.
+// A row of a file tree as displayed: directories first, then files, each sorted by name. Its
+// texts are those of the tree, shared rather than copied: a tree of 100k files is laid out in
+// rows again on each change, see `FileTreeState::rebuild_rows`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileTreeRow {
     pub depth: usize,
-    pub name: String,
+    pub name: Arc<str>,
     // the full path of the file or directory, or `ROOT_PATH` for the root row; git takes it as a
     // pathspec, and the tree keeps its selection and open directories by it
-    pub path: String,
+    pub path: Arc<str>,
     pub kind: RowKind,
 }
 
@@ -103,10 +106,20 @@ pub struct FileTree {
     root: DirNode,
 }
 
+// A directory of a tree, by its full path: "" for the top one.
 #[derive(Debug, Default, Clone)]
 struct DirNode {
-    dirs: BTreeMap<String, DirNode>,
-    files: Vec<(String, usize)>,
+    path: Arc<str>,
+    dirs: BTreeMap<Arc<str>, DirNode>,
+    files: Vec<FileNode>,
+}
+
+// A file of a tree, its name and full path, by its index in the paths the tree was built from.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FileNode {
+    name: Arc<str>,
+    path: Arc<str>,
+    index: usize,
 }
 
 impl FileTree {
@@ -114,13 +127,24 @@ impl FileTree {
         let mut root = DirNode::default();
         for (index, path) in paths.into_iter().enumerate() {
             // an untracked repository inside is listed as `nested/`, a file named `nested`
-            let mut parts: Vec<&str> = tree_path(path).split('/').collect();
-            let name = parts.pop().unwrap_or_default();
+            let path = tree_path(path);
+            let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
             let mut node = &mut root;
-            for part in parts {
-                node = node.dirs.entry(part.to_string()).or_default();
+            let mut end = 0;
+            for part in dir.split('/').filter(|_| !dir.is_empty()) {
+                end += part.len();
+                let full = &dir[..end];
+                end += 1;
+                node = node.dirs.entry(part.into()).or_insert_with(|| DirNode {
+                    path: full.into(),
+                    ..Default::default()
+                });
             }
-            node.files.push((name.to_string(), index));
+            node.files.push(FileNode {
+                name: name.into(),
+                path: path.into(),
+                index,
+            });
         }
         sort_files(&mut root);
         Self { root }
@@ -146,8 +170,25 @@ impl FileTree {
         keep: impl Fn(&str) -> bool,
     ) -> Vec<FileTreeRow> {
         let mut rows = Vec::new();
-        collect_rows(&self.root, "", 0, &is_open, &keep, Some(&mut rows));
+        collect_rows(&self.root, 0, &is_open, &keep, Some(&mut rows));
         rows
+    }
+
+    // The files for which `keep` is true, wherever they are.
+    fn files(&self, keep: impl Fn(&str) -> bool) -> Vec<&FileNode> {
+        fn collect<'t>(
+            node: &'t DirNode,
+            keep: &impl Fn(&str) -> bool,
+            out: &mut Vec<&'t FileNode>,
+        ) {
+            for child in node.dirs.values() {
+                collect(child, keep, out);
+            }
+            out.extend(node.files.iter().filter(|file| keep(&file.path)));
+        }
+        let mut files = Vec::new();
+        collect(&self.root, &keep, &mut files);
+        files
     }
 }
 
@@ -188,7 +229,7 @@ pub struct FileTreeState {
     filter: Option<(String, SearchOptions)>,
     rows: Vec<FileTreeRow>,
     // the indent markers of the rows, see `tree_guides`
-    guides: Vec<String>,
+    guides: Vec<Guide>,
     // the selected row and the rows shown, which drawing the tree moves to show it
     cursor: Cell<ListCursor>,
 }
@@ -224,7 +265,7 @@ impl FileTreeState {
             cursor: self.cursor.clone(),
         };
         state.rebuild_rows();
-        if let Some(path) = self.selected().map(|r| r.path.as_str()) {
+        if let Some(path) = self.selected().map(|r| r.path.as_ref()) {
             state.select_path(path);
         }
         state
@@ -232,8 +273,9 @@ impl FileTreeState {
 
     // Replaces the tree, like after the files changed, keeping the expanded directories and the
     // selected path, or else the position of the cursor.
+    // The tree before is freed on another thread, which takes long for many files.
     pub fn set_tree(&mut self, tree: FileTree) {
-        self.tree = tree;
+        crate::background::drop_elsewhere(std::mem::replace(&mut self.tree, tree));
         self.rebuild_rows();
     }
 
@@ -250,9 +292,10 @@ impl FileTreeState {
         offset
     }
 
-    // The indent markers before the row at `index`, see `tree_guides`.
-    pub fn guide(&self, index: usize) -> &str {
-        self.guides.get(index).map_or("", String::as_str)
+    // The indent markers before the row at `index`, see `tree_guides`, drawn only for the rows
+    // shown.
+    pub fn guide(&self, index: usize) -> String {
+        self.guides.get(index).map(Guide::text).unwrap_or_default()
     }
 
     // All rows with every directory expanded, passing the filter, to search in.
@@ -281,13 +324,13 @@ impl FileTreeState {
     fn list_rows(&self) -> Vec<FileTreeRow> {
         let mut rows: Vec<FileTreeRow> = self
             .tree
-            .rows(|_| true, |path| self.keeps(path))
+            .files(|path| self.keeps(path))
             .into_iter()
-            .filter(|row| !row.is_dir())
-            .map(|row| FileTreeRow {
+            .map(|file| FileTreeRow {
                 depth: 0,
-                name: row.path.clone(),
-                ..row
+                name: file.path.clone(),
+                path: file.path.clone(),
+                kind: RowKind::File(file.index),
             })
             .collect();
         rows.sort_unstable_by(|a, b| a.path.cmp(&b.path));
@@ -364,7 +407,7 @@ impl FileTreeState {
     }
 
     pub fn select_path(&mut self, path: &str) {
-        if let Some(pos) = self.rows.iter().position(|r| r.path == path) {
+        if let Some(pos) = self.rows.iter().position(|r| *r.path == *path) {
             self.select_index(pos);
         }
     }
@@ -412,7 +455,7 @@ impl FileTreeState {
     fn selected_dir(&self) -> Option<String> {
         self.selected()
             .filter(|r| r.is_dir())
-            .map(|r| r.path.clone())
+            .map(|r| r.path.to_string())
     }
 
     fn toggle_dir(&mut self, path: String) {
@@ -426,7 +469,8 @@ impl FileTreeState {
         }
     }
 
-    // Keeps the selected path, or else the position of the cursor.
+    // Keeps the selected path, or else the position of the cursor. The rows before are freed on
+    // another thread, which takes long for many.
     fn rebuild_rows(&mut self) {
         let selected = self.selected().map(|r| r.path.clone());
         let rows = match self.view {
@@ -435,11 +479,12 @@ impl FileTreeState {
                 .rows(|path| self.is_open(path), |path| self.keeps(path)),
             TreeView::List => self.list_rows(),
         };
-        self.rows = if self.root == Root::Shown {
+        let rows = if self.root == Root::Shown {
             under_root(rows, self.is_open(ROOT_PATH))
         } else {
             rows
         };
+        crate::background::drop_elsewhere(std::mem::replace(&mut self.rows, rows));
         self.guides = tree_guides(self.rows.iter().map(|r| (r.depth, r.is_dir())));
         // a filter or a collapsed directory can leave the start of a selection past the rows now
         // shown; the selection ends rather than picking rows that moved under it
@@ -547,8 +592,11 @@ impl TreeSelection {
         let Some(range) = tree.visual_range() else {
             return;
         };
-        self.picked
-            .sync_visual(tree.rows()[range].iter().map(|row| &row.path));
+        let paths: Vec<String> = tree.rows()[range]
+            .iter()
+            .map(|row| row.path.to_string())
+            .collect();
+        self.picked.sync_visual(&paths);
     }
 
     // The entries to act on: those picked, shown or not (in a closed directory, or left out by
@@ -630,7 +678,7 @@ impl CheckedFiles {
             RowKind::File(index) => self.contains(index),
             RowKind::Root | RowKind::Dir => self
                 .counts
-                .get(&row.path)
+                .get(&*row.path)
                 .is_some_and(|&(checked, total)| checked == total),
         }
     }
@@ -692,7 +740,7 @@ fn tree_path(path: &str) -> &str {
 // of its own, like nvim-tree's: a line down the entries of each directory, "└" at its last one,
 // two columns a level. A row's own marker, like a directory's fold marker, goes after its guide;
 // the guide of the other rows, like files, ends with their line.
-pub fn tree_guides(rows: impl IntoIterator<Item = (usize, bool)>) -> Vec<String> {
+pub fn tree_guides(rows: impl IntoIterator<Item = (usize, bool)>) -> Vec<Guide> {
     let rows: Vec<(usize, bool)> = rows.into_iter().collect();
     // whether each row is the last entry of its directory, from the end
     let mut last = vec![false; rows.len()];
@@ -703,29 +751,60 @@ pub fn tree_guides(rows: impl IntoIterator<Item = (usize, bool)>) -> Vec<String>
         seen[depth] = true;
     }
     // whether the directory at each depth has entries after it, from the start
-    let mut continues: Vec<bool> = vec![];
+    let mut continues: u128 = 0;
     rows.iter()
         .zip(last)
         .map(|(&(depth, own_marker), last)| {
-            // the top level has no line
-            let mut guide: String = (0..depth)
-                .map(|level| match continues.get(level) {
-                    Some(true) if level > 0 => "│ ",
-                    _ => "  ",
-                })
-                .collect();
-            if !own_marker {
-                guide.push_str(match (depth, last) {
-                    (0, _) => "  ",
-                    (_, true) => "└ ",
-                    _ => "│ ",
-                });
+            let guide = Guide {
+                depth,
+                continues,
+                own_marker,
+                last,
+            };
+            if depth < 128 {
+                // the levels below are no longer this one's
+                continues &= (1u128 << depth) - 1;
+                if !last {
+                    continues |= 1 << depth;
+                }
             }
-            continues.resize(depth + 1, false);
-            continues[depth] = !last;
             guide
         })
         .collect()
+}
+
+// The indent markers before a row, see `tree_guides`: kept small for the many rows of a tree,
+// drawn only for those shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Guide {
+    depth: usize,
+    // the levels above whose directories have entries after it, one bit each; shortcut: a
+    // directory 128 levels deep or more draws no line, which no real tree reaches
+    continues: u128,
+    own_marker: bool,
+    last: bool,
+}
+
+impl Guide {
+    pub fn text(&self) -> String {
+        // the top level has no line
+        let mut guide: String = (0..self.depth)
+            .map(
+                |level| match level > 0 && level < 128 && self.continues >> level & 1 == 1 {
+                    true => "│ ",
+                    false => "  ",
+                },
+            )
+            .collect();
+        if !self.own_marker {
+            guide.push_str(match (self.depth, self.last) {
+                (0, _) => "  ",
+                (_, true) => "└ ",
+                _ => "│ ",
+            });
+        }
+        guide
+    }
 }
 
 // The path of the next row in `rows` for which `wanted` is true, from `from` in `direction`,
@@ -739,7 +818,7 @@ pub fn find_next(
     find_around(rows.len(), from, direction, |i| {
         !rows[i].is_root() && wanted(&rows[i])
     })
-    .map(|i| rows[i].path.clone())
+    .map(|i| rows[i].path.to_string())
 }
 
 // The directories containing `path`, outermost first, starting with the root.
@@ -764,19 +843,18 @@ pub fn path_contains(row_path: &str, path: &str) -> bool {
 }
 
 // `rows` under a root row, when there are any; only the root row when it is closed.
-fn under_root(rows: Vec<FileTreeRow>, open: bool) -> Vec<FileTreeRow> {
+fn under_root(mut rows: Vec<FileTreeRow>, open: bool) -> Vec<FileTreeRow> {
     if rows.is_empty() {
-        return Vec::new();
+        return rows;
     }
     if !open {
         return vec![FileTreeRow::root()];
     }
-    std::iter::once(FileTreeRow::root())
-        .chain(rows.into_iter().map(|row| FileTreeRow {
-            depth: row.depth + 1,
-            ..row
-        }))
-        .collect()
+    for row in &mut rows {
+        row.depth += 1;
+    }
+    rows.insert(0, FileTreeRow::root());
+    rows
 }
 
 fn sort_files(node: &mut DirNode) {
@@ -790,55 +868,45 @@ fn sort_files(node: &mut DirNode) {
 // Without `rows` (a closed directory) it only looks for a kept file, building no rows.
 fn collect_rows(
     node: &DirNode,
-    parent: &str,
     depth: usize,
     is_open: &impl Fn(&str) -> bool,
     keep: &impl Fn(&str) -> bool,
     mut rows: Option<&mut Vec<FileTreeRow>>,
 ) -> bool {
-    let join = |name: &str| {
-        if parent.is_empty() {
-            name.to_string()
-        } else {
-            format!("{parent}/{name}")
-        }
-    };
     let mut any_kept = false;
     for (name, child) in &node.dirs {
-        let path = join(name);
         let Some(rows) = rows.as_deref_mut() else {
-            if collect_rows(child, &path, depth + 1, is_open, keep, None) {
+            if collect_rows(child, depth + 1, is_open, keep, None) {
                 return true;
             }
             continue;
         };
-        let mut child_rows = Vec::new();
-        let open = is_open(&path);
-        let sink = open.then_some(&mut child_rows);
-        if !collect_rows(child, &path, depth + 1, is_open, keep, sink) {
-            continue;
-        }
-        any_kept = true;
+        // its own row first, taken back when it has nothing kept
+        let at = rows.len();
         rows.push(FileTreeRow {
             depth,
             name: name.clone(),
-            path,
+            path: child.path.clone(),
             kind: RowKind::Dir,
         });
-        rows.extend(child_rows);
+        let sink = is_open(&child.path).then_some(&mut *rows);
+        if collect_rows(child, depth + 1, is_open, keep, sink) {
+            any_kept = true;
+        } else {
+            rows.truncate(at);
+        }
     }
-    for (name, index) in &node.files {
-        let path = join(name);
-        if keep(&path) {
+    for file in &node.files {
+        if keep(&file.path) {
             any_kept = true;
             let Some(rows) = rows.as_deref_mut() else {
                 return true;
             };
             rows.push(FileTreeRow {
                 depth,
-                name: name.clone(),
-                path,
-                kind: RowKind::File(*index),
+                name: file.name.clone(),
+                path: file.path.clone(),
+                kind: RowKind::File(file.index),
             });
         }
     }
@@ -946,13 +1014,13 @@ pub fn render_tree(
             });
             let Some(file) = row.file_index() else {
                 let mut line =
-                    dir_line(row, guide, tree.is_open(&row.path), search, options, theme);
+                    dir_line(row, &guide, tree.is_open(&row.path), search, options, theme);
                 if let Some(check) = check {
                     line.spans.insert(1, check);
                 }
                 return line;
             };
-            let mut spans = vec![guide_span(guide, theme)];
+            let mut spans = vec![guide_span(&guide, theme)];
             spans.extend(check);
             if let Some(symbol) = symbol(file) {
                 spans.extend([change_span(symbol, theme), Span::raw(" ")]);
@@ -1004,7 +1072,7 @@ pub fn unhighlight_guides(
     theme: &ColorTheme,
 ) {
     for (y, index) in (area.top()..area.bottom()).zip(offset..tree.rows().len()) {
-        keep_guide_color(buf, area, y, tree.guide(index), theme);
+        keep_guide_color(buf, area, y, &tree.guide(index), theme);
     }
 }
 
@@ -1054,7 +1122,7 @@ mod tests {
             Root::Shown,
             TreeView::Tree,
         );
-        let rows: Vec<&str> = state.rows().iter().map(|r| r.path.as_str()).collect();
+        let rows: Vec<&str> = state.rows().iter().map(|r| r.path.as_ref()).collect();
         assert_eq!(rows, [ROOT_PATH, "src", "a.rs"]);
     }
 
@@ -1074,7 +1142,7 @@ mod tests {
         let rows: Vec<(&str, &str)> = state
             .rows()
             .iter()
-            .map(|r| (r.name.as_str(), r.path.as_str()))
+            .map(|r| (r.name.as_ref(), r.path.as_ref()))
             .collect();
         assert_eq!(
             rows,
@@ -1085,13 +1153,13 @@ mod tests {
                 ("b/x.rs", "b/x.rs")
             ]
         );
-        assert_eq!(state.selected().unwrap().path, "b/c/y.rs");
+        assert_eq!(&*state.selected().unwrap().path, "b/c/y.rs");
         // the search looks in the rows shown, no directory among them
         assert!(state.all_rows().iter().all(|r| !r.is_dir()));
         state.toggle_view();
         assert_eq!(state.view(), TreeView::Tree);
-        assert!(state.rows().iter().any(|r| r.path == "b/c"));
-        assert_eq!(state.selected().unwrap().path, "b/c/y.rs");
+        assert!(state.rows().iter().any(|r| *r.path == *"b/c"));
+        assert_eq!(&*state.selected().unwrap().path, "b/c/y.rs");
     }
 
     // A directory and the root are checked when every file under them is, and toggle them all.
@@ -1108,7 +1176,7 @@ mod tests {
             state
                 .rows()
                 .iter()
-                .find(|r| r.path == path)
+                .find(|r| *r.path == *path)
                 .unwrap()
                 .clone()
         };
@@ -1201,7 +1269,7 @@ mod tests {
             TreeView::Tree,
         );
         let visible = |state: &FileTreeState| -> Vec<String> {
-            state.rows().iter().map(|r| r.path.clone()).collect()
+            state.rows().iter().map(|r| r.path.to_string()).collect()
         };
         assert_eq!(
             visible(&state),
@@ -1212,14 +1280,14 @@ mod tests {
         state.navigate(UserEvent::NavigateDown);
         state.navigate(UserEvent::NavigateDown);
         state.collapse();
-        assert_eq!(state.selected().unwrap().path, "src");
+        assert_eq!(&*state.selected().unwrap().path, "src");
         state.collapse();
         assert_eq!(visible(&state), vec![ROOT_PATH, "src", "README.md"]);
 
         // the expanded state and selection carry over to another tree
         let other = state.with_tree(FileTree::new(["src/c.rs", "README.md"]));
         assert_eq!(visible(&other), vec![ROOT_PATH, "src", "README.md"]);
-        assert_eq!(other.selected().unwrap().path, "src");
+        assert_eq!(&*other.selected().unwrap().path, "src");
 
         state.toggle();
         assert_eq!(
@@ -1268,7 +1336,7 @@ mod tests {
         // a file at the top goes to the root row, then the root row collapses everything
         state.navigate(UserEvent::GoToBottom);
         state.collapse();
-        assert_eq!(state.selected().unwrap().path, ROOT_PATH);
+        assert_eq!(&*state.selected().unwrap().path, ROOT_PATH);
         state.collapse();
         assert_eq!(state.rows(), vec![row(0, "/", ":/", None)]);
 
@@ -1276,10 +1344,10 @@ mod tests {
         state.toggle();
         state.select_path("README.md");
         state.set_tree(FileTree::new(["src/main.rs", "README.md", "a.rs"]));
-        assert_eq!(state.selected().unwrap().path, "README.md");
+        assert_eq!(&*state.selected().unwrap().path, "README.md");
         state.set_tree(FileTree::new(["src/main.rs", "a.rs"]));
         assert_eq!(state.cursor(), 3);
-        assert_eq!(state.selected().unwrap().path, "a.rs");
+        assert_eq!(&*state.selected().unwrap().path, "a.rs");
     }
 
     #[test]
@@ -1297,7 +1365,7 @@ mod tests {
             TreeView::Tree,
         );
         let visible = |state: &FileTreeState| -> Vec<String> {
-            state.rows().iter().map(|r| r.path.clone()).collect()
+            state.rows().iter().map(|r| r.path.to_string()).collect()
         };
         assert_eq!(visible(&state), vec!["docs", "src", "README.md"]);
 
@@ -1316,7 +1384,7 @@ mod tests {
                 "src/view/list.rs"
             ]
         );
-        assert_eq!(state.selected().unwrap().path, "src/view/list.rs");
+        assert_eq!(&*state.selected().unwrap().path, "src/view/list.rs");
 
         state.set_filter(Some("nothing"), SearchOptions::default());
         assert!(visible(&state).is_empty());

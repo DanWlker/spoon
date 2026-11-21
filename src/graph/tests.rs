@@ -2160,3 +2160,20 @@ fn graph_laid_out_again_keeps_the_images_of_the_rows_drawn_the_same() -> TestRes
 
     Ok(())
 }
+
+// A layout told to stop, replaced by another, stops partway with nothing.
+#[test]
+fn layout_stops_once_cancelled() -> TestResult {
+    use crate::background::Cancel;
+    let dir = tempfile::tempdir()?;
+    let git = &GitRepository::new(dir.path());
+    git.init();
+    git.commit("one", "2024-01-01");
+    let repository =
+        git::Repository::load(dir.path(), git::SortCommit::Chronological, None, false)?;
+    let folded = FxHashSet::default();
+    let layout = |cancel: Cancel| graph::GraphLayout::calc(&repository, None, &folded, &cancel);
+    assert!(layout(Cancel::default()).is_some());
+    assert!(layout(Cancel::cancelled()).is_none());
+    Ok(())
+}

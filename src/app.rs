@@ -147,7 +147,13 @@ pub fn load_laid_out(
         return Err("reload stopped".into());
     }
     let (Loaded::Repository(repository) | Loaded::RefsGone(repository)) = &loaded;
-    let layout = GraphLayout::calc(repository, options.primary_branch.as_deref(), folded);
+    let layout = GraphLayout::calc(
+        repository,
+        options.primary_branch.as_deref(),
+        folded,
+        cancel,
+    )
+    .ok_or("reload stopped")?;
     Ok((loaded, layout))
 }
 
@@ -244,7 +250,7 @@ pub struct AppShell {
     // the blame or timeline opening, see `App::open_window`
     opening: Option<Opening>,
     // when the layout of the graph running after folding merges started, see `App::start_regraph`
-    regraph: Option<Instant>,
+    regraph: Option<PendingRegraph>,
     // the commit to select once the graph laid out with merges unfolded to show it lands, see
     // `App::reveal_sidebar_selection`
     reveal: Option<CommitHash>,
@@ -313,6 +319,15 @@ impl Opening {
         };
         shows_loading(started).then(|| format!("Loading the {name} of {}", self.path))
     }
+}
+
+// The layout of the graph running in the background after folding merges, see
+// `App::start_regraph`.
+#[derive(Debug)]
+struct PendingRegraph {
+    started: Instant,
+    // stops it once another replaces it
+    cancel: Cancel,
 }
 
 // The reload of the repository running in the background, see `App::start_reload`.
@@ -957,16 +972,16 @@ impl App<'_> {
                 self.regraph_if_stale();
             }
             AppEvent::Regraphed { from, layout } => {
-                self.shell.regraph = None;
                 // laid out before the repository was loaded again, of commits it may no longer
-                // have, or before merges were folded since: laid out again. Its repository may be
-                // the last of the one before, freed elsewhere.
+                // have, or before merges were folded since: one laid out since replaces it, see
+                // `regraph_if_stale`. Its repository may be the last of the one before, freed
+                // elsewhere.
                 if !Arc::ptr_eq(&from, self.repository) || layout.folded != self.shell.folded_merges
                 {
                     drop_elsewhere((from, layout));
-                    self.regraph_if_stale();
                     return None;
                 }
+                self.shell.regraph = None;
                 let context = self.view.refresh_context();
                 if let Some(mut context) = context {
                     if let Some(commit) = self.shell.reveal.take() {
@@ -3527,33 +3542,43 @@ impl App<'_> {
         }
     }
 
-    // Lays the graph out again with the merges folded now, unless the graph shows them so: on
-    // another thread, the app going on meanwhile, one layout at a time. Once it lands, the app is
-    // made again on it, see `AppEvent::Regraphed`, which lays it out again for what was folded
-    // meanwhile or what a reload laid out with the merges folded before.
+    // Lays the graph out again with the merges folded now, unless the graph shows them so, like
+    // after a merge folded and unfolded again: on another thread, the app going on meanwhile, the
+    // layout running before stopping. Once it lands, the app is made again on it, see
+    // `AppEvent::Regraphed`. A reload lays the graph out with the merges folded when it started;
+    // made again on it, the app lays it out again for those folded since.
     fn regraph_if_stale(&mut self) {
+        if let Some(running) = self.shell.regraph.take() {
+            running.cancel.cancel();
+        }
         let shown = self.view.as_list_state().map(CommitListState::folded);
-        if self.shell.regraph.is_none() && shown.is_some_and(|f| *f != self.shell.folded_merges) {
+        if shown.is_some_and(|f| *f != self.shell.folded_merges) {
             self.start_regraph();
         }
     }
 
     fn start_regraph(&mut self) {
-        self.shell.regraph = Some(Instant::now());
+        let cancel = Cancel::default();
+        self.shell.regraph = Some(PendingRegraph {
+            started: Instant::now(),
+            cancel: cancel.clone(),
+        });
         let repository = Arc::clone(self.repository);
         let primary_branch = self.load_options.primary_branch.clone();
         let folded = self.shell.folded_merges.clone();
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let layout = GraphLayout::calc(&repository, primary_branch.as_deref(), &folded);
+            let layout =
+                GraphLayout::calc(&repository, primary_branch.as_deref(), &folded, &cancel);
             drop(spinning);
-            // the app may have quit meanwhile
-            let layout = Box::new(layout);
-            tx.try_send(AppEvent::Regraphed {
-                from: repository,
-                layout,
-            });
+            // the app may have quit meanwhile; stopped, it has nothing to show
+            if let Some(layout) = layout {
+                tx.try_send(AppEvent::Regraphed {
+                    from: repository,
+                    layout: Box::new(layout),
+                });
+            }
         });
     }
 

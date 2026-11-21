@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::git::{Commit, CommitHash, Ref, Repository};
+use crate::{
+    background::Cancel,
+    git::{Commit, CommitHash, Ref, Repository},
+};
 
 type CommitPosMap<'a> = FxHashMap<&'a CommitHash, (usize, usize)>;
 
@@ -13,13 +16,13 @@ pub struct Graph<'a> {
     pub edges: GraphEdges,
     pub max_pos_x: usize,
     pub warning: Option<String>,
-    // the merge commits shown, those with two parents or more loaded, see `calc_graph`
+    // the merge commits shown, those with two parents or more loaded, see `GraphLayout::calc`
     pub merges: FxHashMap<&'a CommitHash, Fold>,
     // the merges it was laid out with folded, see `GraphLayout::folded`
     pub folded: FxHashSet<CommitHash>,
 }
 
-// Whether a merge commit shows the commits it brought in, see `calc_graph`.
+// Whether a merge commit shows the commits it brought in, see `GraphLayout::calc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Fold {
     Folded,
@@ -149,6 +152,7 @@ pub fn merges_hiding(
 }
 
 // The graph of the commits loaded, the `folded` merges without the commits they brought in.
+#[cfg(test)]
 pub fn calc_graph<'a>(
     repository: &'a Repository,
     primary_branch: Option<&str>,
@@ -156,7 +160,8 @@ pub fn calc_graph<'a>(
 ) -> Graph<'a> {
     Graph::of(
         repository,
-        GraphLayout::calc(repository, primary_branch, folded),
+        GraphLayout::calc(repository, primary_branch, folded, &Cancel::default())
+            .expect("laid out, never cancelled"),
     )
 }
 
@@ -176,17 +181,21 @@ pub struct GraphLayout {
 }
 
 impl GraphLayout {
+    // None once `cancel` says so, like a layout for merges folded before others were: it stops
+    // partway, every few thousand rows.
     pub fn calc(
         repository: &Repository,
         primary_branch: Option<&str>,
         folded: &FxHashSet<CommitHash>,
-    ) -> Self {
+        cancel: &Cancel,
+    ) -> Option<Self> {
         let links = Links::new(repository, folded);
         let mut commits = repository.all_commits();
         commits.retain(|c| links.is_shown(&c.commit_hash));
 
-        let (commit_pos_map, warning) = calc_commit_positions(&commits, &links, primary_branch);
-        let (edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &links);
+        let (commit_pos_map, warning) =
+            calc_commit_positions(&commits, &links, primary_branch, cancel)?;
+        let (edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &links, cancel)?;
         // a stash has parents not loaded
         let merges = commits
             .iter()
@@ -212,7 +221,7 @@ impl GraphLayout {
             .iter()
             .map(|c| (c.commit_hash.clone(), commit_pos_map[&c.commit_hash].0))
             .collect();
-        GraphLayout {
+        Some(GraphLayout {
             rows,
             edges,
             max_pos_x,
@@ -223,7 +232,7 @@ impl GraphLayout {
                 .filter(|merge| repository.commit(merge).is_some())
                 .cloned()
                 .collect(),
-        }
+        })
     }
 }
 
@@ -316,7 +325,8 @@ fn calc_commit_positions<'a>(
     commits: &[&'a Commit],
     links: &Links<'a, '_>,
     primary_branch: Option<&str>,
-) -> (CommitPosMap<'a>, Option<String>) {
+    cancel: &Cancel,
+) -> Option<(CommitPosMap<'a>, Option<String>)> {
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<&CommitHash>> = Vec::new();
     let mut line_last_occupied_pos_y: Vec<usize> = Vec::new();
@@ -325,6 +335,9 @@ fn calc_commit_positions<'a>(
     let min_col = if has_visible_primary { 1 } else { 0 };
 
     for (pos_y, commit) in commits.iter().enumerate() {
+        if stopped(pos_y, cancel) {
+            return None;
+        }
         let is_primary = primary_spine.contains(&commit.commit_hash);
         let filtered_children_hash = filtered_children_hash(commit, links);
         if filtered_children_hash.is_empty() {
@@ -387,7 +400,12 @@ fn calc_commit_positions<'a>(
         }
     }
 
-    (commit_pos_map, warning)
+    Some((commit_pos_map, warning))
+}
+
+// Whether the layout stops at row `y`, looked at every few thousand rows, see `GraphLayout::calc`.
+fn stopped(y: usize, cancel: &Cancel) -> bool {
+    y.is_multiple_of(4096) && cancel.is_cancelled()
 }
 
 fn filtered_children_hash<'a>(commit: &'a Commit, links: &Links<'a, '_>) -> Vec<&'a CommitHash> {
@@ -563,12 +581,16 @@ fn calc_edges(
     commit_pos_map: &CommitPosMap,
     commits: &[&Commit],
     links: &Links,
-) -> (GraphEdges, usize) {
+    cancel: &Cancel,
+) -> Option<(GraphEdges, usize)> {
     let mut max_pos_x = 0;
     let mut edges = GraphEdges::new(commits.len());
 
     for commit in commits {
         let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
+        if stopped(pos_y, cancel) {
+            return None;
+        }
         let hash = &commit.commit_hash;
 
         for child_hash in links.children_hash(hash) {
@@ -744,7 +766,7 @@ fn calc_edges(
         }
     }
 
-    (edges, max_pos_x)
+    Some((edges, max_pos_x))
 }
 
 #[cfg(test)]

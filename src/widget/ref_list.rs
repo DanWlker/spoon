@@ -20,7 +20,7 @@ use crate::{
     pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::{
-        file_tree::{keep_guide_color, tree_guides},
+        file_tree::{keep_guide_color, tree_guides, Guide},
         picks::Picks,
         style::{
             fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
@@ -205,7 +205,7 @@ pub struct RefListState {
     roots: Vec<RefTreeNode>,
     visible_rows: Vec<VisibleRefRow>,
     // the indent markers of the visible rows, see `tree_guides`, made with them
-    guides: Vec<String>,
+    guides: Vec<Guide>,
     selected: Vec<NodeId>,
     opened: HashSet<Vec<NodeId>>,
     // the row of `selected` and the rows shown, see `sync_cursor`
@@ -814,6 +814,7 @@ impl StatefulWidget for RefList {
             .zip(state.guides.iter().skip(offset))
         {
             let y = inner.y + line as u16;
+            let guide = guide.text();
             // the checked-out branch, like `git branch`
             let head = is_head(row, &state.head);
             let symbol = if head {
@@ -826,7 +827,7 @@ impl StatefulWidget for RefList {
             let (guide_x, _) = buf.set_stringn(
                 inner.x,
                 y,
-                guide,
+                &guide,
                 inner.width as usize,
                 Style::default().fg(theme.divider_fg),
             );
@@ -905,7 +906,7 @@ impl StatefulWidget for RefList {
                     mark_selected_row(buf, inner, y, focused, theme);
                 }
             }
-            keep_guide_color(buf, inner, y, guide, theme);
+            keep_guide_color(buf, inner, y, &guide, theme);
         }
     }
 }

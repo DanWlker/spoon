@@ -14,7 +14,7 @@ use crate::{
     git::{CommitHash, FilesSnapshot, GitTask},
     graph::Fold,
     keybind::UserEvent,
-    refresher::Unhandled,
+    refresher::{Unhandled, Wake},
     search::SearchOutcome,
     view::RefreshViewContext,
     widget::commit_tabs::DetailTab,
@@ -218,7 +218,7 @@ pub struct EventController {
     hover: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     // wakes the refresher up, see `refresh_now`
-    poke: Mutex<Option<mpsc::Sender<()>>>,
+    poke: Mutex<Option<mpsc::Sender<Wake>>>,
     // the terminal is read and given to the commands run in it, but in tests
     terminal: bool,
 }
@@ -321,14 +321,14 @@ impl EventController {
     }
 
     // Wakes the refresher returned by `refresher::spawn` up for `refresh_now`.
-    pub fn set_refresher(&self, poke: mpsc::Sender<()>) {
+    pub fn set_refresher(&self, poke: mpsc::Sender<Wake>) {
         *self.poke.lock().unwrap() = Some(poke);
     }
 
     // Checks right away, like when the terminal gets the focus back.
     pub fn refresh_now(&self) {
         if let Some(poke) = self.poke.lock().unwrap().as_ref() {
-            let _ = poke.send(());
+            let _ = poke.send(Wake::Poke);
         }
     }
 

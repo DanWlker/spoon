@@ -2407,7 +2407,8 @@ fn test_fold_merge_laid_out_before_a_reload() {
         // the graph laid out on another thread meanwhile, from the repository before the reload
         vec![Step::Act(Box::new(move |app: &mut App| {
             let folded = app.shell.folded_merges.clone();
-            let layout = GraphLayout::calc(app.repository, None, &folded);
+            let layout =
+                GraphLayout::calc(app.repository, None, &folded, &Default::default()).unwrap();
             keep.replace(Some((Arc::clone(app.repository), layout)));
         }))],
         outside_git(&["branch", "-q", "-D", "other"]),
@@ -2509,8 +2510,8 @@ fn test_fold_merge_while_reloading_or_laying_out() {
 }
 
 // The reload landing with the graph laid out before a merge was folded shows it, then lays it
-// out again folded in the background, rather than on the thread drawing; the layout of the
-// repository before is dropped.
+// out again folded in the background, rather than on the thread drawing. The merge is folded
+// without laying it out while the reload runs, so only a layout after it can show it.
 #[test]
 fn test_fold_while_reloading_lays_out_in_the_background() {
     let dir = tempfile::tempdir().unwrap();
@@ -2519,9 +2520,46 @@ fn test_fold_while_reloading_lays_out_in_the_background() {
         &path,
         &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
     );
+    let merge = CommitHash::from(git(&path, &["rev-parse", "HEAD"]).trim());
     let mut harness = Harness::new(&path, launch());
-    harness.run(vec![keys_at_once("ctrl-r h")]);
-    assert_eq!(harness.regraphs.get(), 2);
+    harness.run(vec![
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(AppEvent::Reload);
+            app.shell.folded_merges.insert(merge);
+        }))],
+        check(|app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            assert_eq!(view.as_list_state().folded().len(), 1);
+        }),
+    ]);
+    assert_eq!(harness.regraphs.get(), 1);
+}
+
+// Folding again while the graph is laid out stops that layout, which is laid out again for the
+// merges folded now; folded back as shown, none runs.
+#[test]
+fn test_folding_again_stops_the_layout_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    let merge = CommitHash::from(git(&path, &["rev-parse", "HEAD"]).trim());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![vec![Step::Act(Box::new(move |app| {
+        let fold = |fold| AppEvent::FoldMerge {
+            commit: merge.clone(),
+            fold,
+        };
+        app.handle_event(fold(crate::graph::Fold::Folded));
+        let first = app.shell.regraph.as_ref().unwrap().cancel.clone();
+        app.handle_event(fold(crate::graph::Fold::Unfolded));
+        assert!(first.is_cancelled());
+        assert!(app.shell.regraph.is_none());
+    }))]]);
 }
 
 #[test]
