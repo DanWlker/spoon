@@ -5993,3 +5993,92 @@ fn test_commands_wait_for_the_files_staged() {
         assert_eq!(git(&path, &["branch", "--show-current"]).trim(), branch);
     }
 }
+
+// The details of the commit moved to list its changes, loaded in the background or right away.
+#[test]
+fn test_details_list_the_changes_of_the_commit_moved_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let shows = |subject: &'static str| {
+        check(move |app| {
+            let View::Detail(view) = &app.view else {
+                panic!("no details");
+            };
+            let hash = view.as_list_state().selected_commit_hash();
+            assert_eq!(app.repository.commit(hash).unwrap().subject, subject);
+        })
+    };
+    // c1 added it, the others changed it
+    let lists = |text: &str| {
+        let listed = text.contains("M f.txt") || text.contains("A f.txt");
+        assert!(listed, "{text}");
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter"),
+        screen(lists),
+        // loaded in the background, shown once drawn
+        keys("shift-j"),
+        shows("feat1"),
+        screen(lists),
+        // loaded right away, before a key acts on them
+        vec![Step::Act(Box::new(|app| {
+            app.handle_event(AppEvent::Key(parse_key_event("shift-j").unwrap()))
+                .unwrap();
+            let View::Detail(view) = &mut app.view else {
+                panic!("no details");
+            };
+            view.load_selected();
+        }))],
+        shows("c1"),
+        screen(lists),
+    ]);
+}
+
+// Esc never waits for what loads in the background: it closes the details while the changes of
+// the commit moved to load, which stops them, and clears the filter of the local changes while
+// their files are staged, which goes on. It used to wait for both.
+#[test]
+fn test_esc_acts_at_once_while_loading() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let key = |name: &str| AppEvent::Key(parse_key_event(name).unwrap());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("enter 3"),
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(key("shift-j")).unwrap();
+            // the changes of feat1 start loading once drawn
+            app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
+            assert!(app.view.is_loading());
+            app.handle_event(key("esc")).unwrap();
+            assert!(app.shell.app_status.kept.is_empty());
+            assert!(app.view.is_loading());
+        }))],
+        check(|app| assert!(matches!(app.view, View::List(_)))),
+    ]);
+
+    std::fs::write(path.join("n.txt"), "new\n").unwrap();
+    let mut harness = Harness::new(
+        &path,
+        Launch {
+            page: StartPage::LocalChanges,
+            ..launch()
+        },
+    );
+    let filtered = |app: &mut App| render(app).concat().concat().contains("filter: n");
+    harness.run(vec![
+        keys("/ n enter"),
+        vec![Step::Act(Box::new(move |app| assert!(filtered(app))))],
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(key("space")).unwrap();
+            app.handle_event(key("esc")).unwrap();
+            assert!(app.view.is_files_loading());
+            assert!(!filtered(app));
+        }))],
+    ]);
+    assert_eq!(
+        git(&path, &["status", "--porcelain", "n.txt"]),
+        "A  n.txt\n"
+    );
+}

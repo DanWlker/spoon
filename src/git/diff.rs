@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use crate::background::Cancel;
 
 use super::{
-    git_output, git_output_bytes, git_output_bytes_until, git_run_until, parse_name_status,
-    pathspecs, text_from_git, Commit, CommitHash, LocalChangeStatus, Repository, WorkTree,
+    git_output, git_output_bytes_until, git_run_until, parse_name_status, pathspecs, text_from_git,
+    Commit, CommitHash, LocalChangeStatus, Repository, WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -49,18 +49,22 @@ impl Repository {
 
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
-        (commit, self.commit_changes_work(commit_hash)())
+        (
+            commit,
+            self.commit_changes_work(commit_hash)(&Cancel::default()),
+        )
     }
 
-    // The files a commit changed, see `commit_detail`, as work to run on another thread.
+    // The files a commit changed, see `commit_detail`, as work to run on another thread, stopping
+    // early once the job it runs for is dropped, see `Job::spawn_cancellable`.
     pub fn commit_changes_work(
         &self,
         commit_hash: &CommitHash,
-    ) -> impl FnOnce() -> Vec<FileChange> + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> Vec<FileChange> + Send + 'static {
         let base = self.commit_base(commit_hash);
         let (path, target) = (self.path.clone(), commit_hash.as_str().to_string());
-        move || {
-            base.map(|base| diff_summary(&path, &base, &target))
+        move |cancel| {
+            base.map(|base| diff_summary(&path, &base, &target, cancel))
                 .unwrap_or_default()
         }
     }
@@ -140,7 +144,12 @@ impl Repository {
 
     // The files changed from one commit to another.
     pub fn diff_summary_between(&self, base: &CommitHash, target: &CommitHash) -> Vec<FileChange> {
-        diff_summary(&self.path, base.as_str(), target.as_str())
+        diff_summary(
+            &self.path,
+            base.as_str(),
+            target.as_str(),
+            &Cancel::default(),
+        )
     }
 }
 
@@ -199,9 +208,10 @@ impl FileChange {
     }
 }
 
-fn diff_summary(path: &Path, base: &str, target: &str) -> Vec<FileChange> {
+fn diff_summary(path: &Path, base: &str, target: &str, cancel: &Cancel) -> Vec<FileChange> {
     // -z leaves paths as they are, git would quote those with special characters
-    git_output_bytes(path, &["diff", "--name-status", "-z", "-M", base, target])
+    let args = ["diff", "--name-status", "-z", "-M", base, target];
+    git_output_bytes_until(path, &args, cancel)
         .map(|out| parse_name_status(&out))
         .unwrap_or_default()
         .into_iter()
@@ -297,6 +307,29 @@ mod tests {
     use crate::git::GitCommand;
     use crate::git::GitTask;
     use crate::git::SortCommit;
+
+    // The changes and the files of a commit stop loading once nobody waits for them, like once
+    // the details showing them close.
+    #[test]
+    fn test_commit_changes_and_files_stopped_once_cancelled() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("a"), "a\n").unwrap();
+        repo.add(&["a"]);
+        repo.commit("c1", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let head = repository.head_commit().unwrap();
+        let changes = |cancel| repository.commit_changes_work(&head)(&cancel);
+        assert_eq!(changes(Cancel::default()).len(), 1);
+        assert!(changes(Cancel::cancelled()).is_empty());
+        let files = |cancel| repository.commit_tree_work(&head)(&cancel).0;
+        assert_eq!(files(Cancel::default()), ["a"]);
+        assert!(files(Cancel::cancelled()).is_empty());
+    }
 
     #[test]
     fn test_diff_summary_special_paths() {

@@ -179,7 +179,7 @@ impl BlameView {
         let steps = matches!(event, UserEvent::OlderCommit | UserEvent::NewerCommit)
             || (self.focus == BlameFocus::Revision
                 && matches!(event, UserEvent::NavigateLeft | UserEvent::NavigateRight));
-        (self.query.is_editing() || !steps) && self.loading.is_some()
+        !event.never_waits() && (self.query.is_editing() || !steps) && self.loading.is_some()
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
@@ -720,6 +720,37 @@ mod tests {
         },
         widget::git_dialog::{CheckoutTarget, GitDialog, GitDialogWidget},
     };
+
+    // Esc acts at once while the blame of the commit stepped to loads: up to the commit shown,
+    // then closes, which stops the blame. It used to wait for it.
+    #[test]
+    fn test_esc_while_the_blame_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        fs::write(path.join("a"), "one\n").unwrap();
+        repo.add(&["a"]);
+        repo.commit("c1", "2024-01-01");
+        fs::write(path.join("a"), "ONE\n").unwrap();
+        repo.add(&["a"]);
+        repo.commit("c2", "2024-01-02");
+        let c2 = CommitHash::from(repo.rev_parse_head().as_str());
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let ec = EventController::without_terminal();
+        let mut view =
+            BlameView::new(&repository, &c2, "a", None, test_ctx(), ec.sender()).unwrap();
+        let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+        view.handle_event(UserEvent::OlderCommit, key, &repository);
+        assert!(view.is_loading());
+        assert!(!view.waits_for(UserEvent::Cancel));
+        view.handle_event(UserEvent::Cancel, key, &repository);
+        assert_eq!(view.focus, BlameFocus::Revision);
+        while ec.try_recv().is_some() {}
+        view.handle_event(UserEvent::Cancel, key, &repository);
+        assert!(view.is_loading());
+        assert!(matches!(ec.try_recv(), Some(AppEvent::CloseOverlay)));
+    }
 
     #[test]
     fn test_blame_steps_through_the_history_of_the_file() {

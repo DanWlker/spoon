@@ -1740,7 +1740,7 @@ impl<'a> LocalChangesState<'a> {
             }
         };
         match event {
-            _ if event.moves_selection() => Needs::Nothing,
+            _ if event.moves_selection() || event.never_waits() => Needs::Nothing,
             _ if beside => Needs::Beside,
             Unknown => Needs::Nothing,
             _ => Needs::Files,

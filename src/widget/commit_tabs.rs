@@ -896,7 +896,8 @@ impl<'a> CommitFilesState<'a> {
         self.text.measure_in_background(tx);
         if self.paths.is_none() {
             let job = self.tree_loading.get_or_insert_with(|| {
-                Job::spawn(
+                // stopped once replaced or dropped, see `Job::spawn_cancellable`
+                Job::spawn_cancellable(
                     tx.clone(),
                     self.repository.commit_tree_work(&self.commit_hash),
                 )

@@ -3,6 +3,7 @@ use std::{collections::VecDeque, path::Path};
 use rustc_hash::FxHashSet;
 
 use crate::{
+    background::Cancel,
     git::{conflict_side, is_conflict_marker, ConflictSide, Operation, Repository, SideContent},
     widget::style::tabs_shown,
 };
@@ -52,17 +53,18 @@ pub struct ConflictView {
 impl ConflictView {
     // The conflicting blocks of the file in the working tree, or the whole content of each side when
     // the file has no conflict markers (when one side deleted it, or it is binary); as work to run on
-    // another thread, as a big file takes a while.
+    // another thread, as a big file takes a while, stopping early once the job it runs for is
+    // dropped, see `Job::spawn_cancellable`.
     pub fn load_work(
         repository: &Repository,
         path: &str,
-    ) -> impl FnOnce() -> Self + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> Self + Send + 'static {
         let (repository, path) = (repository.path().to_path_buf(), path.to_string());
-        move || ConflictView::load(&repository, &path)
+        move |cancel| ConflictView::load(&repository, &path, cancel)
     }
 
     // See `load_work`, in the repository at `repository`.
-    pub fn load(repository: &Path, path: &str) -> Self {
+    pub fn load(repository: &Path, path: &str, cancel: &Cancel) -> Self {
         let file = crate::git::work_path(repository, path);
         // the markers of a file only, not of what a symlink points at
         let editable = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
@@ -76,7 +78,7 @@ impl ConflictView {
             }
         }
         let side = |side| {
-            let lines = match conflict_side(repository, path, side) {
+            let lines = match conflict_side(repository, path, side, cancel) {
                 SideContent::File(content) => content
                     .lines()
                     .map(|l| tabs_shown(l).into_owned())
@@ -381,7 +383,7 @@ end
         assert!(git(path, &["diff", "--name-only", "--diff-filter=U"]).contains('f'));
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let view = ConflictView::load(repository.path(), "f");
+        let view = ConflictView::load(repository.path(), "f", &Cancel::default());
         assert_eq!(view.conflicts, 1);
     }
 
@@ -414,9 +416,12 @@ end
         std::fs::write(path.join("f"), "\0\n<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n").unwrap();
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        let view = ConflictView::load(repository.path(), "f");
+        let view = ConflictView::load(repository.path(), "f", &Cancel::default());
         assert_eq!(view.conflicts, 0);
         assert_eq!(rows(&view.ours), ["|ours|k"]);
+        // stopped once nobody waits for it: the sides aren't read
+        let stopped = ConflictView::load(repository.path(), "f", &Cancel::cancelled());
+        assert!(stopped.ours.is_empty() && stopped.theirs.is_empty());
     }
 
     #[test]

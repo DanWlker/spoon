@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::Job,
+    background::{Cancel, Job},
     browse::{LinkAction, LinkTarget},
     context::AppContext,
     event::{AppEvent, Sender},
@@ -734,22 +734,24 @@ impl<'a> DetailView<'a> {
             DetailTab::Files => self.files_state.loading_since(),
         };
         let tree = self.tab == DetailTab::Files && self.files_state.is_tree_loading();
-        (!self.moves_commit(event) && self.loading.is_some())
+        let waits = (!self.moves_commit(event) && self.loading.is_some())
             || (!event.moves_selection() && tree)
-            || (self.needs_pane(event) && pane.is_some())
+            || (self.needs_pane(event) && pane.is_some());
+        waits && !event.never_waits()
     }
 
     pub fn handle_event(&mut self, event: UserEvent, key: KeyEvent) {
         // the keys moving the selection leave what it shows to load once drawn, see
         // `update_layout`; the others may act on it, so it is loaded first: the details of the
         // commit for all but those moving to another commit, the diff for all but those moving
-        // in the files
-        if !self.moves_commit(event) {
+        // in the files; esc acts on none of it, see `UserEvent::never_waits`
+        let loads = !event.never_waits();
+        if loads && !self.moves_commit(event) {
             self.load_selected();
         }
         match self.tab {
             DetailTab::Info => {}
-            _ if event.moves_selection() => {}
+            _ if event.moves_selection() || !loads => {}
             DetailTab::Changes if self.needs_pane(event) => self.changes_state.ensure_loaded(),
             DetailTab::Changes => {}
             DetailTab::Files if self.needs_pane(event) => self.files_state.ensure_loaded(),
@@ -1692,7 +1694,7 @@ impl<'a> DetailView<'a> {
         if std::mem::take(&mut self.stale) {
             self.loading = None;
             let selected = self.as_list_state().selected_commit_hash().clone();
-            let changes = self.repository.commit_changes_work(&selected)();
+            let changes = self.repository.commit_changes_work(&selected)(&Cancel::default());
             let view = self.changes_state.tree_view();
             let files = CommitFiles::of(&changes, view);
             self.show_selected((changes, files));
@@ -1709,12 +1711,13 @@ impl<'a> DetailView<'a> {
             let work = self.repository.commit_changes_work(&selected);
             // its files' tree made there too, see `CommitFiles`
             let view = self.changes_state.tree_view();
-            let work = move || {
-                let changes = work();
+            let work = move |cancel: &Cancel| {
+                let changes = work(cancel);
                 let files = CommitFiles::of(&changes, view);
                 (changes, files)
             };
-            self.loading = Some(Job::spawn(self.tx.clone(), work));
+            // stopped once moved past or closed, see `Job::spawn_cancellable`
+            self.loading = Some(Job::spawn_cancellable(self.tx.clone(), work));
         }
         if let Some(changes) = self.loading.as_ref().and_then(Job::try_take) {
             self.loading = None;

@@ -3382,7 +3382,7 @@ impl App<'_> {
     // kept until then, see `Kept`. After keys kept, it follows them; the force quit doesn't wait.
     fn must_wait(&mut self, event: UserEvent) -> bool {
         use UserEvent::*;
-        if event == ForceQuit {
+        if event.never_waits() {
             return false;
         }
         if !self.shell.app_status.kept.is_empty() {

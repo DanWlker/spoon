@@ -6,21 +6,21 @@ Some keys are sequences, pressed one after another, like <kbd>y</kbd> <kbd>y</kb
 The status bar shows the keys working everywhere, like push, pull and fetch, as many as fit.
 <kbd>H</kbd> shows the keys of the focused panel in a popup at the bottom right, and hides it again; while a popup has the focus or text is typed, the status bar shows their keys instead.
 
-A key acting on what still loads in the background (a diff, the files, a blame) is kept until it is loaded, the screen going on meanwhile; the keys pressed after it follow it in order, and <kbd>Esc</kbd> drops them. Keys moving the selection never wait, unless keys are kept before them. The mouse does what the keys would, but nothing on what still loads, and nothing while keys are kept. Which keys wait:
+A key acting on what still loads in the background (a diff, the files, a blame) is kept until it is loaded, the screen going on meanwhile; the keys pressed after it follow it in order, and <kbd>Esc</kbd> drops them. <kbd>Esc</kbd> never waits: it clears, steps back or closes at once, and what it closes stops loading; a git command running, like staging or a fetch, goes on. Keys moving the selection never wait, unless keys are kept before them; in a diff or preview still loading, they do nothing. The mouse does what the keys would, but nothing on what still loads, and nothing while keys are kept. Which keys wait:
 
 | Where | Waits for | Waits | Acts at once |
 | ----- | --------- | ----- | ------------ |
 | Local changes, the files | the diff, conflict or submodule beside them | <kbd>Enter</kbd> and <kbd>Ctrl-l</kbd>, going into it; <kbd>Space</kbd> on a conflicted file | every other key |
 | Local changes, the files | the files reloading, after staging or a change outside the app | every key acting on them | typing the filter |
 | Local changes, the app's keys (like <kbd>Tab</kbd> and <kbd>Ctrl-r</kbd>) and the sidebar | the files reloading | every key | |
-| Local changes, the diff, conflict or submodule | it | every key | |
+| Local changes, the diff, conflict or submodule | it | every key but those moving the selection | |
 | Local changes, the commit message | | | typing; committing waits for the files reloading |
 | Details, the changes or files tab | the diff or preview beside the files | <kbd>Enter</kbd> and <kbd>Ctrl-l</kbd>, going into it | every other key |
 | Details, the files tab | its files | every key acting on them | |
 | Details, after moving to another commit | its files | every key acting on them | |
-| Details, the diff or preview | it | every key | |
+| Details, the diff or preview | it | every key but those moving the selection | |
 | Timeline, the commits | the diff | <kbd>Enter</kbd>, <kbd>l</kbd>, <kbd>2</kbd> and <kbd>Ctrl-l</kbd>, going into it | every other key |
-| Timeline, the diff | it | every key | |
+| Timeline, the diff | it | every key but those moving the selection | |
 | Blame | the blame of the commit stepped to | every key but stepping again | |
 
 

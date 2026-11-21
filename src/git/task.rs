@@ -802,6 +802,10 @@ pub(super) fn git_run_until(
     args: &[impl AsRef<OsStr>],
     cancel: &Cancel,
 ) -> Option<Output> {
+    // not started for a job dropped already, which a quick command would finish before asked
+    if cancel.is_cancelled() {
+        return None;
+    }
     let child = git_command()
         .args(args.iter().map(|a| git_arg(&a.as_ref().to_string_lossy())))
         .current_dir(path)

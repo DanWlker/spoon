@@ -3,8 +3,10 @@
 
 use std::path::Path;
 
+use crate::background::Cancel;
+
 use super::{
-    git_arg, git_command, git_output, git_output_bytes, git_output_with_status, is_binary,
+    git_arg, git_command, git_output, git_output_bytes_until, git_output_with_status, is_binary,
     pathspecs, run_logged, text_from_git, work_path, CommitHash, LocalChangeStatus, LocalChanges,
     Repository, WorkTree,
 };
@@ -149,7 +151,12 @@ impl WorkTree {
 }
 
 // What a side of a conflicted file is in the index of `repository`: a file, a symlink, a submodule or nothing.
-pub fn conflict_side(repository: &Path, path: &str, side: ConflictSide) -> SideContent {
+pub fn conflict_side(
+    repository: &Path,
+    path: &str,
+    side: ConflictSide,
+    cancel: &Cancel,
+) -> SideContent {
     let stage = unmerged(repository, path).ok().and_then(|stages| {
         stages
             .into_iter()
@@ -159,7 +166,7 @@ pub fn conflict_side(repository: &Path, path: &str, side: ConflictSide) -> SideC
         return SideContent::Deleted;
     };
     let blob = || {
-        git_output_bytes(repository, &["cat-file", "blob", &object])
+        git_output_bytes_until(repository, &["cat-file", "blob", &object], cancel)
             .map(|blob| text_from_git(&blob))
             .unwrap_or_default()
     };
@@ -543,6 +550,17 @@ mod tests {
         assert!(git_output(path, &["merge", "incoming"]).is_err());
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        // refused while a git command runs, before the submodule is checked out, which `git add`
+        // would then be refused, leaving it half resolved
+        *repository.running.lock() = Some(running("Pushing master"));
+        assert!(repository
+            .resolve_conflict("sub", ConflictSide::Theirs)
+            .is_err());
+        assert_eq!(
+            git(&path.join("sub"), &["rev-parse", "HEAD"]).trim(),
+            hash("master")
+        );
+        *repository.running.lock() = None;
         repository
             .resolve_conflict("sub", ConflictSide::Theirs)
             .unwrap();

@@ -145,6 +145,7 @@ impl TimelineView {
         let into = matches!(event, Confirm | NavigateRight | FocusPanel(2) | FocusRight);
         !self.query.is_editing()
             && !event.moves_selection()
+            && !event.never_waits()
             && (self.pane.is_focused() || into)
             && self.pane.loading_since().is_some()
     }

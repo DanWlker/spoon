@@ -81,8 +81,9 @@ impl<'a> LocalChangesState<'a> {
         let file = self.selected_conflict()?;
         let work = ConflictView::load_work(self.repository, &file.path);
         Some(match tx {
-            Some(tx) => Beside::ConflictLoading(Job::spawn(tx.clone(), work)),
-            None => Beside::Conflict(ConflictPanel::new(work())),
+            // stopped once moved past, see `Job::spawn_cancellable`
+            Some(tx) => Beside::ConflictLoading(Job::spawn_cancellable(tx.clone(), work)),
+            None => Beside::Conflict(ConflictPanel::new(work(&Cancel::default()))),
         })
     }
 

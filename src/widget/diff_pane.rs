@@ -369,6 +369,19 @@ impl DiffPane {
     // Goes one level back: the lines picked cleared -> hunks -> out of the diff. Returns false
     // when already out.
     pub fn back(&mut self) -> bool {
+        // the diff loading, to be entered once loaded: back from what it is to be entered at
+        if let DiffState::Loading {
+            pending: Some(selection),
+            ..
+        } = &mut self.state
+        {
+            selection.focus = match selection.focus {
+                None => return false,
+                Some(DiffPart::Line) => Some(DiffPart::Hunk),
+                Some(DiffPart::Hunk) => None,
+            };
+            return true;
+        }
         match self.focus {
             None => return false,
             Some(DiffPart::Line) if self.cursor.cancel_range() => {}
@@ -775,6 +788,19 @@ mod tests {
         assert!(pane.search_outcome("old", options).is_some());
         pane.outdate();
         assert!(pane.search_outcome("old", options).is_none());
+    }
+
+    // Esc steps back out of a diff entered while it loads, as out of one shown, rather than
+    // passing it on to close what it is in, the diff entered once loaded.
+    #[test]
+    fn test_back_out_of_a_diff_entered_while_it_loads() {
+        let ec = crate::event::EventController::without_terminal();
+        let mut pane = DiffPane::default();
+        pane.load_in_background(ec.sender(), Default::default(), |_| String::new());
+        assert!(pane.enter());
+        assert!(pane.back());
+        assert!(!pane.is_focused());
+        assert!(!pane.back());
     }
 
     // ctrl-e and ctrl-y scroll the diff like vim: the selected line comes along once it would

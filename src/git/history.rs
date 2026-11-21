@@ -26,17 +26,18 @@ impl Repository {
     }
 
     pub fn commit_tree(&self, commit_hash: &CommitHash) -> CommitTree {
-        self.commit_tree_work(commit_hash)()
+        self.commit_tree_work(commit_hash)(&Cancel::default())
     }
 
     // All file paths in the tree of a commit, and those of them that are gitlinks (submodules),
-    // from their modes, in one listing; as work to run on another thread.
+    // from their modes, in one listing; as work to run on another thread, stopping early once the
+    // job it runs for is dropped, see `Job::spawn_cancellable`.
     pub fn commit_tree_work(
         &self,
         commit_hash: &CommitHash,
-    ) -> impl FnOnce() -> CommitTree + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> CommitTree + Send + 'static {
         let (repository, commit) = (self.path.clone(), commit_hash.as_str().to_string());
-        move || commit_tree_at(&repository, &commit)
+        move |cancel| commit_tree_at(&repository, &commit, cancel)
     }
 
     // Who last changed each line of the file at `path` as of the commit, see `Blame`, as work to
@@ -159,8 +160,10 @@ fn parse_blame(out: &str) -> Blame {
 pub type CommitTree = (Vec<String>, FxHashSet<String>);
 
 // See `Repository::commit_tree_work`.
-fn commit_tree_at(repository: &Path, commit: &str) -> CommitTree {
-    let out = git_output(repository, &["ls-tree", "-r", "-z", commit]).unwrap_or_default();
+fn commit_tree_at(repository: &Path, commit: &str, cancel: &Cancel) -> CommitTree {
+    let out = git_output_bytes_until(repository, &["ls-tree", "-r", "-z", commit], cancel)
+        .map(|out| text_from_git(&out))
+        .unwrap_or_default();
     let mut paths = Vec::new();
     let mut gitlinks = FxHashSet::default();
     for (meta, path) in out.split('\0').filter_map(|entry| entry.split_once('\t')) {

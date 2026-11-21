@@ -510,6 +510,13 @@ impl UserEvent {
         )
     }
 
+    // Whether it acts at once, never waiting for what loads in the background: esc, which only
+    // clears, steps back or closes what is shown, what it closes stopping its loading, and the
+    // force quit. A git command running isn't stopped.
+    pub fn never_waits(self) -> bool {
+        matches!(self, UserEvent::Cancel | UserEvent::ForceQuit)
+    }
+
     // The scope a key of the event is bound in, when the keybind doesn't say: the keys of most
     // events work everywhere, those of the commands of a part of the app in that part only, so
     // the same key can do something else elsewhere. See `Scope`.
