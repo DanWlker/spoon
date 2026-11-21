@@ -121,14 +121,9 @@ impl<'a> SubmodulePanel<'a> {
             let work = repository.submodule_repository_work(path, from, to);
             ((from.to_string(), to.to_string()), work)
         });
-        // shortcut: stopped between the two ranges only, as loading a submodule's commits takes no
-        // `Cancel`; pass one down `Repository::load_graph` if a range can be long
         let work = move |cancel: &Cancel| -> Loaded {
             for (range, work) in ranges {
-                if cancel.is_cancelled() {
-                    return Ok(None);
-                }
-                if let Some(submodule) = work()? {
+                if let Some(submodule) = work(cancel)? {
                     let layout = graph::GraphLayout::calc(&submodule, None, &Default::default());
                     return Ok(Some((range, submodule, layout)));
                 }

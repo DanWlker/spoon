@@ -15,9 +15,9 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, matching_rows, parse_diff, parse_diff_until, render_diff_lines,
-            render_split_rows, rewrap, split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart,
-            DiffRowKind, Measuring, ParsedDiff, Step, WrapMap,
+            diff_lines, matching_rows, near_screen, parse_diff, parse_diff_until,
+            render_diff_lines, render_split_rows, rewrap, split_widths, DiffCursor, DiffHunk,
+            DiffLayout, DiffPart, DiffRowKind, Measuring, ParsedDiff, Step, WrapMap, ALL_ROWS,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -557,9 +557,8 @@ impl DiffPane {
             ctx.layout.borrow_mut().record(target, area, RowMap::None);
             return;
         };
-        self.measure(&diff, theme, area.width, wrap, layout);
+        self.measure(&diff, theme, area, wrap, layout);
         let diff = diff.as_ref();
-        let wrap = self.cursor.wrap().wraps();
         let total = self.cursor.wrap().total();
         let range = self
             .cursor
@@ -579,8 +578,7 @@ impl DiffPane {
         };
         if self.cursor.wrap().split_rows().is_some() {
             let map = self.cursor.wrap();
-            let lines =
-                render_split_rows(diff, map, range, selected, restyle, wrap, theme, area, buf);
+            let lines = render_split_rows(diff, map, range, selected, restyle, theme, area, buf);
             let split = split_widths(area.width).0 as usize;
             ctx.layout
                 .borrow_mut()
@@ -602,7 +600,7 @@ impl DiffPane {
             rows.zip(lines),
             skip..skip + range.len(),
             selected,
-            wrap,
+            |row| self.cursor.wrap().wraps_row(row),
             theme,
             area,
             buf,
@@ -612,32 +610,38 @@ impl DiffPane {
 
 impl DiffPane {
     // The scroll counts screen rows while wrapping or split, see `WrapMap`: at another width, wrap
-    // or layout the rows are measured again, showing the selection again with them. A big diff's
-    // take a while to wrap: they are measured on another thread, drawn unwrapped meanwhile.
+    // or layout the rows are measured again, the row at the top staying there, and the selection
+    // shown again with them. A big diff's take a while to wrap: those on the screen in `area` are
+    // measured right away, the rest on another thread, drawn as they are meanwhile, see `rewrap`.
     fn measure(
         &mut self,
         diff: &Arc<ParsedDiff>,
         theme: &ColorTheme,
-        width: u16,
+        area: Rect,
         wrap: bool,
         layout: DiffLayout,
     ) {
+        let width = area.width;
         let work = || {
             let (shared, colors) = (diff.clone(), theme.clone());
-            move |cancel: &Cancel| WrapMap::of_until(&shared, &colors, width, wrap, layout, cancel)
+            move |cancel: &Cancel| {
+                WrapMap::of_until(&shared, &colors, width, wrap, layout, ALL_ROWS, cancel)
+            }
         };
+        let top = self.cursor.wrap().logical_at(self.cursor.scroll.offset);
         let Some(map) = rewrap(
             self.cursor.wrap(),
             &mut self.measuring,
             self.tx.as_ref(),
-            diff.rows.len(),
             (width, wrap, layout),
-            |wrap| WrapMap::of(diff, theme, width, wrap, layout),
+            near_screen(top, area.height),
+            |near| WrapMap::of_until(diff, theme, width, wrap, layout, near, &Cancel::default()),
             work,
         ) else {
             return;
         };
         self.cursor.set_wrap_map(map);
+        self.cursor.scroll.offset = self.cursor.wrap().visual_start(top);
         if self.focus.is_some() {
             let rows = self.cursor.highlighted(diff, self.selected_part());
             self.cursor.scroll_to(rows);
@@ -1003,8 +1007,10 @@ mod tests {
         assert_eq!(rows, [41, 46, 51, 46, 42, 43, 44]);
     }
 
-    // A big diff's rows are wrapped on another thread, as measuring them takes a while: drawn
-    // unwrapped meanwhile, wrapped once measured.
+    // A big diff's rows are wrapped on another thread, as measuring them takes a while; those on
+    // the screen are measured right away, so it shows wrapped at once, as a small diff's does. The
+    // row at the top stays there once all are measured. It used to show unwrapped meanwhile, and
+    // the row at the top to move.
     #[test]
     fn test_big_diff_wraps_in_the_background() {
         let ctx = test_ctx();
@@ -1015,22 +1021,37 @@ mod tests {
         for _ in 0..30_000 {
             raw += &format!("+{long}\n");
         }
+        // the screen of the diff measured all at once, past the scrollbar
+        let text = |buf: &Buffer| -> Vec<String> {
+            (0..area.height)
+                .map(|y| (0..area.width - 1).map(|x| buf[(x, y)].symbol()).collect())
+                .collect()
+        };
+        let mut whole = DiffPane::default();
+        whole.set_diff(Some(parse_diff(&raw)));
+        let wrapped = text(&draw(&mut whole, &ctx, area));
         let ec = crate::event::EventController::without_terminal();
         let mut pane = DiffPane::default();
         pane.load_in_background(ec.sender(), Default::default(), move |_| raw);
         pane.wait_loading();
 
-        draw(&mut pane, &ctx, area);
+        let first = draw(&mut pane, &ctx, area);
         assert!(pane.measuring.is_some());
-        assert!(!pane.cursor.wrap().wraps());
+        assert!(!pane.cursor.wrap().is_measured());
+        assert_eq!(text(&first), wrapped);
+        // far down, past the rows measured
+        let top = 20_000;
+        pane.cursor.scroll.offset = pane.cursor.wrap().visual_start(top);
         let measured = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !pane.cursor.wrap().wraps() {
+        while !pane.cursor.wrap().is_measured() {
             assert!(std::time::Instant::now() < measured, "never wrapped");
             std::thread::sleep(std::time::Duration::from_millis(5));
             draw(&mut pane, &ctx, area);
         }
         assert!(pane.measuring.is_none());
         assert!(pane.cursor.wrap().total() > 30_000);
+        let offset = pane.cursor.scroll.offset;
+        assert_eq!(pane.cursor.wrap().logical_at(offset), top);
     }
 
     #[test]

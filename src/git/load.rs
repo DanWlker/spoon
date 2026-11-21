@@ -12,7 +12,10 @@ use std::{
 use chrono::{DateTime, FixedOffset};
 use rustc_hash::FxHashMap;
 
-use crate::{background::joined, error::Result};
+use crate::{
+    background::{joined, Cancel},
+    error::Result,
+};
 
 use super::{
     git_command, git_output, load_submodules, Commit, CommitHash, CommitMap, CommitsMap, Head,
@@ -84,18 +87,17 @@ impl Repository {
     // Unlike `load_scoped` it skips the status, remotes, tracking, textconv drivers, submodules
     // and stashes, none of which the panel needs, cutting the git commands run when it is picked.
     // None when the revisions have no commits.
-    pub fn load_graph(path: &Path, revisions: &[String]) -> Result<Option<Self>> {
+    pub fn load_graph(path: &Path, revisions: &[String], cancel: &Cancel) -> Result<Option<Self>> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
         let (ref_map, head) = load_refs(path);
         let commits = load_all_commits(
             path,
             SortCommit::Chronological,
-            &head,
-            &[],
+            Listed::Revisions(revisions),
             None,
             false,
-            Some(revisions),
+            cancel,
         )?;
         if commits.is_empty() {
             return Ok(None);
@@ -123,7 +125,14 @@ impl Repository {
         let (stashes, stash_ref_map) = load_stashes(path, mailmap);
         // a graph of some refs leaves the stashes out, they stay in the sidebar
         let stashes = if revisions.is_some() { vec![] } else { stashes };
-        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap, revisions)?;
+        let listed = match revisions {
+            Some(revisions) => Listed::Revisions(revisions),
+            None => Listed::All {
+                head: &head,
+                stashes: &stashes,
+            },
+        };
+        let commits = load_all_commits(path, sort, listed, max_count, mailmap, &Cancel::default())?;
         let commits = merge_stashes_to_commits(commits, stashes);
         merge_ref_maps(&mut ref_map, stash_ref_map);
         Ok(Self::new(
@@ -255,14 +264,23 @@ fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, PathBuf)> {
     Ok((toplevel, git_dir))
 }
 
+// Which commits `load_all_commits` lists: those of every ref, with the stashes' and a detached
+// HEAD's, or those of some revisions only.
+enum Listed<'a> {
+    All {
+        head: &'a Head,
+        stashes: &'a [Commit],
+    },
+    Revisions(&'a [String]),
+}
+
 fn load_all_commits(
     path: &Path,
     sort: SortCommit,
-    head: &Head,
-    stashes: &[Commit],
+    listed: Listed,
     max_count: Option<usize>,
     mailmap: bool,
-    revisions: Option<&[String]>,
+    cancel: &Cancel,
 ) -> std::result::Result<Vec<Commit>, String> {
     let mut cmd = git_command();
     cmd.arg("log");
@@ -278,11 +296,11 @@ fn load_all_commits(
         cmd.arg("--max-count").arg(n.to_string());
     }
 
-    match revisions {
-        Some(revisions) => {
+    match listed {
+        Listed::Revisions(revisions) => {
             cmd.args(revisions);
         }
-        None => {
+        Listed::All { head, stashes } => {
             // exclude stashes and other refs
             cmd.arg("--branches").arg("--remotes").arg("--tags");
 
@@ -318,6 +336,12 @@ fn load_all_commits(
 
     // each field ends with a NUL, which git keeps out of them, see `load_commits_format`
     for bytes in reader.split(b'\0') {
+        // stopped once the job loading them is dropped, see `Job::read`; it only reads
+        if cancel.is_cancelled() {
+            let _ = process.kill();
+            let _ = process.wait();
+            return Err("git log stopped".into());
+        }
         let bytes = bytes.map_err(|e| format!("failed to read git log: {e}"))?;
         fields.push(text_from_git(&bytes));
         if fields.len() == COMMIT_FIELDS {
@@ -702,6 +726,23 @@ mod tests {
                 "{hash:?}"
             );
         }
+    }
+
+    // A graph loaded for a job dropped meanwhile, like a submodule's commits once the cursor
+    // moved on, stops reading git log; one kept loads.
+    #[test]
+    fn test_load_graph_stops_once_cancelled() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepository::new(dir.path());
+        repo.init();
+        repo.commit("one", "2024-01-01");
+        let revisions = ["HEAD".to_string()];
+        let loaded = Repository::load_graph(dir.path(), &revisions, &Cancel::default());
+        assert_eq!(loaded.unwrap().unwrap().all_commits().len(), 1);
+        let stopped = Repository::load_graph(dir.path(), &revisions, &Cancel::cancelled());
+        assert!(stopped.is_err());
     }
 
     // `git branch refs/heads/foo` makes `refs/heads/refs/heads/foo`, which used to be read as the

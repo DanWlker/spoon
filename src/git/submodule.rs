@@ -95,7 +95,7 @@ impl Repository {
         if let Some(repository) = self.loaded_submodule_repository(path, from, to) {
             return Ok(Some(repository));
         }
-        let loaded = self.submodule_repository_work(path, from, to)()?;
+        let loaded = self.submodule_repository_work(path, from, to)(&Cancel::default())?;
         Ok(loaded.map(|repository| self.keep_submodule_repository(path, from, to, repository)))
     }
 
@@ -117,15 +117,16 @@ impl Repository {
         path: &str,
         from: &str,
         to: &str,
-    ) -> impl FnOnce() -> std::result::Result<Option<Repository>, String> + Send + 'static {
+    ) -> impl FnOnce(&Cancel) -> std::result::Result<Option<Repository>, String> + Send + 'static
+    {
         let submodule = self.path.join(path);
         let range = format!("{from}..{to}");
-        move || {
+        move |cancel| {
             // without a `.git` of its own git would load the superproject above
             if !submodule.join(".git").exists() {
                 return Err("submodule not checked out".into());
             }
-            Repository::load_graph(&submodule, &[range]).map_err(|err| err.to_string())
+            Repository::load_graph(&submodule, &[range], cancel).map_err(|err| err.to_string())
         }
     }
 

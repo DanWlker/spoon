@@ -40,7 +40,7 @@ impl Repository {
         Box::new(move |cancel| {
             let mut args = vec!["rev-list", "--reverse", "--no-merges"];
             args.extend(range.iter().map(String::as_str));
-            let out = git_output(&path, &args).ok()?;
+            let out = text_from_git(&git_output_bytes_until(&path, &args, cancel).ok()?);
             let steps: Vec<_> = out
                 .lines()
                 .filter(|c| !skip.iter().any(|s| s.as_str() == *c))

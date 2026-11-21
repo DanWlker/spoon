@@ -318,7 +318,13 @@ pub struct WrapMap {
     // prefix[i] = the screen row shown row i starts on, one longer than the rows, while wrapping;
     // empty else, as the rows are their own screen rows
     prefix: Vec<usize>,
+    // the rows shown wrapped while wrapping; the others take a screen row each, drawn as they are,
+    // until the whole diff is measured, see `rewrap`
+    measured: Range<usize>,
 }
+
+// Every row of a diff or a file, for `WrapMap` to measure, see `rewrap`.
+pub const ALL_ROWS: Range<usize> = 0..usize::MAX;
 
 // How the diffs are shown: in one column, or the old and the new side side by side.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +363,7 @@ fn prefix_of(heights: impl Iterator<Item = usize>) -> Vec<usize> {
 impl WrapMap {
     // The rows of `diff` at `width` as `layout` says, wrapped when `wrap`; built once per change of
     // them, so drawing still builds only the rows it shows.
+    #[cfg(test)]
     pub fn of(
         diff: &ParsedDiff,
         theme: &ColorTheme,
@@ -364,17 +371,27 @@ impl WrapMap {
         wrap: bool,
         layout: DiffLayout,
     ) -> Self {
-        Self::of_until(diff, theme, width, wrap, layout, &Cancel::default())
+        Self::of_until(
+            diff,
+            theme,
+            width,
+            wrap,
+            layout,
+            ALL_ROWS,
+            &Cancel::default(),
+        )
     }
 
-    // `of`, stopping once `cancel` says nobody waits for it any more, as measuring a big diff's
-    // rows wrapped on another thread does, see `rewrap`; its rows measured so far then.
+    // `of`, wrapping only the shown rows of the rows of the diff `near` (see `ALL_ROWS`), and
+    // stopping once `cancel` says nobody waits for it any more, as measuring a big diff's rows
+    // wrapped on another thread does, see `rewrap`; its rows measured so far then.
     pub fn of_until(
         diff: &ParsedDiff,
         theme: &ColorTheme,
         width: u16,
         wrap: bool,
         layout: DiffLayout,
+        near: Range<usize>,
         cancel: &Cancel,
     ) -> Self {
         // asked now and then, a few times a millisecond
@@ -386,17 +403,18 @@ impl WrapMap {
         if split_rows.is_empty() {
             let rows = diff_line_count(diff);
             // made a few at a time, the whole diff of lines would take as much memory again
-            let lines = || {
-                (0..rows)
+            let lines = |range: Range<usize>| {
+                let end = range.end;
+                range
                     .step_by(ASKED_EVERY)
                     .take_while(|_| !cancel.is_cancelled())
                     .flat_map(move |start| {
-                        diff_lines(diff, theme, start..rows.min(start + ASKED_EVERY), width)
+                        diff_lines(diff, theme, start..end.min(start + ASKED_EVERY), width)
                     })
             };
             return WrapMap {
                 layout,
-                ..Self::from_lines(rows, lines, width, wrap)
+                ..Self::from_lines(rows, near, lines, width, wrap)
             };
         }
         let mut placed = vec![0; diff.rows.len()];
@@ -405,26 +423,7 @@ impl WrapMap {
                 placed[row] = row_u32(at);
             }
         }
-        let mut prefix = vec![];
-        if wrap {
-            let (old_width, new_width) = split_widths(width);
-            let height = |row: u32, gutter, width: u16| {
-                let line = diff_line(diff, &diff.rows[row as usize], gutter, theme, width);
-                wrapped_height(&line, width as usize)
-            };
-            let asked =
-                |(i, _): &(usize, &SplitRow)| i % ASKED_EVERY != 0 || !cancel.is_cancelled();
-            let shown = split_rows.iter().enumerate().take_while(asked);
-            prefix = prefix_of(shown.map(|(_, split_row)| match *split_row {
-                SplitRow::Whole(row) => height(row, Gutter::Both, width),
-                SplitRow::Sides(old, new) => {
-                    let old = old.map_or(1, |row| height(row, Gutter::Old, old_width));
-                    let new = new.map_or(1, |row| height(row, Gutter::New, new_width));
-                    old.max(new)
-                }
-            }));
-        }
-        WrapMap {
+        let mut map = WrapMap {
             width,
             wrap,
             layout,
@@ -433,40 +432,77 @@ impl WrapMap {
                 rows: split_rows,
                 placed,
             }),
-            prefix,
+            ..WrapMap::default()
+        };
+        if wrap {
+            let (old_width, new_width) = split_widths(width);
+            let height = |row: u32, gutter, width: u16| {
+                let line = diff_line(diff, &diff.rows[row as usize], gutter, theme, width);
+                wrapped_height(&line, width as usize)
+            };
+            map.measured =
+                map.place(near.start.min(diff.rows.len())..near.end.min(diff.rows.len()));
+            let split_rows = map.split_rows().unwrap_or_default();
+            let asked =
+                |(i, _): &(usize, &SplitRow)| i % ASKED_EVERY != 0 || !cancel.is_cancelled();
+            let shown = split_rows[map.measured.clone()]
+                .iter()
+                .enumerate()
+                .take_while(asked);
+            let heights = shown.map(|(_, split_row)| match *split_row {
+                SplitRow::Whole(row) => height(row, Gutter::Both, width),
+                SplitRow::Sides(old, new) => {
+                    let old = old.map_or(1, |row| height(row, Gutter::Old, old_width));
+                    let new = new.map_or(1, |row| height(row, Gutter::New, new_width));
+                    old.max(new)
+                }
+            });
+            map.prefix = prefix_of(map.measured_rows(heights));
         }
+        map
+    }
+
+    // The heights of every row shown, those of the `measured` rows given, one screen row each
+    // past them.
+    fn measured_rows(&self, measured: impl Iterator<Item = usize>) -> impl Iterator<Item = usize> {
+        let ones = std::iter::repeat_n(1, self.measured.start);
+        let after = std::iter::repeat_n(1, self.rows.saturating_sub(self.measured.end));
+        ones.chain(measured).chain(after)
     }
 
     // The screen rows the `rows` of `lines` wrap to at `width`, wrapped when `wrap`; the diff and
-    // the file preview measure the same way. The lines are only made while wrapping: a big diff
-    // would take a while, and as much memory again.
+    // the file preview measure the same way. Only the rows `near` (see `ALL_ROWS`) are measured,
+    // `lines` making those: a big diff would take a while, and as much memory again.
     pub fn from_lines<'a, L: IntoIterator<Item = Line<'a>>>(
         rows: usize,
-        lines: impl FnOnce() -> L,
+        near: Range<usize>,
+        lines: impl FnOnce(Range<usize>) -> L,
         width: u16,
         wrap: bool,
     ) -> Self {
-        let mut prefix = vec![];
-        if wrap {
-            prefix = prefix_of(
-                lines()
-                    .into_iter()
-                    .map(|line| wrapped_height(&line, width as usize)),
-            );
-        }
-        WrapMap {
+        let mut map = WrapMap {
             width,
             wrap,
             rows,
-            prefix,
             ..WrapMap::default()
+        };
+        if wrap {
+            map.measured = near.start.min(rows)..near.end.min(rows);
+            let lines = lines(map.measured.clone()).into_iter();
+            let heights = lines.map(|line| wrapped_height(&line, width as usize));
+            map.prefix = prefix_of(map.measured_rows(heights));
         }
+        map
     }
 
-    // Whether the rows are wrapped, which drawing them follows: a big diff's are drawn unwrapped
-    // while measured wrapped, see `DiffPane::measure`.
-    pub fn wraps(&self) -> bool {
-        self.wrap
+    // Whether row shown `shown` is drawn wrapped: while wrapping, once measured, see `rewrap`.
+    pub fn wraps_row(&self, shown: usize) -> bool {
+        self.wrap && self.measured.contains(&shown)
+    }
+
+    // Whether every row is measured, wrapped or not, see `rewrap`.
+    pub fn is_measured(&self) -> bool {
+        !self.wrap || self.measured == (0..self.rows)
     }
 
     // Whether this is the map for `width`, `wrap` and `layout`.
@@ -591,22 +627,20 @@ pub struct Measuring {
     job: Job<WrapMap>,
 }
 
-// The map of `rows` rows at `width`, `wrap` and `layout`, when `current` isn't it, see `WrapMap`:
-// many rows wrapped take a while to measure, so with `tx` they are measured on another thread by
-// `work` (see `measuring`), shown unwrapped meanwhile; else `map` makes it, wrapped or not. A diff
-// and the lines of a file are measured so.
+// The map at `width`, `wrap` and `layout`, when `current` isn't it, see `WrapMap`: with `tx`, `map`
+// measures only the rows of the diff `near` the screen right away, so the screen shows wrapped at
+// once, and when there are more, `work` measures all of them on another thread (see `measuring`),
+// the others drawn as they are meanwhile; else `map` measures all of them (`ALL_ROWS`). A diff and
+// the lines of a file are measured so.
 pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
     current: &WrapMap,
     measuring: &mut Option<Measuring>,
     tx: Option<&Sender>,
-    rows: usize,
     (width, wrap, layout): (u16, bool, DiffLayout),
-    map: impl FnOnce(bool) -> WrapMap,
+    near: Range<usize>,
+    map: impl FnOnce(Range<usize>) -> WrapMap,
     work: impl FnOnce() -> W,
 ) -> Option<WrapMap> {
-    // shortcut: wrapped right away up to this many rows, a few milliseconds, rather than drawn
-    // unwrapped first; lower it when wrapping them holds up the screen
-    const MEASURED_RIGHT_AWAY: usize = 20_000;
     let measured = match measuring.take() {
         Some(m) if wrap && (m.width, m.layout) == (width, layout) => match m.job.try_take() {
             Some(map) => Some(map),
@@ -621,23 +655,23 @@ pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
     Some(match measured {
         Some(map) => map,
         None if current.matches(width, wrap, layout) => return None,
-        // unwrapped while measuring
-        None if measuring.is_some() => {
-            if current.matches(width, false, layout) {
-                return None;
-            }
-            map(false)
-        }
-        None => match tx {
-            Some(tx) if wrap && rows > MEASURED_RIGHT_AWAY => {
+        None => {
+            let map = map(if tx.is_some() { near } else { ALL_ROWS });
+            if let Some(tx) = tx.filter(|_| !map.is_measured()) {
                 // stopped once measuring for another width or diff, see `Job::read`
                 let job = Job::read(tx.clone(), work());
                 *measuring = Some(Measuring { width, layout, job });
-                map(false)
             }
-            _ => map(wrap),
-        },
+            map
+        }
     })
+}
+
+// The rows of a diff or a file `rewrap` measures right away, with the screen `height` rows high
+// from the row `top`: those it can show, and as many again around them to scroll to.
+pub fn near_screen(top: usize, height: u16) -> Range<usize> {
+    let height = usize::from(height);
+    top.saturating_sub(height)..top.saturating_add(2 * height)
 }
 
 // The widths of the old and the new side of a diff `width` wide, a divider between them.
@@ -1879,12 +1913,12 @@ fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
 
 // Renders `lines` with their logical row, the screen rows `screen` of them, a line's background
 // (added, removed) across `area`, the `selected` rows marked on their line numbers and by the bar
-// left of `area`; long lines wrapped at the width of `area`, when `wrap`.
+// left of `area`; long lines wrapped at the width of `area`, those `wrap` says.
 pub fn render_diff_lines<'a>(
     lines: impl Iterator<Item = (usize, Line<'a>)>,
     screen: Range<usize>,
     selected: impl Fn(usize) -> bool,
-    wrap: bool,
+    wrap: impl Fn(usize) -> bool,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
@@ -1905,8 +1939,9 @@ pub fn render_diff_lines<'a>(
 
 // Draws the screen rows `screen` of `diff` side by side, see `ParsedDiff::split_rows`: the old
 // side left of a divider, the new side right of it, a file or hunk header across both; otherwise
-// like `render_diff_lines`, each line made changed by `restyle` (the matches of a search). Returns
-// the rows of the diff on each screen row drawn, of the old side and of the new side.
+// like `render_diff_lines`, each line made changed by `restyle` (the matches of a search), wrapped
+// as `map` says. Returns the rows of the diff on each screen row drawn, of the old side and of the
+// new side.
 #[expect(clippy::too_many_arguments)]
 pub fn render_split_rows(
     diff: &ParsedDiff,
@@ -1914,13 +1949,12 @@ pub fn render_split_rows(
     screen: Range<usize>,
     selected: impl Fn(usize) -> bool,
     restyle: impl Fn(&mut Line),
-    wrap: bool,
     theme: &ColorTheme,
     area: Rect,
     buf: &mut Buffer,
 ) -> Vec<[Option<usize>; 2]> {
     let (old_width, new_width) = split_widths(area.width);
-    let make = |row: usize, gutter, width: u16| -> Vec<Line<'static>> {
+    let make = |row: usize, gutter, width: u16, wrap: bool| -> Vec<Line<'static>> {
         let mut line = diff_line(diff, &diff.rows[row], gutter, theme, width);
         if selected(row) {
             select_diff_line(&mut line, theme);
@@ -1940,17 +1974,19 @@ pub fn render_split_rows(
     let shown = map.shown_rows(screen.clone());
     let skip = screen.start - map.shown_start(shown.start);
     let mut drawn = Vec::new();
-    for split_row in &map.split_rows().unwrap_or_default()[shown] {
+    let split_rows = &map.split_rows().unwrap_or_default()[shown.clone()];
+    for (split_row, at) in split_rows.iter().zip(shown) {
+        let wrap = map.wraps_row(at);
         match *split_row {
             SplitRow::Whole(row) => {
                 let row = row as usize;
-                let lines = make(row, Gutter::Both, area.width).into_iter();
+                let lines = make(row, Gutter::Both, area.width, wrap).into_iter();
                 drawn.extend(lines.map(|line| Drawn::Whole(row, line)));
             }
             SplitRow::Sides(old, new) => {
                 let (old, new) = (old.map(|row| row as usize), new.map(|row| row as usize));
                 let side = |row: Option<usize>, gutter, width| {
-                    row.map_or_else(Vec::new, |row| make(row, gutter, width))
+                    row.map_or_else(Vec::new, |row| make(row, gutter, width, wrap))
                 };
                 let mut old_lines = side(old, Gutter::Old, old_width).into_iter();
                 let mut new_lines = side(new, Gutter::New, new_width).into_iter();
@@ -1999,18 +2035,18 @@ pub fn render_split_rows(
     hits
 }
 
-// The screen rows `screen` of `lines` with their logical row, wrapped at the width of `area` when
-// `wrap`; only the rows shown are built.
+// The screen rows `screen` of `lines` with their logical row, wrapped at the width of `area` those
+// `wrap` says; only the rows shown are built.
 pub fn wrapped_rows<'a>(
     lines: impl Iterator<Item = (usize, Line<'a>)>,
     screen: Range<usize>,
-    wrap: bool,
+    wrap: impl Fn(usize) -> bool,
     area: Rect,
 ) -> Vec<(usize, Line<'static>)> {
     let width = area.width as usize;
     lines
         .flat_map(|(row, line)| {
-            let wrapped = if wrap {
+            let wrapped = if wrap(row) {
                 wrap_line(line, width)
             } else {
                 vec![owned(line)]
@@ -2314,11 +2350,11 @@ mod tests {
 
         // the screen rows asked for, wrapped or one per line
         let lines = (0..3).map(|i| (i, line("abcdefghijkl")));
-        let visual = wrapped_rows(lines, 5..9, true, Rect::new(0, 0, 7, 4));
+        let visual = wrapped_rows(lines, 5..9, |_| true, Rect::new(0, 0, 7, 4));
         let rows: Vec<usize> = visual.iter().map(|(row, _)| *row).collect();
         assert_eq!(rows, [1, 2, 2, 2]);
         let lines = (0..3).map(|i| (i, line("abcdefghijkl")));
-        let visual = wrapped_rows(lines, 0..4, false, Rect::new(0, 0, 7, 4));
+        let visual = wrapped_rows(lines, 0..4, |_| false, Rect::new(0, 0, 7, 4));
         assert_eq!(visual.len(), 3);
     }
 
@@ -2622,21 +2658,45 @@ mod tests {
         // the hunk, from its header to its last row
         assert_eq!(map.visual_range(0..9), 0..7);
         assert_eq!(map.logical_at(2), 5);
+        // wrapped near row 6 only, see `rewrap`: its pair as tall as when all are, the rest a
+        // screen row each
+        let theme = ColorTheme::default();
+        let near = WrapMap::of_until(
+            &diff,
+            &theme,
+            16,
+            true,
+            DiffLayout::Split,
+            6..7,
+            &Cancel::default(),
+        );
+        let all = WrapMap::of(&diff, &theme, 16, true, DiffLayout::Split);
+        assert!(near.wraps_row(3) && !near.wraps_row(2) && !near.is_measured());
+        assert!(all.is_measured());
+        let height = |map: &WrapMap| map.visual_range(6..7).len();
+        assert!(height(&all) > 1);
+        assert_eq!(height(&near), height(&all));
+        assert_eq!(near.total(), 6 + height(&all));
     }
 
     #[test]
     fn test_wrap_map_makes_no_lines_unwrapped() {
         // each row its own screen row, the lines never made
-        let map = WrapMap::from_lines(3, || -> Vec<Line> { panic!("made") }, 80, false);
+        let map = WrapMap::from_lines(3, ALL_ROWS, |_| -> Vec<Line> { panic!("made") }, 80, false);
         assert_eq!(map.total(), 3);
         assert_eq!(map.visual_range(1..2), 1..2);
         assert_eq!(map.logical_rows(1..5), 1..3);
         assert_eq!(map.logical_at(2), 2);
         // while wrapping they are measured
         let lines = || vec![Line::raw("a".repeat(25)), Line::raw("b")];
-        let map = WrapMap::from_lines(2, lines, 10, true);
+        let map = WrapMap::from_lines(2, ALL_ROWS, |_| lines(), 10, true);
         assert_eq!(map.total(), 4);
         assert_eq!(map.visual_range(1..2), 3..4);
+        assert!(map.is_measured());
+        // only those asked, see `rewrap`: the others a screen row each, drawn as they are
+        let map = WrapMap::from_lines(2, 1..2, |range| lines()[range].to_vec(), 10, true);
+        assert_eq!(map.total(), 2);
+        assert!(map.wraps_row(1) && !map.wraps_row(0) && !map.is_measured());
     }
 
     // A search keeps the lines picked while it stays in their hunk; in another one it clears them,

@@ -1518,12 +1518,13 @@ impl App<'_> {
     // Hands the event to the app, when it is one of its keys (see `register_app_keys`), else to
     // the window over everything, the focused sidebar or the page, when one of their keys works
     // there: no key works without being listed in the hints and the help.
-    // A key after keys kept, see `Kept`: it follows them; esc drops them, a way out of a slow
-    // load, as it cancels a key sequence.
+    // A key after keys kept, see `Kept`: it follows them; esc drops them and acts at once, as it
+    // never waits, see `UserEvent::never_waits`.
     fn keep_after(&mut self, key: KeyEvent) {
         let scope = self.current_scope();
         if self.ctx.keybind.event_in(scope, &key) == Some(UserEvent::Cancel) {
             self.shell.app_status.kept.clear();
+            self.handle_key(key);
         } else {
             self.shell.app_status.kept.push_back(Kept::Key(key));
         }

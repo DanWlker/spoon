@@ -20,7 +20,10 @@ use crate::{
     pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
     widget::{
-        diff::{render_visual_rows, rewrap, wrapped_rows, DiffLayout, Measuring, Step, WrapMap},
+        diff::{
+            near_screen, render_visual_rows, rewrap, wrapped_rows, DiffLayout, Measuring, Step,
+            WrapMap, ALL_ROWS,
+        },
         style::{
             picked_style, render_scrollbar, scroll_to, tabs_shown, ScrollState, VisualSelection,
         },
@@ -310,31 +313,37 @@ impl FileText {
     ) -> Vec<usize> {
         let theme = &ctx.color_theme;
         // the scroll counts screen rows while wrapping, see `WrapMap`; at another width or wrap
-        // the lines are measured again, showing the selection again with them, many of them on
-        // another thread, unwrapped meanwhile
+        // the lines are measured again, the line at the top staying there and the selection shown
+        // again with them; those of a big file off the screen on another thread, drawn as they
+        // are meanwhile, see `rewrap`
         let (width, rows) = (area.width, self.lines.len());
         let work = || {
             let lines = self.lines.clone();
             move |cancel: &Cancel| {
                 // stopped once measuring for another width or file, see `rewrap`
-                let measured = || plain_lines(&lines).take_while(|_| !cancel.is_cancelled());
-                WrapMap::from_lines(lines.len(), measured, width, true)
+                let measured =
+                    |range| plain_lines(&lines, range).take_while(|_| !cancel.is_cancelled());
+                WrapMap::from_lines(lines.len(), ALL_ROWS, measured, width, true)
             }
         };
+        let top = self.wrap.logical_at(self.scroll_state.offset);
         let map = rewrap(
             &self.wrap,
             &mut self.measuring,
             self.tx.as_ref(),
-            rows,
             (width, ctx.wrap.get(), DiffLayout::Unified),
-            |wrap| WrapMap::from_lines(rows, || plain_lines(&self.lines), width, wrap),
+            near_screen(top, area.height),
+            |near| {
+                let lines = |range| plain_lines(&self.lines, range);
+                WrapMap::from_lines(rows, near, lines, width, ctx.wrap.get())
+            },
             work,
         );
         if let Some(map) = map {
             self.wrap = map;
+            self.scroll_state.offset = self.wrap.visual_start(top);
             self.scroll_to(self.selected..self.selected + 1);
         }
-        let wrap = self.wrap.wraps();
         let scrolloff = ctx.ui_config.common.scrolloff as usize;
         let total = self.wrap.total();
         let screen = self
@@ -397,7 +406,12 @@ impl FileText {
             }
             (row, line)
         });
-        let visual = wrapped_rows(lines, skip..skip + screen.len(), wrap, area);
+        let visual = wrapped_rows(
+            lines,
+            skip..skip + screen.len(),
+            |row| self.wrap.wraps_row(row),
+            area,
+        );
         let rows = visual.iter().map(|(row, _)| *row).collect();
         // the background and text color across the row, like the other lists
         for (y, (row, _)) in (area.y..).zip(&visual) {
@@ -432,9 +446,10 @@ impl FileText {
 
 // The lines of a file, numbered, without the search or the selection: only their width matters
 // for measuring how they wrap.
-fn plain_lines(lines: &[String]) -> impl Iterator<Item = Line<'static>> + '_ {
+fn plain_lines(lines: &[String], range: Range<usize>) -> impl Iterator<Item = Line<'static>> + '_ {
     let width = lines.len().to_string().len();
-    lines.iter().enumerate().map(move |(i, text)| {
+    let start = range.start;
+    lines[range].iter().zip(start..).map(move |(text, i)| {
         Line::from(vec![
             Span::raw(format!("{:>width$} ", i + 1)),
             Span::raw(tabs_shown(text).into_owned()),
@@ -721,8 +736,8 @@ mod tests {
             "the picked style hid the match"
         );
     }
-    // Many lines are wrapped on another thread, as measuring them takes a while: drawn unwrapped
-    // meanwhile, wrapped once measured.
+    // Many lines are wrapped on another thread, as measuring them takes a while: those on the
+    // screen right away, the others drawn unwrapped meanwhile, all wrapped once measured.
     #[test]
     fn test_many_lines_wrap_in_the_background() {
         let ctx = test_ctx();
@@ -747,9 +762,10 @@ mod tests {
 
         draw(&mut text);
         assert!(text.measuring.is_some());
-        assert!(!text.wrap.wraps());
+        // those on the screen right away
+        assert!(text.wrap.wraps_row(0) && !text.wrap.is_measured());
         let measured = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !text.wrap.wraps() {
+        while !text.wrap.is_measured() {
             assert!(std::time::Instant::now() < measured, "never wrapped");
             std::thread::sleep(std::time::Duration::from_millis(5));
             draw(&mut text);

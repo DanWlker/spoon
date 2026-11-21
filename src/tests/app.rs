@@ -714,7 +714,7 @@ fn test_a_key_after_moving_acts_on_the_diff_moved_to() {
 
 // Keys pressed while what they act on loads are kept, see `Kept`, rather than waiting with the
 // screen frozen: a key after them follows them, and they run in order once it is loaded; esc drops
-// them, and ctrl-c still quits.
+// them, acting at once too (see `test_keys_wait_for_the_blame_opening`), and ctrl-c still quits.
 #[test]
 fn test_keys_kept_run_in_order_and_esc_drops_them() {
     let dir = tempfile::tempdir().unwrap();
@@ -6085,7 +6085,8 @@ fn test_esc_acts_at_once_while_loading() {
 }
 
 // A key while the blame opens waits for it, acting on the blame once open rather than on the page
-// under it; esc stops the opening. They used to act on the page, then the window opened over it.
+// under it; esc stops the opening, dropping the keys kept for it at once. They used to act on the
+// page, then the window opened over it; and esc after them used to drop them only.
 #[test]
 fn test_keys_wait_for_the_blame_opening() {
     let dir = tempfile::tempdir().unwrap();
@@ -6098,6 +6099,7 @@ fn test_keys_wait_for_the_blame_opening() {
         line: None,
     };
     let opened = open.clone();
+    let reopened = open.clone();
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         vec![Step::Act(Box::new(move |app| {
@@ -6115,6 +6117,14 @@ fn test_keys_wait_for_the_blame_opening() {
         vec![Step::Act(Box::new(move |app| {
             app.handle_event(opened()).unwrap();
             app.handle_event(key("esc")).unwrap();
+            assert!(app.shell.opening.is_none());
+        }))],
+        overlay("none"),
+        vec![Step::Act(Box::new(move |app| {
+            app.handle_event(reopened()).unwrap();
+            app.handle_event(key("j")).unwrap();
+            app.handle_event(key("esc")).unwrap();
+            assert!(app.shell.app_status.kept.is_empty());
             assert!(app.shell.opening.is_none());
         }))],
         overlay("none"),
