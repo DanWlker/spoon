@@ -500,6 +500,16 @@ impl WrapMap {
         self.wrap && self.measured.contains(&shown)
     }
 
+    // Whether the shown rows of the rows of the diff `rows` are measured, wrapped or not.
+    fn measures(&self, rows: Range<usize>) -> bool {
+        let logical = self
+            .split
+            .as_ref()
+            .map_or(self.rows, |split| split.placed.len());
+        let shown = self.place(rows.start.min(logical)..rows.end.min(logical));
+        !self.wrap || (self.measured.start <= shown.start && shown.end <= self.measured.end)
+    }
+
     // Whether every row is measured, wrapped or not, see `rewrap`.
     pub fn is_measured(&self) -> bool {
         !self.wrap || self.measured == (0..self.rows)
@@ -629,15 +639,16 @@ pub struct Measuring {
 
 // The map at `width`, `wrap` and `layout`, when `current` isn't it, see `WrapMap`: with `tx`, `map`
 // measures only the rows of the diff `near` the screen right away, so the screen shows wrapped at
-// once, and when there are more, `work` measures all of them on another thread (see `measuring`),
-// the others drawn as they are meanwhile; else `map` measures all of them (`ALL_ROWS`). A diff and
-// the lines of a file are measured so.
+// once, and when there are more, `work` measures all of them on another thread (see `measuring`);
+// meanwhile, the screen moved past those rows, `map` measures those near it instead, so the rows
+// shown are always wrapped. Without `tx`, `map` measures all of them (`ALL_ROWS`). A diff and the
+// lines of a file are measured so.
 pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
     current: &WrapMap,
     measuring: &mut Option<Measuring>,
     tx: Option<&Sender>,
     (width, wrap, layout): (u16, bool, DiffLayout),
-    near: Range<usize>,
+    near: NearScreen,
     map: impl FnOnce(Range<usize>) -> WrapMap,
     work: impl FnOnce() -> W,
 ) -> Option<WrapMap> {
@@ -654,9 +665,18 @@ pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
     };
     Some(match measured {
         Some(map) => map,
-        None if current.matches(width, wrap, layout) => return None,
+        None if current.matches(width, wrap, layout) => {
+            if measuring.is_none() || current.measures(near.shown()) {
+                return None;
+            }
+            map(near.measured())
+        }
         None => {
-            let map = map(if tx.is_some() { near } else { ALL_ROWS });
+            let map = map(if tx.is_some() {
+                near.measured()
+            } else {
+                ALL_ROWS
+            });
             if let Some(tx) = tx.filter(|_| !map.is_measured()) {
                 // stopped once measuring for another width or diff, see `Job::read`
                 let job = Job::read(tx.clone(), work());
@@ -667,11 +687,26 @@ pub fn rewrap<W: FnOnce(&Cancel) -> WrapMap + Send + 'static>(
     })
 }
 
-// The rows of a diff or a file `rewrap` measures right away, with the screen `height` rows high
-// from the row `top`: those it can show, and as many again around them to scroll to.
-pub fn near_screen(top: usize, height: u16) -> Range<usize> {
-    let height = usize::from(height);
-    top.saturating_sub(height)..top.saturating_add(2 * height)
+// The rows of a diff or a file near the screen, `height` rows high from the row `top`, which
+// `rewrap` measures right away.
+#[derive(Debug, Clone, Copy)]
+pub struct NearScreen {
+    pub top: usize,
+    pub height: u16,
+}
+
+impl NearScreen {
+    // Those the screen can show: as many as it is high, twice, each of a pair side by side being
+    // a row of the diff.
+    fn shown(self) -> Range<usize> {
+        self.top..self.top.saturating_add(2 * usize::from(self.height))
+    }
+
+    // Those measured: the ones shown, and a screen of them above to scroll to.
+    fn measured(self) -> Range<usize> {
+        let shown = self.shown();
+        self.top.saturating_sub(usize::from(self.height))..shown.end
+    }
 }
 
 // The widths of the old and the new side of a diff `width` wide, a divider between them.

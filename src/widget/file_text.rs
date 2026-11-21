@@ -21,7 +21,7 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            near_screen, render_visual_rows, rewrap, wrapped_rows, DiffLayout, Measuring, Step,
+            render_visual_rows, rewrap, wrapped_rows, DiffLayout, Measuring, NearScreen, Step,
             WrapMap, ALL_ROWS,
         },
         style::{
@@ -332,7 +332,10 @@ impl FileText {
             &mut self.measuring,
             self.tx.as_ref(),
             (width, ctx.wrap.get(), DiffLayout::Unified),
-            near_screen(top, area.height),
+            NearScreen {
+                top,
+                height: area.height,
+            },
             |near| {
                 let lines = |range| plain_lines(&self.lines, range);
                 WrapMap::from_lines(rows, near, lines, width, ctx.wrap.get())

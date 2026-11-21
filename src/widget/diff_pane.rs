@@ -15,9 +15,9 @@ use crate::{
     search::{SearchOptions, SearchOutcome},
     widget::{
         diff::{
-            diff_lines, matching_rows, near_screen, parse_diff, parse_diff_until,
-            render_diff_lines, render_split_rows, rewrap, split_widths, DiffCursor, DiffHunk,
-            DiffLayout, DiffPart, DiffRowKind, Measuring, ParsedDiff, Step, WrapMap, ALL_ROWS,
+            diff_lines, matching_rows, parse_diff, parse_diff_until, render_diff_lines,
+            render_split_rows, rewrap, split_widths, DiffCursor, DiffHunk, DiffLayout, DiffPart,
+            DiffRowKind, Measuring, NearScreen, ParsedDiff, Step, WrapMap, ALL_ROWS,
         },
         style::{render_panel, render_scrollbar, ScrollState},
         tree_query::{highlight_match, SearchDirection},
@@ -634,7 +634,10 @@ impl DiffPane {
             &mut self.measuring,
             self.tx.as_ref(),
             (width, wrap, layout),
-            near_screen(top, area.height),
+            NearScreen {
+                top,
+                height: area.height,
+            },
             |near| WrapMap::of_until(diff, theme, width, wrap, layout, near, &Cancel::default()),
             work,
         ) else {
@@ -1008,9 +1011,9 @@ mod tests {
     }
 
     // A big diff's rows are wrapped on another thread, as measuring them takes a while; those on
-    // the screen are measured right away, so it shows wrapped at once, as a small diff's does. The
-    // row at the top stays there once all are measured. It used to show unwrapped meanwhile, and
-    // the row at the top to move.
+    // the screen are measured right away, so it shows wrapped at once, as a small diff's does, and
+    // so are those it scrolls to meanwhile. The row at the top stays there once all are measured.
+    // It used to show unwrapped meanwhile, and the row at the top to move.
     #[test]
     fn test_big_diff_wraps_in_the_background() {
         let ctx = test_ctx();
@@ -1039,9 +1042,13 @@ mod tests {
         assert!(pane.measuring.is_some());
         assert!(!pane.cursor.wrap().is_measured());
         assert_eq!(text(&first), wrapped);
-        // far down, past the rows measured
+        // far down, past the rows measured: those there are measured right away, shown wrapped
         let top = 20_000;
         pane.cursor.scroll.offset = pane.cursor.wrap().visual_start(top);
+        let far = text(&draw(&mut pane, &ctx, area));
+        assert!(!pane.cursor.wrap().is_measured());
+        whole.cursor.scroll.offset = whole.cursor.wrap().visual_start(top);
+        assert_eq!(far, text(&draw(&mut whole, &ctx, area)));
         let measured = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !pane.cursor.wrap().is_measured() {
             assert!(std::time::Instant::now() < measured, "never wrapped");
