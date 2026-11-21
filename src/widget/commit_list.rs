@@ -374,6 +374,11 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    // The merges the graph was laid out with folded.
+    pub fn folded(&self) -> &FxHashSet<CommitHash> {
+        &self.graph_image_manager.graph().folded
+    }
+
     // Folds the selected merge commit with left, unfolds it with right; None for other events
     // and commits.
     pub fn fold_event(&self, event: UserEvent) -> Option<AppEvent> {
@@ -1409,7 +1414,7 @@ mod tests {
                     color_theme: ColorTheme::default(),
                     image_protocol,
                     graph: Default::default(),
-                    running_task: Default::default(),
+                    running_tasks: Default::default(),
                     key_names: Default::default(),
                     layout: Default::default(),
                     wrap: Default::default(),
@@ -1510,7 +1515,7 @@ mod tests {
                 color_theme: ColorTheme::default(),
                 image_protocol: ImageProtocol::Iterm2,
                 graph: Default::default(),
-                running_task: Default::default(),
+                running_tasks: Default::default(),
                 key_names: Default::default(),
                 layout: Default::default(),
                 wrap: Default::default(),

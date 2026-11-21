@@ -800,10 +800,11 @@ impl StatefulWidget for RefList {
         let branches = NodeId::Section(RefSection::Branches);
         let options = self.ctx.search_options.get();
         // what runs on a branch, like lazygit's "Pushing |", in place of its counts
-        let task = self.ctx.running_task.lock();
-        let branch_status = task
-            .as_ref()
-            .and_then(|running| running.task.branch_status.as_ref());
+        let running = self.ctx.running_tasks.borrow();
+        let statuses: Vec<_> = running
+            .iter()
+            .filter_map(|running| running.task.branch_status.as_ref())
+            .collect();
         for ((line, row), guide) in state
             .visible_rows
             .iter()
@@ -849,7 +850,9 @@ impl StatefulWidget for RefList {
             let branch = (row.depth > 0 && row.identifier[0] == branches)
                 .then(|| row.identifier.last().and_then(NodeId::name))
                 .flatten();
-            let running = branch_status.filter(|status| branch == Some(status.branch.as_str()));
+            let running = statuses
+                .iter()
+                .find(|status| branch == Some(status.branch.as_str()));
             let tracking = branch
                 .filter(|_| running.is_none())
                 .and_then(|branch| state.tracking.get(branch));

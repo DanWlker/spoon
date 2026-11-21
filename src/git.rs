@@ -32,17 +32,18 @@ pub use load::{read_head_commit, read_operation, refs_snapshot, LoadOptions, Loa
 use local_changes::LoadedFiles;
 use local_changes::{load_local_changes, parse_name_status};
 pub use local_changes::{
-    Entry, FilesSnapshot, LocalChangeFile, LocalChangeStatus, LocalChanges, Seen,
+    Entry, FilesSnapshot, IndexRefresh, LocalChangeFile, LocalChangeStatus, LocalChanges, Seen,
 };
 use submodule::{load_submodules, SubmoduleRepositories};
+pub use submodule::{submodule_gitlink_at, submodule_info};
 pub use task::{
     command_log, fits_a_command_line, git_arg, git_bytes, git_command, is_binary, is_kept_byte,
     pathspecs, run_task, stash_args, text_from_git, todo_action, work_path, AfterTask,
-    BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, SharedTask, WorkTree,
+    BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, RunningTasks, WorkTree,
 };
 use task::{
-    git_output, git_output_bytes, git_output_bytes_until, git_output_with_status, git_run_until,
-    lock, pathspec_parts, run_logged,
+    git_output, git_output_bytes_until, git_output_with_status, git_run_until, lock, output_result,
+    pathspec_parts, run_logged,
 };
 
 // One allocation for all the copies of a hash, which the maps of parents, children and the graph's
@@ -275,9 +276,6 @@ pub struct Repository {
     loaded_local_changes: Mutex<LoadedFiles>,
     // when the last ones it holds started loading, see `set_local_changes`
     local_changes_started: Mutex<Instant>,
-    // the git command the app runs in the background, shared with it: the repository refuses to
-    // be changed meanwhile, see `run`
-    running: SharedTask,
     // the fingerprint of the refs when loaded, see `refs_snapshot`
     refs_snapshot: Option<String>,
     // the operation stopped and waiting when loaded, see `operation_in_progress`

@@ -73,11 +73,19 @@ pub struct BlameView {
     text: FileText,
     focus: BlameFocus,
     query: TreeQuery,
-    // the blame of another commit loading on another thread, with the commit shown before, which
-    // stays when it fails
-    loading: Option<(usize, Job<Result<Blame, String>>)>,
+    // the blame of another commit stepped to, still to show
+    loading: Option<Stepped>,
     ctx: Rc<AppContext>,
     tx: Sender,
+}
+
+// The blame of a commit stepped to, with the commit shown before, which stays when it fails.
+#[derive(Debug)]
+struct Stepped {
+    shown: usize,
+    // loading on another thread; None until drawn, see `BlameView::poll_loading`, so stepping on
+    // meanwhile runs no git
+    job: Option<Job<Result<Blame, String>>>,
 }
 
 // The blame of the commit stepped to: stepping again replaces it, the other keys act on its
@@ -225,11 +233,9 @@ impl BlameView {
                 self.focus = BlameFocus::Revision
             }
             // on the commit shown, left and right step too, like a popup's option
-            UserEvent::OlderCommit | UserEvent::NavigateLeft => {
-                self.select(self.index + 1, repository)
-            }
+            UserEvent::OlderCommit | UserEvent::NavigateLeft => self.select(self.index + 1),
             UserEvent::NewerCommit | UserEvent::NavigateRight => {
-                self.select(self.index.saturating_sub(1), repository)
+                self.select(self.index.saturating_sub(1))
             }
             UserEvent::Search if body => {
                 // from the commits of the lines, or from the text, wherever the line is
@@ -299,22 +305,36 @@ impl BlameView {
     // Shows the blame as of another commit changing the file, as the timeline selects one.
     // The blame loads on another thread, said in place of the text meanwhile, see `poll_loading`;
     // one still loading is replaced, the blame shown before it staying when this one fails.
-    fn select(&mut self, index: usize, repository: &Repository) {
+    fn select(&mut self, index: usize) {
         let index = index.min(self.history.len() - 1);
         if index == self.index {
             return;
         }
-        let shown = self.loading.take().map_or(self.index, |(shown, _)| shown);
+        let shown = self
+            .loading
+            .take()
+            .map_or(self.index, |stepped| stepped.shown);
         self.index = index;
-        let revision = &self.history[index];
-        let work = repository.blame_work(&revision.commit, &revision.path);
-        // stopped once stepped past, see `Job::read`
-        self.loading = Some((shown, Job::read(self.tx.clone(), work)));
+        self.loading = Some(Stepped { shown, job: None });
     }
 
-    // Before drawing: the blame loaded on another thread, once it is.
-    pub fn poll_loading(&mut self) {
-        if let Some((shown, job)) = &self.loading {
+    // Before drawing: the blame of the commit stepped to starts loading on another thread, and
+    // shows once loaded.
+    pub fn poll_loading(&mut self, repository: &Repository) {
+        if let Some(Stepped {
+            job: job @ None, ..
+        }) = &mut self.loading
+        {
+            let revision = &self.history[self.index];
+            let work = repository.blame_work(&revision.commit, &revision.path);
+            // stopped once stepped past, see `Job::read`
+            *job = Some(Job::read(self.tx.clone(), work));
+        }
+        if let Some(Stepped {
+            shown,
+            job: Some(job),
+        }) = &self.loading
+        {
             if let Some(blame) = job.try_take() {
                 let shown = *shown;
                 self.loading = None;
@@ -325,8 +345,13 @@ impl BlameView {
 
     // The blame loading, waiting for it, before a key acts on it.
     fn wait_loading(&mut self) {
-        if let Some((shown, job)) = self.loading.take() {
-            self.show_loaded(shown, job.wait());
+        match self.loading.take() {
+            Some(Stepped {
+                shown,
+                job: Some(job),
+            }) => self.show_loaded(shown, job.wait()),
+            // drawn first, which starts it, see `App::must_wait`
+            stepped => self.loading = stepped,
         }
     }
 
@@ -616,7 +641,10 @@ impl BlameView {
             .into_iter()
             .chain(self.query.indicator())
             .chain(loading_note(
-                self.loading.as_ref().map(|(_, job)| job.started()),
+                self.loading
+                    .as_ref()
+                    .and_then(|stepped| stepped.job.as_ref())
+                    .map(Job::started),
             ));
         let block =
             panel_block(focused, theme).title(panel_title("[2] Blame", notes, focused, theme));
@@ -800,6 +828,8 @@ mod tests {
         // older, before the rename, on the same line, loaded on another thread
         press(&mut view, UserEvent::OlderCommit);
         assert!(view.is_loading());
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         view.wait_loading();
         assert_eq!(
             shown(&view),
@@ -832,6 +862,8 @@ mod tests {
         press(&mut view, UserEvent::Cancel);
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         view.wait_loading();
         assert_eq!(
             shown(&view),
@@ -841,11 +873,20 @@ mod tests {
         press(&mut view, UserEvent::NewerCommit);
         press(&mut view, UserEvent::NewerCommit);
         assert_eq!(shown(&view).0, c3);
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         view.wait_loading();
-        // stepping again while one loads replaces it, the blame shown before both staying on failure
+        // stepping again while one loads replaces it, the blame shown before both staying on
+        // failure; none starts before drawing, a held key running git for the last one only
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
-        assert_eq!(view.loading.as_ref().map(|(shown, _)| *shown), Some(0));
+        assert_eq!(view.loading.as_ref().map(|stepped| stepped.shown), Some(0));
+        assert!(view
+            .loading
+            .as_ref()
+            .is_some_and(|stepped| stepped.job.is_none()));
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         view.wait_loading();
         assert_eq!(
             shown(&view),
@@ -884,6 +925,8 @@ mod tests {
         press(&mut view, UserEvent::NavigateRight);
         assert_eq!(shown(&view).0, c3);
         assert_eq!(view.focus, BlameFocus::Revision);
+        // as drawing does, which starts it; the keys after it wait for it
+        view.poll_loading(&repository);
 
         // searching the commits shown by hash, the lines' commits by hash, from run to run
         let search = |view: &mut BlameView, query: &str| {
@@ -963,6 +1006,8 @@ mod tests {
             (muted, lit)
         );
         // too narrow for the lines, drawn without them
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         view.wait_loading();
         let mut terminal = Terminal::new(TestBackend::new(2, 8)).unwrap();
         terminal.draw(|f| view.render(f, f.area())).unwrap();
@@ -1015,6 +1060,8 @@ mod tests {
             loading.contains("text1") && !loading.contains("loading…"),
             "{loading}"
         );
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         view.wait_loading();
         let loaded = screen(&mut view);
         assert!(

@@ -34,7 +34,7 @@ pub fn test_ctx_of(color_theme: ColorTheme, ui_config: UiConfig) -> Rc<AppContex
         color_theme,
         image_protocol: ImageProtocol::Kitty,
         graph: Default::default(),
-        running_task: Default::default(),
+        running_tasks: Default::default(),
         key_names: Default::default(),
         layout: Default::default(),
         wrap: Default::default(),

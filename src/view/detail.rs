@@ -158,9 +158,12 @@ impl Loads for DetailView<'_> {
             DetailTab::Changes => self.changes_state.loading_since(),
             DetailTab::Files => self.files_state.loading_since(),
         };
-        let tree = self.tab == DetailTab::Files && self.files_state.is_tree_loading();
+        // not loaded yet counts too: a key moving the commit or the tab leaves them to load once
+        // drawn, see `update_layout`, which a key acting before that waits for
+        let tree = self.tab == DetailTab::Files && !self.files_state.is_tree_loaded();
         let commit = !self.moves_commit(event);
-        (commit && (self.loading.is_some() || tree)) || (self.needs_pane(event) && pane.is_some())
+        let details = self.loading.is_some() || self.stale.is_some();
+        (commit && (details || tree)) || (self.needs_pane(event) && pane.is_some())
     }
 
     // Also loads them when the selection moved since, as a key moving it leaves them to load.

@@ -64,12 +64,14 @@ impl App<'_> {
     // loads once it takes long (see `shows_loading`): the repository, the graph laid out again, or
     // the file history of a window.
     pub(super) fn background_activity(&self) -> Option<String> {
-        if let Some(running) = self.ctx.running_task.lock().as_ref() {
-            return Some(running.task.running.clone());
+        let running = self.ctx.running_tasks.borrow();
+        let names: Vec<_> = running.iter().map(|r| r.task.running.as_str()).collect();
+        if !names.is_empty() {
+            return Some(names.join(", "));
         }
         let shell = &self.shell;
         let reload = shell.reload.as_ref().map(|r| (r.started, "Reloading"));
-        let regraph = shell.regraphs.first().map(|&s| (s, "Drawing the graph"));
+        let regraph = shell.regraph.map(|s| (s, "Drawing the graph"));
         reload
             .into_iter()
             .chain(regraph)

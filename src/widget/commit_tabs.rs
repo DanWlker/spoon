@@ -857,9 +857,9 @@ impl<'a> CommitFilesState<'a> {
         self.show_tree();
     }
 
-    // Whether the files load in the background.
-    pub fn is_tree_loading(&self) -> bool {
-        self.tree_loading.is_some()
+    // Whether the files are loaded, rather than loading in the background or left to load.
+    pub fn is_tree_loaded(&self) -> bool {
+        self.paths.is_some()
     }
 
     // Before drawing: starts loading the files, then the preview of the selected one, on another
@@ -1843,7 +1843,7 @@ mod tests {
         state.set_commit(&newest, &changes, &Default::default());
         let ec = crate::event::EventController::without_terminal();
         state.ensure_loaded_in_background(&ec.sender());
-        assert!(state.is_tree_loading());
+        assert!(state.tree_loading.is_some());
         // its files listed, those of the commit before unknown yet
         let (oldest, changes) = repository.commit_detail(&hashes[1]);
         state.set_commit(&oldest, &changes, &Default::default());

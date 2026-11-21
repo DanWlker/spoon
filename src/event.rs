@@ -14,6 +14,7 @@ use crate::{
     git::{CommitHash, FilesSnapshot, GitTask},
     graph::Fold,
     keybind::UserEvent,
+    refresher::Unhandled,
     search::SearchOutcome,
     view::RefreshViewContext,
     widget::commit_tabs::DetailTab,
@@ -42,10 +43,16 @@ pub enum AppEvent {
     // the working tree changed, the count of the local changes in the sidebar is updated
     LocalChangesChanged,
     // the local changes, loaded every few seconds in the background, for those made outside the app
-    FilesTick(FilesSnapshot),
+    FilesTick(
+        FilesSnapshot,
+        #[expect(dead_code, reason = "held until handled")] Unhandled,
+    ),
     // where the refs and HEAD point and the operation in progress, every few seconds, see
     // `git::refs_snapshot`
-    RefsSnapshot(String),
+    RefsSnapshot(
+        String,
+        #[expect(dead_code, reason = "held until handled")] Unhandled,
+    ),
     // the terminal got the focus back, what changed meanwhile is checked right away
     FocusGained,
     // work for what is shown finished on another thread, drawn with the next frame, see `Job`
@@ -54,8 +61,11 @@ pub enum AppEvent {
     SpinnerTick,
     // runs a git command in the background, see `App::start_task`
     StartTask(GitTask),
-    // the git command running in the background finished, see `AppContext::running_task`
-    TaskFinished(Result<(), String>),
+    // the git command running in the background finished, see `RunningTasks::start`
+    TaskFinished {
+        id: u64,
+        result: Result<(), String>,
+    },
     OpenHelp,
     // runs the action chosen in the keys list, closing it, as if its key were pressed
     RunAction(UserEvent),

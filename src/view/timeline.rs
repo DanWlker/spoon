@@ -45,6 +45,9 @@ pub struct TimelineView {
     cursor: ListCursor,
     // the focus is on the commits while it is outside the diff
     pane: DiffPane,
+    // another commit selected, its diff starting to load once drawn, see `poll_loading`: a held
+    // key starts it only for the commit it stops on
+    diff_stale: bool,
     // the search of the diff
     query: TreeQuery,
     ctx: Rc<AppContext>,
@@ -59,7 +62,7 @@ impl Loads for TimelineView {
         let into = matches!(event, Confirm | NavigateRight | FocusPanel(2) | FocusRight);
         !self.query.is_editing()
             && (self.pane.is_focused() || into)
-            && self.pane.loading_since().is_some()
+            && (self.diff_stale || self.pane.loading_since().is_some())
     }
 
     fn load_for(&mut self, event: UserEvent) {
@@ -100,6 +103,7 @@ impl TimelineView {
             history,
             cursor,
             pane: DiffPane::default(),
+            diff_stale: false,
             query: TreeQuery::default(),
             ctx,
             tx,
@@ -132,24 +136,28 @@ impl TimelineView {
         }
     }
 
-    // Before drawing: the diff loaded in the background, once it is.
-    pub fn poll_loading(&mut self) {
+    // Before drawing: the diff of the commit selected since starts loading, the diff loaded in
+    // the background shows once it is.
+    pub fn poll_loading(&mut self, repository: &Repository) {
+        if std::mem::take(&mut self.diff_stale) {
+            self.show_selected(repository);
+        }
         self.pane.poll_loading();
     }
 
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {
-        self.pane.loading_since().is_some()
+        self.diff_stale || self.pane.loading_since().is_some()
     }
 
     // Selects another commit; in the diff, it stays there, on the first hunk.
-    fn select(&mut self, index: usize, repository: &Repository) {
+    fn select(&mut self, index: usize) {
         let index = index.min(self.history.len() - 1);
         if index == self.cursor.selected() {
             return;
         }
         self.cursor.select(index, self.history.len());
-        self.show_selected(repository);
+        self.diff_stale = true;
     }
 
     // The path of the file in the selected commit, for the page bar.
@@ -170,7 +178,7 @@ impl TimelineView {
         if self.query.is_editing() {
             let kind = self.query_kind();
             if type_query(&self.ctx, &mut self.query, key, kind) == Some(QueryKind::Search) {
-                self.search(SearchDirection::Current, repository);
+                self.search(SearchDirection::Current);
             }
             self.update_query_status();
             return;
@@ -199,10 +207,8 @@ impl TimelineView {
             UserEvent::NavigateLeft if in_diff => {
                 self.pane.back();
             }
-            UserEvent::OlderCommit => self.select(self.cursor.selected() + 1, repository),
-            UserEvent::NewerCommit => {
-                self.select(self.cursor.selected().saturating_sub(1), repository)
-            }
+            UserEvent::OlderCommit => self.select(self.cursor.selected() + 1),
+            UserEvent::NewerCommit => self.select(self.cursor.selected().saturating_sub(1)),
             UserEvent::Search => {
                 // from the commits, or from the diff while it has the focus
                 let from = match in_diff {
@@ -212,27 +218,27 @@ impl TimelineView {
                 self.query.start(QueryKind::Search, from);
                 self.update_query_status();
             }
-            UserEvent::GoToNext => self.search(SearchDirection::Next, repository),
-            UserEvent::GoToPrevious => self.search(SearchDirection::Previous, repository),
+            UserEvent::GoToNext => self.search(SearchDirection::Next),
+            UserEvent::GoToPrevious => self.search(SearchDirection::Previous),
             // the file under its newest name, as it is in the working tree
             UserEvent::Edit => self
                 .tx
                 .send(edit_files(repository, &[&self.history[0].path])),
             _ if in_diff => self.handle_diff_event(event, repository),
-            _ => self.handle_commits_event(event, repository),
+            _ => self.handle_commits_event(event),
         }
     }
 
     // The keys on the commits: moving, and acting on the selected one; every scroll key moves
     // the commits.
-    fn handle_commits_event(&mut self, event: UserEvent, repository: &Repository) {
+    fn handle_commits_event(&mut self, event: UserEvent) {
         let total = self.history.len();
         let before = self.cursor.selected();
         if self.cursor.navigate(event, total) {
             // the offset moves even when the selection stays, like ctrl-e/y; the diff only reloads
             // when another commit is selected
             if self.cursor.selected() != before {
-                self.show_selected(repository);
+                self.diff_stale = true;
             }
             return;
         }
@@ -296,7 +302,7 @@ impl TimelineView {
     }
 
     // Searches the diff while it has the focus, else the commits, by hash, date or subject.
-    fn search(&mut self, direction: SearchDirection, repository: &Repository) {
+    fn search(&mut self, direction: SearchDirection) {
         let Some(search) = self.query.search().map(String::from) else {
             return;
         };
@@ -314,7 +320,7 @@ impl TimelineView {
                 revision_matches(&self.ctx, &history[i], &search, options)
             });
             if let Some(index) = found {
-                self.select(index, repository);
+                self.select(index);
             }
         }
         self.update_query_status();
@@ -452,18 +458,12 @@ impl TimelineView {
     }
 
     // Focuses what the mouse points at and selects its row there, see `View::point`.
-    pub fn point(
-        &mut self,
-        target: Target,
-        row: Option<usize>,
-        picks: OnPicks,
-        repository: &Repository,
-    ) -> bool {
+    pub fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         match (target, row) {
             (Target::TimelineCommits, row) => {
                 while self.pane.back() {}
                 if let Some(row) = row {
-                    self.select(row, repository);
+                    self.select(row);
                 }
             }
             (Target::TimelineDiff, row) => self.pane.point(row, picks),
@@ -620,8 +620,9 @@ mod tests {
         press(&mut view, UserEvent::DecreaseDiffContext);
         view.pane.wait_loading();
         press(&mut view, UserEvent::OlderCommit);
-        // loading in the background, entered once loaded: the rename, from the path before it;
-        // with no hunk, back on the commits
+        // loading in the background once drawn, entered once loaded: the rename, from the path
+        // before it; with no hunk, back on the commits
+        view.poll_loading(&repository);
         view.pane.wait_loading();
         assert!(raw(&view).contains("rename from a"));
         assert!(!view.pane.is_focused());
@@ -633,8 +634,11 @@ mod tests {
         press(&mut view, UserEvent::NavigateRight);
         press(&mut view, UserEvent::OlderCommit);
         press(&mut view, UserEvent::OlderCommit);
-        // from the commits, the diff loads in the background, the key into it shown meanwhile;
-        // it waits for it, moving between the commits doesn't
+        // from the commits, the diff loads once drawn, the key into it shown meanwhile; it waits
+        // for it, moving between the commits doesn't
+        assert!(view.waits_for(UserEvent::NavigateRight));
+        assert!(view.pane.loading_since().is_none());
+        view.poll_loading(&repository);
         assert!(view.pane.loading_since().is_some());
         assert!(view.keys().takes(UserEvent::NavigateRight));
         assert!(view.waits_for(UserEvent::NavigateRight));
@@ -691,6 +695,8 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
         view.handle_event(UserEvent::OlderCommit, key, &repository);
         assert!(view.is_loading());
+        // as drawing does, which starts it
+        view.poll_loading(&repository);
         // the diff before stays, without a note while it is quick, see `shows_loading`
         let loading = diff(&mut view);
         assert!(

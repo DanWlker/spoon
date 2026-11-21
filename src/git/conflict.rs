@@ -59,8 +59,6 @@ impl WorkTree {
         path: &str,
         side: ConflictSide,
     ) -> std::result::Result<(), String> {
-        // before the file is written, which `git add` would then be refused
-        self.check_idle()?;
         // literal, so resolving `x*.txt` leaves `xa.txt` alone
         let spec = pathspecs(&[path]);
         let spec = spec[0].as_str();
@@ -100,8 +98,7 @@ impl WorkTree {
     }
 
     // Stages the conflicts of `changes` resolved by hand like lazygit does (see
-    // `resolved_conflicts`); not while a git command runs, which `stage_paths` refuses. Returns
-    // whether it staged some.
+    // `resolved_conflicts`). Returns whether it staged some.
     pub fn stage_resolved_conflicts(&self, changes: &LocalChanges) -> bool {
         let conflicted: Vec<&str> = changes
             .unstaged
@@ -306,22 +303,7 @@ pub enum Conflict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::GitTask;
-    use crate::git::RunningTask;
     use crate::git::SortCommit;
-
-    // A git command running in the background, saying `running`.
-    fn running(running: &str) -> RunningTask {
-        let task = GitTask {
-            running: running.into(),
-            ..Default::default()
-        };
-        RunningTask {
-            task,
-            head_before_commit: None,
-            quit_after: false,
-        }
-    }
 
     // A conflicted file named with characters git quotes used to be shown quoted.
     #[test]
@@ -381,15 +363,6 @@ mod tests {
         assert!(git_output(path, &["merge", "incoming"]).is_err());
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        // refused while a git command runs, the conflict markers kept
-        let conflicted = std::fs::read_to_string(path.join("f")).unwrap();
-        *repository.running.lock() = Some(running("Pushing master"));
-        assert!(repository
-            .work_tree()
-            .resolve_conflict("f", ConflictSide::Ours)
-            .is_err());
-        assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), conflicted);
-        *repository.running.lock() = None;
         repository
             .work_tree()
             .resolve_conflict("f", ConflictSide::Ours)
@@ -565,18 +538,6 @@ mod tests {
         assert!(git_output(path, &["merge", "incoming"]).is_err());
 
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-        // refused while a git command runs, before the submodule is checked out, which `git add`
-        // would then be refused, leaving it half resolved
-        *repository.running.lock() = Some(running("Pushing master"));
-        assert!(repository
-            .work_tree()
-            .resolve_conflict("sub", ConflictSide::Theirs)
-            .is_err());
-        assert_eq!(
-            git(&path.join("sub"), &["rev-parse", "HEAD"]).trim(),
-            hash("master")
-        );
-        *repository.running.lock() = None;
         repository
             .work_tree()
             .resolve_conflict("sub", ConflictSide::Theirs)

@@ -25,7 +25,7 @@ use crate::view::{DetailQueries, TreeViews};
 use crate::widget::file_tree::TreeView;
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{shows_loading, Job, Loads},
+    background::{self, drop_elsewhere, shows_loading, Cancel, Job, Loads},
     browse::{self, LinkAction, LinkTarget},
     config::CursorType,
     config::InitialSelection,
@@ -35,7 +35,7 @@ use crate::{
     git::{
         read_head_commit, read_operation, refs_snapshot, run_task, AfterTask, CommitHash,
         FileBlameResult, FileHistoryResult, FilesSnapshot, GitCommand, GitTask, Head, LoadOptions,
-        Loaded, NamedRef, RemoteBranch, RemoteInfo, Repository, Rev, RunningTask, SharedTask,
+        Loaded, NamedRef, RemoteBranch, RemoteInfo, Repository, Rev, RunningTask,
     },
     graph::{merges_hiding, Fold, GraphImageManager, GraphImages, GraphLayout},
     graph_commands::{
@@ -134,14 +134,18 @@ pub enum Ret {
 mod status_bar;
 
 // Loads the repository of `options` with the history of `revisions` (None: all of it), and lays
-// its graph out with the `folded` merges: when the app starts, and reloads, on another thread.
+// its graph out with the `folded` merges: when the app starts, and reloads, on another thread,
+// stopping once `cancel` says so.
 pub fn load_laid_out(
     options: &LoadOptions,
     revisions: Option<&[String]>,
-    running: SharedTask,
     folded: &FxHashSet<CommitHash>,
+    cancel: &Cancel,
 ) -> Result<(Loaded, GraphLayout), String> {
-    let loaded = options.load(revisions, running)?;
+    let loaded = options.load(revisions, cancel)?;
+    if cancel.is_cancelled() {
+        return Err("reload stopped".into());
+    }
     let (Loaded::Repository(repository) | Loaded::RefsGone(repository)) = &loaded;
     let layout = GraphLayout::calc(repository, options.primary_branch.as_deref(), folded);
     Ok((loaded, layout))
@@ -188,6 +192,8 @@ enum Kept {
     Event(UserEvent, KeyEvent),
     Typed(KeyEvent),
     Key(KeyEvent),
+    // text pasted, typed once the keys before it ran, see `App::paste`
+    Paste(String),
 }
 
 // A scrollbar's thumb being dragged from the line `from`, its panel showing from `shown` since.
@@ -237,8 +243,8 @@ pub struct AppShell {
     reload_generation: u64,
     // the blame or timeline opening, see `App::open_window`
     opening: Option<Opening>,
-    // when each layout of the graph running after folding merges started, see `App::start_regraph`
-    regraphs: Vec<Instant>,
+    // when the layout of the graph running after folding merges started, see `App::start_regraph`
+    regraph: Option<Instant>,
     // the commit to select once the graph laid out with merges unfolded to show it lands, see
     // `App::reveal_sidebar_selection`
     reveal: Option<CommitHash>,
@@ -317,6 +323,8 @@ struct PendingReload {
     // of the latest one asked for: a result of one asked for before is dropped
     generation: u64,
     restore: Restore,
+    // stops the latest one once another is asked for
+    cancel: Cancel,
 }
 
 // What covers the page and the sidebar, taking the keys: the keys of the whole app (see
@@ -389,16 +397,10 @@ impl FileWindow {
     }
 
     // See `View::point`.
-    fn point(
-        &mut self,
-        target: Target,
-        row: Option<usize>,
-        picks: OnPicks,
-        repository: &Repository,
-    ) -> bool {
+    fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
         match self {
             FileWindow::Blame(blame) => blame.point(target, row, picks),
-            FileWindow::Timeline(timeline) => timeline.point(target, row, picks, repository),
+            FileWindow::Timeline(timeline) => timeline.point(target, row, picks),
         }
     }
 
@@ -455,10 +457,10 @@ impl FileWindow {
 
     // Before drawing: what loads in the background, once loaded: the blame of another commit,
     // the diff of the timeline.
-    fn update(&mut self) {
+    fn update(&mut self, repository: &Repository) {
         match self {
-            FileWindow::Blame(blame) => blame.poll_loading(),
-            FileWindow::Timeline(timeline) => timeline.poll_loading(),
+            FileWindow::Blame(blame) => blame.poll_loading(repository),
+            FileWindow::Timeline(timeline) => timeline.poll_loading(repository),
         }
     }
 }
@@ -538,10 +540,6 @@ impl AppShell {
                 refs.target.shown()
             ))),
         }
-    }
-
-    pub fn folded_merges(&self) -> &FxHashSet<CommitHash> {
-        &self.folded_merges
     }
 
     pub fn reset_graph_filter(&mut self) {
@@ -683,7 +681,7 @@ impl<'a> App<'a> {
                 reload: None,
                 reload_generation: 0,
                 opening: None,
-                regraphs: Vec::new(),
+                regraph: None,
                 reveal: None,
                 pointer: Pointer::default(),
                 drag: None,
@@ -725,6 +723,7 @@ impl<'a> App<'a> {
             }
         }
         app.end_stale_ref_compare();
+        app.regraph_if_stale();
 
         app
     }
@@ -768,13 +767,16 @@ impl App<'_> {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
             self.prepare_render(terminal.size()?.into());
+            let drawn = Instant::now();
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
-            // woken up to show the popup waiting for a second press, or to drop expired notices
+            // woken up to show the popup waiting for a second press, to drop expired notices, or
+            // to say what runs long loads
             let expiry = self.shell.notices.iter().map(|n| n.until).min();
             let reveal = self.shell.dialog.as_ref().and_then(|popup| popup.reveal);
-            let event = match reveal.into_iter().chain(expiry).min() {
+            let shown = background::next_shown(drawn);
+            let event = match reveal.into_iter().chain(expiry).chain(shown).min() {
                 Some(at) => match self
                     .ec
                     .recv_timeout(at.saturating_duration_since(Instant::now()))
@@ -792,7 +794,7 @@ impl App<'_> {
             let started = Instant::now();
             let mut next = Some(event);
             while let Some(event) = next {
-                if let Some(ret) = self.handle_event(event)? {
+                if let Some(ret) = self.handle_event(event) {
                     return Ok(ret);
                 }
                 next = (started.elapsed() < MAX_BATCH)
@@ -805,16 +807,16 @@ impl App<'_> {
     // Handles one event; returns what ends the app or reloads it. A check of the refs or the files
     // skipped meanwhile, while reloading was paused, is made again once it isn't, so the repository
     // as loaded keeps up as well as it can.
-    fn handle_event(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
-        let ret = self.handle(event)?;
+    fn handle_event(&mut self, event: AppEvent) -> Option<Ret> {
+        let ret = self.handle(event);
         if self.shell.missed_check && !self.refresh_paused() {
             self.shell.missed_check = false;
             self.ec.refresh_now();
         }
-        Ok(ret)
+        ret
     }
 
-    fn handle(&mut self, event: AppEvent) -> Result<Option<Ret>, std::io::Error> {
+    fn handle(&mut self, event: AppEvent) -> Option<Ret> {
         // what may change what is shown, like a key: a click before the next frame acts on nothing
         // rather than on a row that moved; the ticks and checks coming while git runs or every few
         // seconds change nothing until then, but files reloaded in place, see `reload_files`
@@ -823,8 +825,8 @@ impl App<'_> {
             AppEvent::Mouse(_)
                 | AppEvent::SpinnerTick
                 | AppEvent::Loaded
-                | AppEvent::RefsSnapshot(_)
-                | AppEvent::FilesTick(_)
+                | AppEvent::RefsSnapshot(..)
+                | AppEvent::FilesTick(..)
                 | AppEvent::FocusGained
                 | AppEvent::LocalChangesChanged
         );
@@ -840,21 +842,27 @@ impl App<'_> {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
             AppEvent::Quit => {
-                // quitting would kill the git command half done (a stash never popped), so it
-                // waits; asking again quits right away
-                let mut running = self.ctx.running_task.lock();
-                if let Some(running) = running.as_mut().filter(|running| !running.quit_after) {
+                // quitting would kill the git commands half done (a stash never popped), so it
+                // waits for them; asking again quits right away
+                let mut running = self.ctx.running_tasks.borrow_mut();
+                if !running.is_empty() && !running.quit_after {
                     running.quit_after = true;
+                    let names: Vec<_> = running.iter().map(|r| r.task.running.as_str()).collect();
+                    let finish = if names.len() > 1 {
+                        "finish"
+                    } else {
+                        "finishes"
+                    };
                     self.ec.send(AppEvent::NotifyWarn(format!(
-                        "Quitting once {} finishes, quit again to quit now",
-                        running.task.running
+                        "Quitting once {} {finish}, quit again to quit now",
+                        names.join(" and ")
                     )));
-                    return Ok(None);
+                    return None;
                 }
                 drop(running);
-                return Ok(Some(Ret::Quit));
+                return Some(Ret::Quit);
             }
-            AppEvent::Paste(text) => self.paste(&text)?,
+            AppEvent::Paste(text) => self.paste(&text),
             AppEvent::OpenDetail(tab) => {
                 self.open_detail(tab);
             }
@@ -871,20 +879,20 @@ impl App<'_> {
                 self.run_external(&command);
             }
             AppEvent::StartTask(task) => self.start_task(task),
-            AppEvent::TaskFinished(result) => {
-                if self.finish_task(result) {
+            AppEvent::TaskFinished { id, result } => {
+                if self.finish_task(id, result) {
                     self.ec.send(AppEvent::Quit);
                 }
             }
             // what changed meanwhile, without reloading everything when nothing did, loaded in the
             // background
             AppEvent::LocalChangesChanged | AppEvent::FocusGained => self.ec.refresh_now(),
-            AppEvent::FilesTick(files) if !self.refresh_paused() => self.reload_files(files),
-            AppEvent::RefsSnapshot(snapshot) if !self.refresh_paused() => {
+            AppEvent::FilesTick(files, _) if !self.refresh_paused() => self.reload_files(files),
+            AppEvent::RefsSnapshot(snapshot, _) if !self.refresh_paused() => {
                 self.check_refs(snapshot);
             }
             // checked again once reloading isn't paused, see `handle_event`
-            AppEvent::FilesTick(_) | AppEvent::RefsSnapshot(_) => self.shell.missed_check = true,
+            AppEvent::FilesTick(..) | AppEvent::RefsSnapshot(..) => self.shell.missed_check = true,
             // only redraws
             AppEvent::SpinnerTick | AppEvent::Resize | AppEvent::Loaded => {}
             AppEvent::OpenHelp => {
@@ -939,29 +947,28 @@ impl App<'_> {
             }
             AppEvent::Refresh(context) => self.start_reload(Restore::Given(Box::new(context))),
             AppEvent::Reloaded { generation, result } => {
-                return Ok(self.land_reload(generation, result));
+                return self.land_reload(generation, result);
             }
             AppEvent::FoldMerge { commit, fold } => {
                 match fold {
                     Fold::Folded => self.shell.folded_merges.insert(commit),
                     Fold::Unfolded => self.shell.folded_merges.remove(&commit),
                 };
-                self.start_regraph();
+                self.regraph_if_stale();
             }
             AppEvent::Regraphed { from, layout } => {
-                if !self.shell.regraphs.is_empty() {
-                    self.shell.regraphs.remove(0);
-                }
+                self.shell.regraph = None;
                 // laid out before the repository was loaded again, of commits it may no longer
-                // have; the app made again on it laid its graph out with the merges folded now
-                if !Arc::ptr_eq(&from, self.repository) {
-                    return Ok(None);
-                }
-                // one of merges folded since is laid out after it
-                let context = self.view.refresh_context();
-                if let Some(mut context) =
-                    context.filter(|_| layout.folded == self.shell.folded_merges)
+                // have, or before merges were folded since: laid out again. Its repository may be
+                // the last of the one before, freed elsewhere.
+                if !Arc::ptr_eq(&from, self.repository) || layout.folded != self.shell.folded_merges
                 {
+                    drop_elsewhere((from, layout));
+                    self.regraph_if_stale();
+                    return None;
+                }
+                let context = self.view.refresh_context();
+                if let Some(mut context) = context {
                     if let Some(commit) = self.shell.reveal.take() {
                         context.list_context_mut().select = Reselect::Commit(commit);
                     }
@@ -970,11 +977,11 @@ impl App<'_> {
                         .take_list_state()
                         .map(CommitListState::into_graph_images);
                     let context = Box::new(context);
-                    return Ok(Some(Ret::Regraph {
+                    return Some(Ret::Regraph {
                         context,
                         layout,
                         images,
-                    }));
+                    });
                 }
             }
             AppEvent::ClearStatusLine => {
@@ -1007,32 +1014,46 @@ impl App<'_> {
                 push_notice(&mut self.shell.notices, Notice::error(msg));
             }
         }
-        Ok(None)
+        None
     }
 
     // Types pasted text where keys are typed, as if pressed one at a time; elsewhere it is no keys,
     // which could run anything. A newline or a tab would finish typing or switch fields, so it is
-    // a space, but in the commit message, where it is the new line or the tab itself.
-    fn paste(&mut self, text: &str) -> Result<(), std::io::Error> {
+    // a space, but in the commit message, where it is the new line or the tab itself. After keys
+    // kept, or a key of it kept, what is left of it is kept whole to follow them, see `Kept`.
+    fn paste(&mut self, text: &str) {
+        if !self.shell.app_status.kept.is_empty() {
+            self.shell
+                .app_status
+                .kept
+                .push_back(Kept::Paste(text.into()));
+            return;
+        }
         if self.shell.dialog.is_none() && !self.is_typing() {
-            return Ok(());
+            return;
         }
         let message = self.view.is_typing_message();
         // terminals send a newline as \r, some as \r\n
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let count = text.chars().count();
-        for (i, c) in text.chars().enumerate() {
+        for (i, (at, c)) in text.char_indices().enumerate() {
+            if !self.shell.app_status.kept.is_empty() {
+                self.shell
+                    .app_status
+                    .kept
+                    .push_back(Kept::Paste(text[at..].into()));
+                break;
+            }
             let code = match c {
                 '\n' if message => KeyCode::Enter,
                 '\n' | '\t' if !message => KeyCode::Char(' '),
                 c => KeyCode::Char(c),
             };
             self.ctx.pasting.set(i + 1 < count);
-            let handled = self.handle(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+            // typed, a key ends or reloads nothing
+            self.handle(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
             self.ctx.pasting.set(false);
-            handled?;
         }
-        Ok(())
     }
 
     // Lays the page out in the screen's `area` before handling the next events and drawing; the
@@ -1056,7 +1077,7 @@ impl App<'_> {
             self.shell.app_status.kept.clear();
         }
         if let Some(Overlay::File(window)) = &mut self.shell.overlay {
-            window.update();
+            window.update(self.repository);
         }
         // the keys kept, once what they act on is loaded, laid out again after them
         if self.run_kept() {
@@ -1117,7 +1138,7 @@ impl App<'_> {
         window
             || checking
             || shell.opening.is_some()
-            || !shell.regraphs.is_empty()
+            || shell.regraph.is_some()
             || self.view.is_loading()
     }
 
@@ -2179,7 +2200,7 @@ impl App<'_> {
             self.shell.folded_merges.remove(merge);
         }
         self.shell.reveal = target;
-        self.start_regraph();
+        self.regraph_if_stale();
     }
 
     // Selects the commit on the graph, from the blame, which closes; warns when the graph doesn't show it.
@@ -2380,10 +2401,6 @@ impl App<'_> {
     }
 
     fn open_dialog(&mut self, dialog: Result<GitDialog, String>) {
-        if let Some(message) = self.ctx.busy_message() {
-            self.ec.send(AppEvent::NotifyWarn(message));
-            return;
-        }
         match dialog {
             // the popup would only lead to refusing its command
             Ok(dialog)
@@ -2565,10 +2582,6 @@ impl App<'_> {
 
     // Runs the git command in the background; the app is told when it finishes.
     fn start_task(&mut self, task: GitTask) {
-        if let Some(message) = self.ctx.busy_message() {
-            self.ec.send(AppEvent::NotifyWarn(message));
-            return;
-        }
         if self.blocked_by_operation(&task) {
             return;
         }
@@ -2581,11 +2594,11 @@ impl App<'_> {
         let head_before_commit = task
             .commits()
             .then(|| read_head_commit(self.repository.path()).unwrap_or_default());
-        *self.ctx.running_task.lock() = Some(RunningTask {
-            task: task.clone(),
-            head_before_commit,
-            quit_after: false,
-        });
+        let id = self
+            .ctx
+            .running_tasks
+            .borrow_mut()
+            .start(task.clone(), head_before_commit);
         let path = self.repository.path().to_path_buf();
         // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
         if task.may_sign() && self.repository.signs() {
@@ -2594,7 +2607,7 @@ impl App<'_> {
             let result = run_task(&path, &task);
             self.ec.resume();
             self.shell.app_status.pending_clear = PendingClear::Screen;
-            self.ec.send(AppEvent::TaskFinished(result));
+            self.ec.send(AppEvent::TaskFinished { id, result });
             return;
         }
         let tx = self.ec.sender();
@@ -2603,21 +2616,25 @@ impl App<'_> {
             let result = run_task(&path, &task);
             drop(spinning);
             // the app may have quit meanwhile, not waiting for it
-            tx.try_send(AppEvent::TaskFinished(result));
+            tx.try_send(AppEvent::TaskFinished { id, result });
         });
     }
 
-    // Shows what the git command did; returns whether quitting waited for it.
-    fn finish_task(&mut self, mut result: Result<(), String>) -> bool {
+    // Shows what the git command `id` did; returns whether quitting waited for it, the last one
+    // running.
+    fn finish_task(&mut self, id: u64, mut result: Result<(), String>) -> bool {
         // set by `start_task` before the command runs
+        let mut running = self.ctx.running_tasks.borrow_mut();
         let Some(RunningTask {
             task,
             head_before_commit,
-            quit_after: quit,
-        }) = self.ctx.running_task.lock().take()
+            ..
+        }) = running.finish(id)
         else {
             return false;
         };
+        let quit = running.quit_after && running.is_empty();
+        drop(running);
         if let (Err(_), Some(failed)) = (&result, &task.failed) {
             result = Err(failed.clone());
         }
@@ -2649,9 +2666,10 @@ impl App<'_> {
             self.view.clear_picked_commits();
         }
         // what is left to resolve or commit is on the local changes page; read from git, as the
-        // command may have stopped on conflicts
+        // command may have stopped on conflicts. Only a command starting or going on with the
+        // operation waiting goes there, not one run beside it, like a fetch.
         let to_local_changes = (result.is_ok() && task.after == AfterTask::LocalChanges)
-            || read_operation(self.repository.git_dir()).is_some();
+            || (task.leads_operation() && read_operation(self.repository.git_dir()).is_some());
         // the command may have changed files or stopped on conflicts, even when it failed;
         // refreshing would interrupt typing, so then it waits for the refs to be checked once
         // typing stopped, see `check_refs`
@@ -3348,7 +3366,7 @@ impl App<'_> {
         // a window over the page takes the clicks on it
         match self.shell.overlay.as_mut() {
             Some(Overlay::File(window)) => {
-                return window.point(hit.target, hit.row, picks, self.repository);
+                return window.point(hit.target, hit.row, picks);
             }
             Some(Overlay::Help(help)) => return help.point(hit.target, hit.row),
             Some(Overlay::CommandLog(state)) => return state.point(hit.target, hit.row),
@@ -3420,8 +3438,7 @@ impl App<'_> {
             return false;
         }
         // the app's own keys act on no page, but moving the focus in it; they and the sidebar's
-        // wait for the files staged meanwhile, which leaving the page or a command would get in
-        // the way of, see `WorkTree::check_idle`
+        // wait for the files staged meanwhile, whose result leaving the page would drop
         let staging = self.view.is_files_loading();
         let focus = matches!(event, FocusLeft | FocusRight | FocusUp | FocusDown);
         if self.app_keys().takes(event) && !focus {
@@ -3457,6 +3474,7 @@ impl App<'_> {
                 Kept::Event(event, key) => self.dispatch(event, key),
                 Kept::Typed(key) => self.type_key(key),
                 Kept::Key(key) => self.handle_key(key),
+                Kept::Paste(text) => self.paste(&text),
             }
             let waits = !self.shell.app_status.kept.is_empty();
             self.shell.app_status.kept.extend(rest);
@@ -3478,16 +3496,21 @@ impl App<'_> {
             Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(*dialog)),
             Some(Ok(GraphCommand::AmendHead)) => self.amend_on_local_changes(),
             Some(Ok(GraphCommand::Compare(compare))) => self.open_compare(compare),
-            // the popups tell first that a command is running
             Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
         }
     }
 
     // Whether reloading in the background would get in the way, like lazygit pausing its refreshes:
-    // while a git command runs, a popup is open or something is being typed or confirmed.
+    // while a git command runs, but those only talking to a remote (as lazygit's push, pull and
+    // fetch), the local changes are staged, a popup is open or something is being typed or
+    // confirmed.
     fn refresh_paused(&self) -> bool {
-        self.ctx.busy_message().is_some() || self.shell.dialog.is_some() || self.is_typing()
+        let running = self.ctx.running_tasks.borrow();
+        running.iter().any(|running| !running.task.is_remote())
+            || self.view.is_files_loading()
+            || self.shell.dialog.is_some()
+            || self.is_typing()
     }
 
     // Reloads everything when the refs, HEAD or the operation in progress changed since they were
@@ -3504,10 +3527,19 @@ impl App<'_> {
         }
     }
 
-    // Lays the graph out again on another thread with the merges folded now, the app going on
-    // meanwhile; once it lands, the app is made again on it, see `AppEvent::Regraphed`.
+    // Lays the graph out again with the merges folded now, unless the graph shows them so: on
+    // another thread, the app going on meanwhile, one layout at a time. Once it lands, the app is
+    // made again on it, see `AppEvent::Regraphed`, which lays it out again for what was folded
+    // meanwhile or what a reload laid out with the merges folded before.
+    fn regraph_if_stale(&mut self) {
+        let shown = self.view.as_list_state().map(CommitListState::folded);
+        if self.shell.regraph.is_none() && shown.is_some_and(|f| *f != self.shell.folded_merges) {
+            self.start_regraph();
+        }
+    }
+
     fn start_regraph(&mut self) {
-        self.shell.regraphs.push(Instant::now());
+        self.shell.regraph = Some(Instant::now());
         let repository = Arc::clone(self.repository);
         let primary_branch = self.load_options.primary_branch.clone();
         let folded = self.shell.folded_merges.clone();
@@ -3534,7 +3566,11 @@ impl App<'_> {
             .reload
             .as_ref()
             .map_or_else(Instant::now, |p| p.started);
-        let restore = match (self.shell.reload.take(), restore) {
+        let before = self.shell.reload.take();
+        if let Some(before) = &before {
+            before.cancel.cancel();
+        }
+        let restore = match (before, restore) {
             (
                 Some(PendingReload {
                     restore: given @ Restore::Given(_),
@@ -3546,14 +3582,15 @@ impl App<'_> {
         };
         self.shell.reload_generation += 1;
         let generation = self.shell.reload_generation;
+        let cancel = Cancel::default();
         self.shell.reload = Some(PendingReload {
             started,
             generation,
             restore,
+            cancel: cancel.clone(),
         });
         let options = self.load_options.clone();
         let revisions = self.shell.graph_revisions();
-        let running = self.ctx.running_task.clone();
         let folded = self.shell.folded_merges.clone();
         let (path, git_dir) = (
             self.repository.path().to_path_buf(),
@@ -3562,7 +3599,7 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             let spinning = spin(tx.clone());
-            let result = load_laid_out(&options, revisions.as_deref(), running, &folded)
+            let result = load_laid_out(&options, revisions.as_deref(), &folded, &cancel)
                 .map(|(loaded, layout)| Box::new(Reloaded { loaded, layout }))
                 .map_err(|error| ReloadFailed {
                     error,
@@ -3581,10 +3618,14 @@ impl App<'_> {
         generation: u64,
         result: std::result::Result<Box<Reloaded>, ReloadFailed>,
     ) -> Option<Ret> {
-        let pending = self
+        let Some(pending) = self
             .shell
             .reload
-            .take_if(|pending| pending.generation == generation)?;
+            .take_if(|pending| pending.generation == generation)
+        else {
+            drop_elsewhere(result);
+            return None;
+        };
         let Reloaded { loaded, layout } = match result {
             Ok(reloaded) => *reloaded,
             Err(failed) => {

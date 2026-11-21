@@ -85,7 +85,7 @@ In the popup, <kbd>j/k</kbd> move between the fields, <kbd>h/l</kbd> change the 
 The key that opened the popup runs it too, and the popup waits a moment before showing: pressing <kbd>f</kbd> <kbd>f</kbd>, <kbd>p</kbd> <kbd>p</kbd> or <kbd>P</kbd> <kbd>P</kbd> quickly runs the command with its defaults without showing the popup.
 The popup shows the git command it will run.
 
-The command runs in the background, the status line shows it with a spinner while it runs (a push or pull also beside its branch in the sidebar, like lazygit), and the app refreshes when it is done.
+The command runs in the background, the status line shows it with a spinner while it runs (a push or pull also beside its branch in the sidebar, like lazygit), and the app refreshes when it is done. Like lazygit, a command doesn't wait for another, nor do the changes made meanwhile, like staging during a push: git refuses one that needs what another holds (its index), saying so. Quitting waits for every command running; quitting again quits at once.
 Git cannot ask for a password or passphrase meanwhile, so use a credential helper or an SSH agent: a prompt fails the command instead.
 
 #### Commit List
@@ -156,7 +156,7 @@ A merge commit is drawn as a ring, larger than a commit's dot, with a chevron in
 
 Drop rewrites the commits after the ones dropped too, so like squash and amend they must be on the current branch, with no merge commits after them.
 Rebase, merge, checkout and reset work on the selected commit only, so they error while commits are picked.
-The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them. The popups of merge, rebase, cherry-pick, revert and drop warn of the first conflict the command would stop at, looked for in the background once the popup opens: "Checking for conflicts…" shows until it is found, and <kbd>Enter</kbd> waits for it, showing the warning instead of running when there is one.
+The commands run in the background like fetch, pull and push. When one stops on conflicts, or leaves changes to commit, the local changes page is shown to resolve and commit them; a command run beside an operation already stopped, like a fetch or a tag, leaves the page as it is. The popups of merge, rebase, cherry-pick, revert and drop warn of the first conflict the command would stop at, looked for in the background once the popup opens: "Checking for conflicts…" shows until it is found, and <kbd>Enter</kbd> waits for it, showing the warning instead of running when there is one.
 
 These keys are bound for the commit graph only: the local changes page uses <kbd>d</kbd> <kbd>s</kbd> <kbd>m</kbd> for its own commands. While the commit details are open, they work with the commit list focused (<kbd>2</kbd>), not from the tabs of the details.
 
@@ -213,7 +213,7 @@ While the diff or the preview has the focus, only its own keys work there: the k
 
 The file trees of the local changes page and of the changes and files tabs are filtered by path with <kbd>/</kbd>, like lazygit's: only matching files are shown, with their directories expanded, and the matching letters of the names are highlighted. The diff or preview beside them is searched with <kbd>/</kbd> while it has the focus, matching the text as it is in the file (a tab, drawn as spaces, is matched as a tab). The lines picked stay picked, unless the match is in another hunk of the diff.
 
-<kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Text pasted into a query or a popup's field is typed on one line, its newlines and tabs as spaces; pasted where nothing is typed, it does nothing. Afterwards, the panel title shows the active filter, and <kbd>Esc</kbd> clears it.
+<kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Text pasted into a query or a popup's field is typed on one line, its newlines and tabs as spaces; pasted where nothing is typed, it does nothing. Pasted while keys wait for what they act on, it follows them, like a key. Afterwards, the panel title shows the active filter, and <kbd>Esc</kbd> clears it.
 Matching ignores case unless the query has an uppercase letter.
 
 Every search shares its options with the commit list's: while typing any of them, <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
@@ -251,7 +251,9 @@ Like lazygit, the app picks up changes made elsewhere, in an editor or another t
 - every 2 seconds, it checks where the local branches and `HEAD` point, and whether a rebase, merge, cherry-pick or revert is in progress; when that changed (a commit, a checkout, or a merge stopped on conflicts in another terminal), everything is reloaded, like <kbd>Ctrl-r</kbd>.
 - when the terminal gets the focus back, both are checked right away.
 
-Nothing is reloaded while a git command runs, a popup is open, or something is being typed or confirmed; a check skipped meanwhile runs again as soon as that ends.
+The checks every few seconds leave git's index as it is, so a git command you run meanwhile doesn't fail on its lock; those after the app's own changes and on getting the focus back save what git refreshed in it, like lazygit, so after a tool touched every file the next checks don't read them all again. A check waits for the one before to be shown, so none pile up while an editor runs.
+
+Nothing is reloaded while a git command runs (but a fetch, pull or push, as in lazygit), the local changes are staged, a popup is open, or something is being typed or confirmed; a check skipped meanwhile runs again as soon as that ends.
 
 Everything the app shows, its keys included, is the repository as last loaded. A command runs on what you chose from it, without checking git again first: a change made outside since, before the next check, is not caught, so a popup that says "Reset main" resets whatever is checked out by then.
 

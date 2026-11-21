@@ -19,9 +19,9 @@ use crate::{
 
 use super::{
     git_command, git_output, load_submodules, Commit, CommitHash, CommitMap, CommitsMap, Head,
-    Operation, Ref, RefMap, Repository, SharedTask, SortCommit, Tracking, WorkTree,
+    Operation, Ref, RefMap, Repository, SortCommit, Tracking, WorkTree,
 };
-use crate::git::{diff::empty_tree, text_from_git, FilesSnapshot, LoadedFiles, Seen};
+use crate::git::{diff::empty_tree, text_from_git, FilesSnapshot, IndexRefresh, LoadedFiles, Seen};
 
 impl Repository {
     #[cfg(test)]
@@ -31,40 +31,49 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
     ) -> Result<Self> {
-        Self::load_scoped(path, sort, max_count, mailmap, None, Default::default())
+        let cancel = Cancel::default();
+        Self::load_scoped(path, sort, max_count, mailmap, None, &cancel)
     }
 
     // `revisions` loads only their history, like ["HEAD"] for the current branch; else that of
-    // every branch, tag and stash. `running` is the app's, see `RunningTask`.
+    // every branch, tag and stash. The commits stop loading once `cancel` says so, see
+    // `load_all_commits`.
     pub fn load_scoped(
         path: &Path,
         sort: SortCommit,
         max_count: Option<usize>,
         mailmap: bool,
         revisions: Option<&[String]>,
-        running: SharedTask,
+        cancel: &Cancel,
     ) -> Result<Self> {
         let (toplevel, git_dir) = locate_repository(path)?;
         let path = toplevel.as_deref().unwrap_or(path);
+        // the refs as of before they load, so the check after sees one changed meanwhile, see
+        // `App::check_refs`
+        let refs_snapshot = refs_snapshot(path, &git_dir).ok();
         // what doesn't depend on the commits loads alongside them
         let local_changes_started = Instant::now();
         std::thread::scope(|scope| {
             let work_tree = WorkTree {
                 path: path.to_path_buf(),
                 git_dir: git_dir.clone(),
-                running: running.clone(),
             };
-            let local_changes = scope.spawn(move || work_tree.load_files());
+            let local_changes = scope.spawn(move || work_tree.load_files(IndexRefresh::Skipped));
             let remotes = scope.spawn(|| load_remotes(path));
             let textconv_drivers = scope.spawn(|| load_textconv_drivers(path));
-            let refs_snapshot = scope.spawn(|| refs_snapshot(path, &git_dir).ok());
             let operation = scope.spawn(|| read_operation(&git_dir));
             let tracking = scope.spawn(|| load_branch_tracking(path));
             let submodules = scope.spawn(|| load_submodules(path));
             let empty_tree = scope.spawn(|| empty_tree(path).ok());
-            let mut repository =
-                Self::load_commits(path, git_dir.clone(), sort, max_count, mailmap, revisions)?;
-            repository.running = running;
+            let mut repository = Self::load_commits(
+                path,
+                git_dir.clone(),
+                sort,
+                max_count,
+                mailmap,
+                revisions,
+                cancel,
+            )?;
             repository.remotes = joined(remotes);
             repository.textconv_drivers = joined(textconv_drivers);
             repository.loaded_local_changes = Mutex::new(LoadedFiles {
@@ -72,7 +81,7 @@ impl Repository {
                 seen: Seen::First,
             });
             repository.local_changes_started = Mutex::new(local_changes_started);
-            repository.refs_snapshot = joined(refs_snapshot);
+            repository.refs_snapshot = refs_snapshot;
             repository.operation = joined(operation);
             repository.tracking = joined(tracking);
             repository.submodules = joined(submodules);
@@ -119,6 +128,7 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
         revisions: Option<&[String]>,
+        cancel: &Cancel,
     ) -> Result<Self> {
         let (mut ref_map, head) = load_refs(path);
 
@@ -132,7 +142,7 @@ impl Repository {
                 stashes: &stashes,
             },
         };
-        let commits = load_all_commits(path, sort, listed, max_count, mailmap, &Cancel::default())?;
+        let commits = load_all_commits(path, sort, listed, max_count, mailmap, cancel)?;
         let commits = merge_stashes_to_commits(commits, stashes);
         merge_ref_maps(&mut ref_map, stash_ref_map);
         Ok(Self::new(
@@ -168,7 +178,6 @@ impl Repository {
                 seen: Seen::First,
             }),
             local_changes_started: Mutex::new(Instant::now()),
-            running: Default::default(),
             refs_snapshot: None,
             operation: None,
             tracking: Default::default(),
@@ -214,7 +223,7 @@ impl LoadOptions {
     pub fn load(
         &self,
         revisions: Option<&[String]>,
-        running: SharedTask,
+        cancel: &Cancel,
     ) -> std::result::Result<Loaded, String> {
         let load = |revisions| {
             Repository::load_scoped(
@@ -223,12 +232,14 @@ impl LoadOptions {
                 self.max_count,
                 self.mailmap,
                 revisions,
-                running.clone(),
+                cancel,
             )
             .map_err(|e| e.to_string())
         };
         match load(revisions) {
-            Err(_) if revisions.is_some() => load(None).map(Loaded::RefsGone),
+            Err(_) if revisions.is_some() && !cancel.is_cancelled() => {
+                load(None).map(Loaded::RefsGone)
+            }
             loaded => loaded.map(Loaded::Repository),
         }
     }
@@ -841,7 +852,11 @@ mod tests {
         assert_eq!(repository.loaded_local_change_count(), 1);
         // taken again, the page loads them again, see `LocalChangesState::restore`
         assert_eq!(taken(&repository), (1, Seen::Again));
-        repository.set_local_changes(crate::git::FilesSnapshot::load(path, &path.join(".git")));
+        repository.set_local_changes(crate::git::FilesSnapshot::load(
+            path,
+            &path.join(".git"),
+            IndexRefresh::Skipped,
+        ));
         assert_eq!(taken(&repository), (2, Seen::First));
         // a `git status` started before is older than them: dropped
         let older = crate::git::FilesSnapshot {
@@ -946,7 +961,7 @@ mod tests {
         let head = ["HEAD".to_string()];
         let sort = SortCommit::Chronological;
         let head_only =
-            Repository::load_scoped(path, sort, None, false, Some(&head), Default::default())
+            Repository::load_scoped(path, sort, None, false, Some(&head), &Cancel::default())
                 .unwrap();
         assert_eq!(subjects(&head_only), ["main", "base"]);
     }

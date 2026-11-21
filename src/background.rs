@@ -3,8 +3,8 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
     },
     time::{Duration, Instant},
 };
@@ -55,6 +55,24 @@ pub fn shows_loading(since: Instant) -> bool {
     since.elapsed() >= LOADING_SHOWN_AFTER
 }
 
+// When each job running and waited for started, by its id, for the app to draw again once one
+// runs long enough to be shown loading, see `next_shown`.
+static RUNNING: Mutex<Vec<(u64, Instant)>> = Mutex::new(Vec::new());
+
+fn running() -> MutexGuard<'static, Vec<(u64, Instant)>> {
+    RUNNING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+// When a job running is shown loading next, after the frame drawn at `drawn`: the app waits for
+// events until then, to draw it, see `shows_loading`.
+pub fn next_shown(drawn: Instant) -> Option<Instant> {
+    running()
+        .iter()
+        .map(|&(_, started)| started + LOADING_SHOWN_AFTER)
+        .filter(|&at| at > drawn)
+        .min()
+}
+
 // Whether the job some work runs for was dropped, replaced by another, nobody waiting for what it
 // makes: long work checks it now and then to stop early, see `Job::read`. The default
 // is never cancelled, for the same work run right away.
@@ -64,6 +82,11 @@ pub struct Cancel(Arc<AtomicBool>);
 impl Cancel {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
+    }
+
+    // Tells the work to stop, for work run without a `Job`, like a reload replaced by another.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 
     // One cancelled already, for the tests of the work stopping early.
@@ -79,14 +102,22 @@ impl Cancel {
 #[derive(Debug)]
 pub struct Job<T> {
     result: Arc<(Mutex<Option<T>>, Condvar)>,
+    // in `RUNNING` until its work is done or it is dropped
+    id: u64,
     started: Instant,
     cancel: Cancel,
 }
 
 impl<T> Drop for Job<T> {
     fn drop(&mut self) {
-        self.cancel.0.store(true, Ordering::Relaxed);
+        self.cancel.cancel();
+        running().retain(|&(id, _)| id != self.id);
     }
+}
+
+// Frees `value` on another thread: a whole repository, of 100k commits, takes the screen ~100ms.
+pub fn drop_elsewhere<T: Send + 'static>(value: T) {
+    std::thread::spawn(move || drop(value));
 }
 
 impl<T: Send + 'static> Job<T> {
@@ -96,35 +127,33 @@ impl<T: Send + 'static> Job<T> {
         Self::read(tx, |_| work())
     }
 
-    // Runs `work` reading only, then wakes the app up through `tx` to draw its result; also once
-    // it has run long enough to be shown loading, see `shows_loading`. It stops early once the job
-    // is dropped, as `Cancel` tells it: a load replaced by another, like the diff of a file the
-    // cursor moved past, or of what was closed. A panic in it stops the app, see `main`.
+    // Runs `work` reading only, then wakes the app up through `tx` to draw its result; once it
+    // has run long enough to be shown loading, the app draws that, see `next_shown`. It stops
+    // early once the job is dropped, as `Cancel` tells it: a load replaced by another, like the
+    // diff of a file the cursor moved past, or of what was closed. A panic in it stops the app,
+    // see `main`.
     pub fn read(tx: Sender, work: impl FnOnce(&Cancel) -> T + Send + 'static) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let started = Instant::now();
+        running().push((id, started));
         let cancel = Cancel::default();
         let cancelled = cancel.clone();
         let result: Arc<(Mutex<Option<T>>, Condvar)> = Arc::default();
         let shared = result.clone();
-        let waiting = Arc::downgrade(&result);
-        let wake = tx.clone();
         std::thread::spawn(move || {
             let value = work(&cancelled);
             let (slot, done) = &*shared;
             *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
             done.notify_all();
+            running().retain(|&(running, _)| running != id);
             // the app may have quit meanwhile
             tx.try_send(AppEvent::Loaded);
         });
-        std::thread::spawn(move || {
-            std::thread::sleep(LOADING_SHOWN_AFTER);
-            // held by the job and its work: still running and waited for
-            if waiting.strong_count() == 2 {
-                wake.try_send(AppEvent::Loaded);
-            }
-        });
         Job {
             result,
-            started: Instant::now(),
+            id,
+            started,
             cancel,
         }
     }
@@ -194,28 +223,36 @@ mod tests {
         assert!(matches!(ec.recv(), AppEvent::Loaded));
     }
 
+    // The app draws again once a job running and waited for runs long enough to be shown
+    // loading: its deadline is there until its work is done or it is dropped. Other tests' jobs
+    // run meanwhile, so only these are looked at.
     #[test]
-    fn test_job_wakes_the_app_once_it_runs_long_enough_to_show() {
+    fn test_job_is_shown_loading_once_it_runs_long() {
         let ec = EventController::without_terminal();
-        let wait = Duration::from_secs(5);
+        let waits = |job_id: u64| running().iter().any(|&(id, _)| id == job_id);
         let quick = Job::command(ec.sender(), || Ok::<_, String>(1));
         let (finish, finished) = std::sync::mpsc::channel::<()>();
         let slow = Job::command(ec.sender(), move || {
             finished.recv().unwrap();
             Ok::<_, String>(())
         });
-        // the quick one, done
-        assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
-        assert_eq!(quick.try_take(), Some(Ok(1)));
-        assert!(!shows_loading(slow.started()));
-        // the slow one, still running, wakes the app to say it is loading
-        assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
-        assert!(shows_loading(slow.started()));
-        // the quick one, done before, doesn't
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(ec.try_recv().is_none());
+        let (_, dropped_finished) = std::sync::mpsc::channel::<()>();
+        let dropped = Job::command(ec.sender(), move || dropped_finished.recv().ok());
+        let dropped_id = dropped.id;
+        drop(dropped);
+        assert!(!waits(dropped_id));
+        assert_eq!(quick.wait(), Ok(1));
+        assert!(waits(slow.id));
+        let shown = slow.started() + LOADING_SHOWN_AFTER;
+        assert!(next_shown(slow.started()).is_some_and(|at| at <= shown));
         finish.send(()).unwrap();
+        let slow_id = slow.id;
         slow.wait().unwrap();
-        assert!(matches!(ec.recv_timeout(wait), Some(AppEvent::Loaded)));
+        // removed by its thread once done, right after waking the app
+        let until = Instant::now() + Duration::from_secs(10);
+        while waits(slow_id) {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }

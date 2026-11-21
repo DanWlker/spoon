@@ -15,6 +15,8 @@ pub struct Graph<'a> {
     pub warning: Option<String>,
     // the merge commits shown, those with two parents or more loaded, see `calc_graph`
     pub merges: FxHashMap<&'a CommitHash, Fold>,
+    // the merges it was laid out with folded, see `GraphLayout::folded`
+    pub folded: FxHashSet<CommitHash>,
 }
 
 // Whether a merge commit shows the commits it brought in, see `calc_graph`.
@@ -169,7 +171,7 @@ pub struct GraphLayout {
     warning: Option<String>,
     // the rows of the merge commits shown
     merges: Vec<(usize, Fold)>,
-    // the merges it was laid out with folded
+    // the merges it was laid out with folded, of those the repository has, as the app keeps them
     pub folded: FxHashSet<CommitHash>,
 }
 
@@ -216,7 +218,11 @@ impl GraphLayout {
             max_pos_x,
             warning,
             merges,
-            folded: folded.clone(),
+            folded: folded
+                .iter()
+                .filter(|merge| repository.commit(merge).is_some())
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -251,6 +257,7 @@ impl<'a> Graph<'a> {
             max_pos_x: layout.max_pos_x,
             warning: layout.warning,
             merges,
+            folded: layout.folded,
         }
     }
 }

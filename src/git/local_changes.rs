@@ -7,14 +7,14 @@ use std::{
 };
 
 use super::{
-    git_bytes, git_output, git_output_bytes, lock, pathspec_parts, pathspecs, text_from_git,
-    work_path, GitArgs, GitCommand, Repository, WorkTree,
+    git_bytes, git_command, git_output, lock, output_result, pathspec_parts, pathspecs,
+    text_from_git, work_path, GitArgs, GitCommand, Repository, WorkTree,
 };
 
 impl Repository {
     #[cfg(test)]
     pub fn local_changes(&self) -> LocalChanges {
-        load_local_changes(&self.path)
+        load_local_changes(&self.path, IndexRefresh::Skipped)
     }
 
     // The number of local changes, as they were last loaded.
@@ -294,17 +294,31 @@ impl LocalChanges {
     }
 }
 
-pub(super) fn load_local_changes(path: &Path) -> LocalChanges {
-    // without refreshing the index, whose lock would make a git command running meanwhile fail
-    let args = [
-        "--no-optional-locks",
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
-        "-z",
-    ];
+// Whether `git status` saves in the index what it refreshed of it, taking its lock, like lazygit:
+// the checks after the app's own changes and on getting the focus back do, so the next ones don't
+// look at every file again after a tool touched them all; those every few seconds don't, which
+// would make a git command the user runs meanwhile fail on the lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexRefresh {
+    Skipped,
+    Saved,
+}
+
+pub(super) fn load_local_changes(path: &Path, refresh: IndexRefresh) -> LocalChanges {
+    let args = ["status", "--porcelain=v1", "--untracked-files=all", "-z"];
+    let mut cmd = git_command();
+    if refresh == IndexRefresh::Saved {
+        cmd.env("GIT_OPTIONAL_LOCKS", "1");
+    }
+    let output = cmd
+        .args(args)
+        .current_dir(path)
+        .stdin(std::process::Stdio::null())
+        .output();
     // fails in bare repositories, which have no working tree
-    git_output_bytes(path, &args)
+    output
+        .ok()
+        .and_then(|output| output_result(&args, output).ok())
         .map(|out| parse_status_porcelain(&out))
         .unwrap_or_default()
 }
@@ -417,10 +431,10 @@ impl WorkTree {
 
     // The local changes of the work tree with a stamp of their files, see `FilesSnapshot`, the
     // conflicts resolved by hand staged first, see `stage_resolved_conflicts`.
-    pub fn load_files(&self) -> FilesSnapshot {
-        let files = FilesSnapshot::load(&self.path, &self.git_dir);
+    pub fn load_files(&self, refresh: IndexRefresh) -> FilesSnapshot {
+        let files = FilesSnapshot::load(&self.path, &self.git_dir, refresh);
         match self.stage_resolved_conflicts(&files.changes) {
-            true => FilesSnapshot::load(&self.path, &self.git_dir),
+            true => FilesSnapshot::load(&self.path, &self.git_dir, refresh),
             false => files,
         }
     }
@@ -464,9 +478,9 @@ pub struct FilesSnapshot {
 }
 
 impl FilesSnapshot {
-    pub fn load(work_tree: &Path, git_dir: &Path) -> Self {
+    pub fn load(work_tree: &Path, git_dir: &Path, refresh: IndexRefresh) -> Self {
         let started = Instant::now();
-        let changes = load_local_changes(work_tree);
+        let changes = load_local_changes(work_tree, refresh);
         let stamp = files_stamp(work_tree, git_dir, &changes);
         FilesSnapshot {
             changes,
@@ -594,7 +608,7 @@ mod tests {
         git.commit("init", "2024-01-01");
         std::fs::write(path.join("a"), "b\n").unwrap();
         let git_dir = path.join(".git");
-        let load = || FilesSnapshot::load(path, &git_dir);
+        let load = || FilesSnapshot::load(path, &git_dir, IndexRefresh::Skipped);
 
         let before = load();
         assert_eq!(load().stamp, before.stamp);

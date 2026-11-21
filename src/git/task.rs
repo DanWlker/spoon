@@ -27,30 +27,27 @@ impl Repository {
         WorkTree {
             path: self.path.clone(),
             git_dir: self.git_dir.clone(),
-            running: self.running.clone(),
         }
     }
 }
 
-// The work tree of a repository, the git directory and the app's git command running in the
-// background: what running git commands changing the work tree or the index needs, without the
-// commits, to run them on another thread, see `Repository::work_tree`.
+// The work tree of a repository and the git directory: what running git commands changing the
+// work tree or the index needs, without the commits, to run them on another thread, see
+// `Repository::work_tree`. Like lazygit, they run while the app's git commands run in the
+// background, git refusing what the index locked meanwhile.
 #[derive(Debug, Clone)]
 pub struct WorkTree {
     pub(super) path: PathBuf,
     pub(super) git_dir: PathBuf,
-    pub(super) running: SharedTask,
 }
 
 impl WorkTree {
-    // Runs a git command changing the repository, unless one runs in the background, see
-    // `check_idle`.
+    // Runs a git command changing the repository.
     pub(super) fn run(
         &self,
         args: &[&str],
         stdin: Option<&str>,
     ) -> std::result::Result<(), String> {
-        self.check_idle()?;
         run_logged(
             git_command()
                 .args(args.iter().map(|a| git_arg(a)))
@@ -59,15 +56,6 @@ impl WorkTree {
             stdin,
             None,
         )
-    }
-
-    // An error while a git command runs in the background, which a change could fail on (its
-    // locked index) or end up in the middle of (its stash and pop), like lazygit.
-    pub(super) fn check_idle(&self) -> std::result::Result<(), String> {
-        match self.running.lock().as_ref() {
-            Some(running) => Err(running.busy_message()),
-            None => Ok(()),
-        }
     }
 }
 
@@ -256,35 +244,53 @@ pub(super) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-// The app's git command running in the background, shared with the repositories it loads, which
-// load on other threads, see `RunningTask`.
-#[derive(Debug, Default, Clone)]
-pub struct SharedTask(std::sync::Arc<std::sync::Mutex<Option<RunningTask>>>);
+// The app's git commands running in the background, each until it finishes, see
+// `App::finish_task`: like lazygit, one doesn't wait for another, nor the changes made meanwhile.
+#[derive(Debug, Default)]
+pub struct RunningTasks {
+    tasks: Vec<RunningTask>,
+    // given to the next one started, to tell which finished
+    next_id: u64,
+    // quit was asked meanwhile, the app quits once they all finish
+    pub quit_after: bool,
+}
 
-impl SharedTask {
-    // Held only while read or set, never across another lock of it: it isn't reentrant.
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunningTask>> {
-        lock(&self.0)
+impl RunningTasks {
+    // Adds `task` running; returns what tells it finished, see `finish`.
+    pub fn start(&mut self, task: GitTask, head_before_commit: Option<CommitHash>) -> u64 {
+        self.next_id += 1;
+        self.tasks.push(RunningTask {
+            id: self.next_id,
+            task,
+            head_before_commit,
+        });
+        self.next_id
+    }
+
+    // The one `start` returned `id` for, no longer running.
+    pub fn finish(&mut self, id: u64) -> Option<RunningTask> {
+        let index = self.tasks.iter().position(|running| running.id == id)?;
+        Some(self.tasks.remove(index))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &RunningTask> {
+        self.tasks.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
     }
 }
 
-// The git command running in the background, and what waits for it to finish. The app sets it
-// and the repository reads it, sharing one, see `Repository::check_idle`.
+// A git command running in the background.
 #[derive(Debug)]
 pub struct RunningTask {
+    // see `RunningTasks::start`
+    id: u64,
     pub task: GitTask,
     // HEAD before committing the message of the local changes page, which is cleared once the
     // commit is made, see `App::finish_task`
     pub head_before_commit: Option<CommitHash>,
-    // quit was asked meanwhile, the app quits once it finishes
-    pub quit_after: bool,
-}
-
-impl RunningTask {
-    // Why the repository can't be changed now.
-    pub fn busy_message(&self) -> String {
-        format!("{}, wait for it to finish", self.task.running)
-    }
 }
 
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
@@ -346,6 +352,16 @@ impl GitTask {
     // Whether it moves or rewrites HEAD, see `GitCommand::moves_head`.
     pub fn moves_head(&self) -> bool {
         self.commands.iter().any(|c| c.command.moves_head())
+    }
+
+    // Whether it may start a rebase, merge, cherry-pick or revert that stops, or go on with one:
+    // it moves HEAD, see `GitCommand::moves_head`, or continues the operation stopped.
+    pub fn leads_operation(&self) -> bool {
+        self.moves_head()
+            || self
+                .commands
+                .iter()
+                .any(|c| matches!(c.command, GitCommand::Resume(_)))
     }
 
     // Whether it talks to a remote, see `GitCommand::is_remote`.
@@ -662,7 +678,8 @@ pub fn stash_args(paths: &[String], message: &str) -> GitArgs {
 }
 
 // A git command of the app, taking no lock it can do without, like `git status` refreshing the
-// index, which would make the user's own git commands fail meanwhile. In tests, the git config of
+// index, which would make the user's own git commands fail meanwhile, but where it says so, see
+// `IndexRefresh`. In tests, the git config of
 // the user's home and system is left out, so the tests behave alike everywhere. A signature's check
 // would come before the fields read from `log`, `show` and `stash list`.
 pub fn git_command() -> Command {
@@ -845,7 +862,7 @@ pub(super) fn git_output_bytes(path: &Path, args: &[&str]) -> std::result::Resul
 }
 
 // The output of git run with `args`, its error when it failed.
-fn output_result(args: &[&str], output: Output) -> std::result::Result<Vec<u8>, String> {
+pub(super) fn output_result(args: &[&str], output: Output) -> std::result::Result<Vec<u8>, String> {
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -955,39 +972,6 @@ mod tests {
         for name in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
             assert!(removed.iter().any(|(k, _)| *k == name), "{name}");
         }
-    }
-
-    // A git command running in the background, saying `running`.
-    fn running(running: &str) -> RunningTask {
-        let task = GitTask {
-            running: running.into(),
-            ..Default::default()
-        };
-        RunningTask {
-            task,
-            head_before_commit: None,
-            quit_after: false,
-        }
-    }
-
-    #[test]
-    fn test_busy_repository_refuses_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-        let git = crate::test_support::git::GitRepository::new(path);
-        git.init();
-        git.commit("init", "2024-01-01");
-        std::fs::write(path.join("a"), "a\n").unwrap();
-        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
-
-        // while a git command runs in the background
-        *repository.running.lock() = Some(running("Pushing main"));
-        assert_eq!(
-            repository.work_tree().stage_paths(&["a"]),
-            Err("Pushing main, wait for it to finish".into())
-        );
-        *repository.running.lock() = None;
-        repository.work_tree().stage_paths(&["a"]).unwrap();
     }
 
     #[test]

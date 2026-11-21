@@ -12,7 +12,7 @@ use crate::{
     color::ColorTheme,
     color::GraphColorSet,
     config::{CoreConfig, GraphColorConfig, UiConfig},
-    git::{RunningTask, SharedTask},
+    git::RunningTasks,
     graph::{CellWidthType, Graph, GraphImageManager, GraphImageWidthMode, GraphStyle},
     keybind::{KeyBind, Scope, UserEvent},
     layout::PanelLayout,
@@ -31,8 +31,8 @@ pub struct AppContext {
     // the graph images are drawn with, shared by the main graph and the submodule graphs the
     // pages build beside it, see `graph_image_manager`
     pub graph: RefCell<GraphRender>,
-    // the git command running in the background, kept across refreshes, shared with the repository
-    pub running_task: SharedTask,
+    // the git commands running in the background, kept across refreshes
+    pub running_tasks: RefCell<RunningTasks>,
     // the keys of the hints in the status bar, see `short_keys`
     pub key_names: RefCell<FxHashMap<(Scope, Vec<UserEvent>), String>>,
     // the sizes of the panels, set by the user, kept across refreshes
@@ -116,13 +116,5 @@ impl AppContext {
             .entry((scope, events.to_vec()))
             .or_insert_with(|| self.keybind.short_keys(scope, events))
             .clone()
-    }
-
-    // Why the repository can't be changed now: a git command is running in the background.
-    pub fn busy_message(&self) -> Option<String> {
-        self.running_task
-            .lock()
-            .as_ref()
-            .map(RunningTask::busy_message)
     }
 }

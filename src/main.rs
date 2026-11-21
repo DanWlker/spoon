@@ -192,7 +192,7 @@ fn run() -> Result<()> {
             image_width_mode: graph_image_width_mode,
             cell_width_type: graph::CellWidthType::Double,
         }),
-        running_task: Default::default(),
+        running_tasks: Default::default(),
         key_names: Default::default(),
         layout: Default::default(),
         wrap: Default::default(),
@@ -239,7 +239,7 @@ fn run() -> Result<()> {
     ));
     let mut restart = Restart {
         before: None,
-        layout: Some(layout),
+        layout,
         images: None,
     };
 
@@ -266,11 +266,12 @@ fn run() -> Result<()> {
             Ok(Ok(Some((shell, context, layout, reloaded, images)))) => {
                 restart = Restart {
                     before: Some((shell, context)),
-                    layout: Some(*layout),
+                    layout: *layout,
                     images,
                 };
                 if let Some(reloaded) = reloaded {
-                    repository = Arc::new(*reloaded);
+                    let before = std::mem::replace(&mut repository, Arc::new(*reloaded));
+                    background::drop_elsewhere(before);
                 }
             }
             Ok(Err(e)) => break Err(e.into()),
@@ -286,7 +287,7 @@ fn run() -> Result<()> {
 // starts), with the graph laid out on the thread loading the repository or folding a merge.
 struct Restart {
     before: Option<(app::AppShell, Box<view::RefreshViewContext>)>,
-    layout: Option<graph::GraphLayout>,
+    layout: graph::GraphLayout,
     // the graph images of the app before, see `Ret::Regraph`
     images: Option<graph::GraphImages>,
 }
@@ -309,13 +310,12 @@ impl Loader {
     // another thread; the app reloads it in the background after.
     fn load_work(
         &self,
-        running: &git::SharedTask,
     ) -> impl FnOnce() -> std::result::Result<(git::Repository, graph::GraphLayout), String> + Send
     {
-        let (options, running) = (self.options.clone(), running.clone());
+        let options = self.options.clone();
         move || {
             let (loaded, layout) =
-                app::load_laid_out(&options, None, running, &Default::default())?;
+                app::load_laid_out(&options, None, &Default::default(), &Default::default())?;
             let (git::Loaded::Repository(repository) | git::Loaded::RefsGone(repository)) = loaded;
             Ok((repository, layout))
         }
@@ -330,7 +330,7 @@ impl Loader {
         terminal: &mut ratatui::DefaultTerminal,
     ) -> Result<Option<(git::Repository, graph::GraphLayout)>> {
         // dropped only by quitting, which ends the work with the app
-        let work = self.load_work(&ctx.running_task);
+        let work = self.load_work();
         let job = background::Job::read(ec.sender(), move |_| work());
         let path = std::fs::canonicalize(&self.options.path).unwrap_or(self.options.path.clone());
         let message = format!("Loading {}…", path.display());
@@ -338,6 +338,7 @@ impl Loader {
             if let Some(loaded) = job.try_take() {
                 return Ok(Some(loaded?));
             }
+            let drawn = std::time::Instant::now();
             terminal.draw(|f| {
                 if !background::shows_loading(job.started()) {
                     return;
@@ -348,7 +349,14 @@ impl Loader {
                     ratatui::layout::Rect::new(area.x, area.y + area.height / 2, area.width, 1);
                 f.render_widget(ratatui::widgets::Paragraph::new(line).centered(), row);
             })?;
-            if let event::AppEvent::Key(key) = ec.recv() {
+            // woken up to say it is loading once it takes long
+            let event = match background::next_shown(drawn) {
+                Some(at) => {
+                    ec.recv_timeout(at.saturating_duration_since(std::time::Instant::now()))
+                }
+                None => Some(ec.recv()),
+            };
+            if let Some(event::AppEvent::Key(key)) = event {
                 let quits = matches!(
                     ctx.keybind.event_in(keybind::Scope::Global, &key),
                     Some(keybind::UserEvent::Quit | keybind::UserEvent::ForceQuit)
@@ -376,16 +384,9 @@ impl Loader {
             layout,
             images,
         } = restart;
-        let folded = refresh
-            .as_ref()
-            .map(|(shell, _)| shell.folded_merges().clone())
-            .unwrap_or_default();
-        // laid out on the thread reloading it, unless a merge was folded or unfolded meanwhile
-        let primary_branch = self.options.primary_branch.as_deref();
-        let graph = match layout {
-            Some(layout) if layout.folded == folded => graph::Graph::of(repository, layout),
-            _ => graph::calc_graph(repository, primary_branch, &folded),
-        };
+        // laid out on the thread loading it; a merge folded or unfolded meanwhile is laid out
+        // again there, see `App::regraph_if_stale`
+        let graph = graph::Graph::of(repository, layout);
         // picked at the start and kept when made again: the graph then is cut like on a resize,
         // instead of the app quitting on a reload in a narrow terminal
         let cell_width_type = match &refresh {

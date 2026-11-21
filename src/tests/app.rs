@@ -207,6 +207,8 @@ struct Harness {
     ec: EventController,
     // how many times the repository was loaded, the first time and those failing included
     loads: std::cell::Cell<usize>,
+    // how many times the graph was laid out again after folding a merge, those dropped included
+    regraphs: std::cell::Cell<usize>,
     quit: bool,
 }
 
@@ -234,6 +236,7 @@ impl Harness {
             ctx: test_ctx(),
             ec: EventController::without_terminal(),
             loads: Default::default(),
+            regraphs: Default::default(),
             quit: false,
         }
     }
@@ -244,13 +247,13 @@ impl Harness {
     fn run(&mut self, steps: Vec<Vec<Step>>) {
         let mut steps = steps.into_iter().flatten();
         let (path, ctx, ec, quit) = (&self.path, &self.ctx, &self.ec, &mut self.quit);
-        let loads = &self.loads;
-        let (repository, layout) = self.loader.load_work(&ctx.running_task)().unwrap();
+        let (loads, regraphs) = (&self.loads, &self.regraphs);
+        let (repository, layout) = self.loader.load_work()().unwrap();
         let mut repository = Arc::new(repository);
         loads.set(loads.get() + 1);
         let mut restart = Restart {
             before: None,
-            layout: Some(layout),
+            layout,
             images: None,
         };
         loop {
@@ -258,7 +261,7 @@ impl Harness {
             let next = self
                 .loader
                 .with_app(&repository, SIZE, ctx, ec, restart, |mut app| loop {
-                    if let Some(ret) = settle(&mut app, ec, ctx, loads) {
+                    if let Some(ret) = settle(&mut app, ec, ctx, loads, regraphs) {
                         return match ret {
                             Ret::Quit => {
                                 *quit = true;
@@ -287,7 +290,7 @@ impl Harness {
                 Some((shell, context, layout, reloaded, images)) => {
                     restart = Restart {
                         before: Some((shell, context)),
-                        layout: Some(*layout),
+                        layout: *layout,
                         images,
                     };
                     if let Some(reloaded) = reloaded {
@@ -306,13 +309,15 @@ fn settle(
     ec: &EventController,
     ctx: &AppContext,
     loads: &std::cell::Cell<usize>,
+    regraphs: &std::cell::Cell<usize>,
 ) -> Option<Ret> {
     // a frame drawn after the events handled, as the app draws after each batch of them
     let mut handled = false;
     loop {
         app.expire(Instant::now());
         app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
-        let busy = ctx.running_task.lock().is_some() || app.is_reloading() || app.is_loading();
+        let running = !ctx.running_tasks.borrow().is_empty();
+        let busy = running || app.is_reloading() || app.is_loading();
         let event = if busy {
             ec.recv_timeout(TIMEOUT)
                 .expect("the git command, the reload or the diff loading to finish")
@@ -328,10 +333,12 @@ fn settle(
             }
         };
         handled = true;
-        if let AppEvent::Reloaded { .. } = event {
-            loads.set(loads.get() + 1);
+        match event {
+            AppEvent::Reloaded { .. } => loads.set(loads.get() + 1),
+            AppEvent::Regraphed { .. } => regraphs.set(regraphs.get() + 1),
+            _ => {}
         }
-        if let Some(ret) = app.handle_event(event).unwrap() {
+        if let Some(ret) = app.handle_event(event) {
             return Some(ret);
         }
     }
@@ -364,14 +371,19 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
             let git_dir = app.repository.git_dir();
             ec.send(AppEvent::RefsSnapshot(
                 refs_snapshot(path, git_dir).unwrap(),
+                Default::default(),
             ));
         }
         Step::Tick => {
             let git_dir = app.repository.git_dir();
             ec.send(AppEvent::RefsSnapshot(
                 refs_snapshot(path, git_dir).unwrap(),
+                Default::default(),
             ));
-            ec.send(AppEvent::FilesTick(FilesSnapshot::load(path, git_dir)));
+            ec.send(AppEvent::FilesTick(
+                FilesSnapshot::load(path, git_dir, crate::git::IndexRefresh::Skipped),
+                Default::default(),
+            ));
         }
         Step::WaitFor(f) => {
             let started = Instant::now();
@@ -735,7 +747,7 @@ fn test_keys_kept_run_in_order_and_esc_drops_them() {
         vec![Step::Act(Box::new(move |app| {
             let kept = &mut app.shell.app_status.kept;
             kept.extend(["j", "j"].map(|j| Kept::Key(parse_key_event(j).unwrap())));
-            app.handle_event(key("space")).unwrap();
+            app.handle_event(key("space"));
             assert_eq!(app.shell.app_status.kept.len(), 3);
         }))],
         check(|app| assert!(app.shell.app_status.kept.is_empty())),
@@ -743,7 +755,7 @@ fn test_keys_kept_run_in_order_and_esc_drops_them() {
         vec![Step::Act(Box::new(move |app| {
             let kept = &mut app.shell.app_status.kept;
             kept.extend(["k", "space"].map(|k| Kept::Key(parse_key_event(k).unwrap())));
-            app.handle_event(key("esc")).unwrap();
+            app.handle_event(key("esc"));
             assert!(app.shell.app_status.kept.is_empty());
         }))],
     ]);
@@ -753,7 +765,7 @@ fn test_keys_kept_run_in_order_and_esc_drops_them() {
     harness.run(vec![vec![Step::Act(Box::new(move |app| {
         let kept = &mut app.shell.app_status.kept;
         kept.push_back(Kept::Key(parse_key_event("j").unwrap()));
-        app.handle_event(key("ctrl-c")).unwrap();
+        app.handle_event(key("ctrl-c"));
     }))]]);
     assert!(harness.quit);
 }
@@ -819,8 +831,7 @@ fn test_keys_on_the_details_files_dont_wait_for_the_diff() {
     harness.run(vec![
         keys("4"),
         vec![Step::Act(Box::new(|app| {
-            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()))
-                .unwrap();
+            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()));
             // as drawing does, before it polls what loads
             app.view.load_in_background();
             assert!(app.view.waits_for(Confirm) && app.view.waits_for(FocusRight));
@@ -840,8 +851,7 @@ fn test_more_context_in_the_details_loads_in_the_background() {
     harness.run(vec![
         keys("4 enter"),
         vec![Step::Act(Box::new(|app| {
-            app.handle_event(AppEvent::Key(parse_key_event("+").unwrap()))
-                .unwrap();
+            app.handle_event(AppEvent::Key(parse_key_event("+").unwrap()));
             assert!(app.view.is_loading());
         }))],
         check(|app| {
@@ -927,6 +937,28 @@ fn test_a_key_after_moving_to_another_commit_acts_on_its_details() {
             assert_eq!(view.focus(), DetailFocus::Pane);
             assert_eq!(detail_path(app), Some("f.txt".into()));
         }),
+    ]);
+}
+
+// A key moving through the files after one moving to another commit, or to the files tab, before
+// a frame is drawn: it waits for the files loading in the background, rather than loading them
+// with the screen frozen.
+#[rstest::rstest]
+#[case::another_commit("shift-j")]
+#[case::files_tab("]")]
+fn test_moving_in_the_files_after_another_commit_waits_for_them(#[case] first: &'static str) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("4 j"),
+        vec![Step::Act(Box::new(move |app| {
+            for key in [first, "j"] {
+                let key = parse_key_event(key).unwrap();
+                app.handle_event(AppEvent::Key(key));
+            }
+            assert_eq!(app.shell.app_status.kept.len(), 1);
+        }))],
     ]);
 }
 
@@ -1181,8 +1213,108 @@ fn test_launch_fetch_holds_no_command_back() {
         keys("f"),
         check(|app| {
             assert!(app.shell.dialog.is_some(), "{:?}", notices(app));
-            assert!(app.ctx.running_task.lock().is_none());
+            assert!(app.ctx.running_tasks.borrow().is_empty());
         }),
+    ]);
+}
+
+// Like lazygit, a git command doesn't wait for another, nor do the changes made meanwhile: a
+// tag is made and a file staged while a fetch from a slow remote runs. Quitting meanwhile waits
+// for both commands, and quits once the last is done.
+#[test]
+fn test_commands_run_beside_a_fetch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = with_remote(dir.path());
+    git(
+        &path,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            "sleep 2; git-upload-pack",
+        ],
+    );
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![vec![Step::Act(Box::new(|app| {
+        app.handle_event(AppEvent::StartTask(super::fetch_all_task()));
+        let tag = crate::git::GitTask::new(
+            crate::git::GitCommand::Tag,
+            &["t1"],
+            "Tagging".into(),
+            "Tagged".into(),
+        );
+        app.handle_event(AppEvent::StartTask(tag));
+        assert_eq!(app.ctx.running_tasks.borrow().iter().count(), 2);
+        app.repository.work_tree().stage_paths(&["f.txt"]).unwrap();
+        app.handle_event(AppEvent::Quit);
+        // the warning it sends, the fetch still running
+        while let Some(event) = app.ec.try_recv() {
+            assert!(app.handle_event(event).is_none());
+        }
+        assert_notice(
+            app,
+            "Quitting once Fetching all remotes and Tagging finish,",
+        );
+    }))]]);
+    assert!(harness.quit);
+    assert_eq!(git(&path, &["tag", "--list"]), "t1\n");
+    assert_eq!(git(&path, &["diff", "--cached", "--name-only"]), "f.txt\n");
+}
+
+// A ref changed outside while the local changes are staged doesn't reload meanwhile, which would
+// drop the staging and its error: it reloads once staged.
+#[test]
+fn test_no_reload_while_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    // staging f.txt takes long, then fails
+    std::fs::write(path.join(".git/info/attributes"), "f.txt filter=slow\n").unwrap();
+    git(&path, &["config", "filter.slow.clean", "sleep 1; exit 1"]);
+    git(&path, &["config", "filter.slow.required", "true"]);
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        keys("j"),
+        vec![Step::Act(Box::new(|app| {
+            app.handle_event(AppEvent::Key(parse_key_event("space").unwrap()));
+            assert!(app.view.is_files_loading());
+            git(app.repository.path(), &["branch", "outside"]);
+            let refs = refs_snapshot(app.repository.path(), app.repository.git_dir()).unwrap();
+            app.handle_event(AppEvent::RefsSnapshot(refs, Default::default()));
+            assert!(!app.is_reloading());
+        }))],
+        check(|app| assert_notice(app, "git add failed")),
+        // the check skipped, made again once staged
+        tick(),
+    ]);
+    assert_eq!(harness.loads.get(), 2);
+}
+
+// A file changed outside shows once its files are laid out in a tree on another thread, which
+// takes long with many of them.
+#[test]
+fn test_files_changed_outside_reload_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        vec![Step::Act(Box::new(|app| {
+            let (path, git_dir) = (app.repository.path(), app.repository.git_dir());
+            std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+            let files = FilesSnapshot::load(path, git_dir, crate::git::IndexRefresh::Skipped);
+            app.handle_event(AppEvent::FilesTick(files, Default::default()));
+            assert!(app.view.is_files_loading());
+        }))],
+        check(|app| assert_eq!(local_change_path(app), Some(":/".into()))),
+        screen(|text| assert!(text.contains("f.txt"), "{text}")),
     ]);
 }
 
@@ -1241,6 +1373,21 @@ fn test_moving_while_reloading_is_kept() {
     ]);
     // the first, and both reloads, the stale one dropped
     assert_eq!(harness.loads.get(), 3);
+}
+
+// A reload asked for again stops the one running, which is no longer used.
+#[test]
+fn test_reload_asked_again_stops_the_one_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![vec![Step::Act(Box::new(|app| {
+        app.handle_event(AppEvent::Reload);
+        let first = app.shell.reload.as_ref().unwrap().cancel.clone();
+        assert!(!first.is_cancelled());
+        app.handle_event(AppEvent::Reload);
+        assert!(first.is_cancelled());
+    }))]]);
 }
 
 #[test]
@@ -1590,35 +1737,6 @@ fn test_checks_skipped_under_a_popup_run_once_it_closes() {
 }
 
 #[test]
-fn test_repository_refuses_changes_while_the_app_runs_a_command() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = repository(dir.path());
-    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
-    // the app's command running, as the repository sees it, also once reloaded
-    let running = |app: &App, on: bool| {
-        *app.ctx.running_task.lock() = on.then(|| crate::git::RunningTask {
-            task: crate::git::GitTask {
-                running: "Pushing master".into(),
-                ..Default::default()
-            },
-            head_before_commit: None,
-            quit_after: false,
-        });
-    };
-    let mut harness = Harness::new(&path, launch());
-    harness.run(vec![
-        keys("ctrl-r"),
-        check(move |app| {
-            running(app, true);
-            let refused = app.repository.work_tree().stage_paths(&["f.txt"]);
-            running(app, false);
-            assert_eq!(refused, Err("Pushing master, wait for it to finish".into()));
-            app.repository.work_tree().stage_paths(&["f.txt"]).unwrap();
-        }),
-    ]);
-}
-
-#[test]
 fn test_no_file_keys_on_a_commit_without_changes() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
@@ -1925,6 +2043,37 @@ fn test_tabs_from_git_show_as_spaces() {
     ]);
 }
 
+// Text pasted after a key kept, like / pressed while what it acts on loads, waits for it, and
+// is typed into the search it opens, rather than dropped as pasted where nothing is typed.
+#[test]
+fn test_paste_after_a_key_kept_follows_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        vec![Step::Act(Box::new(|app| {
+            let key = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
+            app.shell
+                .app_status
+                .kept
+                .push_back(Kept::Event(UserEvent::Search, key));
+            app.handle_event(AppEvent::Paste("f.t".into()));
+        }))],
+        check(|app| {
+            let said = &app.shell.app_status.status_line;
+            assert!(
+                matches!(said, StatusLine::Input { message, .. } if message == "filter: f.t"),
+                "{said:?}"
+            );
+        }),
+    ]);
+}
+
 #[test]
 fn test_paste_is_typed() {
     let dir = tempfile::tempdir().unwrap();
@@ -2195,7 +2344,7 @@ fn test_fold_merge() {
                 panic!("no commit list")
             };
             assert_eq!(view.as_list_state().position(), (1, count));
-            assert_eq!(app.shell.folded_merges().len(), folded);
+            assert_eq!(app.shell.folded_merges.len(), folded);
         })
     };
     harness.run(vec![
@@ -2254,10 +2403,10 @@ fn test_fold_merge_laid_out_before_a_reload() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         keys("h"),
-        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        check(|app| assert_eq!(app.shell.folded_merges.len(), 1)),
         // the graph laid out on another thread meanwhile, from the repository before the reload
         vec![Step::Act(Box::new(move |app: &mut App| {
-            let folded = app.shell.folded_merges().clone();
+            let folded = app.shell.folded_merges.clone();
             let layout = GraphLayout::calc(app.repository, None, &folded);
             keep.replace(Some((Arc::clone(app.repository), layout)));
         }))],
@@ -2276,7 +2425,7 @@ fn test_fold_merge_laid_out_before_a_reload() {
             let layout = Box::new(layout);
             app.ec.send(AppEvent::Regraphed { from, layout });
         }))],
-        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        check(|app| assert_eq!(app.shell.folded_merges.len(), 1)),
     ]);
 }
 
@@ -2302,7 +2451,7 @@ fn test_fold_merge_draws_over_the_last_frame() {
         clears(PendingClear::None),
         keys("h"),
         // the rows that changed are drawn again over it, not the whole screen
-        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        check(|app| assert_eq!(app.shell.folded_merges.len(), 1)),
         clears(PendingClear::None),
     ]);
 }
@@ -2345,7 +2494,7 @@ fn test_fold_merge_while_reloading_or_laying_out() {
                 panic!("no commit list")
             };
             assert_eq!(view.as_list_state().position(), (1, count));
-            assert_eq!(app.shell.folded_merges().len(), folded);
+            assert_eq!(app.shell.folded_merges.len(), folded);
         })
     };
     harness.run(vec![
@@ -2357,6 +2506,22 @@ fn test_fold_merge_while_reloading_or_laying_out() {
         keys_at_once("l h l"),
         shown(4, 0),
     ]);
+}
+
+// The reload landing with the graph laid out before a merge was folded shows it, then lays it
+// out again folded in the background, rather than on the thread drawing; the layout of the
+// repository before is dropped.
+#[test]
+fn test_fold_while_reloading_lays_out_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![keys_at_once("ctrl-r h")]);
+    assert_eq!(harness.regraphs.get(), 2);
 }
 
 #[test]
@@ -2375,7 +2540,7 @@ fn test_enter_on_a_ref_unfolds_the_merge_hiding_it() {
                 panic!("no commit list")
             };
             assert_eq!(view.as_list_state().position().1, count);
-            assert_eq!(app.shell.folded_merges().len(), folded);
+            assert_eq!(app.shell.folded_merges.len(), folded);
         })
     };
     harness.run(vec![
@@ -2434,7 +2599,7 @@ fn test_fold_merge_with_branch_only() {
         shown(3, Some("master only")),
         keys("shift-l"),
         shown(3, None),
-        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        check(|app| assert_eq!(app.shell.folded_merges.len(), 1)),
     ]);
     // the branch only view loads the repository again, folding draws the graph again only
     assert_eq!(harness.loads.get(), 3);
@@ -2448,7 +2613,7 @@ fn test_blame_and_timeline_open_once_loaded() {
     let mut harness = Harness::new(&path, launch());
     let open = |event: AppEvent| {
         vec![Step::Act(Box::new(move |app: &mut App| {
-            app.handle_event(event).unwrap();
+            app.handle_event(event);
             // the history loads on another thread: no window yet, and nothing said in the status
             // line while it is quick, see `shows_loading`
             assert!(app.shell.overlay.is_none());
@@ -2523,8 +2688,7 @@ fn test_details_stay_while_the_next_load() {
         vec![Step::Act(Box::new(move |app: &mut App| {
             let before = shown(&tips, &draw_now(app));
             assert_eq!(before.len(), 1, "one commit's details");
-            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()))
-                .unwrap();
+            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()));
             app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
             // loaded already on a fast machine, nothing to see in between
             if !app.is_loading() {
@@ -2578,8 +2742,7 @@ fn test_local_changes_diff_stays_while_the_next_loads() {
                 screen.contains("FFFF") && screen.contains("GGGG"),
                 "{screen}"
             );
-            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()))
-                .unwrap();
+            app.handle_event(AppEvent::Key(parse_key_event("j").unwrap()));
             app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
             // loaded already on a fast machine, nothing to see in between
             if !app.is_loading() {
@@ -4329,6 +4492,36 @@ fn test_click_while_typing_the_message_stops_typing() {
     ]);
 }
 
+// A command that leaves no operation of its own to go on with, like a tag made while a merge is
+// stopped on conflicts, keeps the graph: only one starting or going on with the operation, which
+// waits on the local changes page, goes there.
+#[test]
+fn test_a_command_beside_an_operation_stopped_keeps_the_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let merge = crate::git::git_command()
+        .args(["merge", "-q", "feat"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    let mut harness = Harness::new(&path, launch());
+    let tag = crate::git::GitTask::new(
+        crate::git::GitCommand::Tag,
+        &["t1"],
+        "Tagging".into(),
+        "Tagged".into(),
+    );
+    harness.run(vec![
+        vec![Step::Event(Box::new(AppEvent::StartTask(tag)))],
+        check(|app| {
+            assert!(app.repository.operation_in_progress().is_some());
+            assert!(matches!(app.view, View::List(_)));
+        }),
+    ]);
+    assert_eq!(git(&path, &["tag", "--list"]), "t1\n");
+}
+
 #[test]
 fn test_double_click_in_a_conflict_keeps_a_side() {
     let dir = tempfile::tempdir().unwrap();
@@ -5090,7 +5283,7 @@ fn test_popup_checks_for_conflicts_in_the_background() {
             // cherry-picking feat1, the second row, onto master, which changed its line of f.txt
             // too: the popup opens before the conflict is found, saying it looks for them
             let key = parse_key_event("shift-c").unwrap();
-            app.handle_event(AppEvent::Key(key)).unwrap();
+            app.handle_event(AppEvent::Key(key));
             let dialog = app.visible_dialog().expect("the popup");
             assert!(dialog.is_checking_conflicts());
             let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
@@ -5397,7 +5590,7 @@ fn test_fold_merge_keeps_the_focus_of_the_commit_list_in_the_details() {
         focused(DetailFocus::List),
         // folding the merge draws the graph again, a new page from the same context
         keys("h"),
-        check(|app| assert_eq!(app.shell.folded_merges().len(), 1)),
+        check(|app| assert_eq!(app.shell.folded_merges.len(), 1)),
         focused(DetailFocus::List),
         // and into the details, which the focus leaves the list for
         keys("enter"),
@@ -5915,7 +6108,7 @@ fn test_held_key_loads_where_it_stops() {
         // the repeats of a held key, handled before the app draws again
         for _ in 0..10 {
             let j = AppEvent::Key(parse_key_event("j").unwrap());
-            app.handle_event(j).unwrap();
+            app.handle_event(j);
         }
         assert!(!app.view.is_loading());
     }))]]);
@@ -5981,10 +6174,10 @@ fn test_commands_wait_for_the_files_staged() {
                 app.ec.send(AppEvent::Key(parse_key_event(key).unwrap()));
             }
             while let Some(event) = app.ec.try_recv() {
-                assert!(app.handle_event(event).unwrap().is_none(), "{keys}");
+                assert!(app.handle_event(event).is_none(), "{keys}");
             }
             assert!(app.view.is_files_loading(), "{keys}");
-            let running = app.ctx.running_task.lock().is_some();
+            let running = !app.ctx.running_tasks.borrow().is_empty();
             assert!(!running && !app.is_reloading(), "{keys}");
         }))]]);
         assert_eq!(
@@ -6024,8 +6217,7 @@ fn test_details_list_the_changes_of_the_commit_moved_to() {
         screen(lists),
         // loaded right away, before a key acts on them
         vec![Step::Act(Box::new(|app| {
-            app.handle_event(AppEvent::Key(parse_key_event("shift-j").unwrap()))
-                .unwrap();
+            app.handle_event(AppEvent::Key(parse_key_event("shift-j").unwrap()));
             let View::Detail(view) = &mut app.view else {
                 panic!("no details");
             };
@@ -6048,11 +6240,11 @@ fn test_esc_acts_at_once_while_loading() {
     harness.run(vec![
         keys("enter 3"),
         vec![Step::Act(Box::new(move |app| {
-            app.handle_event(key("shift-j")).unwrap();
+            app.handle_event(key("shift-j"));
             // the changes of feat1 start loading once drawn
             app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
             assert!(app.view.is_loading());
-            app.handle_event(key("esc")).unwrap();
+            app.handle_event(key("esc"));
             assert!(app.shell.app_status.kept.is_empty());
             assert!(app.view.is_loading());
         }))],
@@ -6072,8 +6264,8 @@ fn test_esc_acts_at_once_while_loading() {
         keys("/ n enter"),
         vec![Step::Act(Box::new(move |app| assert!(filtered(app))))],
         vec![Step::Act(Box::new(move |app| {
-            app.handle_event(key("space")).unwrap();
-            app.handle_event(key("esc")).unwrap();
+            app.handle_event(key("space"));
+            app.handle_event(key("esc"));
             assert!(app.view.is_files_loading());
             assert!(!filtered(app));
         }))],
@@ -6103,8 +6295,8 @@ fn test_keys_wait_for_the_blame_opening() {
     let mut harness = Harness::new(&path, launch());
     harness.run(vec![
         vec![Step::Act(Box::new(move |app| {
-            app.handle_event(open()).unwrap();
-            app.handle_event(key("j")).unwrap();
+            app.handle_event(open());
+            app.handle_event(key("j"));
             assert_eq!(app.shell.app_status.kept.len(), 1);
             let View::List(view) = &app.view else {
                 panic!("no commit list");
@@ -6115,15 +6307,15 @@ fn test_keys_wait_for_the_blame_opening() {
         overlay("blame"),
         keys("esc esc"),
         vec![Step::Act(Box::new(move |app| {
-            app.handle_event(opened()).unwrap();
-            app.handle_event(key("esc")).unwrap();
+            app.handle_event(opened());
+            app.handle_event(key("esc"));
             assert!(app.shell.opening.is_none());
         }))],
         overlay("none"),
         vec![Step::Act(Box::new(move |app| {
-            app.handle_event(reopened()).unwrap();
-            app.handle_event(key("j")).unwrap();
-            app.handle_event(key("esc")).unwrap();
+            app.handle_event(reopened());
+            app.handle_event(key("j"));
+            app.handle_event(key("esc"));
             assert!(app.shell.app_status.kept.is_empty());
             assert!(app.shell.opening.is_none());
         }))],
@@ -6172,7 +6364,7 @@ fn test_details_and_local_changes_open_loading() {
         vec![Step::Act(Box::new(move |app| {
             app.ec.send(key("enter"));
             while let Some(event) = app.ec.try_recv() {
-                app.handle_event(event).unwrap();
+                app.handle_event(event);
             }
             app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
             assert!(matches!(app.view, View::Detail(_)));
@@ -6181,7 +6373,7 @@ fn test_details_and_local_changes_open_loading() {
         // the local changes shown once, then the graph again
         keys("esc tab tab"),
         vec![Step::Act(Box::new(move |app| {
-            app.handle_event(key("tab")).unwrap();
+            app.handle_event(key("tab"));
             // shown before, they may have changed since
             assert!(matches!(app.view, View::LocalChanges(_)));
             assert!(app.view.is_files_loading());
@@ -6202,10 +6394,10 @@ fn test_popup_runs_once_its_conflicts_are_checked() {
         keys("j"),
         vec![Step::Act(Box::new(move |app| {
             // cherry-picking feat1 onto master, which changed its line of f.txt too
-            app.handle_event(key("shift-c")).unwrap();
+            app.handle_event(key("shift-c"));
             let dialog = app.visible_dialog().expect("the popup");
             assert!(dialog.is_checking_conflicts() && !dialog.can_run());
-            app.handle_event(key("enter")).unwrap();
+            app.handle_event(key("enter"));
             assert_eq!(app.shell.app_status.kept.len(), 1);
         }))],
         screen(|text| assert!(text.contains("Conflicts at"), "{text}")),

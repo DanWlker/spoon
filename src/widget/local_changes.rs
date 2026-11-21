@@ -18,9 +18,9 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
-        AfterTask, CommitHash, ConflictSide, DiffOf, DiffWork, FilesSnapshot, GitCommand, GitTask,
-        LocalChangeFile, LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository,
-        Seen, WorkTree,
+        submodule_gitlink_at, submodule_info, AfterTask, CommitHash, ConflictSide, DiffOf,
+        DiffWork, FilesSnapshot, GitCommand, GitTask, IndexRefresh, LocalChangeFile,
+        LocalChangeStatus, LocalChanges, Operation, PatchDirection, Repository, Seen, WorkTree,
     },
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
@@ -70,7 +70,18 @@ enum Beside<'a> {
     // loading on another thread, see `load_conflict`
     ConflictLoading(Job<ConflictView>),
     Conflict(ConflictPanel),
+    // what it compares read on another thread, see `prepare_diff`
+    SubmoduleReading(Job<Option<SubmoduleGitlinks>>),
     Submodule(Box<SubmodulePanel<'a>>),
+}
+
+// The two gitlinks a section compares for a submodule, and the files uncommitted in it, see
+// `LocalChangesState::submodule_work`.
+#[derive(Debug)]
+struct SubmoduleGitlinks {
+    from: String,
+    to: Option<String>,
+    uncommitted: Option<usize>,
 }
 
 // What the state asks the app for, once the event is handled: a git command run in the
@@ -150,6 +161,29 @@ fn file_tree(files: &[LocalChangeFile]) -> FileTree {
     FileTree::new(files.iter().map(|f| f.path.as_str()))
 }
 
+// The files loaded again, with the trees of the sections built from them on the thread loading
+// them (100k files take ~50ms), and the error of the change made before, see `change_files`.
+#[derive(Debug)]
+struct ReloadedFiles {
+    result: Result<(), String>,
+    files: FilesSnapshot,
+    trees: [FileTree; 2],
+}
+
+impl ReloadedFiles {
+    fn new(result: Result<(), String>, files: FilesSnapshot) -> Self {
+        let trees = [
+            file_tree(&files.changes.unstaged),
+            file_tree(&files.changes.staged),
+        ];
+        ReloadedFiles {
+            result,
+            files,
+            trees,
+        }
+    }
+}
+
 // What is kept of the page while it isn't shown, or across a refresh.
 #[derive(Debug, Clone)]
 pub struct LocalChangesSnapshot {
@@ -218,7 +252,7 @@ pub struct LocalChangesState<'a> {
     background: Option<Sender>,
     // the files loading after a change (staging, unstaging) made on the same thread before them,
     // with its error; shown once loaded, see `change_files`
-    files_loading: Option<Job<(Result<(), String>, FilesSnapshot)>>,
+    files_loading: Option<Job<ReloadedFiles>>,
     // when the files last started loading after a change, see `reload_if_changed`
     reloaded: Instant,
     // what shows beside the files, see `prepare_diff`
@@ -402,9 +436,7 @@ impl<'a> LocalChangesState<'a> {
     // in the details, and the conflict panel once entered.
     fn focus(&self) -> Focus {
         match self.chosen {
-            Focus::Files | Focus::Side
-                if self.conflict().is_none() && self.submodule().is_none() =>
-            {
+            Focus::Files | Focus::Side if self.conflict().is_none() && !self.shows_submodule() => {
                 if self.pane.is_focused() {
                     Focus::Side
                 } else {
@@ -776,10 +808,10 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(|v| files(v) && !empty(v))
         // resolving a conflict, or a submodule's changes, act
-        .moves(|v| !(v.conflict().is_some() && !picks(v)) && v.submodule().is_none())
+        .moves(|v| !(v.conflict().is_some() && !picks(v)) && !v.shows_submodule())
         .short(|v| {
             let resolve = v.conflict().is_some() && !picks(v);
-            match (resolve, v.submodule().is_some()) {
+            match (resolve, v.shows_submodule()) {
                 (true, _) => "resolve",
                 (false, true) => "submodule",
                 (false, false) => "select hunks",
@@ -824,7 +856,7 @@ impl<'a> LocalChangesState<'a> {
             "Discard the unstaged file, directory, hunk or line",
         )
         // `git restore` leaves a submodule's checkout as it is
-        .when(|v| (row(v) || diff(v)) && unstaged(v) && v.submodule().is_none());
+        .when(|v| (row(v) || diff(v)) && unstaged(v) && !v.shows_submodule());
         // on the empty unstaged files enter commits too, see `enter`; with nothing to commit they
         // say so, unlisted
         let commits = move |v: &Self| commit(v) || (files(v) && empty(v) && unstaged(v));
@@ -1049,7 +1081,7 @@ impl<'a> LocalChangesState<'a> {
             }
             Focus::Submodule => {}
             // the submodule panel is read on its own, like the diff
-            Focus::Files if self.submodule().is_some() => self.chosen = Focus::Submodule,
+            Focus::Files if self.shows_submodule() => self.chosen = Focus::Submodule,
             Focus::Files if self.picked().is_empty() && self.conflict().is_some() => {
                 // a conflicted file is resolved from the conflict panel instead of its diff
                 if let Some(conflict) = self.conflict_mut() {
@@ -1172,7 +1204,7 @@ impl<'a> LocalChangesState<'a> {
                 self.chosen = Focus::Commit(field);
             }
             Target::Submodule => {
-                if self.submodule().is_some() {
+                if self.shows_submodule() {
                     self.chosen = Focus::Submodule;
                 }
             }
@@ -1382,7 +1414,13 @@ impl<'a> LocalChangesState<'a> {
         let changed = !stale && files.stamp != self.files_stamp;
         match changed {
             true if self.needs_reload(&files.changes) => self.reload(),
-            true => self.reload_with(files),
+            true => match &self.background {
+                Some(tx) => {
+                    let work = move |_: &Cancel| ReloadedFiles::new(Ok(()), files);
+                    self.files_loading = Some(Job::read(tx.clone(), work));
+                }
+                None => self.show_files(ReloadedFiles::new(Ok(()), files)),
+            },
             false => {}
         }
         changed
@@ -1416,11 +1454,11 @@ impl<'a> LocalChangesState<'a> {
         let amend_base = self.draft.amend_base().map(String::from);
         let work = move || {
             let result = change(&work_tree);
-            let mut files = work_tree.load_files();
+            let mut files = work_tree.load_files(IndexRefresh::Saved);
             if let Some(base) = amend_base {
                 files.changes.staged = work_tree.staged_changes_against(&base);
             }
-            (result, files)
+            ReloadedFiles::new(result, files)
         };
         match &self.background {
             Some(tx) => {
@@ -1428,32 +1466,33 @@ impl<'a> LocalChangesState<'a> {
                 Ok(())
             }
             None => {
-                let (result, files) = work();
-                self.reload_with(files);
+                let mut reloaded = work();
+                let result = std::mem::replace(&mut reloaded.result, Ok(()));
+                self.show_files(reloaded);
                 result
             }
         }
     }
 
     // The files loaded after a change, the error of the change shown.
-    fn show_files(&mut self, (result, files): (Result<(), String>, FilesSnapshot)) {
+    fn show_files(&mut self, reloaded: ReloadedFiles) {
+        let ReloadedFiles {
+            result,
+            files: FilesSnapshot { changes, stamp, .. },
+            trees,
+        } = reloaded;
         if let (Err(err), Some(tx)) = (result, &self.background) {
             tx.send(AppEvent::NotifyError(err));
         }
-        self.reload_with(files);
-    }
-
-    fn reload_with(&mut self, files: FilesSnapshot) {
         let selected_path = self.selected_path();
-        let FilesSnapshot { changes, stamp, .. } = files;
         self.files_stamp = stamp;
         self.changes = changes;
         self.prepare_message();
         self.sync_amend();
         self.offer_resolved_commit();
         let files = [&self.changes.unstaged, &self.changes.staged];
-        for (section, files) in self.sections.iter_mut().zip(files) {
-            section.tree.set_tree(file_tree(files));
+        for ((section, files), tree) in self.sections.iter_mut().zip(files).zip(trees) {
+            section.tree.set_tree(tree);
             section.tree.cancel_visual();
             // the picks with no changes left, discarded or stashed, go: those that are no file nor
             // directory of one, see `path_contains`
@@ -1804,8 +1843,12 @@ impl<'a> LocalChangesState<'a> {
     // one loading in the background: before a key acts on it.
     pub fn load_stale_diff(&mut self) {
         self.load_stale_files();
-        self.pane.wait_loading();
         self.wait_conflict();
+        match std::mem::replace(&mut self.beside, Beside::Diff) {
+            Beside::SubmoduleReading(job) => self.show_submodule_read(job.wait()),
+            beside => self.beside = beside,
+        }
+        self.pane.wait_loading();
         if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.wait(&self.ctx);
         }
@@ -1824,8 +1867,11 @@ impl<'a> LocalChangesState<'a> {
             .submodule()
             .and_then(SubmodulePanel::loading_since)
             .is_some();
-        let conflict = matches!(self.beside, Beside::ConflictLoading(_));
-        self.pane.loading_since().is_some() || submodule || conflict
+        let reading = matches!(
+            self.beside,
+            Beside::ConflictLoading(_) | Beside::SubmoduleReading(_)
+        );
+        self.pane.loading_since().is_some() || submodule || reading
     }
 
     // Before drawing: starts loading the diff of the row the cursor moved to on another thread,
@@ -1840,8 +1886,15 @@ impl<'a> LocalChangesState<'a> {
             self.pane
                 .load_in_background(tx.clone(), self.repository.converted_paths(), work);
         }
-        self.pane.poll_loading();
         self.poll_conflict();
+        let read = match &self.beside {
+            Beside::SubmoduleReading(job) => job.try_take(),
+            _ => None,
+        };
+        if let Some(read) = read {
+            self.show_submodule_read(read);
+        }
+        self.pane.poll_loading();
         if let Beside::Submodule(submodule) = &mut self.beside {
             submodule.poll(&self.ctx);
         }
@@ -1856,16 +1909,21 @@ impl<'a> LocalChangesState<'a> {
     fn load_diff(&mut self) {
         self.diff_stale = false;
         if self.prepare_diff(self.background.clone().as_ref()) {
-            let work = self.diff_work();
-            match &self.background {
-                Some(tx) => {
-                    let converted = self.repository.converted_paths();
-                    self.pane.load_in_background(tx.clone(), converted, work)
-                }
-                None => self
-                    .pane
-                    .show_loaded(&work(&Cancel::default()), self.repository),
+            self.load_pane();
+        }
+    }
+
+    // The diff of the selected row, see `load_diff`, beside the files as prepared.
+    fn load_pane(&mut self) {
+        let work = self.diff_work();
+        match &self.background {
+            Some(tx) => {
+                let converted = self.repository.converted_paths();
+                self.pane.load_in_background(tx.clone(), converted, work)
             }
+            None => self
+                .pane
+                .show_loaded(&work(&Cancel::default()), self.repository),
         }
     }
 
@@ -1918,11 +1976,14 @@ impl<'a> LocalChangesState<'a> {
         if let Beside::Submodule(panel) = std::mem::replace(&mut self.beside, Beside::Diff) {
             self.submodule_cache = Some((panel.key().to_string(), *panel));
         }
-        self.beside = match self.load_conflict(tx) {
-            Some(conflict) => conflict,
-            None => self
-                .load_submodule()
-                .map_or(Beside::Diff, |panel| Beside::Submodule(Box::new(panel))),
+        self.beside = match (self.load_conflict(tx), self.submodule_work()) {
+            (Some(conflict), _) => conflict,
+            // stopped once moved past, see `Job::read`
+            (None, Some(work)) => match tx {
+                Some(tx) => Beside::SubmoduleReading(Job::read(tx.clone(), work)),
+                None => self.submodule_beside(work(&Cancel::default())),
+            },
+            (None, None) => Beside::Diff,
         };
         // the diff or conflict selected before is gone, the commit section stays
         if !self.is_commit_focused() {
@@ -1930,7 +1991,7 @@ impl<'a> LocalChangesState<'a> {
         }
         // a submodule has no hunks to select, the panel beside the files shows it instead; else
         // the diff loaded replaces the one shown, see `DiffPane::load_in_background`
-        let submodule = self.submodule().is_some();
+        let submodule = self.shows_submodule();
         if submodule {
             self.pane.set_diff(None);
         }
@@ -1952,43 +2013,82 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
-    // The submodule of the selected file, shown in place of its gitlink diff. The last panel is
-    // reused when it shows the same submodule, so moving away and back is instant; only its
-    // uncommitted count is read again. None for a directory or a plain file.
-    fn load_submodule(&mut self) -> Option<SubmodulePanel<'a>> {
-        let row = self.selected_row()?;
-        let is_dir = row.is_dir();
+    // Whether a submodule shows beside the files, its panel or what it compares still being read.
+    fn shows_submodule(&self) -> bool {
+        matches!(
+            self.beside,
+            Beside::Submodule(_) | Beside::SubmoduleReading(_)
+        )
+    }
+
+    // What the section compares of the submodule of the selected file, to read on another
+    // thread, as it reads the submodule's status; None for a directory or a plain file.
+    fn submodule_work(
+        &self,
+    ) -> Option<impl FnOnce(&Cancel) -> Option<SubmoduleGitlinks> + Send + 'static> {
+        let row = self.selected_row().filter(|row| !row.is_dir())?;
         let path = row.path.clone();
-        if is_dir {
+        if !self.repository.is_submodule(&path) {
             return None;
         }
-        let info = self.repository.submodule_info(&path)?;
+        let root = self.repository.path().to_path_buf();
         // the two gitlinks the section compares: the index and the working tree when unstaged,
         // the base commit and the index when staged
-        let (from, to) = match self.section {
-            LocalChangesSection::Unstaged => (info.index.clone(), info.head.clone()),
+        let base = match self.section {
+            LocalChangesSection::Unstaged => None,
             LocalChangesSection::Staged => {
-                let base = self.draft.amend_base().unwrap_or("HEAD");
-                let from = self.repository.submodule_gitlink_at(base, &path)?;
-                (from, Some(info.index.clone()))
+                Some(self.draft.amend_base().unwrap_or("HEAD").to_string())
             }
         };
-        let key = submodule_key(&path, &from, to.as_deref());
+        Some(move |_: &Cancel| {
+            let info = submodule_info(&root, &path)?;
+            Some(match base {
+                None => SubmoduleGitlinks {
+                    from: info.index,
+                    to: info.head,
+                    uncommitted: info.uncommitted,
+                },
+                Some(base) => SubmoduleGitlinks {
+                    from: submodule_gitlink_at(&root, &base, &path)?,
+                    to: Some(info.index),
+                    uncommitted: info.uncommitted,
+                },
+            })
+        })
+    }
+
+    // The submodule of the selected file once read, shown in place of its gitlink diff; that diff
+    // when it has no two gitlinks to compare, like one just added. The last panel is reused when
+    // it shows the same submodule, so moving away and back is instant; only its uncommitted count
+    // is read again.
+    fn submodule_beside(&mut self, read: Option<SubmoduleGitlinks>) -> Beside<'a> {
+        let (Some(read), Some(path)) = (read, self.selected_path()) else {
+            return Beside::Diff;
+        };
+        let key = submodule_key(&path, &read.from, read.to.as_deref());
         if let Some((cached_key, mut panel)) = self.submodule_cache.take() {
             if cached_key == key {
-                panel.set_uncommitted(info.uncommitted);
-                return Some(panel);
+                panel.set_uncommitted(read.uncommitted);
+                return Beside::Submodule(Box::new(panel));
             }
         }
-        Some(SubmodulePanel::between(
+        Beside::Submodule(Box::new(SubmodulePanel::between(
             self.repository,
             &self.ctx,
             &path,
-            &from,
-            to.as_deref(),
-            info.uncommitted,
+            &read.from,
+            read.to.as_deref(),
+            read.uncommitted,
             self.background.as_ref(),
-        ))
+        )))
+    }
+
+    // What the submodule compares, once read: its panel, else the diff of its gitlink.
+    fn show_submodule_read(&mut self, read: Option<SubmoduleGitlinks>) {
+        self.beside = self.submodule_beside(read);
+        if matches!(self.beside, Beside::Diff) {
+            self.load_pane();
+        }
     }
 }
 
@@ -2035,7 +2135,7 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         self.render_file_section(state, LocalChangesSection::Staged, areas.staged, buf);
         if let Beside::Conflict(_) | Beside::ConflictLoading(_) = state.beside {
             self.render_conflict(state, areas.diff, buf);
-        } else if state.submodule().is_some() {
+        } else if state.shows_submodule() {
             self.render_submodule(state, areas.diff, buf);
         } else {
             self.render_diff(state, areas.diff, buf);
@@ -2197,6 +2297,13 @@ impl LocalChangesPanel<'_> {
             badge(" submodule changed ", theme.status_warn_fg, theme),
         ]);
         let focused = self.focused && state.is_submodule_focused();
+        if let Beside::SubmoduleReading(job) = &state.beside {
+            let note = loading_note(Some(job.started()));
+            let note = note.map(|note| Span::raw(format!(" {note} ")).fg(theme.highlight_fg));
+            let title = Line::from_iter(title.spans.into_iter().chain(note));
+            render_panel(buf, area, title, focused, theme);
+            return;
+        }
         let Some(submodule) = state.submodule_mut() else {
             return;
         };
@@ -2315,6 +2422,57 @@ mod tests {
         state.back();
         assert!(state.is_files_focused());
         assert!(state.request_edit().is_err(), "a submodule is a directory");
+        Ok(())
+    }
+
+    // In the app, what a submodule's row compares is read on another thread, as it reads the
+    // submodule's status: its keys are those of a submodule meanwhile, and a key going into it
+    // waits for it.
+    #[test]
+    fn test_submodule_reads_in_the_background() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("init", "2024-01-01");
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        git(
+            &superproject,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                base.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        repo.commit("add sub", "2024-01-02");
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        fs::write(sub.join("a.txt"), "two\n")?;
+        sub_repo.add(&["a.txt"]);
+        sub_repo.commit("second", "2024-01-03");
+
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let ec = crate::event::EventController::without_terminal();
+        let mut state =
+            LocalChangesState::restore(&repository, test_ctx(), None, Some(ec.sender()));
+        let pos = state.rows().iter().position(|r| r.path == "sub").unwrap();
+        state.move_cursor(pos);
+        // as drawing does, before it polls what loads
+        state.prepare_diff(Some(&ec.sender()));
+        assert!(matches!(state.beside, Beside::SubmoduleReading(_)));
+        assert!(!state.keys().takes(UserEvent::Discard));
+        // as the next key does
+        state.load_stale_diff();
+        assert_eq!(state.submodule().unwrap().subjects(), ["second"]);
         Ok(())
     }
 
@@ -4834,7 +4992,7 @@ mod tests {
         select_row(&mut state, "a.txt");
         state.pane.scroll_state().scroll(3);
         // as loaded in the background
-        let files = || FilesSnapshot::load(repo_path, repository.git_dir());
+        let files = || FilesSnapshot::load(repo_path, repository.git_dir(), IndexRefresh::Skipped);
 
         // nothing changed: the diff stays scrolled
         state.reload_if_changed(files());
