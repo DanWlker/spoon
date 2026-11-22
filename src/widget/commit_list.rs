@@ -17,7 +17,7 @@ use crate::{
     context::AppContext,
     event::AppEvent,
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
-    graph::{Fold, GraphImageManager, GraphImages},
+    graph::{Fold, Graph, GraphImageManager, GraphImages},
     keybind::UserEvent,
     layout::{Closes, RowMap, Target},
     pointer::OnPicks,
@@ -114,15 +114,22 @@ pub struct SearchRefreshContext {
     query: String,
 }
 
+// Whether the commit list dims the commits off the current branch, see `CommitInfo::on_head`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dimming {
+    OffHead,
+    None,
+}
+
+// The commits of a graph as a list, row for row: what a row shows of its commit, its refs and
+// whether it is dimmed, is asked of the repository when needed, for the rows drawn, so a list of
+// 100k commits is made at once again on each reload.
 #[derive(Debug)]
 pub struct CommitListState<'a> {
-    commits: Vec<CommitInfo<'a>>,
-    commit_hash_set: FxHashSet<&'a CommitHash>,
+    repository: &'a Repository,
+    // the rows, see `graph`
     graph_image_manager: GraphImageManager<'a>,
-    graph_cell_width: u16,
-
-    // the commit of each ref by its full name ("refs/heads/main", "stash@{0}", "HEAD")
-    ref_name_to_commit_index_map: FxHashMap<String, usize>,
+    dimming: Dimming,
 
     // the search, typed like the others, see `TreeQuery`
     query: TreeQuery,
@@ -143,22 +150,19 @@ pub struct CommitListState<'a> {
 }
 
 impl<'a> CommitListState<'a> {
+    // The list of the commits of the graph of `repository`.
     pub fn new(
-        commits: Vec<CommitInfo<'a>>,
+        repository: &'a Repository,
         graph_image_manager: GraphImageManager<'a>,
-        graph_cell_width: u16,
-        ref_name_to_commit_index_map: FxHashMap<String, usize>,
+        dimming: Dimming,
         search_options: Rc<Cell<SearchOptions>>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
-        let commit_hash_set = commits.iter().map(|c| &c.commit.commit_hash).collect();
-        let search_matches = vec![false; commits.len()];
+        let search_matches = vec![false; graph_image_manager.graph().commits.len()];
         CommitListState {
-            commits,
-            commit_hash_set,
+            repository,
             graph_image_manager,
-            graph_cell_width,
-            ref_name_to_commit_index_map,
+            dimming,
             query: TreeQuery::default(),
             search_options,
             search_matches,
@@ -172,7 +176,36 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn graph_area_cell_width(&self) -> u16 {
-        self.graph_cell_width + 1 // right pad
+        self.graph_image_manager.graph_cell_width() + 1 // right pad
+    }
+
+    // The graph whose commits are the rows, in its order.
+    fn graph(&self) -> &Graph<'a> {
+        self.graph_image_manager.graph()
+    }
+
+    // The commit of each row.
+    fn rows(&self) -> &[&'a Commit] {
+        &self.graph().commits
+    }
+
+    // What the row shows of its commit.
+    fn info(&self, row: usize) -> CommitInfo<'a> {
+        let commit = self.rows()[row];
+        let on_head = match self.dimming {
+            Dimming::OffHead => self.repository.head_history().contains(&commit.commit_hash),
+            Dimming::None => true,
+        };
+        let refs = self.repository.refs(&commit.commit_hash);
+        CommitInfo::new(commit, refs, self.repository.branch_tracking(), on_head)
+    }
+
+    // What the rows drawn show, from the first one shown.
+    fn shown_infos(&self) -> Vec<CommitInfo<'a>> {
+        let rows = self.cursor.offset()..(self.cursor.offset() + self.cursor.height());
+        rows.take_while(|&row| row < self.len())
+            .map(|row| self.info(row))
+            .collect()
     }
 
     pub fn picked_commit_hashes(&self) -> &[CommitHash] {
@@ -191,7 +224,7 @@ impl<'a> CommitListState<'a> {
     // Starts or ends a visual selection, picking the commits from where it started to the selected
     // one.
     pub fn toggle_visual(&mut self) {
-        if self.commits.is_empty() {
+        if self.is_empty() {
             return;
         }
         self.cursor.toggle_visual();
@@ -204,11 +237,11 @@ impl<'a> CommitListState<'a> {
 
     // The commits from where the visual selection started to the cursor, see `Picks`.
     fn sync_visual_picks(&mut self) {
-        let Some(range) = self.cursor.visual_range(self.commits.len()) else {
+        let Some(range) = self.cursor.visual_range(self.len()) else {
             return;
         };
-        let hashes = self.commits[range].iter().map(|c| &c.commit.commit_hash);
-        self.picked.sync_visual(hashes);
+        let rows = &self.graph_image_manager.graph().commits[range];
+        self.picked.sync_visual(rows.iter().map(|c| &c.commit_hash));
     }
 
     pub fn clear_picks(&mut self) {
@@ -219,12 +252,12 @@ impl<'a> CommitListState<'a> {
     // Selects the commit at `row`, as the mouse does, see `OnPicks`.
     pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
         // no row, on empty space, is none picked
-        let commit = row.and_then(|row| self.commits.get(row));
-        let picked = commit.is_some_and(|commit| self.is_picked(&commit.commit.commit_hash));
+        let commit = row.and_then(|row| self.rows().get(row));
+        let picked = commit.is_some_and(|commit| self.is_picked(&commit.commit_hash));
         if picks == OnPicks::ClearUnlessPicked && !picked {
             self.clear_picks();
         }
-        let Some(row) = row.filter(|row| *row < self.commits.len()) else {
+        let Some(row) = row.filter(|row| *row < self.len()) else {
             return;
         };
         self.select_in_view(row);
@@ -234,20 +267,21 @@ impl<'a> CommitListState<'a> {
     pub fn restore_picked_commit_hashes(&mut self, picked_commit_hashes: Vec<CommitHash>) {
         self.cursor.cancel_visual();
         self.picked.clear();
+        let shown = &self.graph_image_manager.graph().commit_pos_map;
         for hash in picked_commit_hashes
             .iter()
-            .filter(|h| self.commit_hash_set.contains(*h))
+            .filter(|h| shown.contains_key(*h))
         {
             self.picked.insert(hash);
         }
     }
 
     pub fn len(&self) -> usize {
-        self.commits.len()
+        self.rows().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty()
+        self.rows().is_empty()
     }
 
     // The first row shown, for the scrollbar of a read-only panel.
@@ -257,25 +291,25 @@ impl<'a> CommitListState<'a> {
 
     #[cfg(test)]
     pub fn subjects(&self) -> Vec<&str> {
-        self.commits
-            .iter()
-            .map(|c| c.commit.subject.as_str())
-            .collect()
+        self.rows().iter().map(|c| c.subject.as_str()).collect()
     }
 
     pub fn update_height(&mut self, height: usize) {
-        self.cursor.fit(height, self.commits.len(), self.scrolloff);
+        self.cursor.fit(height, self.len(), self.scrolloff);
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
-        self.commits
-            .iter()
-            .skip(self.cursor.offset())
-            .take(self.cursor.height())
-            .for_each(|commit_info| {
-                self.graph_image_manager
-                    .ensure_uploaded(&commit_info.commit.commit_hash);
-            });
+        let shown = self.cursor.offset()..(self.cursor.offset() + self.cursor.height());
+        self.ensure_graph_uploaded(shown);
+    }
+
+    // Uploads the graph images of the commits of `rows`, those past the last left out.
+    fn ensure_graph_uploaded(&mut self, rows: std::ops::Range<usize>) {
+        let rows = rows.start.min(self.len())..rows.end.min(self.len());
+        for row in rows {
+            let hash = self.rows()[row].commit_hash.clone();
+            self.graph_image_manager.ensure_uploaded(&hash);
+        }
     }
 
     // The rows the list was last drawn with, 0 before the first draw.
@@ -286,14 +320,7 @@ impl<'a> CommitListState<'a> {
     // Uploads every commit's graph image, for a list whose height isn't known yet (the first
     // draw of the submodule panel).
     pub fn ensure_all_graph_uploaded(&mut self) {
-        let Self {
-            commits,
-            graph_image_manager,
-            ..
-        } = self;
-        commits.iter().for_each(|commit_info| {
-            graph_image_manager.ensure_uploaded(&commit_info.commit.commit_hash);
-        });
+        self.ensure_graph_uploaded(0..self.len());
     }
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
@@ -326,28 +353,28 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn scroll_down(&mut self) {
-        self.cursor.scroll_lines(1, self.commits.len());
+        self.cursor.scroll_lines(1, self.len());
         self.sync_visual_picks();
     }
 
     pub fn scroll_up(&mut self) {
-        self.cursor.scroll_lines(-1, self.commits.len());
+        self.cursor.scroll_lines(-1, self.len());
         self.sync_visual_picks();
     }
 
     pub fn scroll_down_page(&mut self) {
-        self.cursor.scroll_pages(1, self.commits.len());
+        self.cursor.scroll_pages(1, self.len());
         self.sync_visual_picks();
     }
 
     pub fn scroll_up_page(&mut self) {
-        self.cursor.scroll_pages(-1, self.commits.len());
+        self.cursor.scroll_pages(-1, self.len());
         self.sync_visual_picks();
     }
 
     // Moves the selection half a page by `event`, see `half_page_jump`.
     fn jump_half_page(&mut self, event: UserEvent) {
-        if let Some(index) = self.cursor.moved_to(event, self.commits.len()) {
+        if let Some(index) = self.cursor.moved_to(event, self.len()) {
             self.select_in_view(index);
             self.sync_visual_picks();
         }
@@ -356,7 +383,7 @@ impl<'a> CommitListState<'a> {
     // Selects the commit at `index`, scrolling only when it isn't in view: the movement keys, the
     // search, and the refs and hashes picked elsewhere.
     fn select_in_view(&mut self, index: usize) {
-        self.cursor.select(index, self.commits.len());
+        self.cursor.select(index, self.len());
     }
 
     // Selects the next (or previous) commit the search matches, wrapping around.
@@ -367,9 +394,7 @@ impl<'a> CommitListState<'a> {
     // Selects the commit at `from` when the search matches it (`SearchDirection::Current`), else
     // the next or previous one it matches.
     fn select_match_from(&mut self, from: usize, direction: SearchDirection) {
-        if let Some(index) = find_around(self.commits.len(), from, direction, |i| {
-            self.search_matches[i]
-        }) {
+        if let Some(index) = find_around(self.len(), from, direction, |i| self.search_matches[i]) {
             self.select_in_view(index);
         }
     }
@@ -396,19 +421,21 @@ impl<'a> CommitListState<'a> {
     // The subject of each commit shown, and whether it is on the current branch; for the tests.
     #[cfg(test)]
     pub fn on_head(&self) -> Vec<(&str, bool)> {
-        self.commits
-            .iter()
-            .map(|info| (info.commit.subject.as_str(), info.on_head))
+        (0..self.len())
+            .map(|row| {
+                let info = self.info(row);
+                (info.commit.subject.as_str(), info.on_head)
+            })
             .collect()
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
-        &self.commits[self.cursor.selected()].commit.commit_hash
+        &self.rows()[self.cursor.selected()].commit_hash
     }
 
     // The selected commit, counting from 1, and how many there are.
     pub fn position(&self) -> (usize, usize) {
-        (self.cursor.selected() + 1, self.commits.len())
+        (self.cursor.selected() + 1, self.len())
     }
 
     // The selected commit and the commits shown.
@@ -423,11 +450,11 @@ impl<'a> CommitListState<'a> {
     // Shows the selected commit at `row` of those shown, where it can be.
     pub fn restore_selected_row(&mut self, row: usize) {
         let index = self.cursor.selected();
-        self.cursor.select_at(index, row, self.commits.len());
+        self.cursor.select_at(index, row, self.len());
     }
 
     pub fn restore_scroll(&mut self, offset: usize) {
-        self.cursor.show_from(offset, self.commits.len());
+        self.cursor.show_from(offset, self.len());
     }
 
     pub fn set_filter_note(&mut self, note: Option<FilterNote>) {
@@ -447,25 +474,36 @@ impl<'a> CommitListState<'a> {
         self.head = head;
     }
 
+    // Selects the commit of the ref by its full name ("refs/heads/main", "stash@{0}"), or of a
+    // detached "HEAD", when the graph shows it.
     pub fn select_ref(&mut self, ref_name: &str) {
-        if let Some(&index) = self.ref_name_to_commit_index_map.get(ref_name) {
-            self.select_in_view(index);
+        let target = match self.repository.head() {
+            Head::Detached { target } if ref_name == "HEAD" => Some(target),
+            _ => self
+                .repository
+                .all_refs()
+                .into_iter()
+                .find(|r| r.git_name() == ref_name)
+                .map(Ref::target),
+        };
+        if let Some(row) = target.and_then(|target| self.row_of(target)) {
+            self.select_in_view(row);
         }
     }
 
     // Selects the commit; false when the graph doesn't show it.
     pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) -> bool {
-        if !self.commit_hash_set.contains(commit_hash) {
-            return false;
-        }
-        let index = self
-            .commits
-            .iter()
-            .position(|commit_info| commit_info.commit.commit_hash == *commit_hash);
+        let index = self.row_of(commit_hash);
         if let Some(index) = index {
             self.select_in_view(index);
         }
         index.is_some()
+    }
+
+    // The row of the commit, None when the graph doesn't show it.
+    fn row_of(&self, commit_hash: &CommitHash) -> Option<usize> {
+        let graph = self.graph_image_manager.graph();
+        graph.commit_pos_map.get(commit_hash).map(|&(_, row)| row)
     }
 
     // Typing the search, which takes every key.
@@ -551,7 +589,7 @@ impl<'a> CommitListState<'a> {
             UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.jump_half_page(event),
             // the selection stays, so its picks do
             UserEvent::Wheel(_) => {
-                self.cursor.navigate(event, self.commits.len());
+                self.cursor.navigate(event, self.len());
             }
             _ => return false,
         }
@@ -603,18 +641,19 @@ impl<'a> CommitListState<'a> {
             }
             _ => false,
         };
-        for (matched, commit_info) in self.search_matches.iter_mut().zip(&self.commits) {
+        let rows = &self.graph_image_manager.graph().commits;
+        for (matched, commit) in self.search_matches.iter_mut().zip(rows) {
             if narrowing && !*matched {
                 continue;
             }
-            *matched = query.is_some_and(|query| commit_matches(commit_info, query, options));
+            *matched =
+                query.is_some_and(|query| commit_matches(self.repository, commit, query, options));
         }
         self.searched = query.map(|query| (query.to_string(), options));
     }
 
-    fn prepared_image(&self, commit_info: &'a CommitInfo) -> &PreparedImage {
-        self.graph_image_manager
-            .prepared_image(&commit_info.commit.commit_hash)
+    fn prepared_image(&self, commit: &Commit) -> &PreparedImage {
+        self.graph_image_manager.prepared_image(&commit.commit_hash)
     }
 }
 
@@ -673,7 +712,7 @@ pub fn render_commit_list_panel<'a>(
     f.render_stateful_widget(CommitList::new(ctx.clone()), inner, state);
     let rows = RowMap::Rows {
         first: state.cursor.offset(),
-        count: state.commits.len(),
+        count: state.len(),
     };
     ctx.layout.borrow_mut().record(Target::Commits, inner, rows);
     mark_commit_list_bar(f.buffer_mut(), inner, state, focused, &ctx.color_theme);
@@ -681,7 +720,7 @@ pub fn render_commit_list_panel<'a>(
     let thumb = render_panel_scrollbar(
         f.buffer_mut(),
         area,
-        state.commits.len(),
+        state.len(),
         state.cursor.offset(),
         focused,
         theme,
@@ -702,7 +741,7 @@ pub fn mark_commit_list_bar(
         return;
     };
     let y = inner.y + row as u16;
-    if inner.x > 0 && y < inner.bottom() && !state.commits.is_empty() {
+    if inner.x > 0 && y < inner.bottom() && !state.is_empty() {
         mark_selected_bar(buf, inner.x - 1, y, focused, theme);
     }
 }
@@ -716,26 +755,10 @@ pub fn submodule_commit_list<'a>(
     search_options: Rc<Cell<SearchOptions>>,
     scrolloff: usize,
 ) -> CommitListState<'a> {
-    let graph = graph_image_manager.graph();
-    let mut ref_name_to_commit_index_map = FxHashMap::default();
-    let commits = graph
-        .commits
-        .iter()
-        .enumerate()
-        .map(|(i, commit)| {
-            let refs = repository.refs(&commit.commit_hash);
-            for r in &refs {
-                ref_name_to_commit_index_map.insert(r.git_name(), i);
-            }
-            CommitInfo::new(commit, refs, repository.branch_tracking(), true)
-        })
-        .collect();
-    let graph_cell_width = graph_image_manager.graph_cell_width();
     CommitListState::new(
-        commits,
+        repository,
         graph_image_manager,
-        graph_cell_width,
-        ref_name_to_commit_index_map,
+        Dimming::None,
         search_options,
         scrolloff,
     )
@@ -765,27 +788,17 @@ impl<'a> StatefulWidget for CommitList<'a> {
             &self.ctx.ui_config.list.columns,
         );
         let chunks = Layout::horizontal(constraints).split(area);
-
+        // asked once for the rows drawn, which every column shows
+        let shown = state.shown_infos();
         for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
+            let (area, rows) = (chunks[i], &shown);
             match col {
-                UserListColumnType::Graph => {
-                    self.render_graph(buf, chunks[i], state);
-                }
-                UserListColumnType::Marker => {
-                    self.render_marker(buf, chunks[i], state);
-                }
-                UserListColumnType::Subject => {
-                    self.render_subject(buf, chunks[i], state);
-                }
-                UserListColumnType::Name => {
-                    self.render_name(buf, chunks[i], state);
-                }
-                UserListColumnType::Hash => {
-                    self.render_hash(buf, chunks[i], state);
-                }
-                UserListColumnType::Date => {
-                    self.render_date(buf, chunks[i], state);
-                }
+                UserListColumnType::Graph => self.render_graph(buf, area, state, rows),
+                UserListColumnType::Marker => self.render_marker(buf, area, rows),
+                UserListColumnType::Subject => self.render_subject(buf, area, state, rows),
+                UserListColumnType::Name => self.render_name(buf, area, state, rows),
+                UserListColumnType::Hash => self.render_hash(buf, area, state, rows),
+                UserListColumnType::Date => self.render_date(buf, area, state, rows),
             }
         }
     }
@@ -805,48 +818,60 @@ impl CommitList<'_> {
         state.update_height(area.height as usize);
     }
 
-    fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    fn render_graph(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState,
+        shown: &[CommitInfo],
+    ) {
         if area.is_empty() {
             return;
         }
-        self.rendering_commit_info_iter(state)
-            .for_each(|(i, commit_info)| {
-                let prepared_image = state.prepared_image(commit_info);
-                let max_graph_width = area.width.saturating_sub(1) as usize;
-                let y = area.top() + i as u16;
-                for (x, image_cell) in prepared_image
-                    .cells()
-                    .iter()
-                    .take(max_graph_width)
-                    .enumerate()
-                {
-                    let cell = &mut buf[(area.left() + x as u16, y)];
-                    cell.set_symbol(image_cell.symbol());
-                    cell.set_style(image_cell.style());
-                    cell.set_diff_option(image_cell.diff_option());
-                }
-            });
+        shown.iter().enumerate().for_each(|(i, commit_info)| {
+            let prepared_image = state.prepared_image(commit_info.commit);
+            let max_graph_width = area.width.saturating_sub(1) as usize;
+            let y = area.top() + i as u16;
+            for (x, image_cell) in prepared_image
+                .cells()
+                .iter()
+                .take(max_graph_width)
+                .enumerate()
+            {
+                let cell = &mut buf[(area.left() + x as u16, y)];
+                cell.set_symbol(image_cell.symbol());
+                cell.set_style(image_cell.style());
+                cell.set_diff_option(image_cell.diff_option());
+            }
+        });
     }
 
-    fn render_marker(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    fn render_marker(&self, buf: &mut Buffer, area: Rect, shown: &[CommitInfo]) {
         if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
+        let items: Vec<ListItem> = shown
+            .iter()
             // a plain divider: the colors of the branches are in the graph
             .map(|_| ListItem::new("│".fg(self.ctx.color_theme.divider_fg)))
             .collect();
         Widget::render(List::new(items), area, buf)
     }
 
-    fn render_subject(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    fn render_subject(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState,
+        shown: &[CommitInfo],
+    ) {
         let max_width = (area.width as usize).saturating_sub(2);
         if area.is_empty() || max_width == 0 {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
+        let items: Vec<ListItem> = shown
+            .iter()
+            .enumerate()
             .map(|(i, commit_info)| {
                 let mut spans = refs_spans(
                     commit_info,
@@ -875,13 +900,20 @@ impl CommitList<'_> {
         Widget::render(List::new(items), area, buf);
     }
 
-    fn render_name(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    fn render_name(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState,
+        shown: &[CommitInfo],
+    ) {
         let max_width = (area.width as usize).saturating_sub(2);
         if area.is_empty() || max_width == 0 {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
+        let items: Vec<ListItem> = shown
+            .iter()
+            .enumerate()
             .map(|(i, commit_info)| {
                 let commit = commit_info.commit;
                 let name_fg = self.text_fg(commit_info, self.ctx.color_theme.list_name_fg);
@@ -899,12 +931,19 @@ impl CommitList<'_> {
         Widget::render(List::new(items), area, buf);
     }
 
-    fn render_hash(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    fn render_hash(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState,
+        shown: &[CommitInfo],
+    ) {
         if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
+        let items: Vec<ListItem> = shown
+            .iter()
+            .enumerate()
             .map(|(i, commit_info)| {
                 let hash_fg = self.text_fg(commit_info, self.ctx.color_theme.list_hash_fg);
                 let hash = commit_info.commit.commit_hash.as_short_hash();
@@ -922,12 +961,19 @@ impl CommitList<'_> {
         Widget::render(List::new(items), area, buf);
     }
 
-    fn render_date(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
+    fn render_date(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState,
+        shown: &[CommitInfo],
+    ) {
         if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
+        let items: Vec<ListItem> = shown
+            .iter()
+            .enumerate()
             .map(|(i, commit_info)| {
                 let date_str = format_date(&self.ctx, &commit_info.commit.author_date);
                 self.to_commit_list_item(
@@ -938,18 +984,6 @@ impl CommitList<'_> {
             })
             .collect();
         Widget::render(List::new(items), area, buf);
-    }
-
-    fn rendering_commit_info_iter<'a>(
-        &'a self,
-        state: &'a CommitListState,
-    ) -> impl Iterator<Item = (usize, &'a CommitInfo<'a>)> {
-        state
-            .commits
-            .iter()
-            .skip(state.cursor.offset())
-            .take(state.cursor.height())
-            .enumerate()
     }
 
     fn to_commit_list_item<'a, 'b>(
@@ -965,7 +999,7 @@ impl CommitList<'_> {
         // the selection only colors the background, the text keeps its colors
         let index = state.cursor.offset() + i;
         let selected = index == state.cursor.selected();
-        let picked = state.is_picked(&state.commits[index].commit.commit_hash);
+        let picked = state.is_picked(&state.rows()[index].commit_hash);
         // while selecting, the cursor is picked like the rows it extends; after v stops it goes
         // back to the selected color
         if picked && (state.is_visual() || !selected) {
@@ -984,14 +1018,18 @@ impl CommitList<'_> {
     }
 }
 
-// Whether the search matches the commit, in what it looks in: its refs (not stashes), subject,
-// author or short hash.
-fn commit_matches(info: &CommitInfo, query: &str, options: SearchOptions) -> bool {
-    let commit = info.commit;
+// Whether the search matches the commit, in what it looks in: its refs (not stashes), read of the
+// repository only then, subject, author or short hash.
+fn commit_matches(
+    repository: &Repository,
+    commit: &Commit,
+    query: &str,
+    options: SearchOptions,
+) -> bool {
     let matches = |text: &str| name_matches(text, query, options);
     options.target.includes(SearchTarget::Ref)
-        && info
-            .refs
+        && repository
+            .refs(&commit.commit_hash)
             .iter()
             .any(|r| !matches!(r, Ref::Stash { .. }) && matches(r.name()))
         || options.target.includes(SearchTarget::Subject) && matches(&commit.subject)
@@ -1259,14 +1297,6 @@ mod tests {
         let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
         let image_params =
             crate::graph::ImageParams::new(&graph_color_set, CellWidthType::Double, false);
-        let commit_infos = graph
-            .commits
-            .iter()
-            .map(|commit| {
-                let refs = repository.refs(&commit.commit_hash);
-                CommitInfo::new(commit, refs, repository.branch_tracking(), true)
-            })
-            .collect();
         let graph_image_manager = GraphImageManager::new(
             graph,
             image_params,
@@ -1276,10 +1306,9 @@ mod tests {
             image_protocol,
         );
         let mut state = CommitListState::new(
-            commit_infos,
+            &repository,
             graph_image_manager,
-            0,
-            FxHashMap::default(),
+            Dimming::None,
             Default::default(),
             0,
         );
@@ -1428,9 +1457,10 @@ mod tests {
                 for width in [2, 10] {
                     let area = Rect::new(0, 0, width, 2);
                     let mut before = Buffer::empty(area);
-                    list.render_graph(&mut before, area, state);
+                    let shown = state.shown_infos();
+                    list.render_graph(&mut before, area, state, &shown);
                     let mut after = Buffer::empty(area);
-                    list.render_graph(&mut after, area, state);
+                    list.render_graph(&mut after, area, state, &shown);
                     assert!(before.diff(&after).is_empty());
 
                     after[(width - 1, 0)].set_symbol("x");
@@ -1751,30 +1781,21 @@ mod tests {
             state.restore_search(&context);
 
             assert_eq!(state.search_refresh_context(), Some(context.clone()));
-            assert_eq!(
-                state.commits[state.cursor.selected()].commit.subject,
-                "unrelated"
-            );
+            assert_eq!(state.rows()[state.cursor.selected()].subject, "unrelated");
 
             state.select_next_match(Toward::Next);
             assert_eq!(
                 matched(state),
                 Some(("Match 1 of 2 (query: \"fx\")".into(), true))
             );
-            assert_eq!(
-                state.commits[state.cursor.selected()].commit.subject,
-                "FIX new"
-            );
+            assert_eq!(state.rows()[state.cursor.selected()].subject, "FIX new");
 
             state.select_next_match(Toward::Next);
             assert_eq!(
                 matched(state),
                 Some(("Match 2 of 2 (query: \"fx\")".into(), true))
             );
-            assert_eq!(
-                state.commits[state.cursor.selected()].commit.subject,
-                "fix parser"
-            );
+            assert_eq!(state.rows()[state.cursor.selected()].subject, "fix parser");
         });
     }
 
@@ -2132,8 +2153,9 @@ mod tests {
             message: "stash-match".into(),
             target: commit.commit_hash.clone(),
         };
-        let tracking = FxHashMap::default();
-        let info = CommitInfo::new(&commit, vec![&reference, &stash], &tracking, true);
+        let hash = commit.commit_hash.clone();
+        let refs = [(hash, vec![reference, stash])].into_iter().collect();
+        let repository = Repository::new(PathBuf::new(), PathBuf::new(), vec![], refs, Head::None);
         let cases = [
             (SearchTarget::All, "subject-match", true),
             (SearchTarget::All, "author-match", true),
@@ -2155,7 +2177,7 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                commit_matches(&info, query, options),
+                commit_matches(&repository, &commit, query, options),
                 expected,
                 "{target:?}: {query}"
             );
@@ -2230,7 +2252,7 @@ mod tests {
             apply_search(state);
             state.toggle_smart_case();
 
-            assert_eq!(state.commits[state.cursor.selected()].commit.subject, "fix");
+            assert_eq!(state.rows()[state.cursor.selected()].subject, "fix");
             assert_eq!(
                 matched(state),
                 Some(("Match 2 of 2 (query: \"fix\")".into(), true))
@@ -2246,7 +2268,7 @@ mod tests {
             apply_search(state);
             state.toggle_smart_case();
 
-            assert_eq!(state.commits[state.cursor.selected()].commit.subject, "fix");
+            assert_eq!(state.rows()[state.cursor.selected()].subject, "fix");
             assert_eq!(
                 matched(state),
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
@@ -2485,8 +2507,8 @@ mod tests {
         with_commit_list_state(&subjects, |state| {
             let picked = |state: &CommitListState| -> Vec<String> {
                 let subjects = state.picked_commit_hashes().iter().map(|hash| {
-                    let commit = state.commits.iter().find(|c| c.commit.commit_hash == *hash);
-                    commit.unwrap().commit.subject.clone()
+                    let commit = state.rows().iter().find(|c| c.commit_hash == *hash);
+                    commit.unwrap().subject.clone()
                 });
                 subjects.collect()
             };

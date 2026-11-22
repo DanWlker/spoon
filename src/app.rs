@@ -18,7 +18,7 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph},
     DefaultTerminal, Frame, Terminal,
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use unicode_width::UnicodeWidthStr;
 
 use crate::view::{DetailQueries, TreeViews};
@@ -55,7 +55,7 @@ use crate::{
     widget::{
         action_menu::{left_out_of_menu, ActionMenu, MenuEntry, MenuOutcome},
         command_log::{CommandLog, CommandLogState},
-        commit_list::{CommitInfo, CommitListState, FilterNote},
+        commit_list::{CommitListState, Dimming, FilterNote},
         commit_tabs::DetailTab,
         git_dialog::{
             DialogHit, DialogOutcome, GitDialog, GitDialogWidget, RemoteAction, RemoteFrom,
@@ -598,34 +598,14 @@ impl<'a> App<'a> {
         let graph = graph_image_manager.graph();
         // kept past the move of the manager into the commit list below
         let warning = graph.warning.clone();
-        let mut ref_name_to_commit_index_map = FxHashMap::default();
-        let head_history = repository.head_history();
         // diffing a ref from the sidebar, the commits off the current branch are dimmed as
         // everywhere when one of the two is it, else both are shown alike
-        let dim_off_head = shell.as_ref().is_none_or(|s| match &s.graph_filter {
-            GraphFilter::Compare { refs, .. } => compare_with_head(refs, repository),
-            _ => true,
-        });
-        let commits = graph
-            .commits
-            .iter()
-            .enumerate()
-            .map(|(i, commit)| {
-                let refs = repository.refs(&commit.commit_hash);
-                // by the names git takes for them alone, as a tag may have a branch's name
-                for r in &refs {
-                    ref_name_to_commit_index_map.insert(r.git_name(), i);
-                }
-                // the detached HEAD's row in the sidebar selects it
-                if matches!(repository.head(), Head::Detached { target } if *target == commit.commit_hash)
-                {
-                    ref_name_to_commit_index_map.insert("HEAD".to_string(), i);
-                }
-                let on_head = !dim_off_head || head_history.contains(&commit.commit_hash);
-                CommitInfo::new(commit, refs, repository.branch_tracking(), on_head)
-            })
-            .collect();
-        let graph_cell_width = graph_image_manager.graph_cell_width();
+        let dimming = match shell.as_ref().map(|s| &s.graph_filter) {
+            Some(GraphFilter::Compare { refs, .. }) if !compare_with_head(refs, repository) => {
+                Dimming::None
+            }
+            _ => Dimming::OffHead,
+        };
         let search_options = SearchOptions {
             target: ctx.core_config.search.target,
             smart_case: ctx.core_config.search.smart_case,
@@ -633,10 +613,9 @@ impl<'a> App<'a> {
         };
         ctx.search_options.set(search_options);
         let mut commit_list_state = CommitListState::new(
-            commits,
+            repository,
             graph_image_manager,
-            graph_cell_width,
-            ref_name_to_commit_index_map,
+            dimming,
             ctx.search_options.clone(),
             ctx.ui_config.common.scrolloff as usize,
         );

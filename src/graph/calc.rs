@@ -12,12 +12,13 @@ type CommitPosMap<'a> = FxHashMap<&'a CommitHash, (usize, usize)>;
 #[derive(Debug)]
 pub struct Graph<'a> {
     pub commits: Vec<&'a Commit>,
-    pub commit_pos_map: CommitPosMap<'a>,
+    // the column and row of each commit shown, see `GraphLayout`
+    pub commit_pos_map: FxHashMap<CommitHash, (usize, usize)>,
     pub edges: GraphEdges,
     pub max_pos_x: usize,
     pub warning: Option<String>,
     // the merge commits shown, those with two parents or more loaded, see `GraphLayout::calc`
-    pub merges: FxHashMap<&'a CommitHash, Fold>,
+    pub merges: FxHashMap<CommitHash, Fold>,
     // the merges it was laid out with folded, see `GraphLayout::folded`
     pub folded: FxHashSet<CommitHash>,
 }
@@ -166,16 +167,18 @@ pub fn calc_graph<'a>(
 }
 
 // The graph laid out, owning what it holds, so a repository reloaded on another thread is laid out
-// there too; `Graph::of` makes it the graph of that repository.
+// there too, its maps of 100k commits included; `Graph::of` makes it the graph of that repository.
 #[derive(Debug)]
 pub struct GraphLayout {
-    // the commits shown by row, with the column of each
-    rows: Vec<(CommitHash, usize)>,
+    // the commits shown by row
+    rows: Vec<CommitHash>,
+    // the column and row of each
+    positions: FxHashMap<CommitHash, (usize, usize)>,
     edges: GraphEdges,
     max_pos_x: usize,
     warning: Option<String>,
-    // the rows of the merge commits shown
-    merges: Vec<(usize, Fold)>,
+    // the merge commits shown
+    merges: FxHashMap<CommitHash, Fold>,
     // the merges it was laid out with folded, of those the repository has, as the app keeps them
     pub folded: FxHashSet<CommitHash>,
 }
@@ -199,8 +202,7 @@ impl GraphLayout {
         // a stash has parents not loaded
         let merges = commits
             .iter()
-            .enumerate()
-            .filter(|(_, c)| {
+            .filter(|c| {
                 let parents = repository.parents_hash(&c.commit_hash);
                 parents
                     .iter()
@@ -208,21 +210,23 @@ impl GraphLayout {
                     .count()
                     > 1
             })
-            .map(|(row, c)| {
+            .map(|c| {
                 let fold = if folded.contains(&c.commit_hash) {
                     Fold::Folded
                 } else {
                     Fold::Unfolded
                 };
-                (row, fold)
+                (c.commit_hash.clone(), fold)
             })
             .collect();
-        let rows = commits
-            .iter()
-            .map(|c| (c.commit_hash.clone(), commit_pos_map[&c.commit_hash].0))
+        let rows = commits.iter().map(|c| c.commit_hash.clone()).collect();
+        let positions = commit_pos_map
+            .into_iter()
+            .map(|(hash, position)| (hash.clone(), position))
             .collect();
         Some(GraphLayout {
             rows,
+            positions,
             edges,
             max_pos_x,
             warning,
@@ -242,30 +246,19 @@ impl<'a> Graph<'a> {
         let commits: Vec<&Commit> = layout
             .rows
             .iter()
-            .map(|(hash, _)| {
+            .map(|hash| {
                 repository
                     .commit(hash)
                     .expect("laid out from the repository")
             })
             .collect();
-        let commit_pos_map = commits
-            .iter()
-            .zip(&layout.rows)
-            .enumerate()
-            .map(|(pos_y, (commit, (_, pos_x)))| (&commit.commit_hash, (*pos_x, pos_y)))
-            .collect();
-        let merges = layout
-            .merges
-            .into_iter()
-            .map(|(row, fold)| (&commits[row].commit_hash, fold))
-            .collect();
         Graph {
             commits,
-            commit_pos_map,
+            commit_pos_map: layout.positions,
             edges: layout.edges,
             max_pos_x: layout.max_pos_x,
             warning: layout.warning,
-            merges,
+            merges: layout.merges,
             folded: layout.folded,
         }
     }

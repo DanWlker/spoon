@@ -1494,6 +1494,49 @@ fn test_sidebar_branch_shows_its_commit_not_its_tags() {
     ]);
 }
 
+// A ref selects the row of its commit, found through the graph: a detached HEAD, a stash; one
+// whose commit a folded merge hides leaves the selection as it is.
+#[test]
+fn test_refs_select_the_rows_of_their_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    let merge = CommitHash::from(git(&path, &["rev-parse", "HEAD"]).trim());
+    let c1 = git(&path, &["rev-parse", "master~1"]).trim().to_string();
+    std::fs::write(path.join("f.txt"), "stashed\n").unwrap();
+    git(&path, &["stash", "-q"]);
+    let stash = git(&path, &["rev-parse", "stash@{0}"]).trim().to_string();
+    git(&path, &["checkout", "-q", "--detach", "master~1"]);
+    let mut harness = Harness::new(&path, launch());
+    let select = |name: &'static str, expected: String| {
+        vec![Step::Act(Box::new(move |app: &mut App| {
+            let View::List(view) = &mut app.view else {
+                panic!("no commit list")
+            };
+            view.select_ref(name);
+            let state = app.view.as_list_state().unwrap();
+            assert_eq!(state.selected_commit_hash().as_str(), expected, "{name}");
+        }))]
+    };
+    harness.run(vec![
+        select("HEAD", c1.clone()),
+        select("stash@{0}", stash.clone()),
+        vec![Step::Event(Box::new(AppEvent::FoldMerge {
+            commit: merge,
+            fold: crate::graph::Fold::Folded,
+        }))],
+        // feat1, brought in by the merge, is no longer shown: the stash stays selected
+        check(move |app| {
+            let state = app.view.as_list_state().unwrap();
+            assert!(!state.subjects().contains(&"feat1"));
+        }),
+        select("refs/heads/feat", stash),
+    ]);
+}
+
 #[test]
 fn test_compare_follows_the_reloads_until_closed() {
     let dir = tempfile::tempdir().unwrap();
