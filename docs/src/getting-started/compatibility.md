@@ -33,7 +33,7 @@ Rendering using Unicode Placeholder is available by explicitly specifying `kitty
 ### Partially supported environments
 
 - tmux is supported only when using the kitty Unicode placeholder protocol.
-  - Requires `set -g allow-passthrough all` in tmux.conf (version 3.2+). With `on`, tmux drops the graph images it gets while waiting to redraw the window, which it does while the terminal is slow to read, and some rows of the graph stay blank. The app uploads the images on screen again a second after scrolling stops, and <kbd>Ctrl-r</kbd> uploads them all again.
+  - Requires `set -g allow-passthrough all` in tmux.conf (version 3.2+). With `on`, tmux drops the graph images it gets while waiting to redraw the window, which it does while the terminal is slow to read, and some rows of the graph stay blank.
 
 ### Unsupported environments
 

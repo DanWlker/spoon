@@ -1,6 +1,5 @@
 use std::{
     borrow::Cow,
-    cell::Cell,
     fmt::{self, Debug, Formatter},
     hash::{Hash, Hasher},
     io::Cursor,
@@ -57,21 +56,6 @@ pub struct GraphImageManager<'a> {
     image_params: ImageParams,
     drawing_pixels: DrawingPixels,
     image_protocol: ImageProtocol,
-    // the count of `UPLOADS_LOST` its images were uploaded after, see `ensure_uploaded`
-    lost: u64,
-}
-
-thread_local! {
-    // Counts the times the terminal lost the graph images uploaded to it, see `forget_uploads`.
-    // Of the thread drawing the app, so each test has its own.
-    static UPLOADS_LOST: Cell<u64> = const { Cell::new(0) };
-}
-
-// Has every graph image manager upload the images it shows again, the terminal having lost
-// them: tmux throws away what it writes to a terminal that can't keep up, see
-// `protocol::tmux_discarded`. The same ids, so they replace those the terminal still has.
-pub fn forget_uploads() {
-    UPLOADS_LOST.set(UPLOADS_LOST.get() + 1);
 }
 
 // The id of each commit's image in the terminal, its own for as long as the image is there: a hash
@@ -139,7 +123,6 @@ impl<'a> GraphImageManager<'a> {
             image_params,
             drawing_pixels,
             image_protocol,
-            lost: UPLOADS_LOST.get(),
         }
     }
 
@@ -153,7 +136,6 @@ impl<'a> GraphImageManager<'a> {
             mut image_ids,
             mut pending_uploads,
             mut deleting,
-            lost,
         } = images;
         images.retain(|commit_hash, _| {
             let shown = self.graph.commit_pos_map.contains_key(commit_hash);
@@ -169,8 +151,6 @@ impl<'a> GraphImageManager<'a> {
         self.image_ids = image_ids;
         self.pending_uploads = pending_uploads;
         self.deleting = deleting;
-        // uploaded before the terminal lost them, they are uploaded again
-        self.lost = lost;
         self
     }
 
@@ -191,7 +171,6 @@ impl<'a> GraphImageManager<'a> {
             image_ids: std::mem::replace(&mut self.image_ids, ImageIds::new()),
             pending_uploads: std::mem::take(&mut self.pending_uploads),
             deleting: std::mem::take(&mut self.deleting),
-            lost: self.lost,
         }
     }
 
@@ -217,12 +196,6 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn ensure_uploaded(&mut self, commit_hash: &CommitHash) {
-        let lost = UPLOADS_LOST.get();
-        if self.lost != lost {
-            self.lost = lost;
-            self.prepared_image_map.clear();
-            self.previous.clear();
-        }
         if self.prepared_image_map.contains_key(commit_hash) {
             return;
         }
@@ -269,7 +242,6 @@ pub struct GraphImages {
     image_ids: ImageIds,
     pending_uploads: Vec<String>,
     deleting: Vec<u32>,
-    lost: u64,
 }
 
 // The manager owns the images it uploaded: deleting them when it is dropped keeps a page switch or
