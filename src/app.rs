@@ -765,12 +765,7 @@ impl App<'_> {
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
-            // woken up to show the popup waiting for a second press, to drop expired notices, or
-            // to say what runs long loads
-            let expiry = self.shell.notices.iter().map(|n| n.until).min();
-            let reveal = self.shell.dialog.as_ref().and_then(|popup| popup.reveal);
-            let shown = background::next_shown(drawn);
-            let event = match reveal.into_iter().chain(expiry).chain(shown).min() {
+            let event = match self.next_wake(drawn) {
                 Some(at) => match self
                     .ec
                     .recv_timeout(at.saturating_duration_since(Instant::now()))
@@ -796,6 +791,17 @@ impl App<'_> {
                     .flatten();
             }
         }
+    }
+
+    // When the app wakes up without an event, after the frame drawn at `drawn`: to show the popup
+    // waiting for a second press, to drop expired notices, to say what runs long loads, or to
+    // start the search once typing settled.
+    fn next_wake(&self, drawn: Instant) -> Option<Instant> {
+        let expiry = self.shell.notices.iter().map(|n| n.until).min();
+        let reveal = self.shell.dialog.as_ref().and_then(|popup| popup.reveal);
+        let shown = background::next_shown(drawn);
+        let search = self.view.search_due();
+        [expiry, reveal, shown, search].into_iter().flatten().min()
     }
 
     // Handles one event; returns what ends the app or reloads it. A check of the refs or the files
@@ -3454,6 +3460,11 @@ impl App<'_> {
         // on too: a held key loads the row it stops on, once drawn
         if !event.moves_selection() {
             self.view.load_in_background();
+        }
+        // a key acting on the search's matches finds them without waiting for typing to settle;
+        // those typed into it don't
+        if self.view.waits_for(event) {
+            self.view.search_now();
         }
         self.view.waits_for(event)
     }

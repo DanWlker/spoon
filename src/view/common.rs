@@ -5,6 +5,7 @@ use std::ops::RangeInclusive;
 
 use ratatui::{style::Style, text::Span};
 
+use crate::path_tree::{FileTreeRow, ROOT_PATH};
 use crate::{
     browse::{LinkAction, LinkTarget},
     context::AppContext,
@@ -24,7 +25,7 @@ use crate::{
         commit_list::{CommitListState, SearchRefreshContext},
         commit_tabs::DetailTab,
         diff_pane::DiffPane,
-        file_tree::{Entry, FileTreeRow, ROOT_PATH},
+        file_tree::Entry,
         style::ListCursor,
         tree_query::{highlighted_text, name_matches, TreeQuery},
     },

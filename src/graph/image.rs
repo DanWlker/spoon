@@ -155,7 +155,15 @@ impl<'a> GraphImageManager<'a> {
     }
 
     // Its images, left in the terminal for the next manager, see `with_images`.
+    // The graph's maps of every commit are freed on another thread: 100k take the screen ~10ms.
     pub fn into_images(mut self) -> GraphImages {
+        let graph = &mut self.graph;
+        crate::background::drop_elsewhere((
+            std::mem::take(&mut graph.commit_pos_map),
+            std::mem::take(&mut graph.edges),
+            std::mem::take(&mut graph.merges),
+            std::mem::take(&mut graph.folded),
+        ));
         let mut images = std::mem::take(&mut self.previous);
         images.extend(self.prepared_image_map.drain());
         GraphImages {

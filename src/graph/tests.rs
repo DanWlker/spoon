@@ -2177,3 +2177,27 @@ fn layout_stops_once_cancelled() -> TestResult {
     assert!(layout(Cancel::cancelled()).is_none());
     Ok(())
 }
+
+// A layout is of the repository it was laid out from: given another, a bug, it stops rather than
+// showing its rows at other commits.
+#[test]
+#[should_panic(expected = "laid out from another repository")]
+fn layout_of_another_repository_is_refused() {
+    let load = |subjects: &[&str]| {
+        let dir = tempfile::tempdir().unwrap();
+        let git = GitRepository::new(dir.path());
+        git.init();
+        for (i, subject) in subjects.iter().enumerate() {
+            git.commit(subject, &format!("2024-01-0{}", i + 1));
+        }
+        let repository =
+            git::Repository::load(dir.path(), git::SortCommit::Chronological, None, false).unwrap();
+        (dir, repository)
+    };
+    let (_one, one) = load(&["a", "b"]);
+    let (_other, other) = load(&["c", "d"]);
+    let folded = FxHashSet::default();
+    let cancel = crate::background::Cancel::default();
+    let layout = graph::GraphLayout::calc(&one, None, &folded, &cancel).unwrap();
+    graph::Graph::of(&other, layout);
+}

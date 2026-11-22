@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use ratatui::{
     crossterm::event::KeyEvent,
@@ -6,9 +6,10 @@ use ratatui::{
     Frame,
 };
 
+use crate::path_tree::{path_contains, FileTreeRow};
 use crate::widget::tree_query::Toward;
 use crate::{
-    background::{Cancel, Job, Loads},
+    background::{drop_elsewhere, Cancel, Job, Loads},
     browse::{LinkAction, LinkTarget},
     context::AppContext,
     event::{AppEvent, Sender},
@@ -23,9 +24,9 @@ use crate::{
     view::{
         apply_selection, commit_branches, commit_event, copy_hashes, copy_path, copy_paths,
         copy_selection, edit_files, file_link, graph_availability, handle_search_event,
-        query_or_search_status, register_apply_key, register_commit_link_keys,
-        register_commit_list_keys, type_commit_search, CopyForm, ListFacts, ListRefreshViewContext,
-        RefreshViewContext,
+        poll_commit_search, query_or_search_status, register_apply_key, register_commit_link_keys,
+        register_commit_list_keys, searching_waits, type_commit_search, CopyForm, ListFacts,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::diff_pane::register_diff_keys,
     widget::tree_query::{type_query, typing_keys},
@@ -37,7 +38,7 @@ use crate::{
             CommitFiles, CommitFilesState, CommitTab, DetailTab,
         },
         diff::{Step, CONVERTED_DIFF},
-        file_tree::{path_contains, Entry, FileTreeRow, FileTreeState, TreeView},
+        file_tree::{Entry, FileTreeState, TreeView},
         git_dialog::GitDialog,
         style::{loading_note, panel_block, render_close_button, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
@@ -128,7 +129,7 @@ pub struct DetailView<'a> {
     pane_query: TreeQuery,
 
     commit: Commit,
-    changes: Vec<FileChange>,
+    changes: Arc<[FileChange]>,
     refs: Vec<Ref>,
     compare: Comparing<'a>,
     // the commit list above has the focus (1), moving the selection shows the details of each commit
@@ -163,11 +164,15 @@ impl Loads for DetailView<'_> {
         let tree = self.tab == DetailTab::Files && !self.files_state.is_tree_loaded();
         let commit = !self.moves_commit(event);
         let details = self.loading.is_some() || self.stale.is_some();
-        (commit && (details || tree)) || (self.needs_pane(event) && pane.is_some())
+        let search = self.list_focused && searching_waits(self.as_list_state(), event);
+        (commit && (details || tree)) || (self.needs_pane(event) && pane.is_some()) || search
     }
 
     // Also loads them when the selection moved since, as a key moving it leaves them to load.
     fn load_for(&mut self, event: UserEvent) {
+        if self.list_focused && searching_waits(self.as_list_state(), event) {
+            self.as_mut_list_state().finish_search();
+        }
         if self.moves_commit(event) {
             return;
         }
@@ -210,7 +215,7 @@ impl<'a> DetailView<'a> {
             files_query: TreeQuery::default(),
             pane_query: TreeQuery::default(),
             commit,
-            changes: Vec::new(),
+            changes: Arc::default(),
             refs,
             compare: Comparing::No,
             list_focused: false,
@@ -1207,8 +1212,16 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    // Starts the search of the commits waiting for typing to settle, for a key acting on them.
+    pub fn search_now(&mut self) {
+        let tx = self.tx.clone();
+        poll_commit_search(self.as_mut_list_state(), &tx, true);
+    }
+
     pub fn update_layout(&mut self, area: Rect) {
         self.load_in_background();
+        let tx = self.tx.clone();
+        poll_commit_search(self.as_mut_list_state(), &tx, false);
         let [list_area, panel_area] = self.split_areas(area);
         self.as_mut_list_state()
             .update_height(commit_list_inner_height(list_area.height));
@@ -1801,7 +1814,7 @@ impl<'a> DetailView<'a> {
         let shown = load.shown().clone();
         let commit = repository.commit(&shown).unwrap().clone();
         let refs = repository.refs(&shown).into_iter().cloned().collect();
-        self.changes_state = match (load, compared) {
+        let changes_state = match (load, compared) {
             (Load::Compare { base, target, .. }, Some(compared)) => CommitChangesState::with_files(
                 repository,
                 self.ctx.clone(),
@@ -1811,10 +1824,11 @@ impl<'a> DetailView<'a> {
             ),
             _ => CommitChangesState::with_files(repository, self.ctx.clone(), None, shown, files),
         };
+        std::mem::replace(&mut self.changes_state, changes_state).free_elsewhere();
         self.files_state
             .set_commit(&commit, &changes.changes, &changes.gitlinks);
         self.commit = commit;
-        self.changes = changes.changes;
+        drop_elsewhere(std::mem::replace(&mut self.changes, changes.changes));
         self.refs = refs;
 
         self.commit_detail_state.offset = 0;

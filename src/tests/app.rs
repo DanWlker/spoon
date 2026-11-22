@@ -319,8 +319,14 @@ fn settle(
         let running = !ctx.running_tasks.borrow().is_empty();
         let busy = running || app.is_reloading() || app.is_loading();
         let event = if busy {
-            ec.recv_timeout(TIMEOUT)
-                .expect("the git command, the reload or the diff loading to finish")
+            // until what the app wakes up for, like the search once typing settled
+            let wake = app.next_wake(Instant::now());
+            let wait = wake.map_or(TIMEOUT, |at| at.saturating_duration_since(Instant::now()));
+            match ec.recv_timeout(wait.min(TIMEOUT)) {
+                Some(event) => event,
+                None if wake.is_some() => continue,
+                None => panic!("the git command, the reload or the diff loading to finish"),
+            }
         } else {
             match ec.try_recv() {
                 Some(event) => event,
@@ -1294,10 +1300,10 @@ fn test_no_reload_while_staging() {
     assert_eq!(harness.loads.get(), 2);
 }
 
-// A file changed outside shows once its files are laid out in a tree on another thread, which
-// takes long with many of them.
+// A file changed outside shows right away: its files come laid out in their trees from the thread
+// loading them, which takes long with many of them, see `FilesSnapshot`.
 #[test]
-fn test_files_changed_outside_reload_in_the_background() {
+fn test_files_changed_outside_come_with_their_trees() {
     let dir = tempfile::tempdir().unwrap();
     let path = repository(dir.path());
     let launch = Launch {
@@ -1310,10 +1316,11 @@ fn test_files_changed_outside_reload_in_the_background() {
             let (path, git_dir) = (app.repository.path(), app.repository.git_dir());
             std::fs::write(path.join("f.txt"), "changed\n").unwrap();
             let files = FilesSnapshot::load(path, git_dir, crate::git::IndexRefresh::Skipped);
+            let rows = files.trees[0].rows(|_| true, |_| true);
+            assert_eq!(rows.iter().map(|r| &*r.path).collect::<Vec<_>>(), ["f.txt"]);
             app.handle_event(AppEvent::FilesTick(files, Default::default()));
-            assert!(app.view.is_files_loading());
+            assert!(!app.view.is_files_loading());
         }))],
-        check(|app| assert_eq!(local_change_path(app), Some(":/".into()))),
         screen(|text| assert!(text.contains("f.txt"), "{text}")),
     ]);
 }
@@ -2114,6 +2121,55 @@ fn test_paste_after_a_key_kept_follows_it() {
                 "{said:?}"
             );
         }),
+    ]);
+}
+
+// The search of the commits runs on another thread once typing settles: the keys typed into it
+// don't wait, and n, pressed before the matches are found, waits for them, then goes to the next.
+#[test]
+fn test_n_waits_for_the_search_typed_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("work");
+    std::fs::create_dir(&path).unwrap();
+    git(&path, &["init", "-q", "-b", "master"]);
+    for (i, subject) in ["fix one", "plain", "fix two"].iter().enumerate() {
+        let date = format!("@{} +0000", 1_700_000_000 + i * 60);
+        let output = crate::git::git_command()
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q"])
+            .args(["--allow-empty", "-m", subject])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let subject = |app: &App| {
+        let state = app.view.as_list_state().unwrap();
+        app.repository
+            .commit(state.selected_commit_hash())
+            .unwrap()
+            .subject
+            .clone()
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        keys("2"),
+        check(move |app| assert_eq!(subject(app), "fix two")),
+        vec![Step::Act(Box::new(|app| {
+            let press = |app: &mut App, keys: &[&str]| {
+                for key in keys {
+                    app.handle_event(AppEvent::Key(parse_key_event(key).unwrap()));
+                }
+            };
+            // typed and kept, it waits for typing to settle, no search running for each key
+            press(app, &["/", "f", "i", "x", "enter"]);
+            assert!(app.view.search_due().is_some());
+            // n starts it, waiting for its matches
+            press(app, &["n"]);
+            assert!(app.view.search_due().is_none());
+        }))],
+        check(move |app| assert_eq!(subject(app), "fix one")),
     ]);
 }
 

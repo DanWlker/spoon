@@ -158,6 +158,12 @@ impl<T: Send + 'static> Job<T> {
         }
     }
 
+    // What tells its work to stop, for the tests to see it told.
+    #[cfg(test)]
+    pub fn cancel_of(&self) -> Cancel {
+        self.cancel.clone()
+    }
+
     // When it started, see `shows_loading`.
     pub fn started(&self) -> Instant {
         self.started

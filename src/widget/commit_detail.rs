@@ -22,7 +22,7 @@ use crate::{
 
 pub struct CommitDetail<'a> {
     commit: &'a Commit,
-    changes: &'a Vec<FileChange>,
+    changes: &'a [FileChange],
     refs: &'a Vec<Ref>,
     head: &'a Head,
     tracking: &'a FxHashMap<String, Tracking>,
@@ -34,7 +34,7 @@ pub struct CommitDetail<'a> {
 impl<'a> CommitDetail<'a> {
     pub fn new(
         commit: &'a Commit,
-        changes: &'a Vec<FileChange>,
+        changes: &'a [FileChange],
         refs: &'a Vec<Ref>,
         head: &'a Head,
         tracking: &'a FxHashMap<String, Tracking>,
@@ -289,7 +289,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 61, 10));
         CommitDetail::new(
             &commit,
-            &vec![],
+            &[],
             &vec![],
             &Head::None,
             &tracking,
@@ -365,7 +365,7 @@ mod tests {
         let mut detail = Buffer::empty(area);
         CommitDetail::new(
             &commit,
-            &vec![],
+            &[],
             &refs,
             &Head::None,
             &tracking,

@@ -258,8 +258,6 @@ pub enum SortCommit {
     Topological,
 }
 
-pub(super) type CommitMap = FxHashMap<CommitHash, Commit>;
-
 pub(super) type CommitsMap = FxHashMap<CommitHash, Vec<CommitHash>>;
 
 pub(super) type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
@@ -286,7 +284,9 @@ pub struct Repository {
     submodules: FxHashSet<String>,
     // the submodules' own repositories, loaded for the pages that show their commits
     submodule_repositories: SubmoduleRepositories,
-    commit_map: CommitMap,
+    // in the order `git log` gave them, which the graph lays out; by hash in `commit_indices`
+    commits: Vec<Commit>,
+    commit_indices: FxHashMap<CommitHash, usize>,
 
     parents_map: CommitsMap,
     children_map: CommitsMap,
@@ -297,8 +297,6 @@ pub struct Repository {
     remotes: Vec<String>,
     // the diff drivers converting files to text to diff them (`diff.<driver>.textconv`)
     textconv_drivers: Vec<String>,
-    // to preserve order of the original commits from `git log`, we store the commit hashes
-    commit_hashes: Vec<CommitHash>,
     // the loaded commits on the history of HEAD, walked once asked for, see `head_history`
     head_history: std::sync::OnceLock<FxHashSet<CommitHash>>,
     // what a root commit is compared to, found when loaded, see `commit_base`; None for a
@@ -314,14 +312,14 @@ impl Repository {
     }
 
     pub fn commit(&self, commit_hash: &CommitHash) -> Option<&Commit> {
-        self.commit_map.get(commit_hash)
+        self.commit_indices
+            .get(commit_hash)
+            .map(|&index| &self.commits[index])
     }
 
-    pub fn all_commits(&self) -> Vec<&Commit> {
-        self.commit_hashes
-            .iter()
-            .filter_map(|hash| self.commit(hash))
-            .collect()
+    // In the order `git log` gave them.
+    pub fn all_commits(&self) -> &[Commit] {
+        &self.commits
     }
 
     pub fn parents_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
@@ -370,7 +368,7 @@ impl Repository {
         let mut history = FxHashSet::default();
         let mut pending: Vec<&CommitHash> = tip.into_iter().collect();
         while let Some(hash) = pending.pop() {
-            if self.commit_map.contains_key(hash) && history.insert(hash.clone()) {
+            if self.commit_indices.contains_key(hash) && history.insert(hash.clone()) {
                 pending.extend(self.parents_map.get(hash).into_iter().flatten());
             }
         }
@@ -407,15 +405,7 @@ impl Repository {
     // Orders commits as in the commit list, newest first, in one pass over the list;
     // commits not in it go last.
     pub fn sort_newest_first(&self, hashes: &mut [CommitHash]) {
-        let wanted: rustc_hash::FxHashSet<&CommitHash> = hashes.iter().collect();
-        let positions: FxHashMap<&CommitHash, usize> = self
-            .commit_hashes
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| wanted.contains(h))
-            .map(|(i, h)| (h, i))
-            .collect();
-        let position = |h: &CommitHash| positions.get(h).copied().unwrap_or(usize::MAX);
+        let position = |h: &CommitHash| self.commit_indices.get(h).copied().unwrap_or(usize::MAX);
         hashes.sort_by_cached_key(position);
     }
 

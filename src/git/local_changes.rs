@@ -3,8 +3,11 @@
 use std::{
     hash::Hash,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
+
+use crate::path_tree::FileTree;
 
 use super::{
     git_bytes, git_command, git_output, lock, output_result, pathspec_parts, pathspecs,
@@ -467,10 +470,14 @@ impl WorkTree {
 }
 
 // The local changes and a fingerprint of their files, loaded in the background every few seconds
-// for the local changes page to reload when something changed, see `files_stamp`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// for the local changes page to reload when something changed, see `files_stamp`. With the tree
+// of each section, built on the thread loading them, as 100k files take a while; shared, not
+// copied, by the repository and the page taking them.
+#[derive(Debug, Clone)]
 pub struct FilesSnapshot {
-    pub changes: LocalChanges,
+    pub changes: Arc<LocalChanges>,
+    // of the unstaged files, then of the staged ones
+    pub trees: [FileTree; 2],
     pub stamp: u64,
     // when it started loading: one started before the page reloaded after a change of its own
     // shows the files as they were before that change
@@ -482,11 +489,24 @@ impl FilesSnapshot {
         let started = Instant::now();
         let changes = load_local_changes(work_tree, refresh);
         let stamp = files_stamp(work_tree, git_dir, &changes);
+        Self::of(changes, stamp, started)
+    }
+
+    pub fn of(changes: LocalChanges, stamp: u64, started: Instant) -> Self {
+        let tree = |files: &[LocalChangeFile]| FileTree::new(files.iter().map(|f| f.path.as_str()));
         FilesSnapshot {
-            changes,
+            trees: [tree(&changes.unstaged), tree(&changes.staged)],
+            changes: Arc::new(changes),
             stamp,
             started,
         }
+    }
+
+    // The same files but the staged ones, like those of the commit amended with them.
+    pub fn with_staged(self, staged: Vec<LocalChangeFile>) -> Self {
+        let mut changes = Arc::unwrap_or_clone(self.changes);
+        changes.staged = staged;
+        Self::of(changes, self.stamp, self.started)
     }
 }
 

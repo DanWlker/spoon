@@ -24,6 +24,7 @@ impl Repository {
         move |cancel| git_output_bytes_until(&repository, &["cat-file", "blob", &object], cancel)
     }
 
+    #[cfg(test)]
     pub fn commit_tree(&self, commit_hash: &CommitHash) -> CommitTree {
         self.commit_tree_work(commit_hash)(&Cancel::default())
     }

@@ -18,8 +18,8 @@ use crate::{
 };
 
 use super::{
-    git_command, git_output, load_submodules, Commit, CommitHash, CommitMap, CommitsMap, Head,
-    Operation, Ref, RefMap, Repository, SortCommit, Tracking, WorkTree,
+    git_command, git_output, load_submodules, Commit, CommitHash, CommitsMap, Head, Operation, Ref,
+    RefMap, Repository, SortCommit, Tracking, WorkTree,
 };
 use crate::git::{diff::empty_tree, text_from_git, FilesSnapshot, IndexRefresh, LoadedFiles, Seen};
 
@@ -171,19 +171,18 @@ impl Repository {
         ref_map: RefMap,
         head: Head,
     ) -> Self {
-        let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
         let (parents_map, children_map) = build_commits_maps(&commits);
-        let commit_map = to_commit_map(commits);
+        let commit_indices = commits
+            .iter()
+            .enumerate()
+            .map(|(index, commit)| (commit.commit_hash.clone(), index))
+            .collect();
         Self {
             path,
             git_dir,
             // none for a repository loaded for its graph only, see `load_graph`
             loaded_local_changes: Mutex::new(LoadedFiles {
-                files: FilesSnapshot {
-                    changes: Default::default(),
-                    stamp: 0,
-                    started: Instant::now(),
-                },
+                files: FilesSnapshot::of(Default::default(), 0, Instant::now()),
                 seen: Seen::First,
             }),
             local_changes_started: Mutex::new(Instant::now()),
@@ -192,14 +191,14 @@ impl Repository {
             tracking: Default::default(),
             submodules: Default::default(),
             submodule_repositories: Default::default(),
-            commit_map,
+            commits,
+            commit_indices,
             parents_map,
             children_map,
             ref_map,
             head,
             remotes: Vec::new(),
             textconv_drivers: Vec::new(),
-            commit_hashes,
             head_history: Default::default(),
             empty_tree: None,
         }
@@ -481,13 +480,6 @@ fn build_commits_maps(commits: &Vec<Commit>) -> (CommitsMap, CommitsMap) {
     }
 
     (parents_map, children_map)
-}
-
-fn to_commit_map(commits: Vec<Commit>) -> CommitMap {
-    commits
-        .into_iter()
-        .map(|commit| (commit.commit_hash.clone(), commit))
-        .collect()
 }
 
 fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<Commit> {
@@ -868,26 +860,19 @@ mod tests {
         ));
         assert_eq!(taken(&repository), (2, Seen::First));
         // a `git status` started before is older than them: dropped
-        let older = crate::git::FilesSnapshot {
-            changes: Default::default(),
-            stamp: 0,
-            started: before,
-        };
+        let older = crate::git::FilesSnapshot::of(Default::default(), 0, before);
         repository.set_local_changes(older);
         assert_eq!(repository.loaded_local_change_count(), 2);
         // one with a conflict is kept, its conflicts resolved by hand staged once the page takes it
-        let conflicted = crate::git::FilesSnapshot {
-            changes: crate::git::LocalChanges {
-                unstaged: vec![crate::git::LocalChangeFile {
-                    path: "c".into(),
-                    orig_path: None,
-                    status: crate::git::LocalChangeStatus::Conflicted,
-                }],
-                staged: vec![],
-            },
-            stamp: 0,
-            started: Instant::now(),
+        let changes = crate::git::LocalChanges {
+            unstaged: vec![crate::git::LocalChangeFile {
+                path: "c".into(),
+                orig_path: None,
+                status: crate::git::LocalChangeStatus::Conflicted,
+            }],
+            staged: vec![],
         };
+        let conflicted = crate::git::FilesSnapshot::of(changes, 0, Instant::now());
         repository.set_local_changes(conflicted);
         assert_eq!(repository.loaded_local_change_count(), 1);
         assert_eq!(repository.remotes(), ["origin"]);

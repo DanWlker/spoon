@@ -385,7 +385,7 @@ fn shows_loaded<'a>(
 
 fn commits<'a>(
     ctx: &AppContext,
-    submodule: &'a Repository,
+    submodule: &'a Arc<Repository>,
     graph: graph::Graph<'a>,
     moved: Moved,
 ) -> Shows<'a> {

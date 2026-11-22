@@ -1,4 +1,9 @@
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ratatui::{
     buffer::Buffer,
@@ -12,10 +17,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::widget::tree_query::Toward;
 use crate::{
+    background::{Cancel, Job},
     color::ColorTheme,
     config::UserListColumnType,
     context::AppContext,
-    event::AppEvent,
+    event::{AppEvent, Sender},
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
     graph::{Fold, Graph, GraphImageManager, GraphImages},
     keybind::UserEvent,
@@ -114,6 +120,28 @@ pub struct SearchRefreshContext {
     query: String,
 }
 
+// How long the search waits once its query or options last changed before it runs, on another
+// thread, as 100k commits take a while: typing on meanwhile runs none for each key.
+pub const SEARCH_SETTLES_AFTER: Duration = Duration::from_millis(150);
+
+// The search of the commits as it runs: the matches shown are of the query and options they were
+// found with, see `CommitListState::searched`.
+#[derive(Debug)]
+enum SearchRun {
+    Done,
+    // changed since, it starts at `due`; once done, it selects the first match from `from`, or
+    // leaves the selection with none
+    Settling {
+        due: Instant,
+        from: Option<usize>,
+    },
+    Running {
+        from: Option<usize>,
+        searched: Option<(String, SearchOptions)>,
+        job: Job<Vec<bool>>,
+    },
+}
+
 // Whether the commit list dims the commits off the current branch, see `CommitInfo::on_head`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dimming {
@@ -126,7 +154,8 @@ pub enum Dimming {
 // 100k commits is made at once again on each reload.
 #[derive(Debug)]
 pub struct CommitListState<'a> {
-    repository: &'a Repository,
+    // shared, for the search to run on another thread
+    repository: &'a Arc<Repository>,
     // the rows, see `graph`
     graph_image_manager: GraphImageManager<'a>,
     dimming: Dimming,
@@ -138,6 +167,7 @@ pub struct CommitListState<'a> {
     // the commits the search matches, and the query and options they were found with
     search_matches: Vec<bool>,
     searched: Option<(String, SearchOptions)>,
+    search_run: SearchRun,
 
     // commits picked for commands on several commits
     picked: Picks<CommitHash>,
@@ -152,7 +182,7 @@ pub struct CommitListState<'a> {
 impl<'a> CommitListState<'a> {
     // The list of the commits of the graph of `repository`.
     pub fn new(
-        repository: &'a Repository,
+        repository: &'a Arc<Repository>,
         graph_image_manager: GraphImageManager<'a>,
         dimming: Dimming,
         search_options: Rc<Cell<SearchOptions>>,
@@ -167,6 +197,7 @@ impl<'a> CommitListState<'a> {
             search_options,
             search_matches,
             searched: None,
+            search_run: SearchRun::Done,
             picked: Picks::default(),
             filter_note: None,
             head: Head::None,
@@ -550,12 +581,92 @@ impl<'a> CommitListState<'a> {
         &self.query
     }
 
-    // Finds the matches again once the search or its options changed: while typing, the first
-    // from where it started; else the selected commit stays, or the next match.
+    // Finds the matches again once the search or its options changed, once they stop changing
+    // for a moment, see `SEARCH_SETTLES_AFTER`: while typing, the first from where it started;
+    // else the selected commit stays, or the next match. A search running for before stops.
     pub fn search_changed(&mut self) {
         let from = self.query.step_from(self.cursor.selected());
-        self.update_search_matches();
-        self.select_match_from(from, SearchDirection::Current);
+        self.settle_search(Some(from), Instant::now() + SEARCH_SETTLES_AFTER);
+    }
+
+    fn settle_search(&mut self, from: Option<usize>, due: Instant) {
+        self.search_run = SearchRun::Settling { due, from };
+    }
+
+    // When the search waiting for the query to settle starts, see `search_changed`.
+    pub fn search_due(&self) -> Option<Instant> {
+        match self.search_run {
+            SearchRun::Settling { due, .. } => Some(due),
+            SearchRun::Done | SearchRun::Running { .. } => None,
+        }
+    }
+
+    // Whether the matches shown aren't those of the search shown yet, which keys acting on the
+    // list wait for, see `finish_search`.
+    pub fn is_search_pending(&self) -> bool {
+        !matches!(self.search_run, SearchRun::Done)
+    }
+
+    // Before drawing: starts the search once due, or right away when `now`, like before a key
+    // acting on its matches; shows the matches once found. Returns whether it did.
+    pub fn poll_search(&mut self, tx: &Sender, now: bool) -> bool {
+        if let SearchRun::Settling { due, from } = self.search_run {
+            if now || Instant::now() >= due {
+                let (searched, work) = self.search_work();
+                // stopped once replaced, see `Job::read`
+                let job = Job::read(tx.clone(), work);
+                self.search_run = SearchRun::Running {
+                    from,
+                    searched,
+                    job,
+                };
+            }
+        }
+        let found = match &self.search_run {
+            SearchRun::Running { job, .. } => job.try_take(),
+            SearchRun::Done | SearchRun::Settling { .. } => None,
+        };
+        let Some(matches) = found else {
+            return false;
+        };
+        if let SearchRun::Running { from, searched, .. } =
+            std::mem::replace(&mut self.search_run, SearchRun::Done)
+        {
+            self.show_matches(from, searched, matches);
+        }
+        true
+    }
+
+    // Shows the matches of the search, finding them or waiting for them: before a key acts on them.
+    pub fn finish_search(&mut self) {
+        let (from, searched, matches) =
+            match std::mem::replace(&mut self.search_run, SearchRun::Done) {
+                SearchRun::Done => return,
+                SearchRun::Settling { from, .. } => {
+                    let (searched, work) = self.search_work();
+                    (from, searched, work(&Cancel::default()))
+                }
+                SearchRun::Running {
+                    from,
+                    searched,
+                    job,
+                } => (from, searched, job.wait()),
+            };
+        self.show_matches(from, searched, matches);
+    }
+
+    // The matches found, the first selected from where the search started.
+    fn show_matches(
+        &mut self,
+        from: Option<usize>,
+        searched: Option<(String, SearchOptions)>,
+        matches: Vec<bool>,
+    ) {
+        self.search_matches = matches;
+        self.searched = searched;
+        if let Some(from) = from {
+            self.select_match_from(from, SearchDirection::Current);
+        }
     }
 
     pub fn search_refresh_context(&self) -> Option<SearchRefreshContext> {
@@ -564,14 +675,18 @@ impl<'a> CommitListState<'a> {
         })
     }
 
+    // The search applied before the commits were loaded again, its matches found again in the
+    // background right away, the selection staying.
     pub fn restore_search(&mut self, context: &SearchRefreshContext) {
         self.query = TreeQuery::with_search(context.query.clone());
-        self.update_search_matches();
+        self.settle_search(None, Instant::now());
     }
 
     pub fn cancel_search(&mut self) {
         self.query = TreeQuery::default();
-        self.update_search_matches();
+        self.search_run = SearchRun::Done;
+        self.search_matches.fill(false);
+        self.searched = None;
     }
 
     // Moves by the keys moving in a list: the selection, by pages, or only the view; returns
@@ -628,28 +743,47 @@ impl<'a> CommitListState<'a> {
         ))
     }
 
-    // Finds the commits the search matches. A query typed on from the one before, with the same
-    // options, matches only commits that one did (a longer substring, or subsequence when fuzzy,
-    // and a stricter case), so only those are looked at again: a key costs as many commits as
-    // still match, not all of them.
-    fn update_search_matches(&mut self) {
+    // What finds the commits the search matches, with the query and options it finds them with,
+    // to run on another thread. A query typed on from the one before, with the same options,
+    // matches only commits that one did (a longer substring, or subsequence when fuzzy, and a
+    // stricter case), so only those are looked at again.
+    fn search_work(
+        &self,
+    ) -> (
+        Option<(String, SearchOptions)>,
+        impl FnOnce(&Cancel) -> Vec<bool> + Send + 'static,
+    ) {
         let options = self.search_options.get();
-        let query = self.query.search();
-        let narrowing = match (&self.searched, query) {
+        let query = self.query.search().map(String::from);
+        let narrowing = match (&self.searched, &query) {
             (Some((before, before_options)), Some(query)) => {
                 *before_options == options && query.starts_with(before.as_str())
             }
             _ => false,
         };
-        let rows = &self.graph_image_manager.graph().commits;
-        for (matched, commit) in self.search_matches.iter_mut().zip(rows) {
-            if narrowing && !*matched {
-                continue;
+        let before = narrowing.then(|| self.search_matches.clone());
+        let repository = Arc::clone(self.repository);
+        let rows = Arc::clone(&self.graph().rows);
+        let searched = query.clone().map(|query| (query, options));
+        let work = move |cancel: &Cancel| {
+            let all = repository.all_commits();
+            let mut matches = vec![false; rows.len()];
+            let Some(query) = query else {
+                return matches;
+            };
+            for (row, &index) in rows.iter().enumerate() {
+                // replaced, what it finds goes unused
+                if row % 4096 == 0 && cancel.is_cancelled() {
+                    break;
+                }
+                if before.as_ref().is_some_and(|before| !before[row]) {
+                    continue;
+                }
+                matches[row] = commit_matches(&repository, &all[index], &query, options);
             }
-            *matched =
-                query.is_some_and(|query| commit_matches(self.repository, commit, query, options));
-        }
-        self.searched = query.map(|query| (query.to_string(), options));
+            matches
+        };
+        (searched, work)
     }
 
     fn prepared_image(&self, commit: &Commit) -> &PreparedImage {
@@ -750,7 +884,7 @@ pub fn mark_commit_list_bar(
 // the submodule's HEAD and its refs shown, with the graph. The submodule's repository is owned by
 // the parent, so the borrows live as long as this list.
 pub fn submodule_commit_list<'a>(
-    repository: &'a Repository,
+    repository: &'a Arc<Repository>,
     graph_image_manager: GraphImageManager<'a>,
     search_options: Rc<Cell<SearchOptions>>,
     scrolloff: usize,
@@ -1018,8 +1152,8 @@ impl CommitList<'_> {
     }
 }
 
-// Whether the search matches the commit, in what it looks in: its refs (not stashes), read of the
-// repository only then, subject, author or short hash.
+// Whether the search matches the commit, in what it looks in: its subject, author, short hash or
+// refs (not stashes), read of the repository last, only when the others don't match.
 fn commit_matches(
     repository: &Repository,
     commit: &Commit,
@@ -1027,15 +1161,15 @@ fn commit_matches(
     options: SearchOptions,
 ) -> bool {
     let matches = |text: &str| name_matches(text, query, options);
-    options.target.includes(SearchTarget::Ref)
-        && repository
-            .refs(&commit.commit_hash)
-            .iter()
-            .any(|r| !matches!(r, Ref::Stash { .. }) && matches(r.name()))
-        || options.target.includes(SearchTarget::Subject) && matches(&commit.subject)
+    options.target.includes(SearchTarget::Subject) && matches(&commit.subject)
         || options.target.includes(SearchTarget::Author) && matches(&commit.author_name)
         || options.target.includes(SearchTarget::Hash)
             && matches(commit.commit_hash.as_short_hash())
+        || options.target.includes(SearchTarget::Ref)
+            && repository
+                .refs(&commit.commit_hash)
+                .iter()
+                .any(|r| !matches!(r, Ref::Stash { .. }) && matches(r.name()))
 }
 
 // `text` cut to `width` with an ellipsis, what `search` matches in it highlighted, as everywhere.
@@ -1293,6 +1427,7 @@ mod tests {
             FxHashMap::default(),
             Head::None,
         );
+        let repository = Arc::new(repository);
         let graph = calc_graph(&repository, None, &Default::default());
         let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
         let image_params =
@@ -1320,6 +1455,8 @@ mod tests {
     fn type_key(state: &mut CommitListState<'_>, key: KeyEvent) {
         if state.query_mut().handle_key(key).is_some() {
             state.search_changed();
+            // as a key acting on the matches waits for them
+            state.finish_search();
         }
     }
 
@@ -1757,7 +1894,11 @@ mod tests {
         let (context, options) = with_commit_list_state(&["Fix parser", "other"], |state| {
             input_search_query(state, "fx");
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             state.toggle_fuzzy();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             apply_search(state);
 
             (
@@ -1779,6 +1920,7 @@ mod tests {
         with_commit_list_state(&["unrelated", "FIX new", "fix parser"], |state| {
             state.restore_search_options(options);
             state.restore_search(&context);
+            state.finish_search();
 
             assert_eq!(state.search_refresh_context(), Some(context.clone()));
             assert_eq!(state.rows()[state.cursor.selected()].subject, "unrelated");
@@ -1803,6 +1945,8 @@ mod tests {
     fn test_restore_search_options_without_applied_search() {
         let options = with_commit_list_state(&["FIX"], |state| {
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             state.search_options()
         });
 
@@ -1833,6 +1977,8 @@ mod tests {
 
             state.restore_search(&context);
 
+            state.finish_search();
+
             assert_eq!(status(state), (1, 1, 2));
             assert_eq!(
                 matched(state),
@@ -1846,6 +1992,8 @@ mod tests {
         with_commit_list_state(&["FIX"], |state| {
             input_search_query(state, "fix");
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             apply_search(state);
             state.cancel_search();
 
@@ -1877,6 +2025,8 @@ mod tests {
             for fuzzy in [false, true] {
                 if state.search_options().fuzzy != fuzzy {
                     state.toggle_fuzzy();
+                    // as a key acting on the matches waits for them
+                    state.finish_search();
                 }
                 for query in ["fix p", "FIx", "fx", "fixup", "parser"] {
                     state.cancel_search();
@@ -1886,14 +2036,16 @@ mod tests {
                         let typed = state.search_matches.clone();
                         // from scratch
                         state.searched = None;
-                        state.update_search_matches();
+                        state.search_changed();
+                        state.finish_search();
                         assert_eq!(typed, state.search_matches, "{query:?} fuzzy {fuzzy}");
                     }
                     // a key deleted: looked at in all commits again
                     type_key(state, KeyEvent::from(KeyCode::Backspace));
                     let typed = state.search_matches.clone();
                     state.searched = None;
-                    state.update_search_matches();
+                    state.search_changed();
+                    state.finish_search();
                     assert_eq!(typed, state.search_matches, "{query:?} backspace");
                 }
             }
@@ -1905,8 +2057,14 @@ mod tests {
         with_commit_list_state(&["other", "Fix parser", "FIX graph", "last"], |state| {
             state.reset_height(2);
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             state.toggle_fuzzy();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             state.toggle_search_target();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             input_search_query(state, "fx");
             type_key(state, KeyEvent::from(KeyCode::Left));
             apply_search(state);
@@ -2022,6 +2180,8 @@ mod tests {
             with_commit_list_state(&["fix", "other"], |state| {
                 if fuzzy {
                     state.toggle_fuzzy();
+                    // as a key acting on the matches waits for them
+                    state.finish_search();
                 }
                 input_search_query(state, "fix");
                 apply_search(state);
@@ -2085,6 +2245,8 @@ mod tests {
     fn test_search_options_can_be_changed_before_search() {
         with_commit_list_state(&["FIX"], |state| {
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             input_search_query(state, "fix");
             apply_search(state);
 
@@ -2099,6 +2261,8 @@ mod tests {
     fn test_search_option_string_after_toggles() {
         with_commit_list_state(&["fix"], |state| {
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             assert_eq!(
                 state
                     .search_options()
@@ -2106,6 +2270,8 @@ mod tests {
                 "[all] [smart-case] [substring]"
             );
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             assert_eq!(
                 state
                     .search_options()
@@ -2113,6 +2279,8 @@ mod tests {
                 "[all] [case-sensitive] [substring]"
             );
             state.toggle_fuzzy();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             assert_eq!(
                 state
                     .search_options()
@@ -2120,6 +2288,8 @@ mod tests {
                 "[all] [case-sensitive] [fuzzy]"
             );
             state.toggle_fuzzy();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             assert_eq!(
                 state
                     .search_options()
@@ -2127,6 +2297,8 @@ mod tests {
                 "[all] [case-sensitive] [substring]"
             );
             state.toggle_search_target();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             assert_eq!(
                 state
                     .search_options()
@@ -2230,6 +2402,10 @@ mod tests {
             apply_search(state);
 
             state.toggle_search_target();
+
+            // as a key acting on the matches waits for them
+
+            state.finish_search();
             assert_eq!(state.search_options().target, SearchTarget::Subject);
             assert_eq!(
                 matched(state),
@@ -2237,11 +2413,51 @@ mod tests {
             );
 
             state.toggle_search_target();
+
+            // as a key acting on the matches waits for them
+
+            state.finish_search();
             assert_eq!(state.search_options().target, SearchTarget::Author);
             assert_eq!(
                 matched(state),
                 Some(("No matches found (query: \"fix\")".into(), false))
             );
+        });
+    }
+
+    // Typed into, the search runs once typing settles, on another thread: none runs for each key,
+    // and a change meanwhile stops the one running for the query before.
+    #[test]
+    fn test_search_runs_once_typing_settles() {
+        with_commit_list_state(&["other", "fix parser"], |state| {
+            let ec = crate::event::EventController::without_terminal();
+            state.start_search();
+            for c in "fix".chars() {
+                state
+                    .query_mut()
+                    .handle_key(KeyEvent::from(KeyCode::Char(c)));
+                state.search_changed();
+            }
+            let due = state.search_due().expect("waiting for typing to settle");
+            assert!(due > Instant::now());
+            // before it is due, drawing starts nothing
+            assert!(!state.poll_search(&ec.sender(), false));
+            assert!(matches!(state.search_run, SearchRun::Settling { .. }));
+            // a key acting on the matches starts it at once
+            assert!(!state.poll_search(&ec.sender(), true));
+            let SearchRun::Running { job, .. } = &state.search_run else {
+                panic!("not running")
+            };
+            let running = job.cancel_of();
+            // typed on: the one running stops
+            state
+                .query_mut()
+                .handle_key(KeyEvent::from(KeyCode::Char(' ')));
+            state.search_changed();
+            assert!(running.is_cancelled());
+            state.finish_search();
+            assert_eq!(state.rows()[state.cursor.selected()].subject, "fix parser");
+            assert!(!state.is_search_pending());
         });
     }
 
@@ -2251,6 +2467,8 @@ mod tests {
             input_search_query(state, "fix");
             apply_search(state);
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
 
             assert_eq!(state.rows()[state.cursor.selected()].subject, "fix");
             assert_eq!(
@@ -2264,9 +2482,13 @@ mod tests {
     fn test_applied_search_options_select_next_match() {
         with_commit_list_state(&["FIX", "fix"], |state| {
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             input_search_query(state, "fix");
             apply_search(state);
             state.toggle_smart_case();
+            // as a key acting on the matches waits for them
+            state.finish_search();
 
             assert_eq!(state.rows()[state.cursor.selected()].subject, "fix");
             assert_eq!(
@@ -2280,11 +2502,17 @@ mod tests {
     fn test_applied_search_options_keep_selection_when_no_matches() {
         with_commit_list_state(&["fix", "other"], |state| {
             state.toggle_fuzzy();
+            // as a key acting on the matches waits for them
+            state.finish_search();
             input_search_query(state, "fx");
             apply_search(state);
             let selected = state.cursor.selected();
 
             state.toggle_fuzzy();
+
+            // as a key acting on the matches waits for them
+
+            state.finish_search();
 
             assert_eq!(state.cursor.selected(), selected);
             assert_eq!(

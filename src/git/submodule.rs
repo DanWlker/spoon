@@ -65,11 +65,12 @@ impl Repository {
             .0
             .get(&format!("{path}\0{from}..{to}"))
         {
-            return Ok(Some(repository));
+            return Ok(Some(&**repository));
         }
         let loaded = self.submodule_repository_work(path, from, to)(&Cancel::default())?;
-        Ok(loaded
-            .map(|repository| self.keep_submodule_repository(path, from, to, Arc::new(repository))))
+        Ok(loaded.map(|repository| {
+            &**self.keep_submodule_repository(path, from, to, Arc::new(repository))
+        }))
     }
 
     // The submodule's repository of `from..to` when loaded already, see `submodule_repository`;
@@ -82,7 +83,7 @@ impl Repository {
     ) -> Option<Arc<Repository>> {
         self.submodule_repositories
             .0
-            .map_get(&format!("{path}\0{from}..{to}"), Arc::clone)
+            .map_get(&format!("{path}\0{from}..{to}"), |kept| Arc::clone(kept))
     }
 
     // Loads the submodule's repository of `from..to` on another thread, to keep with
@@ -113,18 +114,24 @@ impl Repository {
         from: &str,
         to: &str,
         repository: Arc<Repository>,
-    ) -> &Repository {
+    ) -> &Arc<Repository> {
         let key = format!("{path}\0{from}..{to}");
         // one loaded meanwhile stays, the references to it staying valid
-        self.submodule_repositories.0.insert(key, repository)
+        self.submodule_repositories
+            .0
+            .insert(key, Box::new(repository))
     }
 }
 
 // The submodule repositories loaded beside this one, kept append-only so the references handed
-// out by `submodule_repository` stay valid while more are loaded. The map holds them behind an
-// `Arc`, so their addresses don't change.
+// out by `submodule_repository` stay valid while more are loaded. The map boxes them, so their
+// addresses don't change; shared, for their lists to search them on another thread.
 #[derive(Default)]
-pub(super) struct SubmoduleRepositories(elsa::sync::FrozenMap<String, Arc<Repository>>);
+#[expect(
+    clippy::redundant_allocation,
+    reason = "the box keeps the address of the `Arc` itself, handed out as `&Arc`"
+)]
+pub(super) struct SubmoduleRepositories(elsa::sync::FrozenMap<String, Box<Arc<Repository>>>);
 
 impl std::fmt::Debug for SubmoduleRepositories {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

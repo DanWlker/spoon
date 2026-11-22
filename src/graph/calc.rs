@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -12,6 +12,9 @@ type CommitPosMap<'a> = FxHashMap<&'a CommitHash, (usize, usize)>;
 #[derive(Debug)]
 pub struct Graph<'a> {
     pub commits: Vec<&'a Commit>,
+    // the same, by their index in the repository's, see `Repository::all_commits`: for work on
+    // another thread, which can't borrow them
+    pub rows: Arc<[usize]>,
     // the column and row of each commit shown, see `GraphLayout`
     pub commit_pos_map: FxHashMap<CommitHash, (usize, usize)>,
     pub edges: GraphEdges,
@@ -54,7 +57,7 @@ impl<'a, 'f> Links<'a, 'f> {
         let head = repository.head_commit();
         let mut stack: Vec<&CommitHash> = repository
             .all_commits()
-            .into_iter()
+            .iter()
             .map(|c| &c.commit_hash)
             .filter(|h| repository.children_hash(h).is_empty() || head.as_ref() == Some(*h))
             .collect();
@@ -170,8 +173,10 @@ pub fn calc_graph<'a>(
 // there too, its maps of 100k commits included; `Graph::of` makes it the graph of that repository.
 #[derive(Debug)]
 pub struct GraphLayout {
-    // the commits shown by row
-    rows: Vec<CommitHash>,
+    // the commits shown by row, by their index in the repository's, see `Repository::all_commits`
+    rows: Vec<usize>,
+    // of the repository laid out, which `Graph::of` checks
+    commit_count: usize,
     // the column and row of each
     positions: FxHashMap<CommitHash, (usize, usize)>,
     edges: GraphEdges,
@@ -193,8 +198,11 @@ impl GraphLayout {
         cancel: &Cancel,
     ) -> Option<Self> {
         let links = Links::new(repository, folded);
-        let mut commits = repository.all_commits();
-        commits.retain(|c| links.is_shown(&c.commit_hash));
+        let all = repository.all_commits();
+        let rows: Vec<usize> = (0..all.len())
+            .filter(|&index| links.is_shown(&all[index].commit_hash))
+            .collect();
+        let commits: Vec<&Commit> = rows.iter().map(|&index| &all[index]).collect();
 
         let (commit_pos_map, warning) =
             calc_commit_positions(&commits, &links, primary_branch, cancel)?;
@@ -219,13 +227,13 @@ impl GraphLayout {
                 (c.commit_hash.clone(), fold)
             })
             .collect();
-        let rows = commits.iter().map(|c| c.commit_hash.clone()).collect();
         let positions = commit_pos_map
             .into_iter()
             .map(|(hash, position)| (hash.clone(), position))
             .collect();
         Some(GraphLayout {
             rows,
+            commit_count: all.len(),
             positions,
             edges,
             max_pos_x,
@@ -243,17 +251,21 @@ impl GraphLayout {
 impl<'a> Graph<'a> {
     // The graph of `repository` as `layout`, laid out from it.
     pub fn of(repository: &'a Repository, layout: GraphLayout) -> Self {
-        let commits: Vec<&Commit> = layout
-            .rows
-            .iter()
-            .map(|hash| {
-                repository
-                    .commit(hash)
-                    .expect("laid out from the repository")
-            })
-            .collect();
+        // a bug pairing it with another repository shows its rows at other commits
+        let all = repository.all_commits();
+        let mismatch = "laid out from another repository";
+        assert_eq!(all.len(), layout.commit_count, "{mismatch}");
+        let commits: Vec<&Commit> = layout.rows.iter().map(|&index| &all[index]).collect();
+        for row in [0, commits.len().saturating_sub(1)]
+            .into_iter()
+            .filter(|&row| row < commits.len())
+        {
+            let at = layout.positions.get(&commits[row].commit_hash).map(|p| p.1);
+            assert_eq!(at, Some(row), "{mismatch}");
+        }
         Graph {
             commits,
+            rows: layout.rows.into(),
             commit_pos_map: layout.positions,
             edges: layout.edges,
             max_pos_x: layout.max_pos_x,

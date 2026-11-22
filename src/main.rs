@@ -14,6 +14,7 @@ mod graph_commands;
 mod keybind;
 mod keys;
 mod layout;
+mod path_tree;
 mod pointer;
 mod protocol;
 mod ref_commands;

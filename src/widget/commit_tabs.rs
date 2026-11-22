@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, ops::RangeInclusive, rc::Rc, time::Instant};
+use std::{collections::BTreeSet, ops::RangeInclusive, rc::Rc, sync::Arc, time::Instant};
 
 use rustc_hash::FxHashSet;
 
@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Widget},
 };
 
+use crate::path_tree::{FileTree, FileTreeRow};
 use crate::widget::tree_query::Toward;
 use crate::{
     background::{Cancel, Job},
@@ -27,8 +28,7 @@ use crate::{
         diff_pane::DiffPane,
         file_text::{FileText, LineCursor},
         file_tree::{
-            render_tree, Entry, FileTree, FileTreeRow, FileTreeState, Folders, Root, TreeCursor,
-            TreeSelection, TreeView,
+            render_tree, Entry, FileTreeState, Folders, Root, TreeCursor, TreeSelection, TreeView,
         },
         submodule::SubmodulePanel,
         tree_query::SearchDirection,
@@ -213,6 +213,12 @@ pub struct CommitChangesState<'a> {
 }
 
 impl<'a> CommitChangesState<'a> {
+    // Replaced by another commit's: what it holds of its files is freed on another thread, as
+    // 100k of them take the screen a while.
+    pub fn free_elsewhere(self) {
+        crate::background::drop_elsewhere((self.files, self.tree, self.picked));
+    }
+
     #[cfg(test)]
     pub fn paths(&self) -> Vec<&str> {
         self.files.iter().map(|f| f.path.as_ref()).collect()
@@ -558,7 +564,7 @@ pub struct CommitFilesState<'a> {
     // the first parent of the commit and the changes from it, to work out the files of the
     // commits next to it without listing them all again
     first_parent: Option<CommitHash>,
-    changes: Vec<FileChange>,
+    changes: Arc<[FileChange]>,
     // the files of the commit once listed, or worked out
     paths: Option<BTreeSet<String>>,
     // the gitlinks of the commit, which are not files to preview or act on: listed with its
@@ -568,8 +574,9 @@ pub struct CommitFilesState<'a> {
     // the gitlinks among the paths the commit changed, to step to its parent with, see
     // `Repository::changes_work`
     changed_gitlinks: ChangedGitlinks,
-    // the files of the commit loading on another thread, see `ensure_loaded_in_background`
-    tree_loading: Option<Job<crate::git::CommitTree>>,
+    // the files of the commit and their tree being built on another thread, see
+    // `ensure_loaded_in_background`; the paths worked out are moved there meanwhile
+    tree_loading: Option<Job<ListedFiles>>,
     // loaded lazily, only once the tab is shown
     tree: FilesTree,
     // the rows selected with v, which moving extends and esc clears
@@ -582,6 +589,32 @@ pub struct CommitFilesState<'a> {
     text: FileText,
     // the preview entered while it or the files load, entered once loaded, see `enter`
     enter_loaded: bool,
+}
+
+// The files of a commit and their tree, built on another thread, as 100k files take a while:
+// listed by git with its gitlinks, or worked out from the commit next to it, see `set_commit`,
+// whose gitlinks were worked out with them.
+#[derive(Debug)]
+struct ListedFiles {
+    paths: BTreeSet<String>,
+    // None when worked out
+    gitlinks: Option<FxHashSet<String>>,
+    tree: FileTree,
+}
+
+impl ListedFiles {
+    fn listed((paths, gitlinks): crate::git::CommitTree) -> Self {
+        Self::of(paths.into_iter().collect(), Some(gitlinks))
+    }
+
+    fn of(paths: BTreeSet<String>, gitlinks: Option<FxHashSet<String>>) -> Self {
+        let tree = FileTree::new(paths.iter().map(String::as_str));
+        ListedFiles {
+            paths,
+            gitlinks,
+            tree,
+        }
+    }
 }
 
 // The tree of the files of the commit once loaded, else the one they are to be shown like: of the
@@ -744,7 +777,7 @@ impl<'a> CommitFilesState<'a> {
             repository,
             commit_hash: commit.commit_hash.clone(),
             first_parent: commit.parent_commit_hashes.first().cloned(),
-            changes: Vec::new(),
+            changes: Arc::default(),
             paths: None,
             gitlinks: FxHashSet::default(),
             gitlinks_for: None,
@@ -772,14 +805,14 @@ impl<'a> CommitFilesState<'a> {
     pub fn set_commit(
         &mut self,
         commit: &Commit,
-        changes: &[FileChange],
+        changes: &Arc<[FileChange]>,
         gitlinks: &ChangedGitlinks,
     ) {
         self.enter_loaded = false;
         let hash = &commit.commit_hash;
         let first_parent = commit.parent_commit_hashes.first();
         let step = if first_parent == Some(&self.commit_hash) {
-            Some((changes, PatchDirection::Forward))
+            Some((&changes[..], PatchDirection::Forward))
         } else if self.first_parent.as_ref() == Some(hash) {
             Some((&self.changes[..], PatchDirection::Reverse))
         } else {
@@ -792,16 +825,21 @@ impl<'a> CommitFilesState<'a> {
                 self.paths = Some(paths);
                 // only the changed paths can have become or stopped being gitlinks: those of the
                 // commit stepped to among them were found with its changes, or, stepping back to
-                // the parent, with those of the commit stepped from
-                let touched: FxHashSet<&str> = changes
-                    .iter()
-                    .flat_map(|change| match change {
-                        FileChange::Move { from, to } => vec![from.as_str(), to.as_str()],
-                        change => vec![change.path()],
-                    })
-                    .collect();
-                self.gitlinks
-                    .retain(|path| !touched.contains(path.as_str()));
+                // the parent, with those of the commit stepped from; with none before, none goes
+                if !self.gitlinks.is_empty() {
+                    let touched: FxHashSet<&str> = changes
+                        .iter()
+                        .flat_map(|change| {
+                            let from = match change {
+                                FileChange::Move { from, .. } => Some(from.as_str()),
+                                _ => None,
+                            };
+                            std::iter::once(change.path()).chain(from)
+                        })
+                        .collect();
+                    self.gitlinks
+                        .retain(|path| !touched.contains(path.as_str()));
+                }
                 let stepped = match direction {
                     PatchDirection::Forward => &gitlinks.commit,
                     PatchDirection::Reverse => &self.changed_gitlinks.base,
@@ -816,7 +854,7 @@ impl<'a> CommitFilesState<'a> {
 
         self.commit_hash = hash.clone();
         self.first_parent = first_parent.cloned();
-        self.changes = changes.to_vec();
+        self.changes = Arc::clone(changes);
         // the files of the commit before, loaded late
         self.tree_loading = None;
         if let Some(tree) = self.tree.loaded_mut() {
@@ -846,41 +884,61 @@ impl<'a> CommitFilesState<'a> {
 
     // Loads the files, or waits for them loading in the background: before a key acts on them.
     pub fn ensure_tree(&mut self) {
-        let tree = match self.tree_loading.take() {
+        let listed = match self.tree_loading.take() {
             Some(job) => job.wait(),
-            None if self.paths.is_none() => self.repository.commit_tree(&self.commit_hash),
-            None => Default::default(),
+            None if self.tree.loaded().is_some() => return,
+            None => self.listed_work()(&Cancel::default()),
         };
-        if self.paths.is_none() {
-            self.set_tree(tree);
-        }
-        self.show_tree();
+        self.show_listed(listed);
     }
 
-    // Whether the files are loaded, rather than loading in the background or left to load.
+    // What lists the files of the commit and builds their tree: from the paths worked out when
+    // there are, else listed by git.
+    fn listed_work(&mut self) -> Box<dyn FnOnce(&Cancel) -> ListedFiles + Send> {
+        match self.paths.take() {
+            Some(paths) => Box::new(move |_| ListedFiles::of(paths, None)),
+            None => {
+                let list = self.repository.commit_tree_work(&self.commit_hash);
+                Box::new(move |cancel| ListedFiles::listed(list(cancel)))
+            }
+        }
+    }
+
+    // Shows the files listed, keeping the directories expanded before.
+    fn show_listed(&mut self, listed: ListedFiles) {
+        self.paths = Some(listed.paths);
+        if let Some(gitlinks) = listed.gitlinks {
+            self.gitlinks = gitlinks;
+            self.gitlinks_for = Some(self.commit_hash.clone());
+        }
+        if let FilesTree::Waiting(before) = &self.tree {
+            self.tree = FilesTree::Loaded(before.with_tree(listed.tree));
+            self.replace_preview();
+        }
+    }
+
+    // Whether the files are shown in their tree, rather than loading in the background or left
+    // to load.
     pub fn is_tree_loaded(&self) -> bool {
-        self.paths.is_some()
+        self.tree.loaded().is_some()
     }
 
     // Before drawing: starts loading the files, then the preview of the selected one, on another
     // thread, the screen keeping up with the keys meanwhile, or shows them once loaded.
     pub fn ensure_loaded_in_background(&mut self, tx: &Sender) {
         self.text.measure_in_background(tx);
-        if self.paths.is_none() {
-            let job = self.tree_loading.get_or_insert_with(|| {
+        if self.tree.loaded().is_none() {
+            if self.tree_loading.is_none() {
+                let work = self.listed_work();
                 // stopped once replaced or dropped, see `Job::read`
-                Job::read(
-                    tx.clone(),
-                    self.repository.commit_tree_work(&self.commit_hash),
-                )
-            });
-            let Some(tree) = job.try_take() else {
+                self.tree_loading = Some(Job::read(tx.clone(), work));
+            }
+            let Some(listed) = self.tree_loading.as_ref().and_then(Job::try_take) else {
                 return;
             };
             self.tree_loading = None;
-            self.set_tree(tree);
+            self.show_listed(listed);
         }
-        self.show_tree();
         match self.preview.take() {
             Some(FilePreview::Loading(job)) => match job.try_take() {
                 Some(content) => self.show_content(content),
@@ -920,24 +978,8 @@ impl<'a> CommitFilesState<'a> {
         }
     }
 
-    fn set_tree(&mut self, (paths, gitlinks): crate::git::CommitTree) {
-        self.paths = Some(paths.into_iter().collect());
-        self.gitlinks = gitlinks;
-        self.gitlinks_for = Some(self.commit_hash.clone());
-    }
-
-    // The tree of the files loaded, keeping the directories expanded before.
-    fn show_tree(&mut self) {
-        if let FilesTree::Waiting(before) = &self.tree {
-            let paths = self.paths.get_or_insert_default();
-            let tree = FileTree::new(paths.iter().map(String::as_str));
-            self.tree = FilesTree::Loaded(before.with_tree(tree));
-            self.replace_preview();
-        }
-    }
-
     // Filters the files, those still loading too: the tree loaded keeps the filter of the one
-    // waiting, see `show_tree`.
+    // waiting, see `show_listed`.
     pub fn set_filter(&mut self, filter: Option<&str>, options: SearchOptions) {
         if let FilesTree::Waiting(tree) = &mut self.tree {
             tree.set_filter(filter, options);
@@ -1351,9 +1393,9 @@ mod tests {
     use super::*;
     use crate::{
         git::SortCommit,
+        path_tree::ROOT_PATH,
         test_support::git::{git, GitRepository},
         test_support::ui::test_ctx,
-        widget::file_tree::ROOT_PATH,
     };
 
     // A superproject with `sub` added, and a commit bumping its gitlink from the first commit to
@@ -1855,6 +1897,46 @@ mod tests {
         assert_eq!(files, ["a"]);
     }
 
+    // Stepping to a commit next to the one shown works out its files from the changes between
+    // them; their tree is built on another thread, not where the keys are handled, and git
+    // isn't asked for them.
+    #[test]
+    fn test_files_stepped_to_build_their_tree_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        fs::write(path.join("a"), "a\n").unwrap();
+        git.add(&["a"]);
+        git.commit("add a", "2024-01-01");
+        fs::write(path.join("b"), "b\n").unwrap();
+        git.add(&["b"]);
+        git.commit("add b", "2024-01-02");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let hashes: Vec<CommitHash> = repository
+            .all_commits()
+            .iter()
+            .map(|c| c.commit_hash.clone())
+            .collect();
+        let (oldest, changes) = repository.commit_detail(&hashes[1]);
+        let mut state = CommitFilesState::new(&repository, &oldest, TreeView::Tree);
+        state.set_commit(&oldest, &changes, &Default::default());
+        state.ensure_loaded();
+        // to its child, adding b
+        let (newest, changes) = repository.commit_detail(&hashes[0]);
+        state.set_commit(&newest, &changes, &Default::default());
+        assert!(!state.is_tree_loaded());
+        let ec = crate::event::EventController::without_terminal();
+        state.ensure_loaded_in_background(&ec.sender());
+        let job = state.tree_loading.take();
+        let listed = job.expect("the tree built on another thread").wait();
+        assert!(listed.gitlinks.is_none(), "worked out, not listed by git");
+        state.show_listed(listed);
+        assert!(state.is_tree_loaded());
+        let files: Vec<&String> = state.paths.as_ref().unwrap().iter().collect();
+        assert_eq!(files, ["a", "b"]);
+    }
+
     // Moving to another file while the diff of the one before loads shows the diff of the file
     // moved to: it used to show the one before, loaded late.
     #[test]
@@ -2036,7 +2118,7 @@ mod tests {
         git.add(&["src/a.rs", "b"]);
 
         // the same files, staged then committed, give the same rows
-        let names = |rows: &[crate::widget::file_tree::FileTreeRow]| -> Vec<String> {
+        let names = |rows: &[crate::path_tree::FileTreeRow]| -> Vec<String> {
             rows.iter()
                 .map(|r| format!("{}{}", r.depth, r.name))
                 .collect()

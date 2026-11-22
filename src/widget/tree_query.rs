@@ -178,8 +178,14 @@ fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
 }
 
 // Whether a name, like a path or a field of a commit, matches `query`, see `match_ranges`.
+// Asked of every field of every commit as a search is typed, it finds no ranges.
 pub fn name_matches(name: &str, query: &str, options: SearchOptions) -> bool {
-    !match_ranges(name, query, options).is_empty()
+    if !options.fuzzy || query.is_empty() {
+        return match_range(name, query, options).is_some();
+    }
+    path_matcher(options.smart_case)
+        .fuzzy_match(name, query)
+        .is_some()
 }
 
 // The byte range of the first occurrence of `query` in `text`, smart case or case-sensitive; the
@@ -466,6 +472,32 @@ pub fn type_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Whether a name matches is what its ranges say, which drawing highlights, in every mode.
+    #[test]
+    fn test_name_matches_as_its_ranges_say() {
+        let names = ["src/main.rs", "Fix the Parser", "naïve café", "", "aaa"];
+        let queries = ["", "main", "MAIN", "fp", "FP", "café", "Ï", "zz", "a"];
+        for fuzzy in [false, true] {
+            for smart_case in [false, true] {
+                let options = SearchOptions {
+                    fuzzy,
+                    smart_case,
+                    ..Default::default()
+                };
+                for (name, query) in names
+                    .iter()
+                    .flat_map(|n| queries.iter().map(move |q| (n, q)))
+                {
+                    assert_eq!(
+                        name_matches(name, query, options),
+                        !match_ranges(name, query, options).is_empty(),
+                        "{name:?} {query:?} {options:?}"
+                    );
+                }
+            }
+        }
+    }
 
     fn type_str(query: &mut TreeQuery, text: &str) {
         for c in text.chars() {

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, rc::Rc, time::Instant};
+use std::{collections::BTreeMap, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
 
 use ratatui::{
     buffer::Buffer,
@@ -11,6 +11,7 @@ use ratatui::{
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use rustc_hash::FxHashSet;
 
+use crate::path_tree::{path_contains, FileTree, FileTreeRow, ROOT_PATH};
 use crate::widget::tree_query::Toward;
 use crate::{
     background::{Cancel, Job, Loads},
@@ -34,8 +35,8 @@ use crate::{
         diff::{Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
         file_tree::{
-            find_next, path_contains, render_tree, Entry, FileTree, FileTreeRow, FileTreeState,
-            Folders, Root, TreeCursor, TreeSelection, TreeView, ROOT_PATH,
+            find_next, render_tree, Entry, FileTreeState, Folders, Root, TreeCursor, TreeSelection,
+            TreeView,
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog, StashFile},
         style::{
@@ -148,40 +149,21 @@ struct Section {
 }
 
 impl Section {
-    fn new(files: &[LocalChangeFile]) -> Self {
+    // Its files' tree, loaded with them, see `FilesSnapshot`.
+    fn new(tree: FileTree) -> Self {
         Self {
-            tree: FileTreeState::new(file_tree(files), Folders::Open, Root::Shown, TreeView::Tree),
+            tree: FileTreeState::new(tree, Folders::Open, Root::Shown, TreeView::Tree),
             query: TreeQuery::default(),
             picked: TreeSelection::default(),
         }
     }
 }
 
-fn file_tree(files: &[LocalChangeFile]) -> FileTree {
-    FileTree::new(files.iter().map(|f| f.path.as_ref()))
-}
-
-// The files loaded again, with the trees of the sections built from them on the thread loading
-// them (100k files take ~50ms), and the error of the change made before, see `change_files`.
+// The files loaded again after a change, and the error of the change, see `change_files`.
 #[derive(Debug)]
 struct ReloadedFiles {
     result: Result<(), String>,
     files: FilesSnapshot,
-    trees: [FileTree; 2],
-}
-
-impl ReloadedFiles {
-    fn new(result: Result<(), String>, files: FilesSnapshot) -> Self {
-        let trees = [
-            file_tree(&files.changes.unstaged),
-            file_tree(&files.changes.staged),
-        ];
-        ReloadedFiles {
-            result,
-            files,
-            trees,
-        }
-    }
 }
 
 // What is kept of the page while it isn't shown, or across a refresh.
@@ -214,7 +196,7 @@ impl Default for LocalChangesSnapshot {
             commit_draft: Box::default(),
             focus: Focus::Files,
             sections: Box::new([(); 2].map(|()| {
-                let section = Section::new(&[]);
+                let section = Section::new(FileTree::default());
                 (section.tree, section.query)
             })),
         }
@@ -227,7 +209,7 @@ pub struct LocalChangesState<'a> {
     // what the submodule panel draws its graph with, and the config everywhere
     ctx: Rc<AppContext>,
     // the paths of local changes are relative to it
-    changes: LocalChanges,
+    changes: Arc<LocalChanges>,
     // the unstaged and the staged section, see `LocalChangesSection`
     sections: [Section; 2],
     section: LocalChangesSection,
@@ -299,22 +281,22 @@ impl<'a> LocalChangesState<'a> {
         let (
             FilesSnapshot {
                 changes,
+                trees,
                 stamp: files_stamp,
                 ..
             },
             seen,
         ) = repository.take_loaded_local_changes();
-        let files = [&changes.unstaged, &changes.staged];
         let sections = match &snapshot {
             Some(snapshot) => std::array::from_fn(|i| {
                 let (tree, query) = &snapshot.sections[i];
                 Section {
-                    tree: tree.with_tree(file_tree(files[i])),
+                    tree: tree.with_tree(trees[i].clone()),
                     query: query.clone(),
                     picked: TreeSelection::default(),
                 }
             }),
-            None => files.map(|files| Section::new(files)),
+            None => trees.map(Section::new),
         };
         let section = snapshot
             .as_ref()
@@ -1414,13 +1396,10 @@ impl<'a> LocalChangesState<'a> {
         let changed = !stale && files.stamp != self.files_stamp;
         match changed {
             true if self.needs_reload(&files.changes) => self.reload(),
-            true => match &self.background {
-                Some(tx) => {
-                    let work = move |_: &Cancel| ReloadedFiles::new(Ok(()), files);
-                    self.files_loading = Some(Job::read(tx.clone(), work));
-                }
-                None => self.show_files(ReloadedFiles::new(Ok(()), files)),
-            },
+            true => self.show_files(ReloadedFiles {
+                result: Ok(()),
+                files,
+            }),
             false => {}
         }
         changed
@@ -1456,9 +1435,9 @@ impl<'a> LocalChangesState<'a> {
             let result = change(&work_tree);
             let mut files = work_tree.load_files(IndexRefresh::Saved);
             if let Some(base) = amend_base {
-                files.changes.staged = work_tree.staged_changes_against(&base);
+                files = files.with_staged(work_tree.staged_changes_against(&base));
             }
-            ReloadedFiles::new(result, files)
+            ReloadedFiles { result, files }
         };
         match &self.background {
             Some(tx) => {
@@ -1478,8 +1457,13 @@ impl<'a> LocalChangesState<'a> {
     fn show_files(&mut self, reloaded: ReloadedFiles) {
         let ReloadedFiles {
             result,
-            files: FilesSnapshot { changes, stamp, .. },
-            trees,
+            files:
+                FilesSnapshot {
+                    changes,
+                    trees,
+                    stamp,
+                    ..
+                },
         } = reloaded;
         if let (Err(err), Some(tx)) = (result, &self.background) {
             tx.send(AppEvent::NotifyError(err));
@@ -2326,11 +2310,11 @@ mod tests {
     }
     use crate::{
         git::SortCommit,
+        path_tree::ROOT_PATH,
         test_support::{
             git::{git, GitRepository},
             ui::test_ctx,
         },
-        widget::file_tree::ROOT_PATH,
     };
 
     fn numbered_lines(n: usize) -> String {

@@ -56,17 +56,19 @@ macro_rules! on_page {
 impl Loads for View<'_> {
     fn acts_on_loading(&self, event: UserEvent) -> bool {
         match self {
+            View::List(view) => view.acts_on_loading(event),
             View::Detail(view) => view.acts_on_loading(event),
             View::LocalChanges(view) => view.acts_on_loading(event),
-            View::Default | View::List(_) => false,
+            View::Default => false,
         }
     }
 
     fn load_for(&mut self, event: UserEvent) {
         match self {
+            View::List(view) => view.load_for(event),
             View::Detail(view) => view.load_for(event),
             View::LocalChanges(view) => view.load_for(event),
-            View::Default | View::List(_) => {}
+            View::Default => {}
         }
     }
 }
@@ -120,14 +122,34 @@ impl<'a> View<'a> {
         }
     }
 
+    // Starts the search of the commits without waiting for typing to settle, for a key acting
+    // on its matches.
+    pub fn search_now(&mut self) {
+        match self {
+            View::List(view) => view.search_now(),
+            View::Detail(view) => view.search_now(),
+            View::Default | View::LocalChanges(_) => {}
+        }
+    }
+
+    // When the search of the commits waiting for typing to settle starts, see
+    // `CommitListState::search_changed`.
+    pub fn search_due(&self) -> Option<std::time::Instant> {
+        self.as_list_state()?.search_due()
+    }
+
     // Whether what the page shows loads in the background, see `Job`.
     #[cfg(test)]
     pub fn is_loading(&self) -> bool {
-        match self {
-            View::Detail(view) => view.is_loading(),
-            View::LocalChanges(view) => view.is_loading(),
-            View::Default | View::List(_) => false,
-        }
+        let search = self
+            .as_list_state()
+            .is_some_and(CommitListState::is_search_pending);
+        search
+            || match self {
+                View::Detail(view) => view.is_loading(),
+                View::LocalChanges(view) => view.is_loading(),
+                View::Default | View::List(_) => false,
+            }
     }
 
     pub fn prepare_graph_uploads(&mut self) {

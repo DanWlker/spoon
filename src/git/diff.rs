@@ -1,7 +1,10 @@
 // The diffs of commits and of the local changes, the files they change, and applying a patch.
 
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::background::Cancel;
 
@@ -48,7 +51,7 @@ impl Repository {
     }
 
     #[cfg(test)]
-    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (super::Commit, Vec<FileChange>) {
+    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (super::Commit, Arc<[FileChange]>) {
         let commit = self.commit(commit_hash).unwrap().clone();
         let changes = self.changes_work(None, commit_hash)(&Cancel::default());
         (commit, changes.changes)
@@ -84,7 +87,10 @@ impl Repository {
                 commit: gitlinks_at(&path, &target, &paths, cancel),
                 base: gitlinks_at(&path, &base, &paths, cancel),
             };
-            CommitChanges { changes, gitlinks }
+            CommitChanges {
+                changes: changes.into(),
+                gitlinks,
+            }
         }
     }
 
@@ -205,10 +211,11 @@ impl ChangedGitlinks {
     }
 }
 
-// What changed from one commit to another, see `Repository::changes_work`.
+// What changed from one commit to another, see `Repository::changes_work`. Shared by the tabs of
+// the details rather than copied: a commit can change 100k files.
 #[derive(Debug, Default)]
 pub struct CommitChanges {
-    pub changes: Vec<FileChange>,
+    pub changes: Arc<[FileChange]>,
     pub gitlinks: ChangedGitlinks,
 }
 
@@ -387,9 +394,10 @@ mod tests {
             .iter()
             .map(|c| c.commit_hash.clone())
             .collect();
-        let paths = |changes: Vec<FileChange>| -> Vec<String> {
+        let paths = |changes: Arc<[FileChange]>| -> Vec<String> {
             changes
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|c| match c {
                     FileChange::Add { path } | FileChange::Modify { path } => path,
                     other => panic!("{other:?}"),

@@ -4,6 +4,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::widget::tree_query::Toward;
 use crate::{
+    background::Loads,
     context::AppContext,
     event::{AppEvent, Sender},
     git::{CommitHash, Head, Repository},
@@ -25,6 +26,33 @@ use crate::{
         commit_tabs::DetailTab,
     },
 };
+
+// The search's matches, found on another thread: the keys acting on the list wait for them, those
+// typed into it don't, see `CommitListState::search_changed`.
+impl Loads for ListView<'_> {
+    fn acts_on_loading(&self, event: UserEvent) -> bool {
+        searching_waits(&self.commit_list_state, event)
+    }
+
+    fn load_for(&mut self, event: UserEvent) {
+        if self.acts_on_loading(event) {
+            self.commit_list_state.finish_search();
+        }
+    }
+}
+
+// Whether `event` waits for the matches of the search of `state`: any key but those typed into it.
+pub fn searching_waits(state: &CommitListState, event: UserEvent) -> bool {
+    state.is_search_pending() && event != UserEvent::Unknown
+}
+
+// Before drawing: the search of `state` starts once typing settles, or right away when `now`,
+// before a key acting on its matches; once found, the status line says how it went.
+pub fn poll_commit_search(state: &mut CommitListState, tx: &Sender, now: bool) {
+    if state.poll_search(tx, now) && !state.is_typing_search() {
+        update_matched_message(state, tx);
+    }
+}
 
 #[derive(Debug)]
 pub struct ListView<'a> {
@@ -166,6 +194,12 @@ impl<'a> ListView<'a> {
     pub fn update_layout(&mut self, area: Rect) {
         self.as_mut_list_state()
             .update_height(commit_list_inner_height(area.height));
+        poll_commit_search(&mut self.commit_list_state, &self.tx, false);
+    }
+
+    // Starts the search waiting for typing to settle, for a key acting on its matches.
+    pub fn search_now(&mut self) {
+        poll_commit_search(&mut self.commit_list_state, &self.tx, true);
     }
 
     pub fn prepare_graph_uploads(&mut self) {

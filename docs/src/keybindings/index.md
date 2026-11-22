@@ -22,6 +22,7 @@ A key acting on what still loads in the background (a diff, the files, a blame, 
 | Timeline, the commits | the diff | <kbd>Enter</kbd>, <kbd>l</kbd>, <kbd>2</kbd> and <kbd>Ctrl-l</kbd>, going into it | every other key |
 | Timeline, the diff | it | every key | |
 | Blame | the blame of the commit stepped to | every key but stepping again | |
+| The commit list, searching | the matches, found on another thread once typing pauses for 150ms | every key acting on the list, like <kbd>n/N</kbd>, which starts it at once | typing the search |
 | The blame or timeline opening | its history | every key of the page under it | <kbd>Esc</kbd>, which stops it; the app's own keys |
 | A popup looking for conflicts | the check | <kbd>Enter</kbd>, which runs once none were found, else shows them first | every other key |
 
@@ -218,7 +219,7 @@ Matching ignores case unless the query has an uppercase letter.
 
 Every search shares its options with the commit list's: while typing any of them, <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
 Like the file trees', the title of the diffs, previews, the blame and the timeline shows the active search, and the status line says how it went once kept: the match it is on of how many, or that nothing matched.
-A search goes from where it started while the query is typed, and <kbd>n/N</kbd> go on from the selection. A match is shown as it is: a search moves the selection and scrolls the list only when the match isn't shown already, keeping the `scrolloff` rows around it like the movement keys do.
+A search goes from where it started while the query is typed, and <kbd>n/N</kbd> go on from the selection. The commit list's search runs on another thread once typing pauses for 150ms, as a long history takes a while to search; changing the query or its options meanwhile stops the one running. A match is shown as it is: a search moves the selection and scrolls the list only when the match isn't shown already, keeping the `scrolloff` rows around it like the movement keys do.
 On the local changes page, the unstaged and staged files each have their own filter, applying to the focused section only, and staging, unstaging and discarding a directory only affect the files shown.
 
 #### Resolving conflicts

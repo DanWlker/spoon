@@ -10,6 +10,7 @@ use std::cell::RefCell;
 
 use tui_input::{backend::crossterm::EventHandler, Input};
 
+use crate::path_tree::FileTree;
 use crate::widget::tree_query::{type_query, typing_keys, QueryKind, Toward, TreeQuery};
 use crate::{
     background::{Job, Loads},
@@ -28,7 +29,7 @@ use crate::{
     search::{SearchKind, SearchOptions},
     widget::{
         file_tree::{
-            render_tree, CheckedFiles, FileTree, FileTreeState, Folders, Root, TreeCursor, TreeView,
+            render_tree, CheckedFiles, FileTreeState, Folders, Root, TreeCursor, TreeView,
         },
         style::{
             change_span, check_mark, choice_arrows, focused_title, no_choice_arrows, panel_title,
