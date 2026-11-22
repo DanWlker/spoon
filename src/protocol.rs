@@ -48,6 +48,20 @@ pub fn detect_tmux() -> bool {
         || env::var("TERM_PROGRAM").is_ok_and(|term_program| term_program == "tmux")
 }
 
+// The bytes tmux threw away so far on their way to the terminal, by `#{client_discarded}`; None
+// when tmux can't tell. Once its output to a terminal reading too slowly, like kitty busy showing
+// images, grows past a size, tmux throws it away and draws the screen again from its own: the text
+// comes back, the images uploaded meanwhile don't.
+// shortcut: tmux tells it of the session's client last active, another than ours while several
+// are attached; ctrl-r uploads the images again then.
+pub fn tmux_discarded() -> Option<u64> {
+    let output = std::process::Command::new("tmux")
+        .args(["display-message", "-p", "#{client_discarded}"])
+        .output()
+        .ok()?;
+    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ImageProtocol {
     Iterm2,

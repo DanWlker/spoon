@@ -6599,3 +6599,48 @@ fn test_amending_keeps_the_last_commit_staged_after_a_change_outside() {
         screen(|text| assert!(text.contains("n.txt") && text.contains("f.txt"), "{text}")),
     ]);
 }
+
+// The graph images tmux threw away on their way to the terminal, which couldn't keep up, are
+// uploaded again, the screen drawn again; those it didn't aren't. ctrl-r uploads them again too.
+#[test]
+fn test_graph_images_thrown_away_by_tmux_are_uploaded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let uploads = |app: &mut App| {
+        app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
+        app.view.drain_pending_graph_uploads().len()
+    };
+    // as a check of tmux finds it, see `App::check_discards`
+    let checked = |app: &mut App, before: u64, after: u64| {
+        let job = super::Job::command(app.ec.sender(), move || {
+            Some(super::Discarded { before, after })
+        });
+        app.shell.app_status.discard_check = Some(job);
+        let until = Instant::now() + TIMEOUT;
+        while app.shell.app_status.discard_check.is_some() {
+            assert!(Instant::now() < until, "the check to land");
+            app.land_discard_check();
+        }
+    };
+    let mut harness = Harness::new(&path, launch());
+    harness.loader.image_protocol =
+        ImageProtocol::KittyUnicode(crate::protocol::Escapes::Tmux);
+    harness.run(vec![vec![Step::Act(Box::new(move |app: &mut App| {
+        let shown = uploads(app);
+        assert!(shown > 0);
+        assert_eq!(uploads(app), 0, "uploaded once");
+
+        checked(app, 3, 3);
+        assert_eq!(uploads(app), 0, "none thrown away");
+        assert_eq!(app.shell.app_status.tmux_discarded, Some(3));
+
+        checked(app, 3, 9);
+        assert_eq!(app.shell.app_status.pending_clear, PendingClear::Screen);
+        assert_eq!(uploads(app), shown, "thrown away, uploaded again");
+        assert_eq!(app.shell.app_status.tmux_discarded, Some(9));
+        assert_eq!(uploads(app), 0);
+
+        app.handle_event(AppEvent::Key(parse_key_event("ctrl-r").unwrap()));
+        assert_eq!(uploads(app), shown, "ctrl-r uploads them again");
+    }))]]);
+}
