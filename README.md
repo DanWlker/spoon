@@ -117,7 +117,7 @@ The commit graph is drawn with one of these image protocols:
 - [Inline Images Protocol (iTerm2)](https://iterm2.com/documentation-images.html)
 - [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/), in both its default mode and its [Unicode placeholder](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) mode.
 
-tmux works only with the kitty Unicode placeholder protocol (`--protocol kitty-unicode`). Sixel, other terminal multiplexers and Windows are not supported.
+tmux works only with the kitty Unicode placeholder protocol (`--protocol kitty-unicode`) and `set -g allow-passthrough all` in tmux.conf: with `on`, tmux drops some graph images while it redraws. Sixel, other terminal multiplexers and Windows are not supported.
 
 ## Screenshots
 

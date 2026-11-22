@@ -46,7 +46,7 @@ use crate::{
     keys::{register_moving_keys, Availability, KeyList, Keys},
     layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target, Thumb},
     pointer::{Cell, Gesture, OnPicks, Pointer},
-    protocol::{self, Escapes, ImageProtocol},
+    protocol::{Escapes, ImageProtocol},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
@@ -189,19 +189,25 @@ struct AppStatus {
     pending_clear: PendingClear,
     // where the graph images were drawn in the last frame, see `App::draw`
     images: Vec<(u16, u16, u16)>,
-    // whether tmux threw away the graph images uploaded last, see `App::check_discards`
-    discard_check: Option<Job<Option<Discarded>>>,
-    // the bytes tmux had thrown away when last checked, see `protocol::tmux_discarded`
-    tmux_discarded: Option<u64>,
+    reupload: Reupload,
 }
 
-// The bytes tmux had thrown away before a frame uploaded graph images and after, see
-// `App::check_discards`.
-#[derive(Debug, Clone, Copy)]
-struct Discarded {
-    before: u64,
-    after: u64,
+// The graph images uploaded again, once more after those of the last frames, see `App::draw`:
+// tmux drops what it passes on to a terminal reading too slowly, like kitty busy showing images.
+// It throws away what it can't write in time, and drops what comes while it waits to draw the
+// screen again; the text comes back as it draws it, the images don't. The second it waits, the
+// terminal has read what came before.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Reupload {
+    #[default]
+    None,
+    At(Instant),
+    // uploaded again with the next frame, which is not followed by another
+    Next,
 }
+
+// How long after the last frame uploading graph images they are uploaded again, see `Reupload`.
+const REUPLOAD_AFTER: Duration = Duration::from_secs(1);
 
 // A key kept while what it acts on loads in the background, rather than waiting for it with the
 // screen frozen, see `App::must_wait`: as the event it is, typed into a search or a message, or
@@ -807,14 +813,21 @@ impl App<'_> {
     }
 
     // When the app wakes up without an event, after the frame drawn at `drawn`: to show the popup
-    // waiting for a second press, to drop expired notices, to say what runs long loads, or to
-    // start the search once typing settled.
+    // waiting for a second press, to drop expired notices, to say what runs long loads, to
+    // start the search once typing settled, or to upload the graph images again, see `Reupload`.
     fn next_wake(&self, drawn: Instant) -> Option<Instant> {
         let expiry = self.shell.notices.iter().map(|n| n.until).min();
         let reveal = self.shell.dialog.as_ref().and_then(|popup| popup.reveal);
         let shown = background::next_shown(drawn);
         let search = self.view.search_due();
-        [expiry, reveal, shown, search].into_iter().flatten().min()
+        let reupload = match self.shell.app_status.reupload {
+            Reupload::At(at) => Some(at),
+            Reupload::None | Reupload::Next => None,
+        };
+        [expiry, reveal, shown, search, reupload]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     // Handles one event; returns what ends the app or reloads it. A check of the refs or the files
@@ -1072,7 +1085,6 @@ impl App<'_> {
     // Lays the page out in the screen's `area` before handling the next events and drawing; the
     // keys kept run once what they act on is loaded, see `Kept`.
     fn prepare_render(&mut self, area: Rect) {
-        self.land_discard_check();
         let [_, view_area, _] = split_app_areas(area);
         let [sidebar_area, view_area] = self.split_sidebar(view_area);
         let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
@@ -1167,9 +1179,8 @@ impl App<'_> {
                 repaint_fullscreen(terminal);
             }
         }
-        if self.flush_pending_graph_uploads()? {
-            self.check_discards();
-        }
+        let uploaded = self.flush_pending_graph_uploads()?;
+        self.after_uploads(uploaded);
         let images = self.shell.app_status.images.clone();
         terminal.draw(|f| self.render(f, &keys))?;
         // a graph image covered by something drawn over it, like a popup or the help, or no longer
@@ -1322,6 +1333,24 @@ impl App<'_> {
         std::mem::take(&mut self.shell.app_status.pending_clear).max(clear)
     }
 
+    // When the graph images are uploaded again, after a frame that `uploaded` some or not, see
+    // `Reupload`.
+    fn after_uploads(&mut self, uploaded: bool) {
+        let status = &mut self.shell.app_status;
+        status.reupload = match status.reupload {
+            Reupload::Next => Reupload::None,
+            _ if uploaded
+                && matches!(
+                    self.ctx.image_protocol,
+                    ImageProtocol::KittyUnicode(Escapes::Tmux)
+                ) =>
+            {
+                Reupload::At(Instant::now() + REUPLOAD_AFTER)
+            }
+            reupload => reupload,
+        };
+    }
+
     // Writes the graph images to upload; whether there were any.
     fn flush_pending_graph_uploads(&mut self) -> Result<bool, std::io::Error> {
         let uploads = self.view.drain_pending_graph_uploads();
@@ -1335,61 +1364,6 @@ impl App<'_> {
         }
         stdout.flush()?;
         Ok(true)
-    }
-
-    // Checks in the background whether tmux threw away the graph images just uploaded, see
-    // `protocol::tmux_discarded`, for `land_discard_check` to upload them again. tmux throws
-    // output away for 100ms at a time, and may do it once the terminal reads what came before, so
-    // it is asked for a while. A check running is replaced: from the count of the last one landed,
-    // it sees what the one before would have.
-    fn check_discards(&mut self) {
-        if !matches!(
-            self.ctx.image_protocol,
-            ImageProtocol::KittyUnicode(Escapes::Tmux)
-        ) {
-            return;
-        }
-        let known = self.shell.app_status.tmux_discarded;
-        let job = Job::read(self.ec.sender(), move |cancel| {
-            let before = known.or_else(protocol::tmux_discarded)?;
-            let mut after = before;
-            for _ in 0..4 {
-                std::thread::sleep(Duration::from_millis(200));
-                if cancel.is_cancelled() {
-                    return None;
-                }
-                after = protocol::tmux_discarded()?;
-                if after > before {
-                    break;
-                }
-            }
-            Some(Discarded { before, after })
-        });
-        self.shell.app_status.discard_check = Some(job);
-    }
-
-    // The graph images tmux threw away are uploaded again, see `check_discards`.
-    fn land_discard_check(&mut self) {
-        let status = &mut self.shell.app_status;
-        let Some(checked) = status.discard_check.as_ref().and_then(Job::try_take) else {
-            return;
-        };
-        status.discard_check = None;
-        // tmux didn't tell
-        let Some(discarded) = checked else {
-            return;
-        };
-        status.tmux_discarded = Some(discarded.after);
-        if discarded.after > discarded.before {
-            self.upload_graph_images_again();
-        }
-    }
-
-    // Draws the screen again, uploading every graph image again: the terminal lost them, or the
-    // user asked, see `UserEvent::Refresh`.
-    fn upload_graph_images_again(&mut self) {
-        crate::graph::forget_uploads();
-        self.shell.app_status.pending_clear = PendingClear::Screen;
     }
 
     fn render(&mut self, f: &mut Frame, keys: &[KeyLabel]) {
@@ -1858,7 +1832,9 @@ impl App<'_> {
             UserEvent::ForceQuit | UserEvent::Quit => self.ec.send(AppEvent::Quit),
             UserEvent::HelpToggle => self.ec.send(AppEvent::OpenHelp),
             UserEvent::Refresh => {
-                self.upload_graph_images_again();
+                // the graph images too, should the terminal have lost any, see `Reupload`
+                crate::graph::forget_uploads();
+                self.shell.app_status.pending_clear = PendingClear::Screen;
                 self.view.refresh();
             }
             UserEvent::Fetch | UserEvent::FetchAll | UserEvent::Pull | UserEvent::Push => {
@@ -2628,6 +2604,10 @@ impl App<'_> {
             popup.reveal = popup.reveal.filter(|at| *at > now);
         }
         self.shell.notices.retain(|n| n.until > now);
+        if matches!(self.shell.app_status.reupload, Reupload::At(at) if at <= now) {
+            crate::graph::forget_uploads();
+            self.shell.app_status.reupload = Reupload::Next;
+        }
     }
 
     fn close_dialog(&mut self) {
