@@ -62,10 +62,12 @@ impl FilterNote {
 
 // before the labels of refs (Nerd Font): a branch whose upstream is on the same commit, a remote
 // branch, a tag and a stash; a plain branch has none
-const UPSTREAM_ICON: &str = "\u{ec63}";
+const UPSTREAM_ICON: &str = "\u{f1616}";
 const REMOTE_BRANCH_ICON: &str = "\u{f015f}";
 const TAG_ICON: &str = "\u{f04f9}";
 const STASH_ICON: &str = "\u{f01c}";
+const LEFT_CAP: &str = "\u{e0b6}";
+const RIGHT_CAP: &str = "\u{e0b4}";
 
 #[derive(Debug)]
 pub struct CommitInfo<'a> {
@@ -1211,10 +1213,10 @@ pub fn refs_spans(
 ) -> Vec<Span<'static>> {
     let mut spans = vec![];
     if matches!(head, Head::Detached { target } if *target == commit_info.commit.commit_hash) {
-        spans.push(Span::styled(
-            " HEAD ",
-            ref_label_style(color_theme.list_ref_head_fg),
-        ));
+        let style = ref_label_style(color_theme.list_ref_head_fg);
+        spans.push(cap(LEFT_CAP, style));
+        spans.push(Span::styled("HEAD", style));
+        spans.push(cap(RIGHT_CAP, style));
         spans.push(Span::raw(" "));
     }
     let head_branch = match head {
@@ -1231,10 +1233,12 @@ pub fn refs_spans(
             Ref::Tag { .. } => Some(TAG_ICON),
             Ref::Stash { .. } => Some(STASH_ICON),
         };
-        let prefix = icon.map_or(" ".into(), |icon| format!(" {icon} "));
         // stashes aren't searched
         let search = search.filter(|_| !matches!(r, Ref::Stash { .. }));
-        spans.push(Span::styled(prefix, style));
+        spans.push(cap(LEFT_CAP, style));
+        if let Some(icon) = icon {
+            spans.push(Span::styled(format!("{icon} "), style));
+        }
         spans.extend(highlighted_text(
             name,
             name.len(),
@@ -1243,10 +1247,20 @@ pub fn refs_spans(
             options,
             color_theme,
         ));
-        spans.push(Span::styled(" ", style));
+        spans.push(cap(RIGHT_CAP, style));
         spans.push(Span::raw(" "));
     }
     spans
+}
+
+// The rounded end of a label in `style`, like the status bar's pills.
+fn cap(symbol: &'static str, style: Style) -> Span<'static> {
+    Span::styled(
+        symbol,
+        style
+            .bg
+            .map_or(Style::default(), |bg| Style::default().fg(bg)),
+    )
 }
 
 // The color of the label of `r`, the checked-out branch's its own.
@@ -1514,7 +1528,9 @@ mod tests {
         // another remote's branch isn't its upstream
         assert_eq!(
             label,
-            format!(" {UPSTREAM_ICON} master   {REMOTE_BRANCH_ICON} fork/master   feat  ")
+            format!(
+                "{LEFT_CAP}{UPSTREAM_ICON} master{RIGHT_CAP} {LEFT_CAP}{REMOTE_BRANCH_ICON} fork/master{RIGHT_CAP} {LEFT_CAP}feat{RIGHT_CAP} "
+            )
         );
     }
 
