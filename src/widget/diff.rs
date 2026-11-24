@@ -2060,13 +2060,16 @@ pub fn render_split_rows(
                     Rect::new(area.x, y, old_width, 1),
                     Rect::new(new_x, y, new_width, 1),
                 ];
-                for ((row, line), side) in rows.iter().zip(lines).zip(sides) {
+                for (i, ((row, line), side)) in rows.iter().zip(lines).zip(sides).enumerate() {
+                    // not beside a note like "\ No newline at end of file", which isn't a line
+                    let beside_change = rows[1 - i].is_some_and(|r| diff.rows[r].is_change());
                     match (row, line) {
                         (_, Some(line)) => draw_row(line, side, theme, buf),
                         // no line on this side beside one added or removed: filler stripes
-                        (None, None) => {
+                        (None, None) if beside_change => {
                             buf.set_span(side.x, y, &filler(side.width, theme), side.width);
                         }
+                        (None, None) => {}
                         // the rows past a line shorter than the one beside it, wrapped, stay blank
                         (Some(_), None) => {}
                     }
@@ -2736,6 +2739,57 @@ mod tests {
 
     // The side with no line beside one added or removed is striped; the rows past a line shorter
     // than its wrapped pair stay blank.
+    // A "\\ No newline at end of file" note isn't a line: nothing beside it is striped, on either
+    // side, while an added line beside nothing still is.
+    #[test]
+    fn test_split_no_stripes_beside_a_no_newline_note() {
+        let theme = ColorTheme::default();
+        for (body, note_on_old) in [
+            (
+                "@@ -1 +1,2 @@\n-last\n\\ No newline at end of file\n+last\n+new\n",
+                true,
+            ),
+            (
+                "@@ -1 +1 @@\n-last\n+last\n\\ No newline at end of file\n",
+                false,
+            ),
+        ] {
+            let diff = parse_diff(&format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n{body}"));
+            let map = WrapMap::of(&diff, &theme, 80, true, DiffLayout::Split);
+            let area = Rect::new(0, 0, 80, map.total() as u16);
+            let mut buf = Buffer::empty(area);
+            render_split_rows(
+                &diff,
+                &map,
+                0..map.total(),
+                |_| false,
+                |_| {},
+                &theme,
+                area,
+                &mut buf,
+            );
+            let (old_width, _) = split_widths(80);
+            let side = |y: u16, x: std::ops::Range<u16>| -> String {
+                x.map(|x| buf[(x, y)].symbol().to_string()).collect()
+            };
+            let rows: Vec<_> = (0..area.height)
+                .map(|y| (side(y, 0..old_width), side(y, old_width + 1..80)))
+                .collect();
+            let (note, beside) = rows
+                .iter()
+                .map(|(old, new)| if note_on_old { (old, new) } else { (new, old) })
+                .find(|(note, _)| note.contains("No newline"))
+                .unwrap();
+            assert!(note.contains("No newline"));
+            assert_eq!(beside.trim(), "", "{rows:#?}");
+            if note_on_old {
+                // "+new" beside nothing
+                let new = rows.iter().find(|(_, new)| new.contains("new")).unwrap();
+                assert!(new.0.contains('╱'), "{rows:#?}");
+            }
+        }
+    }
+
     #[test]
     fn test_split_filler_marks_only_missing_lines() {
         let diff = parse_diff(concat!(
