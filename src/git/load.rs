@@ -9,7 +9,7 @@ use std::{
     time::Instant,
 };
 
-use chrono::{DateTime, FixedOffset};
+use jiff::{fmt::temporal::Pieces, tz::TimeZone, ZonedDateTime};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -256,7 +256,13 @@ impl LoadOptions {
 // The top directory of the working tree (None when bare) and the git directory of the repository
 // at `path`, which must be in a working tree or a bare repository.
 fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, PathBuf)> {
-    let not_a_repository = || "not a git repository (or any of the parent directories)".into();
+    let not_a_repository = || {
+        format!(
+            "not a git repository (or any of the parent directories): {}",
+            path.display()
+        )
+        .into()
+    };
     let args = [
         "rev-parse",
         "--is-inside-work-tree",
@@ -451,8 +457,17 @@ fn load_commits_format(mailmap: bool) -> String {
 
 // A broken date of a commit, which git prints as it is or with a time zone like +99:99, is the
 // start of 1970, as git shows a date too big.
-pub(super) fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
-    DateTime::parse_from_rfc3339(s).unwrap_or_default()
+pub(super) fn parse_iso_date(s: &str) -> ZonedDateTime {
+    let parse = || {
+        let pieces = Pieces::parse(s).ok()?;
+        let offset = pieces.to_numeric_offset()?;
+        pieces
+            .date()
+            .to_datetime(pieces.time()?)
+            .to_zoned_datetime(TimeZone::fixed(offset))
+            .ok()
+    };
+    parse().unwrap_or_default()
 }
 
 fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
@@ -701,6 +716,8 @@ pub fn refs_snapshot(path: &Path, git_dir: &Path) -> std::result::Result<String,
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::git::FileChange;
 
@@ -819,10 +836,13 @@ mod tests {
     fn test_parse_iso_date_of_a_broken_date() {
         // what git prints for a commit whose date or time zone is broken
         for broken in ["%aI", "2023-11-19T02:52:20+99:99"] {
-            assert_eq!(parse_iso_date(broken), DateTime::<FixedOffset>::default());
+            assert_eq!(parse_iso_date(broken), ZonedDateTime::default());
         }
         let date = parse_iso_date("2023-11-19T02:52:20+08:00");
-        assert_eq!(date.to_rfc3339(), "2023-11-19T02:52:20+08:00");
+        assert_eq!(
+            date.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+            "2023-11-19T02:52:20+08:00"
+        );
     }
 
     #[test]
@@ -1015,6 +1035,39 @@ mod tests {
             })
             .unwrap();
         assert_eq!(stash, "On master: st\x1fash");
+    }
+
+    #[rstest]
+    #[case("2024-01-01T01:02:03Z", "2024-01-01T01:02:03Z", "+0000")]
+    #[case("2024-01-01T01:02:03+00:00", "2024-01-01T01:02:03Z", "+0000")]
+    #[case("2024-01-01T01:02:03+09:30", "2023-12-31T15:32:03Z", "+0930")]
+    #[case("2024-01-01T01:02:03-03:30", "2024-01-01T04:32:03Z", "-0330")]
+    fn test_parse_iso_date_preserves_offset(
+        #[case] input: &str,
+        #[case] timestamp: &str,
+        #[case] offset: &str,
+    ) {
+        let date = parse_iso_date(input);
+
+        assert_eq!(date.timestamp().to_string(), timestamp);
+        assert_eq!(date.strftime("%Y-%m-%d").to_string(), "2024-01-01");
+        assert_eq!(
+            date.strftime("%Y-%m-%d %H:%M:%S %z").to_string(),
+            format!("2024-01-01 01:02:03 {offset}")
+        );
+    }
+
+    #[rstest]
+    #[case("2024-03-10T06:59:59+00:00", "2024-03-10 01:59:59 -0500")]
+    #[case("2024-03-10T07:00:00+00:00", "2024-03-10 03:00:00 -0400")]
+    fn test_commit_date_conversion_respects_daylight_saving_time(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        let time_zone = TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+        let date = parse_iso_date(input).with_time_zone(time_zone);
+
+        assert_eq!(date.strftime("%Y-%m-%d %H:%M:%S %z").to_string(), expected);
     }
 }
 

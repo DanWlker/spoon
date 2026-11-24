@@ -1,4 +1,4 @@
-use chrono::{Days, TimeZone, Utc};
+use jiff::{civil::date, ToSpan};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{git, graph, test_support::git::GitRepository};
@@ -18,12 +18,12 @@ fn straight_001() -> TestResult {
 
     git.init();
 
-    let mut base_date = Utc.with_ymd_and_hms(2024, 1, 1, 1, 2, 3).unwrap();
+    let mut base_date = date(2024, 1, 1);
     for i in 1..=100 {
         let msg = &format!("{i:03}");
-        let date = &base_date.format("%Y-%m-%d").to_string();
+        let date = &base_date.to_string();
         git.commit(msg, date);
-        base_date = base_date.checked_add_days(Days::new(1)).unwrap();
+        base_date = base_date.checked_add(1.day()).unwrap();
     }
 
     git.log();
@@ -1083,6 +1083,64 @@ fn merge_006() -> TestResult {
 }
 
 #[test]
+fn merge_007() -> TestResult {
+    // A merge detour must avoid unrelated commits in chronological order.
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("Initial commit", "2024-01-01");
+
+    git.checkout_b("feature");
+    git.commit("Start feature", "2024-01-04");
+
+    git.checkout("master");
+    git.commit("Update base", "2024-01-02");
+
+    git.checkout_b("integration");
+    git.commit("Start integration", "2024-01-03");
+
+    git.checkout("master");
+    git.checkout_b("topic");
+    git.commit("Add topic change", "2024-01-05");
+
+    git.checkout("feature");
+    git.merge(&["master"], "2024-01-06");
+
+    git.checkout("integration");
+    git.merge(&["topic"], "2024-01-07");
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new(
+            "merge_007_chrono",
+            git::SortCommit::Chronological,
+            graph::GraphStyle::Rounded,
+        ),
+        GenerateGraphOption::new(
+            "merge_007_topo",
+            git::SortCommit::Topological,
+            graph::GraphStyle::Rounded,
+        ),
+        GenerateGraphOption::new(
+            "merge_007_angular",
+            git::SortCommit::Chronological,
+            graph::GraphStyle::Angular,
+        ),
+    ];
+
+    copy_git_dir(repo_path, "merge_007");
+
+    assert_graph_snapshots(repo_path, options);
+
+    Ok(())
+}
+
+#[test]
 fn stash_001() -> TestResult {
     // Test case for multiple stashes, the most recent commit is normal commit
     let dir = tempfile::tempdir()?;
@@ -1612,10 +1670,10 @@ fn complex_002() -> TestResult {
     let git = &GitRepository::new(repo_path);
     git.init();
 
-    let mut date = Utc.with_ymd_and_hms(2024, 1, 1, 1, 2, 3).unwrap();
+    let mut date = date(2024, 1, 1);
     let mut next_date = || {
-        let result = date.format("%Y-%m-%d").to_string();
-        date = date.checked_add_days(Days::new(1)).unwrap();
+        let result = date.to_string();
+        date = date.checked_add(1.day()).unwrap();
         result
     };
     git.commit("Root", &next_date());

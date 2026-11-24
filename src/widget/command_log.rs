@@ -186,7 +186,7 @@ impl<'a> CommandLog<'a> {
             };
             let line = Line::from(vec![
                 Span::raw(format!("{mark} ")).fg(color),
-                Span::raw(entry.at.format("%H:%M:%S ").to_string()).fg(theme.detail_label_fg),
+                Span::raw(entry.at.strftime("%H:%M:%S ").to_string()).fg(theme.detail_label_fg),
                 Span::raw(format!("{:>6} ", format_duration(entry.duration)))
                     .fg(theme.detail_label_fg),
                 Span::raw(tabs_shown(&entry.command).into_owned()).fg(if entry.ok {
@@ -261,7 +261,7 @@ mod tests {
     fn test_looks_like_the_other_popups() {
         let theme = theme_with_bg();
         let entry = |command: &str| LoggedCommand {
-            at: chrono::Local::now(),
+            at: jiff::ZonedDateTime::now(),
             command: command.into(),
             ok: true,
             output: "done".into(),
@@ -294,7 +294,7 @@ mod tests {
         // like git's list of the files a merge would overwrite
         let mut state = CommandLogState {
             entries: vec![LoggedCommand {
-                at: chrono::Local::now(),
+                at: jiff::ZonedDateTime::now(),
                 command: "git merge other".into(),
                 ok: false,
                 output: "would be overwritten by merge:\n\tfile".into(),
@@ -317,7 +317,7 @@ mod tests {
         let theme = ColorTheme::default();
         let mut state = CommandLogState {
             entries: vec![LoggedCommand {
-                at: chrono::Local::now(),
+                at: jiff::ZonedDateTime::now(),
                 command: "git push".into(),
                 ok: true,
                 output: "done".into(),
@@ -362,7 +362,7 @@ mod tests {
         let theme = ColorTheme::default();
         let mut state = CommandLogState {
             entries: vec![LoggedCommand {
-                at: chrono::Local::now(),
+                at: jiff::ZonedDateTime::now(),
                 command: "git push".into(),
                 ok: true,
                 output: "done".into(),
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn test_half_page_moves_the_commands_then_scrolls_the_output() {
         let entry = |command: &str| LoggedCommand {
-            at: chrono::Local::now(),
+            at: jiff::ZonedDateTime::now(),
             command: command.into(),
             ok: true,
             output: (0..40)

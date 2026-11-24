@@ -5,6 +5,7 @@ use std::{
 
 use clap::ValueEnum;
 use garde::Validate;
+use jiff::{fmt::strtime, ZonedDateTime};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use smart_default::SmartDefault;
@@ -57,7 +58,7 @@ pub fn load() -> Result<(
         }
     }?;
 
-    config.validate()?;
+    config.validate().map_err(|error| error.to_string())?;
 
     Ok((
         config.core,
@@ -224,7 +225,7 @@ pub struct UiListConfig {
     #[garde(range(min = 1))]
     #[default = 20]
     pub subject_min_width: u16,
-    #[garde(length(min = 1), custom(valid_date_format))]
+    #[garde(length(min = 1), custom(validate_date_format))]
     #[default = "%Y-%m-%d"]
     pub date_format: String,
     #[garde(skip)]
@@ -244,7 +245,7 @@ pub struct UiDetailConfig {
     #[garde(range(min = 1))]
     #[default = 20]
     pub height: u16,
-    #[garde(length(min = 1), custom(valid_date_format))]
+    #[garde(length(min = 1), custom(validate_date_format))]
     #[default = "%Y-%m-%d %H:%M:%S %z"]
     pub date_format: String,
     #[garde(skip)]
@@ -296,15 +297,11 @@ pub struct GraphColorConfig {
     pub background: String,
 }
 
-// A date format chrono can draw a date with: one it can't, like "%Q", would fail drawing it.
-fn valid_date_format(format: &str, _: &()) -> garde::Result {
-    use chrono::format::{Item, StrftimeItems};
-    match StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
-        true => Err(garde::Error::new(format!(
-            "{format:?} is no date format, see https://docs.rs/chrono/latest/chrono/format/strftime/index.html"
-        ))),
-        false => Ok(()),
-    }
+// A date format jiff can draw a date with: one it can't, like "%J", would fail drawing it.
+fn validate_date_format(format: &str, _: &()) -> garde::Result {
+    strtime::format(format, &ZonedDateTime::UNIX_EPOCH)
+        .map(|_| ())
+        .map_err(|error| garde::Error::new(format!("invalid date format: {error}")))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -339,6 +336,7 @@ mod tests {
     #[test]
     fn test_config_default() {
         let actual = Config::default();
+        actual.validate().unwrap();
         let expected = Config {
             core: CoreConfig {
                 option: CoreOptionConfig {
@@ -602,6 +600,30 @@ mod tests {
     }
 
     #[test]
+    fn test_config_date_formats_accept_jiff_specifiers() {
+        for format in ["%Q", "%Y-%m-%d %H:%M:%S %:z", "%%", "date"] {
+            let mut config = Config::default();
+            config.ui.list.date_format = format.into();
+            config.ui.detail.date_format = format.into();
+
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_config_invalid_date_formats_report_both_keys() {
+        for format in ["", "%J", "%"] {
+            let mut config = Config::default();
+            config.ui.list.date_format = format.into();
+            config.ui.detail.date_format = format.into();
+
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("ui.list.date_format:"), "{error}");
+            assert!(error.contains("ui.detail.date_format:"), "{error}");
+        }
+    }
+
+    #[test]
     fn test_config_clipboard_auto() {
         let toml = r#"
             [core.external]
@@ -737,7 +759,7 @@ mod tests {
     fn test_config_invalid_date_format() {
         // refused when loaded, naming it, else drawing a date would panic
         for table in ["list", "detail"] {
-            let toml = format!("[ui.{table}]\ndate_format = \"%Y %Q\"\n");
+            let toml = format!("[ui.{table}]\ndate_format = \"%Y %J\"\n");
             let config: Config = toml::from_str::<OptionalConfig>(&toml).unwrap().into();
             let err = config.validate().unwrap_err().to_string();
             assert!(err.contains(&format!("ui.{table}.date_format")), "{err}");

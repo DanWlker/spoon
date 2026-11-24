@@ -69,6 +69,8 @@ It opens on the commit graph; <kbd>Tab</kbd> switches to the local changes page 
 
 The mouse works too: a click selects a row and opens it, as <kbd>Enter</kbd>, the focus staying on the panel clicked (a commit's details open below the list, a file's diff beside the files); a double click does what <kbd>Space</kbd> does; dragging over rows or <kbd>Ctrl</kbd>+click picks them, as <kbd>v</kbd>; a right click shows the actions on the row; the wheel, or dragging a scrollbar's thumb, scrolls without moving the selection; popups take clicks on their fields, chevrons and their <kbd>[Cancel]</kbd> and <kbd>[Confirm]</kbd> buttons; <kbd>[x]</kbd> closes the details, windows and popups, <kbd>[Commit]</kbd> commits, and the amend checkbox beside it toggles amending.
 
+Use `spoon -C <path>` to open a repository from another directory.
+
 ### Options
 
 ```
@@ -77,6 +79,7 @@ Spoon - A lazygit-style git TUI with a rich commit graph
 Usage: spoon [OPTIONS]
 
 Options:
+  -C, --repo <PATH>               Directory to open [default: .]
   -n, --max-count <NUMBER>        Maximum number of commits to render
   -p, --protocol <TYPE>           Image protocol to render graph [default: auto] [possible values: auto, iterm, kitty, kitty-unicode]
   -o, --order <TYPE>              Commit ordering algorithm [default: chrono] [possible values: chrono, topo]

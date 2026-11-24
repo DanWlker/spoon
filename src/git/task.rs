@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::{DateTime, Local};
+use jiff::ZonedDateTime;
 
 use super::{CommitHash, Operation, Repository};
 use crate::background::Cancel;
@@ -875,7 +875,7 @@ pub(super) fn output_result(args: &[&str], output: Output) -> std::result::Resul
 // those of the refresh every few seconds, are left out.
 #[derive(Debug, Clone)]
 pub struct LoggedCommand {
-    pub at: DateTime<Local>,
+    pub at: ZonedDateTime,
     // "git push origin main", with passwords in URLs hidden
     pub command: String,
     pub ok: bool,
@@ -899,7 +899,7 @@ fn log_command(args: &[impl AsRef<str>], output: Result<&str, &str>, started: In
     let lines: Vec<&str> = output.lines().collect();
     let output = lines[lines.len().saturating_sub(COMMAND_LOG_OUTPUT_LINES)..].join("\n");
     let entry = LoggedCommand {
-        at: Local::now(),
+        at: ZonedDateTime::now(),
         command: format!("git {}", args.join(" ")),
         ok,
         output,

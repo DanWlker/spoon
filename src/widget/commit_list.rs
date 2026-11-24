@@ -803,14 +803,14 @@ pub fn commit_list_inner_height(height: u16) -> usize {
 }
 
 // A commit's date as the commit list shows it, see `[ui.list]` in the config.
-pub fn format_date(ctx: &AppContext, date: &chrono::DateTime<chrono::FixedOffset>) -> String {
+pub fn format_date(ctx: &AppContext, date: &jiff::ZonedDateTime) -> String {
     let format = &ctx.ui_config.list.date_format;
     if ctx.ui_config.list.date_local {
-        date.with_timezone(&chrono::Local)
-            .format(format)
+        date.with_time_zone(jiff::tz::TimeZone::system())
+            .strftime(format)
             .to_string()
     } else {
-        date.format(format).to_string()
+        date.strftime(format).to_string()
     }
 }
 

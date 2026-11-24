@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset};
+use jiff::{
+    tz::{Offset, TimeZone},
+    Timestamp, ZonedDateTime,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::background::{joined, Cancel};
@@ -97,14 +100,14 @@ pub struct Blame {
 #[derive(Debug, Clone)]
 pub struct BlameCommit {
     pub author: String,
-    pub date: DateTime<FixedOffset>,
+    pub date: ZonedDateTime,
 }
 
 // A commit changing a file, and the file's path in it.
 #[derive(Debug, Clone)]
 pub struct FileRevision {
     pub commit: CommitHash,
-    pub date: DateTime<FixedOffset>,
+    pub date: ZonedDateTime,
     pub subject: String,
     pub path: String,
 }
@@ -133,14 +136,14 @@ fn parse_blame(out: &str) -> Blame {
             // the details end with the file's name; a commit blamed under two paths comes again
             // with the name alone, its details kept from the first time
             "filename" => {
-                let offset = FixedOffset::east_opt(tz).unwrap_or(FixedOffset::east_opt(0).unwrap());
-                let date = DateTime::from_timestamp(time, 0).unwrap_or_default();
+                let offset = Offset::from_seconds(tz).unwrap_or(Offset::UTC);
+                let date = Timestamp::from_second(time).unwrap_or_default();
                 blame
                     .commits
                     .entry(commit.clone())
                     .or_insert_with(|| BlameCommit {
                         author: std::mem::take(&mut author),
-                        date: date.with_timezone(&offset),
+                        date: date.to_zoned_datetime(TimeZone::fixed(offset)),
                     });
             }
             _ if key.len() >= 40 && key.bytes().all(|b| b.is_ascii_hexdigit()) => {
@@ -450,9 +453,15 @@ mod tests {
         );
         let ann = &blame.commits[&CommitHash::from(a.as_str())];
         assert_eq!(ann.author, "Ann");
-        assert_eq!(ann.date.to_rfc3339(), "1969-12-31T22:30:00-01:30");
+        assert_eq!(
+            ann.date.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+            "1969-12-31T22:30:00-01:30"
+        );
         let bo = &blame.commits[&CommitHash::from(b.as_str())];
-        assert_eq!(bo.date.to_rfc3339(), "1970-01-01T01:01:00+01:00");
+        assert_eq!(
+            bo.date.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+            "1970-01-01T01:01:00+01:00"
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use chrono::{DateTime, FixedOffset};
+use jiff::ZonedDateTime;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 mod conflict;
@@ -72,10 +72,10 @@ pub struct Commit {
     pub commit_hash: CommitHash,
     pub author_name: String,
     pub author_email: String,
-    pub author_date: DateTime<FixedOffset>,
+    pub author_date: ZonedDateTime,
     pub committer_name: String,
     pub committer_email: String,
-    pub committer_date: DateTime<FixedOffset>,
+    pub committer_date: ZonedDateTime,
     pub subject: String,
     pub body: String,
     pub parent_commit_hashes: Vec<CommitHash>,

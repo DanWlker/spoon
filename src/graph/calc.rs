@@ -728,6 +728,10 @@ fn calc_edges(
                         new_pos_x = x + 1;
                     }
                 }
+                // a commit on an earlier row may be in the column the line moved to after it
+                while between.clone().any(|y| commit_pos_xs[y] == new_pos_x) {
+                    new_pos_x += 1;
+                }
             }
 
             if overlap {

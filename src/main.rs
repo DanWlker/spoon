@@ -46,6 +46,10 @@ use crate::{
 #[derive(Parser)]
 #[command(version)]
 struct Args {
+    /// Directory to open
+    #[arg(short = 'C', long, value_name = "PATH", default_value = ".")]
+    repo: PathBuf,
+
     /// Maximum number of commits to render
     #[arg(short = 'n', long, value_name = "NUMBER")]
     max_count: Option<std::num::NonZeroUsize>,
@@ -165,7 +169,7 @@ fn run() -> Result<()> {
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
     let loader = Loader {
         options: git::LoadOptions {
-            path: PathBuf::from("."),
+            path: args.repo,
             sort: order,
             max_count,
             mailmap,
