@@ -15,7 +15,6 @@ use ratatui::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::widget::tree_query::Toward;
 use crate::{
     background::{Cancel, Job},
     color::ColorTheme,
@@ -35,7 +34,8 @@ use crate::{
             render_panel_scrollbar, shown_width, ListCursor,
         },
         tree_query::{
-            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
+            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, Toward,
+            TreeQuery,
         },
     },
 };

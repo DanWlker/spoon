@@ -399,9 +399,8 @@ impl SampledImage {
 mod tests {
     use rstest::rstest;
 
-    use crate::{color::GraphColorSet, config::GraphColorConfig, graph::image::CellWidthType};
-
     use super::*;
+    use crate::{color::GraphColorSet, config::GraphColorConfig, graph::image::CellWidthType};
 
     #[rstest]
     fn connection_masks_cache_shapes(

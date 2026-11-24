@@ -1,3 +1,5 @@
+mod antialias;
+
 use std::{
     borrow::Cow,
     fmt::{self, Debug, Formatter},
@@ -18,8 +20,6 @@ use crate::{
     },
     protocol::{ImageProtocol, PreparedImage},
 };
-
-mod antialias;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1330,12 +1330,10 @@ mod tests {
 
     use image::GenericImage;
     use rstest::rstest;
-
-    use crate::{config::GraphColorConfig, test_support::image_snapshot::compare_image_snapshot};
+    use EdgeType::*;
 
     use super::*;
-
-    use EdgeType::*;
+    use crate::{config::GraphColorConfig, test_support::image_snapshot::compare_image_snapshot};
 
     #[test]
     fn test_image_ids_are_each_commits_own() {

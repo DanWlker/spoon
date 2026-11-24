@@ -128,9 +128,9 @@ pub fn render_notices(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ratatui::{buffer::Buffer, layout::Rect};
 
+    use super::*;
     use crate::test_support::ui::{
         assert_fills_bg, assert_key_style, assert_popup_frame, column_of, find_row, popup_rect,
         theme_with_bg,

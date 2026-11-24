@@ -140,8 +140,9 @@ impl TextArea {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    use super::*;
 
     fn type_keys(text_area: &mut TextArea, codes: &[KeyCode]) {
         for code in codes {

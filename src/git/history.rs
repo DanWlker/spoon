@@ -296,8 +296,7 @@ fn file_history_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::git_command;
-    use crate::git::SortCommit;
+    use crate::git::{git_command, SortCommit};
 
     #[test]
     fn test_file_history_from_a_resolving_merge() {

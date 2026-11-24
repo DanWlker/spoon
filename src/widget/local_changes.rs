@@ -1,18 +1,21 @@
+mod commit;
+mod conflict;
+
 use std::{collections::BTreeMap, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
 
+pub use commit::CommitDraft;
+pub use conflict::ConflictItem;
+use conflict::ConflictPanel;
 use ratatui::{
     buffer::Buffer,
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Flex, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
-
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use rustc_hash::FxHashSet;
 
-use crate::path_tree::{path_contains, FileTree, FileTreeRow, ROOT_PATH};
-use crate::widget::tree_query::Toward;
 use crate::{
     background::{Cancel, Job, Loads},
     color::ColorTheme,
@@ -26,14 +29,13 @@ use crate::{
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
+    path_tree::{path_contains, FileTree, FileTreeRow, ROOT_PATH},
     pointer::OnPicks,
     search::{SearchKind, SearchOptions, SearchOutcome},
-    widget::diff_pane::register_diff_keys,
-    widget::tree_query::type_query,
     widget::{
         conflict::{side_names, ConflictView, RowKind},
         diff::{filler, Step, CONVERTED_DIFF},
-        diff_pane::DiffPane,
+        diff_pane::{register_diff_keys, DiffPane},
         file_tree::{
             find_next, render_tree, Entry, FileTreeState, Folders, Root, TreeCursor, TreeSelection,
             TreeView,
@@ -45,16 +47,9 @@ use crate::{
         },
         submodule::{submodule_key, SubmodulePanel},
         text_area::{Caret, Lines, TextArea},
-        tree_query::{QueryKind, SearchDirection, TreeQuery},
+        tree_query::{type_query, QueryKind, SearchDirection, Toward, TreeQuery},
     },
 };
-
-mod commit;
-mod conflict;
-
-pub use commit::CommitDraft;
-pub use conflict::ConflictItem;
-use conflict::ConflictPanel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalChangesSection {

@@ -1,8 +1,9 @@
+use std::sync::LazyLock;
+
 use crokey::{KeyCombinationFormat, OneToThree};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rustc_hash::FxHashMap;
 use serde::{de::Deserializer, Deserialize};
-use std::sync::LazyLock;
 
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 

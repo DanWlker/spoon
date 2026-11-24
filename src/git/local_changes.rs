@@ -535,9 +535,7 @@ pub fn files_stamp(work_tree: &Path, git_dir: &Path, changes: &LocalChanges) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::run_task;
-    use crate::git::GitTask;
-    use crate::git::SortCommit;
+    use crate::git::{run_task, GitTask, SortCommit};
 
     #[test]
     fn test_parse_name_status() {

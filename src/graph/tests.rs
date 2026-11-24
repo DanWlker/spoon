@@ -1,11 +1,10 @@
-use jiff::{civil::date, ToSpan};
-use rustc_hash::{FxHashMap, FxHashSet};
-
-use crate::{git, graph, test_support::git::GitRepository};
-
 mod snapshot;
 
+use jiff::{civil::date, ToSpan};
+use rustc_hash::{FxHashMap, FxHashSet};
 use snapshot::{assert_graph_snapshots, copy_git_dir, GenerateGraphOption};
+
+use crate::{git, graph, test_support::git::GitRepository};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

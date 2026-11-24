@@ -2,7 +2,6 @@ use std::rc::Rc;
 
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
-use crate::widget::tree_query::Toward;
 use crate::{
     background::Loads,
     context::AppContext,
@@ -23,6 +22,7 @@ use crate::{
             ExternalRequest, LocalChangesPanel, LocalChangesSection, LocalChangesSnapshot,
             LocalChangesState, Request,
         },
+        tree_query::Toward,
     },
 };
 

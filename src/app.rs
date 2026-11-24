@@ -21,14 +21,10 @@ use ratatui::{
 use rustc_hash::FxHashSet;
 use unicode_width::UnicodeWidthStr;
 
-use crate::view::{DetailQueries, TreeViews};
-use crate::widget::file_tree::TreeView;
-use crate::widget::tree_query::Toward;
 use crate::{
     background::{self, drop_elsewhere, shows_loading, Cancel, Job, Loads},
     browse::{self, LinkAction, LinkTarget},
-    config::CursorType,
-    config::InitialSelection,
+    config::{CursorType, InitialSelection},
     context::AppContext,
     event::{AppEvent, EventController, Sender},
     external::{copy_to_clipboard, exec_interactive},
@@ -49,14 +45,16 @@ use crate::{
     ref_commands::{diff_refs, ref_command, ref_command_applies},
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
-        query_or_search_status, register_graph_commands, BlameView, DetailFocus, HelpView,
-        LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView, View, ViewKind,
+        query_or_search_status, register_graph_commands, BlameView, DetailFocus, DetailQueries,
+        HelpView, LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView,
+        TreeViews, View, ViewKind,
     },
     widget::{
         action_menu::{left_out_of_menu, ActionMenu, MenuEntry, MenuOutcome},
         command_log::{CommandLog, CommandLogState},
         commit_list::{CommitListState, Dimming, FilterNote},
         commit_tabs::DetailTab,
+        file_tree::TreeView,
         git_dialog::{
             DialogHit, DialogOutcome, GitDialog, GitDialogWidget, RemoteAction, RemoteFrom,
         },
@@ -65,7 +63,7 @@ use crate::{
         notices::{push_notice, render_notices, Notice},
         ref_list::{RefList, RefListState, RefSection, RefSelection, SidebarMode},
         style::{badge, key_hints, render_close_button, spinner, KeyLabel, SPINNER_RATE},
-        tree_query::{type_query, typing_keys, QueryKind, SearchDirection},
+        tree_query::{type_query, typing_keys, QueryKind, SearchDirection, Toward},
     },
 };
 
