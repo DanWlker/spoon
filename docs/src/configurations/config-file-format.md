@@ -31,7 +31,6 @@ cursor_type = "native"
 scrolloff = 0
 
 [ui.list]
-columns = ["graph", "marker", "subject", "name", "hash", "date"]
 subject_min_width = 20
 date_format = "%Y-%m-%d"
 date_width = 10
@@ -313,20 +312,6 @@ The minimum number of visible rows to keep above and below the selected row wher
 
 - type: `u16`
 - default: `0`
-
-### `ui.list.columns`
-
-The order and visibility of columns in the commit list. When `subject` comes right after `graph`, or after `graph` and `marker`, each subject starts right after its own row's graph, like `git log --graph`, and the `marker` divider between them is not drawn.
-
-- type: `array of strings` (enum)
-- default: `["graph", "marker", "subject", "name", "hash", "date"]`
-- possible values:
-  - `graph`
-  - `marker`
-  - `subject`
-  - `name`
-  - `hash`
-  - `date`
 
 ### `ui.list.subject_min_width`
 

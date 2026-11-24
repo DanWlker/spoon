@@ -189,7 +189,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>T</kbd>                         | Show the commits changing the selected file (see below); only with one file selected | `timeline` |
 | <kbd>e</kbd>                         | Open the selected files as they are in the working tree in `$VISUAL` or `$EDITOR`, in the changes and files tabs, from the diff or preview too | `edit` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
-| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them; or in one column (one setting for every diff) | `toggle_tree_view` |
+| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 
 The commit detail has three tabs:
@@ -224,7 +224,7 @@ On the local changes page, the unstaged and staged files each have their own fil
 
 #### Resolving conflicts
 
-Conflicted files are marked `U`. With the cursor on one, the diff is replaced by its conflicts, side by side, each with 3 lines of the file around it and the line numbers of the file in the working tree, with two tools below them. The sides are named for what they are in the operation stopped on the conflict, as git's "ours" and "theirs" swap in a rebase:
+Conflicted files are marked `U`. With the cursor on one, the diff is replaced by its conflicts, side by side, each with 3 lines of the file around it and the line numbers of the file in the working tree, with two tools below them; where one side of a conflict has fewer lines, the rows it lacks are striped, as in the side-by-side diff. The sides are named for what they are in the operation stopped on the conflict, as git's "ours" and "theirs" swap in a rebase:
 
 | Operation   | Ours (left)    | Theirs (right) |
 | ----------- | -------------- | -------------- |
@@ -346,7 +346,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>/</kbd>                         | Filter files<br>Search the diff, while it has the focus      | `search`                        |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the relative/absolute paths of the selected files, one per line<br>Copy the line, selected lines or hunk (<kbd>y</kbd><kbd>y</kbd>), or the file's absolute path (<kbd>y</kbd><kbd>f</kbd>), in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
-| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them; or in one column (one setting for every diff) | `toggle_tree_view` |
+| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 | <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below) | `ignore`         |
 | <kbd>B</kbd>                         | Blame the file as of the last commit (see below); the local changes aren't blamed, and only one file may be picked | `blame`     |
@@ -412,7 +412,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>Space</kbd>                     | Check out the commit, after confirming, closing the timeline<br>In the diff, apply the selected hunk, line or lines to the working tree, as in the details | `select`            |
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the hunk or line, in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes | `increase_diff_context` `decrease_diff_context` |
-| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them; or in one column (one setting for every diff) | `toggle_tree_view` |
+| <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd> | Open the commit, or from the diff the file at the selected lines, on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR` | `edit` |

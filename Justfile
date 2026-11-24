@@ -85,12 +85,14 @@ demo:
     shot graph
     k '<tab>'; shot local-changes
     k P; shot popup
-    k '<escape>' '<tab>' / '(#2818)' '<enter>' '<enter>' 3 j; shot details
+    # tab focuses the sidebar: 2 the commits, to search them
+    k '<escape>' '<tab>' 2 / '(#2818)' '<enter>' '<enter>' 3 j; shot details
     k '<escape>' '<escape>' 1 j l ']' l ']' l '[' '[' j j; shot refs
     # the blame and the timeline of a file, found in the files of the selected commit
     k '<escape>' 4 / 'ratatui-widgets/src/scrollbar.rs' '<enter>' B; sleep 1
     D=0.3 k j j j j j j j j; shot blame
-    k '<escape>' T; sleep 1; k j j l; shot timeline
+    # esc moves from the blame to its commit, the second closes it
+    k '<escape>' '<escape>' T; sleep 1; k j j l; shot timeline
     k q; sleep 1.5
 
     # recorded losslessly: wf-recorder's default video marks limited-range colors as full range
@@ -102,10 +104,11 @@ demo:
     k '<escape>' '<escape>' 3; sleep 0.4
     D=0.06 k f i x '(' s c r o l l b a r ')' ':' ' ' u s e ' ' t h u m b ' ' f o r ' ' t r a c k
     sleep 0.8; k '<escape>' c; sleep 1.8; k '<enter>'; sleep 1.8
-    k '<tab>'; sleep 1.2; D=0.25 k j j j j j; sleep 0.5; k '<enter>'; sleep 1; k 3; sleep 1; k j; sleep 1.5
+    # the commit just made is on top: its details, then the blame and the timeline of its file
+    k '<tab>' 2; sleep 1.2; D=0.25 k j j j k k k; sleep 0.5; k '<enter>'; sleep 1; k 3; sleep 1; k j; sleep 1.5
     k '<escape>' '<escape>'; k 1; sleep 0.5; D=0.8 k ']' ']'; sleep 0.8; k '<escape>'; sleep 0.5
     k 4; sleep 0.6; k / 'ratatui-widgets/src/scrollbar.rs'; sleep 0.6; k '<enter>' B; sleep 1.5
-    D=0.3 k j j j j j j j j; sleep 0.6; k '['; sleep 1.5; k ']'; sleep 0.8; k '<escape>'
+    D=0.3 k j j j j j j j j; sleep 0.6; k '['; sleep 1.5; k ']'; sleep 0.8; k '<escape>' '<escape>'
     k T; sleep 1.5; D=0.6 k j j; k l; sleep 1.5; D=0.4 k '<escape>' '<escape>' '<escape>' '<escape>'; sleep 0.8
     k P; sleep 2; k '<escape>'; sleep 1.5
     kill -INT $rec; wait $rec || true

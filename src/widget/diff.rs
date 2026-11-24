@@ -2764,7 +2764,7 @@ mod tests {
         let new = |y| side(y, old_width + 1..40);
         let rows: Vec<_> = (0..area.height).map(|y| (old(y), new(y))).collect();
         let stripes = "╱".repeat((40 - old_width - 1) as usize);
-        // header, ctx, "gone" beside stripes, "call" over 2+ rows
+        // header, ctx, "gone" beside stripes, "foo bar baz qux quux" over 2+ rows
         assert!(
             rows[2].0.contains("gone") && rows[2].1 == stripes,
             "{rows:#?}"

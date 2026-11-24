@@ -221,16 +221,6 @@ pub struct CoreExternalConfig {
 #[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiListConfig {
-    #[garde(length(min = 1))]
-    #[default(vec![
-        UserListColumnType::Graph,
-        UserListColumnType::Marker,
-        UserListColumnType::Subject,
-        UserListColumnType::Name,
-        UserListColumnType::Hash,
-        UserListColumnType::Date,
-    ])]
-    pub columns: Vec<UserListColumnType>,
     #[garde(range(min = 1))]
     #[default = 20]
     pub subject_min_width: u16,
@@ -246,17 +236,6 @@ pub struct UiListConfig {
     #[garde(skip)]
     #[default = 20]
     pub name_width: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UserListColumnType {
-    Graph,
-    Marker,
-    Subject,
-    Name,
-    Hash,
-    Date,
 }
 
 #[optional(derives = [Deserialize], attrs = [serde(deny_unknown_fields)])]
@@ -390,14 +369,6 @@ mod tests {
                     scrolloff: 0,
                 },
                 list: UiListConfig {
-                    columns: vec![
-                        UserListColumnType::Graph,
-                        UserListColumnType::Marker,
-                        UserListColumnType::Subject,
-                        UserListColumnType::Name,
-                        UserListColumnType::Hash,
-                        UserListColumnType::Date,
-                    ],
                     subject_min_width: 20,
                     date_format: "%Y-%m-%d".into(),
                     date_width: 10,
@@ -458,7 +429,6 @@ mod tests {
             cursor_type = { virtual = "|" }
             scrolloff = 3
             [ui.list]
-            columns = ["date", "subject", "hash", "graph"]
             subject_min_width = 40
             date_format = "%Y/%m/%d"
             date_width = 20
@@ -525,12 +495,6 @@ mod tests {
                     scrolloff: 3,
                 },
                 list: UiListConfig {
-                    columns: vec![
-                        UserListColumnType::Date,
-                        UserListColumnType::Subject,
-                        UserListColumnType::Hash,
-                        UserListColumnType::Graph,
-                    ],
                     subject_min_width: 40,
                     date_format: "%Y/%m/%d".into(),
                     date_width: 20,
@@ -600,14 +564,6 @@ mod tests {
                     scrolloff: 0,
                 },
                 list: UiListConfig {
-                    columns: vec![
-                        UserListColumnType::Graph,
-                        UserListColumnType::Marker,
-                        UserListColumnType::Subject,
-                        UserListColumnType::Name,
-                        UserListColumnType::Hash,
-                        UserListColumnType::Date,
-                    ],
                     subject_min_width: 20,
                     date_format: "%Y/%m/%d".into(),
                     date_width: 10,
@@ -745,7 +701,6 @@ mod tests {
     #[test]
     fn test_config_invalid_values() {
         let refused = [
-            ("[ui.list]\ncolumns = []\n", "ui.list.columns"),
             (
                 "[ui.list]\nsubject_min_width = 0\n",
                 "ui.list.subject_min_width",

@@ -556,15 +556,26 @@ pub fn crop_covered_images(buf: &mut Buffer) -> Vec<(u16, u16, u16)> {
             let end = x.saturating_add(width).min(area.right());
             // the covered cells are no longer skipped, like the image's own
             let covered = (x + 1..end).find(|&c| buf[(c, y)].diff_option != CellDiffOption::Skip);
-            match covered {
+            let shown = match covered {
                 Some(covered) => match kitty_crop(buf[(x, y)].symbol(), covered - x) {
                     Some(symbol) => {
                         buf[(x, y)].set_symbol(&symbol);
-                        images.push((x, y, covered - x));
+                        Some(covered - x)
                     }
-                    None => (x..covered).for_each(|c| buf[(c, y)].reset()),
+                    None => {
+                        (x..covered).for_each(|c| buf[(c, y)].reset());
+                        None
+                    }
                 },
-                None => images.push((x, y, end - x)),
+                None => Some(end - x),
+            };
+            if let Some(width) = shown {
+                // the cells under the image erased first (ECH, the cursor staying): they are skipped,
+                // so the text the terminal had there would show through the image's transparent
+                // pixels, like a subject in a row whose graph is wider now
+                let symbol = format!("\x1b[{width}X{}", buf[(x, y)].symbol());
+                buf[(x, y)].set_symbol(&symbol);
+                images.push((x, y, width));
             }
             x = end.max(x + 1);
         }
@@ -766,7 +777,9 @@ mod tests {
     fn test_crop_covered_images() {
         // the kitty image shows its first 6 cells, of the pixels in them
         let (buf, images) = covered(ImageProtocol::Kitty, true);
+        // with the 6 cells under it erased first
         let symbol = buf[(0, 0)].symbol();
+        assert!(symbol.starts_with("\x1b[6X\x1b_G"), "{symbol:?}");
         assert!(
             symbol.contains(&kitty_display_control(6, 1, 24)),
             "{symbol}"
@@ -787,7 +800,7 @@ mod tests {
         assert_eq!(buf[(5, 0)].diff_option, CellDiffOption::None);
         assert!(images.is_empty());
         let (buf, images) = covered(ImageProtocol::Iterm2, false);
-        assert!(buf[(0, 0)].symbol().starts_with("\x1b]1337;File="));
+        assert!(buf[(0, 0)].symbol().starts_with("\x1b[10X\x1b]1337;File="));
         assert_eq!(images, [(0, 0, 10)]);
 
         // what is written is read back, wide images too

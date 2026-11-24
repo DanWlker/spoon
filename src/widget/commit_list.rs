@@ -19,7 +19,6 @@ use crate::widget::tree_query::Toward;
 use crate::{
     background::{Cancel, Job},
     color::ColorTheme,
-    config::UserListColumnType,
     context::AppContext,
     event::{AppEvent, Sender},
     git::{Commit, CommitHash, Head, Ref, Repository, Tracking},
@@ -915,48 +914,22 @@ impl<'a> StatefulWidget for CommitList<'a> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         self.update_state(area, state);
 
-        let constraints = calc_cell_widths(
+        let list = &self.ctx.ui_config.list;
+        let [graph_subject, name, hash, date] = Layout::horizontal(calc_cell_widths(
             area.width,
-            self.ctx.ui_config.list.subject_min_width,
+            list.subject_min_width,
             state.graph_area_cell_width(),
-            self.ctx.ui_config.list.name_width,
-            self.ctx.ui_config.list.date_width,
-            &self.ctx.ui_config.list.columns,
-        );
-        let chunks = Layout::horizontal(constraints).split(area);
+            list.name_width,
+            list.date_width,
+        ))
+        .areas(area);
         // asked once for the rows drawn, which every column shows
         let shown = state.shown_infos();
-        let columns = &self.ctx.ui_config.list.columns;
-        // the column of a graph the subject follows, with at most the divider between them, which
-        // is left out: each subject starts right after its row's graph, like `git log --graph`
-        let graph_before_subject = columns
-            .iter()
-            .position(|col| *col == UserListColumnType::Graph)
-            .filter(|&g| {
-                matches!(
-                    columns[g + 1..],
-                    [UserListColumnType::Subject, ..]
-                        | [UserListColumnType::Marker, UserListColumnType::Subject, ..]
-                )
-            });
-        for (i, col) in columns.iter().enumerate() {
-            let (area, rows) = (chunks[i], &shown);
-            match col {
-                UserListColumnType::Graph => self.render_graph(buf, area, state, rows),
-                UserListColumnType::Marker if graph_before_subject.is_some_and(|g| g < i) => {}
-                UserListColumnType::Marker => self.render_marker(buf, area, rows),
-                UserListColumnType::Subject => match graph_before_subject {
-                    Some(g) => {
-                        let graph = chunks[g];
-                        self.render_subject(buf, graph.union(area), state, rows, Some(graph))
-                    }
-                    None => self.render_subject(buf, area, state, rows, None),
-                },
-                UserListColumnType::Name => self.render_name(buf, area, state, rows),
-                UserListColumnType::Hash => self.render_hash(buf, area, state, rows),
-                UserListColumnType::Date => self.render_date(buf, area, state, rows),
-            }
-        }
+        self.render_graph(buf, graph_subject, state, &shown);
+        self.render_subject(buf, graph_subject, state, &shown);
+        self.render_name(buf, name, state, &shown);
+        self.render_hash(buf, hash, state, &shown);
+        self.render_date(buf, date, state, &shown);
     }
 }
 
@@ -995,32 +968,20 @@ impl CommitList<'_> {
         });
     }
 
-    fn render_marker(&self, buf: &mut Buffer, area: Rect, shown: &[CommitInfo]) {
-        if area.is_empty() {
-            return;
-        }
-        let items: Vec<ListItem> = shown
-            .iter()
-            // a plain divider: the colors of the branches are in the graph
-            .map(|_| ListItem::new("│".fg(self.ctx.color_theme.divider_fg)))
-            .collect();
-        Widget::render(List::new(items), area, buf)
-    }
-
-    // In `area`, each row after the graph drawn in `graph` when it is given, see `render`.
+    // In `area`, where the graph is drawn too, each row's subject right after the row's graph, like
+    // `git log --graph`.
     fn render_subject(
         &self,
         buf: &mut Buffer,
         area: Rect,
         state: &CommitListState,
         shown: &[CommitInfo],
-        graph: Option<Rect>,
     ) {
         if area.is_empty() {
             return;
         }
         shown.iter().enumerate().for_each(|(i, commit_info)| {
-            let inset = graph.map_or(0, |graph| drawn_graph(state, commit_info, graph).len());
+            let inset = drawn_graph(state, commit_info, area).len();
             let row = Rect {
                 x: area.x.saturating_add(inset as u16),
                 y: area.y + i as u16,
@@ -1311,64 +1272,41 @@ pub fn ref_label_style(color: Color) -> Style {
     }
 }
 
-// The cells of the row's graph drawn in `area`, which keeps a column of right pad.
+// The cells of the row's graph drawn at the start of `area`, within the graph's width and with a
+// column of right pad.
 fn drawn_graph<'s>(
     state: &'s CommitListState,
     commit_info: &CommitInfo,
     area: Rect,
 ) -> &'s [PreparedImageCell] {
     let cells = state.prepared_image(commit_info.commit).cells();
-    &cells[..cells.len().min(area.width.saturating_sub(1) as usize)]
+    let width = area.width.min(state.graph_area_cell_width());
+    &cells[..cells.len().min(width.saturating_sub(1) as usize)]
 }
 
 const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);
 
+// The widths of the graph with the subjects after it, the name, the hash and the date: the name,
+// then the date, then the hash left out when the subject would be narrower than its minimum.
 fn calc_cell_widths(
     area_width: u16,
     subject_min_width: u16,
     graph_width: u16,
     name_width: u16,
     date_width: u16,
-    columns: &[UserListColumnType],
-) -> Vec<Constraint> {
+) -> [Constraint; 4] {
     let pad = 2;
-    let (
-        mut graph_cell_width,
-        mut marker_cell_width,
-        mut name_cell_width,
-        mut hash_cell_width,
-        mut date_cell_width,
-    ) = (0, 0, 0, 0, 0);
-
-    for col in columns {
-        match col {
-            UserListColumnType::Graph => {
-                graph_cell_width = graph_width;
-            }
-            UserListColumnType::Marker => {
-                marker_cell_width = 1;
-            }
-            UserListColumnType::Name => {
-                name_cell_width = name_width.saturating_add(pad);
-            }
-            UserListColumnType::Hash => {
-                hash_cell_width = 7 + pad;
-            }
-            UserListColumnType::Date => {
-                date_cell_width = date_width.saturating_add(pad);
-            }
-            UserListColumnType::Subject => {}
-        }
-    }
+    let mut name_cell_width = name_width.saturating_add(pad);
+    let mut hash_cell_width = 7 + pad;
+    let mut date_cell_width = date_width.saturating_add(pad);
 
     // summed wider than the widths, which the config sets up to u16::MAX
     let mut total_width: u32 = [
-        graph_cell_width,
-        marker_cell_width,
-        hash_cell_width,
-        name_cell_width,
-        date_cell_width,
+        graph_width,
         subject_min_width,
+        name_cell_width,
+        hash_cell_width,
+        date_cell_width,
     ]
     .into_iter()
     .map(u32::from)
@@ -1386,31 +1324,12 @@ fn calc_cell_widths(
     if total_width > area_width {
         hash_cell_width = 0;
     }
-
-    let mut constraints = Vec::new();
-    for col in columns {
-        match col {
-            UserListColumnType::Graph => {
-                constraints.push(Constraint::Length(graph_cell_width));
-            }
-            UserListColumnType::Marker => {
-                constraints.push(Constraint::Length(marker_cell_width));
-            }
-            UserListColumnType::Subject => {
-                constraints.push(Constraint::Min(0));
-            }
-            UserListColumnType::Name => {
-                constraints.push(Constraint::Length(name_cell_width));
-            }
-            UserListColumnType::Hash => {
-                constraints.push(Constraint::Length(hash_cell_width));
-            }
-            UserListColumnType::Date => {
-                constraints.push(Constraint::Length(date_cell_width));
-            }
-        }
-    }
-    constraints
+    [
+        Constraint::Min(0),
+        Constraint::Length(name_cell_width),
+        Constraint::Length(hash_cell_width),
+        Constraint::Length(date_cell_width),
+    ]
 }
 
 #[cfg(test)]
@@ -1796,14 +1715,7 @@ mod tests {
     #[test]
     fn test_pick_only_changes_row_colors() {
         with_commit_list_state(&["first", "second", "third"], |state| {
-            let mut ui_config = UiConfig::default();
-            ui_config.list.columns = vec![
-                UserListColumnType::Marker,
-                UserListColumnType::Subject,
-                UserListColumnType::Name,
-                UserListColumnType::Hash,
-                UserListColumnType::Date,
-            ];
+            let ui_config = UiConfig::default();
             let ctx = Rc::new(AppContext {
                 keybind: KeyBind::new(None),
                 core_config: CoreConfig::default(),
@@ -1821,8 +1733,14 @@ mod tests {
                 pasting: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
+            state.reset_height(3);
+            state.ensure_visible_graph_uploaded();
             let mut before = Buffer::empty(area);
             CommitList::new(ctx.clone()).render(area, &mut before, state);
+            // where a subject starts, after the graph: its first letter
+            let subject =
+                |buf: &Buffer, y, first| (0..area.width).find(|&x| buf[(x, y)].symbol() == first);
+            let x = subject(&before, 0, "f").unwrap();
 
             // pick the first commit, then move the cursor away from it
             state.toggle_visual();
@@ -1831,11 +1749,10 @@ mod tests {
             let mut after = Buffer::empty(area);
             CommitList::new(ctx.clone()).render(area, &mut after, state);
 
-            // the marker column is unchanged, the text of the picked row is recolored
-            assert_eq!(after[(0, 0)].symbol(), "│");
-            assert_eq!(after[(0, 0)].fg, ctx.color_theme.divider_fg);
-            assert_eq!(after[(2, 0)].bg, ctx.color_theme.list_picked_bg);
-            assert_eq!(after[(2, 0)].fg, ctx.color_theme.list_picked_fg);
+            // the graph is unchanged, the text of the picked row is recolored
+            assert_eq!(after[(0, 0)], before[(0, 0)]);
+            assert_eq!(after[(x, 0)].bg, ctx.color_theme.list_picked_bg);
+            assert_eq!(after[(x, 0)].fg, ctx.color_theme.list_picked_fg);
             for x in 0..area.width {
                 assert_eq!(after[(x, 0)].symbol(), before[(x, 0)].symbol());
             }
@@ -1844,7 +1761,8 @@ mod tests {
             state.toggle_visual();
             let mut visual = Buffer::empty(area);
             CommitList::new(ctx.clone()).render(area, &mut visual, state);
-            assert_eq!(visual[(2, 1)].bg, ctx.color_theme.list_picked_bg);
+            let x = subject(&visual, 1, "s").unwrap();
+            assert_eq!(visual[(x, 1)].bg, ctx.color_theme.list_picked_bg);
         });
     }
 
@@ -2658,28 +2576,16 @@ mod tests {
         let graph_width = 6;
         let name_width = 10;
         let date_width = 15;
-        let columns = vec![
-            UserListColumnType::Graph,
-            UserListColumnType::Marker,
-            UserListColumnType::Subject,
-            UserListColumnType::Name,
-            UserListColumnType::Hash,
-            UserListColumnType::Date,
-        ];
-
         let actual = calc_cell_widths(
             area_width,
             subject_min_width,
             graph_width,
             name_width,
             date_width,
-            &columns,
         );
 
-        let expected = vec![
-            Constraint::Length(6),  // Graph
-            Constraint::Length(1),  // Marker
-            Constraint::Min(0),     // Subject
+        let expected = [
+            Constraint::Min(0),     // Graph and subject
             Constraint::Length(12), // Name (10 + 2 pad)
             Constraint::Length(9),  // Hash (7 + 2 pad)
             Constraint::Length(17), // Date (15 + 2 pad)
@@ -2690,19 +2596,9 @@ mod tests {
     #[test]
     fn test_calc_cell_widths_of_the_widest_config() {
         // the widths a config can set, at their most: the columns that don't fit are left out
-        let columns = vec![
-            UserListColumnType::Graph,
-            UserListColumnType::Marker,
-            UserListColumnType::Subject,
-            UserListColumnType::Name,
-            UserListColumnType::Hash,
-            UserListColumnType::Date,
-        ];
-        let actual = calc_cell_widths(80, u16::MAX, 6, u16::MAX, u16::MAX, &columns);
-        let expected = vec![
-            Constraint::Length(6),
-            Constraint::Length(1),
-            Constraint::Min(0),
+        let actual = calc_cell_widths(80, u16::MAX, 6, u16::MAX, u16::MAX);
+        let expected = [
+            Constraint::Min(0), // Graph and subject
             Constraint::Length(0),
             Constraint::Length(0),
             Constraint::Length(0),
@@ -2717,30 +2613,18 @@ mod tests {
         let graph_width = 6;
         let name_width = 10;
         let date_width = 15;
-        let columns = vec![
-            UserListColumnType::Graph,
-            UserListColumnType::Marker,
-            UserListColumnType::Subject,
-            UserListColumnType::Name,
-            UserListColumnType::Hash,
-            UserListColumnType::Date,
-        ];
-
         let actual = calc_cell_widths(
             area_width,
             subject_min_width,
             graph_width,
             name_width,
             date_width,
-            &columns,
         );
 
-        // Graph + Marker + Subject + Hash = 6 + 1 + 20 + 9 = 36 > 30
+        // Graph + Subject + Hash = 6 + 20 + 9 = 35 > 30
         // => Name, Date, and Hash are removed
-        let expected = vec![
-            Constraint::Length(6), // Graph
-            Constraint::Length(1), // Marker
-            Constraint::Min(0),    // Subject
+        let expected = [
+            Constraint::Min(0),    // Graph and subject
             Constraint::Length(0), // Name removed
             Constraint::Length(0), // Hash removed
             Constraint::Length(0), // Date removed
@@ -2755,31 +2639,19 @@ mod tests {
         let graph_width = 6;
         let name_width = 10;
         let date_width = 15;
-        let columns = vec![
-            UserListColumnType::Graph,
-            UserListColumnType::Marker,
-            UserListColumnType::Subject,
-            UserListColumnType::Name,
-            UserListColumnType::Hash,
-            UserListColumnType::Date,
-        ];
-
         let actual = calc_cell_widths(
             area_width,
             subject_min_width,
             graph_width,
             name_width,
             date_width,
-            &columns,
         );
 
-        // Graph + Marker + Subject + Hash = 6 + 1 + 20 + 9 = 36
-        // Graph + Marker + Subject + Date + Hash = 6 + 1 + 20 + 17 + 9 = 53 > 40
+        // Graph + Subject + Hash = 6 + 20 + 9 = 35
+        // Graph + Subject + Date + Hash = 6 + 20 + 17 + 9 = 52 > 40
         // => Name and Date are removed
-        let expected = vec![
-            Constraint::Length(6), // Graph
-            Constraint::Length(1), // Marker
-            Constraint::Min(0),    // Subject
+        let expected = [
+            Constraint::Min(0),    // Graph and subject
             Constraint::Length(0), // Name removed
             Constraint::Length(9), // Hash (7 + 2 pad)
             Constraint::Length(0), // Date removed
@@ -2794,66 +2666,22 @@ mod tests {
         let graph_width = 6;
         let name_width = 10;
         let date_width = 15;
-        let columns = vec![
-            UserListColumnType::Graph,
-            UserListColumnType::Marker,
-            UserListColumnType::Subject,
-            UserListColumnType::Name,
-            UserListColumnType::Hash,
-            UserListColumnType::Date,
-        ];
-
         let actual = calc_cell_widths(
             area_width,
             subject_min_width,
             graph_width,
             name_width,
             date_width,
-            &columns,
         );
 
-        // Graph + Marker + Subject + Date + Hash = 6 + 1 + 20 + 17 + 9 = 53 <= 60
-        // Graph + Marker + Subject + Name + Date + Hash = 6 + 1 + 20 + 12 + 17 + 9 = 65 > 60
+        // Graph + Subject + Date + Hash = 6 + 20 + 17 + 9 = 52 <= 60
+        // Graph + Subject + Name + Date + Hash = 6 + 20 + 12 + 17 + 9 = 64 > 60
         // => Name is removed
-        let expected = vec![
-            Constraint::Length(6),  // Graph
-            Constraint::Length(1),  // Marker
-            Constraint::Min(0),     // Subject
+        let expected = [
+            Constraint::Min(0),     // Graph and subject
             Constraint::Length(0),  // Name removed
             Constraint::Length(9),  // Hash (7 + 2 pad)
             Constraint::Length(17), // Date (15 + 2 pad)
-        ];
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_calc_cell_width_columns_order() {
-        let area_width = 80;
-        let subject_min_width = 20;
-        let graph_width = 6;
-        let name_width = 10;
-        let date_width = 15;
-        let columns = vec![
-            UserListColumnType::Date,
-            UserListColumnType::Subject,
-            UserListColumnType::Hash,
-            UserListColumnType::Graph,
-        ];
-
-        let actual = calc_cell_widths(
-            area_width,
-            subject_min_width,
-            graph_width,
-            name_width,
-            date_width,
-            &columns,
-        );
-
-        let expected = vec![
-            Constraint::Length(17), // Date (15 + 2 pad)
-            Constraint::Min(0),     // Subject
-            Constraint::Length(9),  // Hash (7 + 2 pad)
-            Constraint::Length(6),  // Graph
         ];
         assert_eq!(actual, expected);
     }
