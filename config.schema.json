@@ -259,7 +259,7 @@
           "properties": {
             "subject_min_width": {
               "type": "integer",
-              "description": "The minimum width of a subject in the commit list.",
+              "description": "The minimum width of a subject in the commit list. When it does not fit beside the widest graph and the other columns, the name is left out first, then the date, then the hash.",
               "minimum": 1,
               "maximum": 65535,
               "default": 20

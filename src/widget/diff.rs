@@ -2737,9 +2737,7 @@ mod tests {
         assert_eq!(near.total(), 6 + height(&all));
     }
 
-    // The side with no line beside one added or removed is striped; the rows past a line shorter
-    // than its wrapped pair stay blank.
-    // A "\\ No newline at end of file" note isn't a line: nothing beside it is striped, on either
+    // A "\ No newline at end of file" note isn't a line: nothing beside it is striped, on either
     // side, while an added line beside nothing still is.
     #[test]
     fn test_split_no_stripes_beside_a_no_newline_note() {
@@ -2775,12 +2773,11 @@ mod tests {
             let rows: Vec<_> = (0..area.height)
                 .map(|y| (side(y, 0..old_width), side(y, old_width + 1..80)))
                 .collect();
-            let (note, beside) = rows
+            let (_, beside) = rows
                 .iter()
                 .map(|(old, new)| if note_on_old { (old, new) } else { (new, old) })
                 .find(|(note, _)| note.contains("No newline"))
                 .unwrap();
-            assert!(note.contains("No newline"));
             assert_eq!(beside.trim(), "", "{rows:#?}");
             if note_on_old {
                 // "+new" beside nothing
@@ -2790,6 +2787,8 @@ mod tests {
         }
     }
 
+    // The side with no line beside one added or removed is striped; the rows past a line shorter
+    // than its wrapped pair stay blank.
     #[test]
     fn test_split_filler_marks_only_missing_lines() {
         let diff = parse_diff(concat!(

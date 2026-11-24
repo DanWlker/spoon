@@ -1272,16 +1272,14 @@ pub fn ref_label_style(color: Color) -> Style {
     }
 }
 
-// The cells of the row's graph drawn at the start of `area`, within the graph's width and with a
-// column of right pad.
+// The cells of the row's graph drawn at the start of `area`, leaving a column of right pad in it.
 fn drawn_graph<'s>(
     state: &'s CommitListState,
     commit_info: &CommitInfo,
     area: Rect,
 ) -> &'s [PreparedImageCell] {
     let cells = state.prepared_image(commit_info.commit).cells();
-    let width = area.width.min(state.graph_area_cell_width());
-    &cells[..cells.len().min(width.saturating_sub(1) as usize)]
+    &cells[..cells.len().min(area.width.saturating_sub(1) as usize)]
 }
 
 const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);

@@ -5,4 +5,3 @@ TODO:
      between the project, and its submodules
 1. Move commits (do we really need this?)...
 1. Interactive rebase, switch refresh to Ctrl-R, use shift r for interactive rebase
-1. Split diff panel, currently it is one page, use ` same as file tree

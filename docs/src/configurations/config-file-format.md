@@ -315,7 +315,7 @@ The minimum number of visible rows to keep above and below the selected row wher
 
 ### `ui.list.subject_min_width`
 
-The minimum width of a subject in the commit list.
+The minimum width of a subject in the commit list. Each row shows the graph, the subject starting right after that row's graph (like `git log --graph`), then the author name, the hash and the date. When the widest graph, this minimum and the other columns don't fit, the name is left out first, then the date, then the hash.
 
 - type: `u16`
 - default: `20`
