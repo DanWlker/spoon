@@ -576,6 +576,16 @@
           "description": "Background color of the part of a removed line that differs from the line replacing it.",
           "default": "#694459"
         },
+        "diff_filler_fg": {
+          "type": "string",
+          "description": "Color of the stripes filling the side of a split diff that has no line beside a line added or removed.",
+          "default": "#45475a"
+        },
+        "diff_filler_bg": {
+          "type": "string",
+          "description": "Background color of the side of a split diff that has no line beside a line added or removed.",
+          "default": "#313244"
+        },
         "help_block_title_fg": {
           "type": "string",
           "description": "Color for block titles in the help view.",

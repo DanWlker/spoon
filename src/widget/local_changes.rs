@@ -32,7 +32,7 @@ use crate::{
     widget::tree_query::type_query,
     widget::{
         conflict::{side_names, ConflictView, RowKind},
-        diff::{Step, CONVERTED_DIFF},
+        diff::{filler, Step, CONVERTED_DIFF},
         diff_pane::DiffPane,
         file_tree::{
             find_next, render_tree, Entry, FileTreeState, Folders, Root, TreeCursor, TreeSelection,

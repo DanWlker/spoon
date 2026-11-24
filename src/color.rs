@@ -86,6 +86,12 @@ pub struct ColorTheme {
     pub diff_add_word_bg: RatatuiColor,
     #[default(RatatuiColor::Rgb(0x69, 0x44, 0x59))]
     pub diff_delete_word_bg: RatatuiColor,
+    // the side of a split diff with no line beside a line added or removed: "╱" stripes, like
+    // neovim's `fillchars diff`, on grey Surface 0
+    #[default(SURFACE1)]
+    pub diff_filler_fg: RatatuiColor,
+    #[default(SURFACE0)]
+    pub diff_filler_bg: RatatuiColor,
 
     #[default(MAUVE)]
     pub help_block_title_fg: RatatuiColor,
@@ -134,6 +140,8 @@ const TEXT: RatatuiColor = RatatuiColor::Rgb(0xCD, 0xD6, 0xF4);
 const SUBTEXT0: RatatuiColor = RatatuiColor::Rgb(0xA6, 0xAD, 0xC8);
 const OVERLAY1: RatatuiColor = RatatuiColor::Rgb(0x7F, 0x84, 0x9C);
 const OVERLAY0: RatatuiColor = RatatuiColor::Rgb(0x6C, 0x70, 0x86);
+const SURFACE1: RatatuiColor = RatatuiColor::Rgb(0x45, 0x47, 0x5A);
+const SURFACE0: RatatuiColor = RatatuiColor::Rgb(0x31, 0x32, 0x44);
 const BASE: RatatuiColor = RatatuiColor::Rgb(0x1E, 0x1E, 0x2E);
 const ROSEWATER: RatatuiColor = RatatuiColor::Rgb(0xF5, 0xE0, 0xDC);
 const LAVENDER: RatatuiColor = RatatuiColor::Rgb(0xB4, 0xBE, 0xFE);

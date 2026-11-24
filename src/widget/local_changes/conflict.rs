@@ -221,6 +221,7 @@ impl LocalChangesPanel<'_> {
                         RowKind::Header | RowKind::Context => theme.muted_fg,
                         RowKind::Kept => theme.fg,
                         RowKind::Changed => theme.detail_file_change_add_fg,
+                        RowKind::Padding => return Line::from(filler(content_area.width, theme)),
                     };
                     let number = match row.number {
                         _ if number_width == 0 => String::new(),

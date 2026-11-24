@@ -1972,6 +1972,17 @@ pub fn render_diff_lines<'a>(
     render_visual_rows(visual, selected, theme, area, buf);
 }
 
+// The stripes where a side has no line beside one on the other side, in the split diff and the
+// conflict view alike.
+pub fn filler(width: u16, theme: &ColorTheme) -> Span<'static> {
+    Span::styled(
+        "╱".repeat(width as usize),
+        Style::default()
+            .fg(theme.diff_filler_fg)
+            .bg(theme.diff_filler_bg),
+    )
+}
+
 // Draws the screen rows `screen` of `diff` side by side, see `ParsedDiff::split_rows`: the old
 // side left of a divider, the new side right of it, a file or hunk header across both; otherwise
 // like `render_diff_lines`, each line made changed by `restyle` (the matches of a search), wrapped
@@ -2043,13 +2054,22 @@ pub fn render_split_rows(
                 draw_row(line, Rect::new(area.x, y, area.width, 1), theme, buf);
                 [Some(row); 2]
             }
-            Drawn::Sides(rows, [old_line, new_line]) => {
-                if let Some(line) = old_line {
-                    draw_row(line, Rect::new(area.x, y, old_width, 1), theme, buf);
-                }
+            Drawn::Sides(rows, lines) => {
                 let new_x = area.x.saturating_add(old_width).saturating_add(1);
-                if let Some(line) = new_line {
-                    draw_row(line, Rect::new(new_x, y, new_width, 1), theme, buf);
+                let sides = [
+                    Rect::new(area.x, y, old_width, 1),
+                    Rect::new(new_x, y, new_width, 1),
+                ];
+                for ((row, line), side) in rows.iter().zip(lines).zip(sides) {
+                    match (row, line) {
+                        (_, Some(line)) => draw_row(line, side, theme, buf),
+                        // no line on this side beside one added or removed: filler stripes
+                        (None, None) => {
+                            buf.set_span(side.x, y, &filler(side.width, theme), side.width);
+                        }
+                        // the rows past a line shorter than the one beside it, wrapped, stay blank
+                        (Some(_), None) => {}
+                    }
                 }
                 if old_width < area.width {
                     buf.set_string(
@@ -2712,6 +2732,50 @@ mod tests {
         assert!(height(&all) > 1);
         assert_eq!(height(&near), height(&all));
         assert_eq!(near.total(), 6 + height(&all));
+    }
+
+    // The side with no line beside one added or removed is striped; the rows past a line shorter
+    // than its wrapped pair stay blank.
+    #[test]
+    fn test_split_filler_marks_only_missing_lines() {
+        let diff = parse_diff(concat!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,2 @@\n ctx\n-gone\n",
+            "-foo bar baz\n+foo bar baz qux quux\n",
+        ));
+        let theme = ColorTheme::default();
+        let map = WrapMap::of(&diff, &theme, 40, true, DiffLayout::Split);
+        let area = Rect::new(0, 0, 40, map.total() as u16);
+        let mut buf = Buffer::empty(area);
+        render_split_rows(
+            &diff,
+            &map,
+            0..map.total(),
+            |_| false,
+            |_| {},
+            &theme,
+            area,
+            &mut buf,
+        );
+        let (old_width, _) = split_widths(40);
+        let side = |y: u16, x: std::ops::Range<u16>| -> String {
+            x.map(|x| buf[(x, y)].symbol().to_string()).collect()
+        };
+        let old = |y| side(y, 0..old_width);
+        let new = |y| side(y, old_width + 1..40);
+        let rows: Vec<_> = (0..area.height).map(|y| (old(y), new(y))).collect();
+        let stripes = "╱".repeat((40 - old_width - 1) as usize);
+        // header, ctx, "gone" beside stripes, "call" over 2+ rows
+        assert!(
+            rows[2].0.contains("gone") && rows[2].1 == stripes,
+            "{rows:#?}"
+        );
+        assert_eq!(buf[(old_width + 1, 2)].bg, theme.diff_filler_bg);
+        assert!(rows.len() > 4, "{rows:#?}");
+        assert!(
+            rows[4..].iter().all(|(old, _)| old.trim().is_empty()),
+            "{rows:#?}"
+        );
+        assert!(!rows.iter().any(|(old, _)| old.contains('╱')), "{rows:#?}");
     }
 
     #[test]

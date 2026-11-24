@@ -22,10 +22,12 @@ pub enum RowKind {
     Kept,
     // a line of the side the common ancestor doesn't have: what that side changed
     Changed,
+    // no line, keeping the sides' conflicts level
+    Padding,
 }
 
-// A row of a side: its line in the file in the working tree (none for headers, the padding that
-// keeps the sides' conflicts level, and the sides of a file without markers).
+// A row of a side: its line in the file in the working tree (none for headers, padding, and the
+// sides of a file without markers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictRow {
     pub number: Option<usize>,
@@ -207,7 +209,7 @@ pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
                 let padding = ConflictRow {
                     number: None,
                     text: String::new(),
-                    kind: RowKind::Kept,
+                    kind: RowKind::Padding,
                 };
                 let mut rows: Vec<ConflictRow> = rows.collect();
                 rows.resize(height, padding);
@@ -271,6 +273,7 @@ mod tests {
                     RowKind::Context => "c",
                     RowKind::Kept => "k",
                     RowKind::Changed => "+",
+                    RowKind::Padding => "p",
                 };
                 format!("{number}|{}|{kind}", row.text)
             })
@@ -318,12 +321,12 @@ end
                 "3|c|c",
                 "4|d|c",
                 "6|ours 1|k",
-                "||k",
+                "||p",
                 "11|e|c",
                 "12|f|c",
                 "|── conflict 2 of 2 ──|h",
                 "14|ours 2|+",
-                "||k",
+                "||p",
                 "21|end|c",
             ]
         );
@@ -346,7 +349,7 @@ end
         );
         let base = view.base.unwrap();
         assert_eq!(base.len(), view.ours.len());
-        assert_eq!(rows(&base[9..11]), ["16|base 2|k", "||k"]);
+        assert_eq!(rows(&base[9..11]), ["16|base 2|k", "||p"]);
 
         assert_eq!(parse_conflict_markers("no conflict\n"), None);
     }

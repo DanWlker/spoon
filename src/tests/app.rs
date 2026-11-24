@@ -4690,6 +4690,39 @@ fn test_double_click_in_a_conflict_keeps_a_side() {
     ]);
 }
 
+// The side with fewer lines in a conflict is padded with the stripes of the split diff.
+#[test]
+fn test_conflict_padding_is_striped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let merge = crate::git::git_command()
+        .args(["merge", "-q", "feat"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "{merge:?}");
+    // ours 3 lines, theirs 1: 2 rows of padding on the theirs side
+    std::fs::write(
+        path.join("f.txt"),
+        "a\n<<<<<<< HEAD\nours 1\nours 2\nours 3\n=======\ntheirs 1\n>>>>>>> feat\nc\n",
+    )
+    .unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        mouse_at("Unstaged", (0, 2), TestGesture::Click),
+        screen(|screen| {
+            let row = |text| screen.lines().find(|l| l.contains(text)).unwrap();
+            assert!(!row("ours 1").contains('╱'), "{screen}");
+            assert!(row("ours 2").contains('╱'), "{screen}");
+            assert!(row("ours 3").contains('╱'), "{screen}");
+        }),
+    ]);
+}
+
 #[test]
 fn test_click_on_the_page_bar_switches_page() {
     let dir = tempfile::tempdir().unwrap();

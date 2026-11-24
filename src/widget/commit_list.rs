@@ -27,7 +27,7 @@ use crate::{
     keybind::UserEvent,
     layout::{Closes, RowMap, Target},
     pointer::OnPicks,
-    protocol::PreparedImage,
+    protocol::{PreparedImage, PreparedImageCell},
     search::{SearchOptions, SearchOutcome, SearchTarget},
     widget::{
         picks::Picks,
@@ -926,12 +926,32 @@ impl<'a> StatefulWidget for CommitList<'a> {
         let chunks = Layout::horizontal(constraints).split(area);
         // asked once for the rows drawn, which every column shows
         let shown = state.shown_infos();
-        for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
+        let columns = &self.ctx.ui_config.list.columns;
+        // the column of a graph the subject follows, with at most the divider between them, which
+        // is left out: each subject starts right after its row's graph, like `git log --graph`
+        let graph_before_subject = columns
+            .iter()
+            .position(|col| *col == UserListColumnType::Graph)
+            .filter(|&g| {
+                matches!(
+                    columns[g + 1..],
+                    [UserListColumnType::Subject, ..]
+                        | [UserListColumnType::Marker, UserListColumnType::Subject, ..]
+                )
+            });
+        for (i, col) in columns.iter().enumerate() {
             let (area, rows) = (chunks[i], &shown);
             match col {
                 UserListColumnType::Graph => self.render_graph(buf, area, state, rows),
+                UserListColumnType::Marker if graph_before_subject.is_some_and(|g| g < i) => {}
                 UserListColumnType::Marker => self.render_marker(buf, area, rows),
-                UserListColumnType::Subject => self.render_subject(buf, area, state, rows),
+                UserListColumnType::Subject => match graph_before_subject {
+                    Some(g) => {
+                        let graph = chunks[g];
+                        self.render_subject(buf, graph.union(area), state, rows, Some(graph))
+                    }
+                    None => self.render_subject(buf, area, state, rows, None),
+                },
                 UserListColumnType::Name => self.render_name(buf, area, state, rows),
                 UserListColumnType::Hash => self.render_hash(buf, area, state, rows),
                 UserListColumnType::Date => self.render_date(buf, area, state, rows),
@@ -965,15 +985,8 @@ impl CommitList<'_> {
             return;
         }
         shown.iter().enumerate().for_each(|(i, commit_info)| {
-            let prepared_image = state.prepared_image(commit_info.commit);
-            let max_graph_width = area.width.saturating_sub(1) as usize;
             let y = area.top() + i as u16;
-            for (x, image_cell) in prepared_image
-                .cells()
-                .iter()
-                .take(max_graph_width)
-                .enumerate()
-            {
+            for (x, image_cell) in drawn_graph(state, commit_info, area).iter().enumerate() {
                 let cell = &mut buf[(area.left() + x as u16, y)];
                 cell.set_symbol(image_cell.symbol());
                 cell.set_style(image_cell.style());
@@ -994,46 +1007,54 @@ impl CommitList<'_> {
         Widget::render(List::new(items), area, buf)
     }
 
+    // In `area`, each row after the graph drawn in `graph` when it is given, see `render`.
     fn render_subject(
         &self,
         buf: &mut Buffer,
         area: Rect,
         state: &CommitListState,
         shown: &[CommitInfo],
+        graph: Option<Rect>,
     ) {
-        let max_width = (area.width as usize).saturating_sub(2);
-        if area.is_empty() || max_width == 0 {
+        if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = shown
-            .iter()
-            .enumerate()
-            .map(|(i, commit_info)| {
-                let mut spans = refs_spans(
-                    commit_info,
-                    state.search_in(SearchTarget::Ref),
+        shown.iter().enumerate().for_each(|(i, commit_info)| {
+            let inset = graph.map_or(0, |graph| drawn_graph(state, commit_info, graph).len());
+            let row = Rect {
+                x: area.x.saturating_add(inset as u16),
+                y: area.y + i as u16,
+                width: area.width.saturating_sub(inset as u16),
+                height: 1,
+            };
+            let max_width = (row.width as usize).saturating_sub(2);
+            if max_width == 0 {
+                return;
+            }
+            let mut spans = refs_spans(
+                commit_info,
+                state.search_in(SearchTarget::Ref),
+                state.search_options(),
+                &state.head,
+                &self.ctx.color_theme,
+            );
+            let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
+            let max_width = max_width.saturating_sub(ref_spans_width);
+            let commit = commit_info.commit;
+            let subject_fg = self.text_fg(commit_info, self.ctx.color_theme.list_subject_fg);
+            if max_width > ELLIPSIS.len() {
+                spans.extend(highlighted_cut(
+                    &commit.subject,
+                    max_width,
+                    Style::default().fg(subject_fg),
+                    state.search_in(SearchTarget::Subject),
                     state.search_options(),
-                    &state.head,
                     &self.ctx.color_theme,
-                );
-                let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
-                let max_width = max_width.saturating_sub(ref_spans_width);
-                let commit = commit_info.commit;
-                let subject_fg = self.text_fg(commit_info, self.ctx.color_theme.list_subject_fg);
-                if max_width > ELLIPSIS.len() {
-                    spans.extend(highlighted_cut(
-                        &commit.subject,
-                        max_width,
-                        Style::default().fg(subject_fg),
-                        state.search_in(SearchTarget::Subject),
-                        state.search_options(),
-                        &self.ctx.color_theme,
-                    ));
-                }
-                self.to_commit_list_item(i, spans, state)
-            })
-            .collect();
-        Widget::render(List::new(items), area, buf);
+                ));
+            }
+            let item = self.to_commit_list_item(i, spans, state);
+            Widget::render(List::new([item]), row, buf);
+        });
     }
 
     fn render_name(
@@ -1288,6 +1309,16 @@ pub fn ref_label_style(color: Color) -> Style {
         // named colors cannot be tinted
         _ => style.fg(LABEL_INK).bg(color),
     }
+}
+
+// The cells of the row's graph drawn in `area`, which keeps a column of right pad.
+fn drawn_graph<'s>(
+    state: &'s CommitListState,
+    commit_info: &CommitInfo,
+    area: Rect,
+) -> &'s [PreparedImageCell] {
+    let cells = state.prepared_image(commit_info.commit).cells();
+    &cells[..cells.len().min(area.width.saturating_sub(1) as usize)]
 }
 
 const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);
@@ -1626,6 +1657,88 @@ mod tests {
                     assert_eq!(positions, vec![(width - 1, 0), (0, 1)]);
                 }
             });
+        }
+    }
+
+    #[test]
+    fn test_subject_starts_right_after_its_rows_graph() {
+        // "two" branches off beside "one", so its row's graph is wider
+        let hash = |i: usize| CommitHash::from(format!("{i:040x}").as_str());
+        let commit = |i, subject: &str, parents: Vec<CommitHash>| Commit {
+            commit_hash: hash(i),
+            subject: subject.into(),
+            parent_commit_hashes: parents,
+            ..Commit::default()
+        };
+        let commits = vec![
+            commit(1, "one", vec![hash(3)]),
+            commit(2, "two", vec![hash(3)]),
+            commit(3, "three", vec![]),
+        ];
+        let repository = Arc::new(Repository::new(
+            PathBuf::new(),
+            PathBuf::new(),
+            commits,
+            FxHashMap::default(),
+            Head::None,
+        ));
+        let graph = calc_graph(&repository, None, &Default::default());
+        let graph_color_set = GraphColorSet::new(&GraphColorConfig::default());
+        let image_params =
+            crate::graph::ImageParams::new(&graph_color_set, CellWidthType::Double, false);
+        let graph_image_manager = GraphImageManager::new(
+            graph,
+            image_params,
+            CellWidthType::Double,
+            GraphStyle::Rounded,
+            GraphImageWidthMode::Compact,
+            ImageProtocol::Iterm2,
+        );
+        let mut state = CommitListState::new(
+            &repository,
+            graph_image_manager,
+            Dimming::None,
+            Default::default(),
+            0,
+        );
+        state.reset_height(3);
+        state.ensure_visible_graph_uploaded();
+        let ctx = Rc::new(AppContext {
+            keybind: KeyBind::new(None),
+            core_config: CoreConfig::default(),
+            ui_config: UiConfig::default(),
+            color_theme: ColorTheme::default(),
+            image_protocol: ImageProtocol::Iterm2,
+            graph: Default::default(),
+            running_tasks: Default::default(),
+            key_names: Default::default(),
+            layout: Default::default(),
+            wrap: Default::default(),
+            diff_layout: Default::default(),
+            diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
+            search_options: Default::default(),
+            pasting: Default::default(),
+        });
+        let area = Rect::new(0, 0, 60, 3);
+        let mut buf = Buffer::empty(area);
+        CommitList::new(ctx).render(area, &mut buf, &mut state);
+
+        let graph_widths: Vec<usize> = state
+            .rows()
+            .iter()
+            .map(|commit| state.prepared_image(commit).cells().len())
+            .collect();
+        assert!(graph_widths[0] < graph_widths[1], "{graph_widths:?}");
+        for (y, (subject, graph_width)) in
+            ["one", "two", "three"].iter().zip(graph_widths).enumerate()
+        {
+            let row: Vec<&str> = (0..area.width)
+                .map(|x| buf[(x, y as u16)].symbol())
+                .collect();
+            // one space between the graph and the subject, and no divider
+            assert_eq!(row[graph_width], " ");
+            assert_eq!(row[graph_width + 1..][..subject.len()].concat(), *subject);
+            assert!(!row.contains(&"│"), "{row:?}");
         }
     }
 

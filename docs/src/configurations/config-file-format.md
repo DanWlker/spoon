@@ -96,6 +96,8 @@ diff_add_bg = "#394545"
 diff_delete_bg = "#493446"
 diff_add_word_bg = "#4e6356"
 diff_delete_word_bg = "#694459"
+diff_filler_fg = "#45475a"
+diff_filler_bg = "#313244"
 help_block_title_fg = "#cba6f7"
 virtual_cursor_fg = "#f5e0dc"
 muted_fg = "#7f849c"
@@ -314,7 +316,7 @@ The minimum number of visible rows to keep above and below the selected row wher
 
 ### `ui.list.columns`
 
-The order and visibility of columns in the commit list.
+The order and visibility of columns in the commit list. When `subject` comes right after `graph`, or after `graph` and `marker`, each subject starts right after its own row's graph, like `git log --graph`, and the `marker` divider between them is not drawn.
 
 - type: `array of strings` (enum)
 - default: `["graph", "marker", "subject", "name", "hash", "date"]`
