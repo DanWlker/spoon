@@ -33,7 +33,8 @@ pub fn ref_command_applies(
             selection,
             RefSelection::Ref(NamedRef::Branch(_) | NamedRef::RemoteBranch(_))
         ),
-        UserEvent::ShortCopy | UserEvent::FullCopy => on_ref,
+        // the picked refs' names, else the selected one's, see `App::copy_sidebar_ref_name`
+        UserEvent::ShortCopy | UserEvent::FullCopy => on_ref || !picked.is_empty(),
         UserEvent::ToggleSelect => {
             matches!(selection, RefSelection::Ref(_) | RefSelection::Stash(_))
         }
@@ -389,6 +390,29 @@ mod tests {
             git(path, &["remote", "-v"]).lines().next().unwrap(),
             "origin2\thttps://a.example/r.gitx (fetch)"
         );
+    }
+
+    // y copies the picked refs' names, as it does, so it applies with the cursor off a ref too:
+    // it used to need the cursor on a branch, remote branch or tag.
+    #[test]
+    fn test_copy_names_of_the_picked_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "t"]);
+        git(path, &["config", "user.email", "t@t"]);
+        git(path, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        std::fs::write(path.join("f"), "1\n").unwrap();
+        git(path, &["stash", "push", "-q", "--include-untracked"]);
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let picked = RefPicks::new(RefSection::Stashes, vec!["stash@{0}".into()]);
+        let none = RefPicks::new(RefSection::Stashes, vec![]);
+        let on_stash = RefSelection::Stash("stash@{0}".into());
+        let applies =
+            |picked| ref_command_applies(&repository, UserEvent::ShortCopy, &on_stash, picked);
+        assert!(applies(&picked));
+        // a stash alone has no name to copy
+        assert!(!applies(&none));
     }
 
     #[test]

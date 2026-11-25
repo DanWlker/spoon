@@ -145,9 +145,6 @@ impl App<'_> {
                 left.extend(input.spans);
                 right.push(Span::raw(format!("{metadata} ")).fg(theme.muted_fg));
             }
-            StatusLine::Transient(msg) => {
-                right.push(Span::raw(format!("{msg} ")).fg(theme.muted_fg));
-            }
             StatusLine::SearchResult { outcome, options } => {
                 let span = Span::raw(outcome.to_string());
                 left.push(match outcome {

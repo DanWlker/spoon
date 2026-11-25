@@ -6632,3 +6632,148 @@ fn test_amending_keeps_the_last_commit_staged_after_a_change_outside() {
         screen(|text| assert!(text.contains("n.txt") && text.contains("f.txt"), "{text}")),
     ]);
 }
+
+// The details trees said nothing of the files picked, unlike the other panels picking rows.
+#[test]
+fn test_details_trees_say_how_many_are_picked() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let shown = |text: &'static str| {
+        screen(move |screen| assert!(screen.contains(text), "{text:?} not in\n{screen}"))
+    };
+    harness.run(vec![
+        keys("4 v v"),
+        draw(),
+        shown("1 picked"),
+        keys("esc 5 v v"),
+        draw(),
+        shown("1 picked"),
+    ]);
+}
+
+// Esc in the details trees cleared the filter before the picked files, unlike every other list.
+#[test]
+fn test_esc_clears_the_picked_files_before_the_filter_of_the_details() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let filter = |expected: Option<&'static str>| {
+        check(move |app| match &app.view {
+            View::Detail(view) => {
+                let queries = view.queries();
+                let query = match view.tab() {
+                    DetailTab::Changes => queries.changes,
+                    _ => queries.files,
+                };
+                assert_eq!(query.filter(), expected);
+            }
+            _ => panic!("not in the commit details"),
+        })
+    };
+    let picked = |shown: bool| {
+        screen(move |screen| assert_eq!(screen.contains("1 picked"), shown, "{screen}"))
+    };
+    harness.run(vec![
+        keys("4 /"),
+        typing("f"),
+        keys("enter v v"),
+        draw(),
+        picked(true),
+        keys("esc"),
+        draw(),
+        picked(false),
+        filter(Some("f")),
+        keys("esc"),
+        filter(None),
+        // the files tab alike
+        keys("5 /"),
+        typing("f"),
+        keys("enter v v esc"),
+        draw(),
+        picked(false),
+        filter(Some("f")),
+    ]);
+}
+
+// e on the local changes page took the file under the cursor only, unlike the details: not the
+// picked files with the cursor on a folder, nor from the diff.
+#[test]
+fn test_edit_opens_the_picked_local_changes_from_anywhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::create_dir(path.join("x")).unwrap();
+    std::fs::write(path.join("x/a1"), "1\n").unwrap();
+    std::fs::write(path.join("x/a2"), "2\n").unwrap();
+    let mut harness = Harness::new(&path, launch());
+    let edits = |expected: bool| {
+        check(move |app| {
+            assert_eq!(
+                app.view.keys().takes(crate::keybind::UserEvent::Edit),
+                expected
+            )
+        })
+    };
+    harness.run(vec![
+        keys("tab 1 shift-g"),
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some("x/a2"))),
+        keys("v v k k"),
+        check(|app| assert_eq!(local_change_path(app).as_deref(), Some("x"))),
+        edits(true),
+        keys("esc shift-g enter"),
+        edits(true),
+    ]);
+}
+
+// y f copies the file's absolute path in every diff and in the text of a file, as the keys doc
+// says; the timeline's diff and the blame's text had none.
+#[test]
+fn test_full_path_copied_in_every_diff_and_text() {
+    let pages = [
+        ("4 enter", StartPage::Graph),
+        ("5 enter", StartPage::Graph),
+        ("shift-g enter", StartPage::LocalChanges),
+        ("5 shift-t l", StartPage::Graph),
+        ("5 shift-b", StartPage::Graph),
+    ];
+    for (to, page) in pages {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        harness.run(vec![
+            keys(to),
+            keys("shift-h"),
+            check(move |app| {
+                let keys = app.keys_popup_keys();
+                assert!(keys.iter().any(|k| k.keys == "yf"), "{to:?}");
+            }),
+        ]);
+    }
+}
+
+// The options of a search toggle only while it is typed, on every panel: the commit list's
+// toggled outside it too.
+#[test]
+fn test_search_options_toggle_only_while_typing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let toggled = |expected: bool| {
+        check(move |app| {
+            let options = app.ctx.search_options.get();
+            let config = &app.ctx.core_config.search;
+            assert_eq!(options.smart_case != config.smart_case, expected);
+        })
+    };
+    harness.run(vec![
+        keys("ctrl-g"),
+        toggled(false),
+        keys("/"),
+        typing("c"),
+        keys("enter ctrl-g"),
+        toggled(false),
+        keys("/ ctrl-g"),
+        toggled(true),
+    ]);
+}

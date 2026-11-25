@@ -97,7 +97,7 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Move down/up                                       | `select_down` `select_up`                    |
 | <kbd>g/G</kbd>                       | Go to top/bottom                                   | `go_to_top` `go_to_bottom`                   |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up                                | `page_down` `page_up`                        |
-| <kbd>Ctrl-d/u</kbd>                  | Jump half page down/up, scrolling as needed       | `half_page_down` `half_page_up`              |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll half a page down/up, the selection moving as much, like vim | `half_page_down` `half_page_up`              |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`                    |
 | <kbd>Left/Right</kbd> <kbd>h/l</kbd> | Fold/Unfold the selected merge commit              | `navigate_left` `navigate_right`             |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
@@ -122,9 +122,9 @@ Git cannot ask for a password or passphrase meanwhile, so use a credential helpe
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Clear picked commits, then the search, then show all the commits again after <kbd>L</kbd> | `cancel` |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
-| <kbd>Ctrl-t</kbd>                    | Toggle search target                               | `search_target_toggle`                       |
-| <kbd>Ctrl-g</kbd>                    | Toggle smart case or case-sensitive, for every search (see below)  | `smart_case_toggle`                         |
-| <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match, for every search but of text (see below) | `fuzzy_toggle`                               |
+| <kbd>Ctrl-t</kbd>                    | Toggle search target, while typing the search      | `search_target_toggle`                       |
+| <kbd>Ctrl-g</kbd>                    | Toggle smart case or case-sensitive, for every search, while typing it (see below)  | `smart_case_toggle`                         |
+| <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match, for every search but of text, while typing it (see below) | `fuzzy_toggle`                               |
 | <kbd>Ctrl-r</kbd>                    | Refresh                                            | `refresh`                                    |
 
 #### Commands on the commit graph
@@ -165,10 +165,10 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 
 | Key                                  | Description                     | Corresponding keybind           |
 | ------------------------------------ | ------------------------------- | ------------------------------- |
-| <kbd>Esc</kbd>  | Clear the picked commits, then the search or filter, then close commit details | `cancel` |
+| <kbd>Esc</kbd>  | Clear the picked commits, then the picked files, then the search or filter, then close commit details | `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
 | <kbd>Ctrl-f/b</kbd>                  | Select the files page down/up; scroll the diff or preview page down/up while it has the focus; jump a page while selecting hunks or lines | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll the files half a page down/up, the selection moving as much, like vim; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                         | `refresh`                       |
@@ -217,7 +217,7 @@ The file trees of the local changes page and of the changes and files tabs are f
 <kbd>Enter</kbd> keeps the query, <kbd>Esc</kbd> while typing clears it. Text pasted into a query or a popup's field is typed on one line, its newlines and tabs as spaces; pasted where nothing is typed, it does nothing. Pasted while keys wait for what they act on, it follows them, like a key. Afterwards, the panel title shows the active filter, and <kbd>Esc</kbd> clears it.
 Matching ignores case unless the query has an uppercase letter.
 
-Every search shares its options with the commit list's: while typing any of them, <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
+Every search shares its options with the commit list's: while typing any of them (only then, the commit list's too), <kbd>Ctrl-g</kbd> toggles smart case and <kbd>Ctrl-x</kbd> fuzzy matching, and the status line shows the options that apply. Names, like paths and the commits of the blame and the timeline, match fuzzily or as a substring; text, like diffs, file previews and the blame's text, always matches exactly, so <kbd>Ctrl-x</kbd> does nothing there.
 Like the file trees', the title of the diffs, previews, the blame and the timeline shows the active search, and the status line says how it went once kept: the match it is on of how many, or that nothing matched.
 A search goes from where it started while the query is typed, and <kbd>n/N</kbd> go on from the selection. The commit list's search runs on another thread once typing pauses for 150ms, as a long history takes a while to search; changing the query or its options meanwhile stops the one running. A match is shown as it is: a search moves the selection and scrolls the list only when the match isn't shown already, keeping the `scrolloff` rows around it like the movement keys do.
 On the local changes page, the unstaged and staged files each have their own filter, applying to the focused section only, and staging, unstaging and discarding a directory only affect the files shown.
@@ -281,13 +281,13 @@ While files are picked, <kbd>Space</kbd>, <kbd>d</kbd> and <kbd>s</kbd> apply to
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>                  | Move down/up     | `navigate_down` `navigate_up`    |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                                     | Move down/up     | `select_down` `select_up`        |
 | <kbd>g/G</kbd>                                     | Go to top/bottom | `go_to_top` `go_to_bottom`       |
-| <kbd>Ctrl-d/u</kbd>                                | Jump half page down/up, scrolling as needed | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                                | Scroll half a page down/up, the selection moving as much, like vim | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-f/b</kbd>                                | Scroll a page down/up | `page_down` `page_up`           |
 | <kbd>Ctrl-e/y</kbd>                                | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`        |
 | <kbd>Right/Left</kbd> <kbd>l/h</kbd>               | Open/Close node  | `navigate_right` `navigate_left` |
 | <kbd>]/[</kbd>                                     | Go to the next/previous section (branches, remotes, tags, stashes), opening it | `next_section` `previous_section` |
 | <kbd>Ctrl-r</kbd>                                  | Refresh          | `refresh`                        |
-| <kbd>y</kbd><kbd>y</kbd>                           | Copy the selected refs' names, one per line | `short_copy` |
+| <kbd>y</kbd><kbd>y</kbd>                           | Copy the picked refs' names, one per line, wherever the cursor is; else the selected ref's | `short_copy` |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd>              | Open the branch (or a new pull request from it, chosen in the popup), the remote branch, tag or remote on the web host; copy its link | `open_in_browser` `copy_link` |
 | <kbd>a</kbd>                                       | New remote (on a remote or the remotes header) | `create_ref` |
 | <kbd>b</kbd>                                       | New branch from the selected branch, remote branch or tag | `create_branch` |
@@ -330,7 +330,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>3</kbd>                         | Focus the commit message, typing it when it is empty          | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Commit, like <kbd>c</kbd>, in the commit section or on an empty unstaged section<br>Go to the unstaged section from an empty staged one | `confirm`    |
 | <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert, after confirming, optionally skipping the commit hooks (`--no-verify`) | `commit` |
-| <kbd>e</kbd>                         | Open the selected files in `$VISUAL` or `$EDITOR`<br>Type the message, in the commit section | `edit`  |
+| <kbd>e</kbd>                         | Open the picked files, or the selected one, in `$VISUAL` or `$EDITOR`, from the diff too<br>Type the message, in the commit section | `edit`  |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>m</kbd> <kbd>c</kbd>            | Continue the rebase in progress                              | `continue`                      |
 | <kbd>m</kbd> <kbd>a</kbd>            | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
@@ -356,7 +356,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Select the files half a page down/up; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll the files half a page down/up, the selection moving as much, like vim; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                                                      | `refresh`                       |
 
@@ -388,14 +388,14 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | <kbd>[</kbd> <kbd>]</kbd>            | Blame as of the older/newer commit changing the file, renames followed, on the same line | `older_commit` `newer_commit` |
 | <kbd>Enter</kbd>                     | Select the commit of the line on the graph, closing the blame | `confirm`                      |
 | <kbd>Space</kbd>                     | Check out the commit, after confirming, closing the blame    | `select`                        |
-| <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the line, or the selected lines, on its text | `short_copy` `full_copy` |
+| <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the line, or the selected lines, or the file's absolute path, on its text | `short_copy` `full_copy` |
 | <kbd>v</kbd>                         | Select the lines from the first to the selected one, on the text; another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd> | Open the commit, or the file at the line or the lines selected, on the web host; copy its link (on the text, of the file at the lines) | `open_in_browser` `copy_link` |
 | <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR` | `edit` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the lines' commits (by hash, author or date, from one run of lines to the next) or the text, whichever has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
 
-The commit keys act on the commit at the top while it has the focus, and on the commit of the selected line in the left column; in the text, <kbd>y</kbd> <kbd>y</kbd>, <kbd>y</kbd> <kbd>l</kbd> and <kbd>o</kbd> act on the line, the other keys of the file preview work too. The commit selected with <kbd>Enter</kbd> may not be in the graph, hidden by <kbd>L</kbd> or a folded merge: a warning says so.
+The commit keys act on the commit at the top while it has the focus, and on the commit of the selected line in the left column; in the text, <kbd>y</kbd> <kbd>y</kbd>, <kbd>y</kbd> <kbd>f</kbd>, <kbd>y</kbd> <kbd>l</kbd> and <kbd>o</kbd> act on the line, the other keys of the file preview work too. The commit selected with <kbd>Enter</kbd> may not be in the graph, hidden by <kbd>L</kbd> or a folded merge: a warning says so.
 
 #### Timeline
 
@@ -410,7 +410,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>Enter</kbd>                     | Select the commit on the graph, closing the timeline<br>In the diff, select the lines of the hunk | `confirm` |
 | <kbd>v</kbd>                         | While selecting lines in the diff, select lines like in the file preview, in the hunk | `toggle_select` |
 | <kbd>Space</kbd>                     | Check out the commit, after confirming, closing the timeline<br>In the diff, apply the selected hunk, line or lines to the working tree, as in the details | `select`            |
-| <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the hunk or line, in the diff | `short_copy` `full_copy` |
+| <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the hunk or line, or the file's absolute path, in the diff | `short_copy` `full_copy` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes | `increase_diff_context` `decrease_diff_context` |
 | <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |

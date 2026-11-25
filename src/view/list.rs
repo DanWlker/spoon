@@ -433,18 +433,6 @@ pub fn register_commit_list_keys<T: ?Sized>(
     k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
         .when(move |v| works(GoToNext)(v) && facts(v).search_applied);
     let quiet = [
-        (
-            vec![SearchTargetToggle],
-            "Toggle what the search of the commit list looks in",
-        ),
-        (
-            vec![SmartCaseToggle],
-            "Toggle smart case or case-sensitive, for every search",
-        ),
-        (
-            vec![FuzzyToggle],
-            "Toggle fuzzy match, for every search but of text",
-        ),
         (vec![SelectDown, SelectUp], "Select the older/newer commit"),
         (
             vec![NavigateLeft, NavigateRight],
@@ -480,8 +468,8 @@ pub fn type_commit_search(
     }
 }
 
-// The keys of the search of the commit list while not typing it: starting it, its options, and
-// going through its matches. Returns whether `event` was one.
+// The keys of the search of the commit list while not typing it: starting it and going through
+// its matches; its options toggle only while it is typed, as in every search. Returns whether `event` was one.
 pub fn handle_search_event(
     state: &mut CommitListState,
     ctx: &AppContext,
@@ -493,18 +481,6 @@ pub fn handle_search_event(
         UserEvent::Search => {
             state.start_search();
             tx.send(query_status(ctx, state.query(), SearchKind::Commits));
-        }
-        UserEvent::SearchTargetToggle => {
-            state.toggle_search_target();
-            update_search_options_message(state, tx);
-        }
-        UserEvent::SmartCaseToggle => {
-            state.toggle_smart_case();
-            update_search_options_message(state, tx);
-        }
-        UserEvent::FuzzyToggle => {
-            state.toggle_fuzzy();
-            update_search_options_message(state, tx);
         }
         UserEvent::GoToNext | UserEvent::GoToPrevious if applied => {
             state.select_next_match(Toward::of(event, UserEvent::GoToNext));
@@ -518,17 +494,6 @@ pub fn handle_search_event(
         _ => return false,
     }
     true
-}
-
-fn update_search_options_message(state: &CommitListState, tx: &Sender) {
-    if state.search_applied() {
-        update_matched_message(state, tx);
-    } else {
-        let options = state.search_options().status_string(SearchKind::Commits);
-        tx.send(AppEvent::UpdateStatusTransient(format!(
-            "Search: {options}"
-        )));
-    }
 }
 
 fn update_matched_message(state: &CommitListState, tx: &Sender) {

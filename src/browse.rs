@@ -4,7 +4,7 @@
 
 use std::ops::RangeInclusive;
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
@@ -375,8 +375,9 @@ const LINK_PATH: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'~')
     .remove(b'/');
 
+// A name from git with its bytes as they are on disk, see `git_bytes`.
 fn encode(text: &str) -> String {
-    utf8_percent_encode(text, LINK_PATH).to_string()
+    percent_encode(&crate::git::git_bytes(text), LINK_PATH).to_string()
 }
 
 #[cfg(test)]
@@ -424,6 +425,9 @@ mod tests {
     fn test_encode() {
         // UTF-8 bytes each, "-._~" and "/" as they are
         assert_eq!(encode("feat/é #1-a.b_c~"), "feat/%C3%A9%20%231-a.b_c~");
+        // a byte that isn't UTF-8 as itself, not as the character standing in for it
+        let name = crate::git::text_from_git(b"caf\xe9.txt");
+        assert_eq!(encode(&name), "caf%E9.txt");
     }
 
     #[test]

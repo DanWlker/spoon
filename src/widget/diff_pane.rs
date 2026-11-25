@@ -567,9 +567,13 @@ impl DiffPane {
         let thumb = render_scrollbar(buf, scrollbar, total, range.start, focused, theme);
         ctx.layout.borrow_mut().record_thumb(target, thumb);
         // a hunk selects only its changed lines, the context around them staying as it is
-        let selected = |row: usize| {
+        let mark = |row: usize| {
             self.focus
-                .is_some_and(|part| self.cursor.is_highlighted(diff, part, row))
+                .and_then(|part| self.cursor.row_mark(diff, part, row))
+        };
+        let cursor = |row: usize| {
+            self.focus
+                .is_some_and(|part| self.cursor.is_cursor(diff, part, row))
         };
         let restyle = |line: &mut Line| {
             if let Some(query) = search {
@@ -578,7 +582,8 @@ impl DiffPane {
         };
         if self.cursor.wrap().split_rows().is_some() {
             let map = self.cursor.wrap();
-            let lines = render_split_rows(diff, map, range, selected, restyle, theme, area, buf);
+            let marks = (mark, cursor);
+            let lines = render_split_rows(diff, map, range, marks, restyle, theme, area, buf);
             let split = split_widths(area.width).0 as usize;
             ctx.layout
                 .borrow_mut()
@@ -599,7 +604,8 @@ impl DiffPane {
         render_diff_lines(
             rows.zip(lines),
             skip..skip + range.len(),
-            selected,
+            mark,
+            cursor,
             |row| self.cursor.wrap().wraps_row(row),
             theme,
             area,
@@ -921,6 +927,50 @@ mod tests {
         assert_eq!((row_at(2, 1), row_at(20, 1)), (Some(1), Some(1)));
         assert_eq!((row_at(2, 2), row_at(20, 2)), (Some(2), Some(3)));
         assert_eq!(row_at(2, 3), None);
+    }
+
+    // The cursor shows among the lines picked, as in a list or a file's text: its line numbers
+    // selected and the bar beside it, the other picked ones in the picked color. All of them used
+    // to look like the cursor.
+    #[test]
+    fn test_cursor_marked_apart_from_the_picked_lines() {
+        let ctx = test_ctx();
+        let theme = &ctx.color_theme;
+        // one column of the panel's padding, for the selection bar
+        let area = Rect::new(1, 0, 29, 6);
+        let mut pane = DiffPane::default();
+        pane.set_diff(Some(parse_diff(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,4 @@\n+a\n+b\n+c\n+d\n",
+        )));
+        assert!(pane.enter() && pane.enter());
+        pane.toggle_range();
+        pane.step(Step::Next);
+        pane.step(Step::Next);
+        pane.toggle_range();
+        pane.step(Step::Prev);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
+        let scrollbar = Rect::new(area.right(), 0, 0, 6);
+        pane.render(
+            area,
+            Target::DetailPane,
+            scrollbar,
+            &mut buf,
+            &ctx,
+            true,
+            None,
+        );
+        // the rows of a, b (the cursor) and c
+        let gutter = |y| buf[(2, y)].style().bg;
+        let bar = |y| buf[(0, y)].symbol() == "▌";
+        assert_eq!(gutter(2), Some(theme.list_selected_bg));
+        assert_eq!(
+            (gutter(1), gutter(3)),
+            (Some(theme.list_picked_bg), Some(theme.list_picked_bg))
+        );
+        assert_eq!(
+            (bar(1), bar(2), bar(3), bar(4)),
+            (false, true, false, false)
+        );
     }
 
     // Side by side, j and k move along the side of the selected line, h and l to the nearest line

@@ -22,8 +22,8 @@ use crate::{
     pointer::OnPicks,
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
-        commit_event, copy_selection, edit_files, file_link, query_or_search_status,
-        register_commit_keys, revision_spans, SHORT_HASH_WIDTH,
+        commit_event, copy_paths, copy_selection, edit_files, file_link, query_or_search_status,
+        register_commit_keys, revision_spans, CopyForm, SHORT_HASH_WIDTH,
     },
     widget::tree_query::{type_query, typing_keys},
     widget::{
@@ -249,7 +249,7 @@ impl BlameView {
             UserEvent::Edit => self
                 .tx
                 .send(edit_files(repository, &[&self.history[0].path])),
-            _ if body => self.handle_line_event(event),
+            _ if body => self.handle_line_event(event, repository),
             _ => {
                 let commit = &self.history[self.index].commit;
                 if let Some(event) = commit_event(event, commit) {
@@ -260,7 +260,7 @@ impl BlameView {
     }
 
     // The keys on a line: moving, and acting on its commit or its text.
-    fn handle_line_event(&mut self, event: UserEvent) {
+    fn handle_line_event(&mut self, event: UserEvent, repository: &Repository) {
         let step = Step::of(event);
         if let Some(step) = step {
             self.text.step(step);
@@ -287,6 +287,11 @@ impl BlameView {
                         self.tx
                             .send(copy_selection(text, self.text.selected_name()));
                     }
+                }
+                // the file as named at the commit shown, like the details
+                UserEvent::FullCopy => {
+                    let paths = [self.history[self.index].path.as_str()];
+                    self.tx.send(copy_paths(repository, paths, CopyForm::Full));
                 }
                 // the file at the commit shown, at the lines selected, else the line
                 UserEvent::OpenInBrowser | UserEvent::CopyLink => {
@@ -512,6 +517,12 @@ impl BlameView {
             }
             .into()
         });
+        k.add(
+            &[FullCopy],
+            "copy full path",
+            "Copy the absolute path of the file",
+        )
+        .when(on(Text));
         k.add(
             &[OpenInBrowser],
             "open in browser",

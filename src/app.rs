@@ -76,7 +76,6 @@ enum StatusLine {
         cursor_byte_index: usize,
         metadata: String,
     },
-    Transient(String),
     SearchResult {
         outcome: SearchOutcome,
         options: String,
@@ -996,9 +995,6 @@ impl App<'_> {
                     metadata,
                 };
             }
-            AppEvent::UpdateStatusTransient(msg) => {
-                self.shell.app_status.status_line = StatusLine::Transient(msg);
-            }
             AppEvent::UpdateSearchResult { outcome, options } => {
                 self.shell.app_status.status_line = StatusLine::SearchResult { outcome, options };
             }
@@ -1554,9 +1550,7 @@ impl App<'_> {
             StatusLine::None | StatusLine::Input { .. } => {
                 // do nothing
             }
-            StatusLine::Transient(_)
-            | StatusLine::SearchResult { .. }
-            | StatusLine::NotificationSuccess(_) => {
+            StatusLine::SearchResult { .. } | StatusLine::NotificationSuccess(_) => {
                 // Clear message and pass key input as is
                 self.clear_status_line();
             }
@@ -2010,8 +2004,12 @@ impl App<'_> {
             "Show only the commits of the selected branch or remote branch, or all again",
         )
         .when(applies(ThisBranchOnly));
-        k.add(&[ShortCopy], "copy name", "Copy the name of the ref")
-            .when(applies(ShortCopy));
+        k.add(
+            &[ShortCopy],
+            "copy name",
+            "Copy the names of the picked refs, or the selected one",
+        )
+        .when(applies(ShortCopy));
         k.add(
             &[OpenInBrowser],
             "open in browser",

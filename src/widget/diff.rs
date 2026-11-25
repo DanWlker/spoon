@@ -1,6 +1,4 @@
-use std::{
-    borrow::Cow, cell::OnceCell, collections::BTreeSet, num::NonZeroU32, ops::Range, sync::Arc,
-};
+use std::{borrow::Cow, cell::OnceCell, num::NonZeroU32, ops::Range, sync::Arc};
 
 use similar::DiffTag;
 use unicode_width::UnicodeWidthChar;
@@ -17,14 +15,15 @@ use crate::{
     background::{Cancel, Job},
     color::ColorTheme,
     event::Sender,
-    git::{ConvertedPaths, PatchDirection},
+    git::{git_bytes, text_from_git, ConvertedPaths, PatchDirection},
     keybind::UserEvent,
     pointer::OnPicks,
     search::SearchOptions,
     widget::{
+        picks::Picks,
         style::{
-            divider, mark_selected_bar, placeholder, scroll_to, tabs_shown, ScrollState,
-            VisualSelection,
+            divider, mark_selected_bar, picked_style, placeholder, scroll_to, tabs_shown,
+            ScrollState, VisualSelection,
         },
         tree_query::{match_range, patch_range, SearchDirection},
     },
@@ -63,13 +62,13 @@ impl ParsedDiff {
     // textconv driver: the text isn't in the file, so they can't be staged or applied. Bytes that
     // aren't UTF-8 are kept, see `text_from_git`.
     pub fn drop_converted(&mut self, converted: &ConvertedPaths) {
-        let mut paths: Vec<&str> = self.hunks.iter().map(DiffHunk::path).collect();
+        let mut paths: Vec<String> = self.hunks.iter().map(DiffHunk::path).collect();
         paths.dedup();
-        let converted = converted.of(&paths);
+        let converted = converted.of(&paths.iter().map(String::as_str).collect::<Vec<_>>());
         if converted.is_empty() {
             return;
         }
-        self.hunks.retain(|h| !converted.contains(h.path()));
+        self.hunks.retain(|h| !converted.contains(&h.path()));
         self.converted = true;
     }
 }
@@ -109,14 +108,10 @@ impl DiffHunk {
     }
 
     // The path of its file, the old one of a deleted file.
-    fn path(&self) -> &str {
-        let path_of = |prefix: &str| {
-            self.file_header()
-                .lines()
-                .find_map(|l| l.strip_prefix(prefix))
-        };
-        path_of("+++ b/")
-            .or_else(|| path_of("--- a/"))
+    fn path(&self) -> String {
+        let file_header = self.file_header();
+        header_path(file_header, "+++ ", "b/")
+            .or_else(|| header_path(file_header, "--- ", "a/"))
             .unwrap_or_default()
     }
 
@@ -214,15 +209,10 @@ impl DiffHunk {
 // A renamed (or copied) file is patched under its new name alone: with the rename, git would
 // look for the old file, or unstage the rename along with the hunk.
 fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) -> String {
-    let path_of = |prefix: &str| {
-        file_header
-            .lines()
-            .find_map(|l| l.strip_prefix(prefix))
-            .unwrap_or_default()
-            .to_string()
-    };
-    let new_path = path_of("+++ b/");
-    let old_path = path_of("--- a/");
+    let path_of = |marker, prefix| header_path(file_header, marker, prefix).unwrap_or_default();
+    let new_path = path_of("+++ ", "b/");
+    let old_path = path_of("--- ", "a/");
+    let (old_new, new_new) = (quote_path("a/", &new_path), quote_path("b/", &new_path));
     let renamed = file_header
         .lines()
         .any(|l| l.starts_with("rename from ") || l.starts_with("copy from "));
@@ -242,10 +232,10 @@ fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) ->
                     return None;
                 }
                 if line.starts_with("diff --git ") {
-                    return Some(format!("diff --git a/{new_path} b/{new_path}\n"));
+                    return Some(format!("diff --git {old_new} {new_new}\n"));
                 }
-                if line.starts_with("--- a/") {
-                    return Some(format!("--- a/{new_path}\n"));
+                if line.starts_with("--- ") {
+                    return Some(format!("--- {old_new}\n"));
                 }
             }
             if (old_count > 0 && line.starts_with("new file mode"))
@@ -253,14 +243,72 @@ fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) ->
             {
                 None
             } else if old_count > 0 && line.starts_with("--- /dev/null") {
-                Some(format!("--- a/{new_path}\n"))
+                Some(format!("--- {old_new}\n"))
             } else if new_count > 0 && line.starts_with("+++ /dev/null") {
-                Some(format!("+++ b/{old_path}\n"))
+                Some(format!("+++ {}\n", quote_path("b/", &old_path)))
             } else {
                 Some(line.to_string())
             }
         })
         .collect()
+}
+
+// The path on the `marker` line of a file header ("+++ " or "--- "), without its `prefix`. Git
+// quotes a name holding a quote, a backslash or a control character, C style ("b/say \"hi\""),
+// and ends a name holding a space with a tab.
+fn header_path(file_header: &str, marker: &str, prefix: &str) -> Option<String> {
+    let rest = file_header.lines().find_map(|l| l.strip_prefix(marker))?;
+    let Some(quoted) = rest.strip_prefix('"') else {
+        let rest = rest.strip_suffix('\t').unwrap_or(rest);
+        return rest.strip_prefix(prefix).map(str::to_string);
+    };
+    let bytes = git_bytes(quoted);
+    let mut name = Vec::with_capacity(bytes.len());
+    let mut it = bytes.iter().copied();
+    while let Some(b) = it.next() {
+        match b {
+            b'"' => break,
+            b'\\' => name.push(match it.next()? {
+                b'a' => 7,
+                b'b' => 8,
+                b't' => b'\t',
+                b'n' => b'\n',
+                b'v' => 11,
+                b'f' => 12,
+                b'r' => b'\r',
+                d @ b'0'..=b'3' => {
+                    let digit = |b: u8| (b'0'..=b'7').contains(&b).then(|| b - b'0');
+                    let (d2, d3) = (digit(it.next()?)?, digit(it.next()?)?);
+                    (d - b'0') << 6 | d2 << 3 | d3
+                }
+                other => other,
+            }),
+            b => name.push(b),
+        }
+    }
+    text_from_git(&name)
+        .strip_prefix(prefix)
+        .map(str::to_string)
+}
+
+// `prefix` and `path` as git names them in a file header, quoted as `header_path` reads them.
+fn quote_path(prefix: &str, path: &str) -> String {
+    let special = |c: char| c == '"' || c == '\\' || c.is_ascii_control();
+    if !path.contains(special) {
+        return format!("{prefix}{path}");
+    }
+    let mut quoted = format!("\"{prefix}");
+    for c in path.chars() {
+        match c {
+            '"' | '\\' => quoted.extend(['\\', c]),
+            '\t' => quoted.push_str("\\t"),
+            '\n' => quoted.push_str("\\n"),
+            c if c.is_ascii_control() => quoted.push_str(&format!("\\{:03o}", u32::from(c))),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 // A move of the selection in a diff.
@@ -778,8 +826,9 @@ pub struct DiffCursor {
     // where a visual selection of lines started, the selected line moving from there, like the
     // lines of a file preview
     visual: VisualSelection,
-    // the rows picked, kept once the visual selection ends until cleared, all in the selected hunk
-    picked: BTreeSet<usize>,
+    // the rows picked, kept once the visual selection ends until cleared, all in the selected hunk;
+    // like the rows of a list, see `Picks`
+    picked: Picks<usize>,
     pub scroll: ScrollState,
     // the screen rows the diff's rows wrap to, for the scroll to count
     wrap: WrapMap,
@@ -827,8 +876,10 @@ impl DiffCursor {
         if let Some(rows) = self.visual.range(row, usize::MAX) {
             // side by side, the lines picked are those of the selected line's side
             let side = self.side(diff);
-            self.picked
-                .extend(rows.filter(|&r| side.is_none_or(|kind| diff.rows[r].kind == kind)));
+            let rows: Vec<usize> = rows
+                .filter(|&r| side.is_none_or(|kind| diff.rows[r].kind == kind))
+                .collect();
+            self.picked.sync_visual(&rows);
         }
         if let Some(index) = diff.hunks.iter().position(|h| h.rows.contains(&row)) {
             self.hunk = index;
@@ -1016,10 +1067,12 @@ impl DiffCursor {
     }
 
     // After ctrl-e or ctrl-y scrolled the window: the selected line pulled along to the nearest
-    // changed line in it, like vim's; the selected hunk once it left the window whole, to the
-    // nearest hunk in it. The window stays where it scrolled to.
+    // changed line out of the `scrolloff` rows at its edges, like vim's and like a list's; the
+    // selected hunk once it left the window whole, to the nearest hunk in it. The window stays
+    // where it scrolled to.
     pub fn keep_in_view(&mut self, diff: &ParsedDiff, part: DiffPart) {
         let height = self.scroll.height;
+        let margin = self.scroll.scrolloff.min(height.saturating_sub(1) / 2);
         self.scroll.offset = self
             .scroll
             .offset
@@ -1033,7 +1086,7 @@ impl DiffCursor {
         // while split, the window's rows can hold rows of a change scrolled out beside them
         let shows = |row: usize| {
             let rows = self.wrap.visual_range(row..row + 1);
-            rows.start < offset + height && offset < rows.end
+            rows.start < offset + height - margin && offset + margin < rows.end
         };
         match part {
             DiffPart::Line => {
@@ -1041,7 +1094,8 @@ impl DiffCursor {
                     return;
                 }
                 let mut rows = self.selectable_rows(diff).filter(|r| window.contains(r));
-                let above = self.wrap.visual_range(self.line..self.line + 1).start < offset;
+                let above =
+                    self.wrap.visual_range(self.line..self.line + 1).start < offset + margin;
                 let row = match above {
                     true => rows.find(|&r| shows(r)),
                     false => rows.rfind(|&r| shows(r)),
@@ -1144,15 +1198,21 @@ impl DiffCursor {
     // Starts a visual selection of lines at the selected line, or ends it, keeping the lines
     // picked; another one adds to them, like the lines of a file preview.
     pub fn toggle_range(&mut self) {
-        if self.visual.toggle(self.line) {
-            self.picked.insert(self.line);
+        match self.visual.toggle(self.line) {
+            true => {
+                self.picked.start_visual();
+                self.picked.sync_visual(&[self.line]);
+            }
+            false => self.picked.finish_visual(),
         }
     }
 
     // Clears the lines picked; false when there were none.
     pub fn cancel_range(&mut self) -> bool {
         self.visual.cancel();
-        !std::mem::take(&mut self.picked).is_empty()
+        let picked = !self.picked.is_empty();
+        self.picked.clear();
+        picked
     }
 
     // Before the mouse selects `row`, or no row on empty space, see `OnPicks`.
@@ -1174,10 +1234,12 @@ impl DiffCursor {
 
     // The rows of the lines picked, else of the selected line, sorted.
     fn line_rows(&self) -> Vec<usize> {
-        match self.picked.is_empty() {
-            true => vec![self.line],
-            false => self.picked.iter().copied().collect(),
+        let mut rows: Vec<usize> = self.picked.iter().copied().collect();
+        if rows.is_empty() {
+            rows.push(self.line);
         }
+        rows.sort_unstable();
+        rows
     }
 
     // Scrolls to the edge of the diff the page was going to, the selection kept where it is.
@@ -1229,11 +1291,27 @@ impl DiffCursor {
 
     // Whether `row` is drawn selected: the selected line, or the changed lines of the range of
     // lines or of the selected hunk, whose context stays as it is.
-    pub fn is_highlighted(&self, diff: &ParsedDiff, part: DiffPart, row: usize) -> bool {
+    // How `row` is marked on its line numbers: the lines picked in the picked color, the cursor
+    // line selected, like a file's text (picked too while selecting), or the changed lines of the
+    // selected hunk selected.
+    pub fn row_mark(&self, diff: &ParsedDiff, part: DiffPart, row: usize) -> Option<RowMark> {
         match part {
             DiffPart::Line => {
-                row == self.line || (self.picked.contains(&row) && diff.rows[row].is_change())
+                let picked = self.picked.contains(&row) && diff.rows[row].is_change();
+                if picked && (self.visual.is_visual() || row != self.line) {
+                    Some(RowMark::Picked)
+                } else {
+                    (row == self.line).then_some(RowMark::Selected)
+                }
             }
+            DiffPart::Hunk => self.is_cursor(diff, part, row).then_some(RowMark::Selected),
+        }
+    }
+
+    // Whether the bar beside `row` marks it: the cursor line, or the changed lines of the hunk.
+    pub fn is_cursor(&self, diff: &ParsedDiff, part: DiffPart, row: usize) -> bool {
+        match part {
+            DiffPart::Line => row == self.line,
             DiffPart::Hunk => diff
                 .hunks
                 .get(self.hunk)
@@ -1935,24 +2013,37 @@ fn diff_line<'a>(
     line.bg(bg)
 }
 
-// Marks a line of `diff_lines` selected on its line numbers, keeping the colors of the change.
-fn select_diff_line(line: &mut Line, theme: &ColorTheme) {
+// How a row of a diff is marked on its line numbers, like the rows of a list: picked, or
+// selected (the cursor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowMark {
+    Picked,
+    Selected,
+}
+
+// Marks a line of `diff_lines` on its line numbers, keeping the colors of the change.
+fn mark_diff_line(line: &mut Line, mark: RowMark, theme: &ColorTheme) {
     if let Some(gutter) = line.spans.first_mut() {
-        gutter.style = gutter
-            .style
-            .fg(theme.list_selected_fg)
-            .bg(theme.list_selected_bg)
-            .add_modifier(Modifier::BOLD);
+        gutter.style = match mark {
+            RowMark::Picked => gutter.style.patch(picked_style(theme)),
+            RowMark::Selected => gutter
+                .style
+                .fg(theme.list_selected_fg)
+                .bg(theme.list_selected_bg)
+                .add_modifier(Modifier::BOLD),
+        };
     }
 }
 
 // Renders `lines` with their logical row, the screen rows `screen` of them, a line's background
-// (added, removed) across `area`, the `selected` rows marked on their line numbers and by the bar
-// left of `area`; long lines wrapped at the width of `area`, those `wrap` says.
+// (added, removed) across `area`, the rows marked on their line numbers by `mark` and the cursor
+// rows by the bar left of `area`; long lines wrapped at the width of `area`, those `wrap` says.
+#[expect(clippy::too_many_arguments)]
 pub fn render_diff_lines<'a>(
     lines: impl Iterator<Item = (usize, Line<'a>)>,
     screen: Range<usize>,
-    selected: impl Fn(usize) -> bool,
+    mark: impl Fn(usize) -> Option<RowMark>,
+    cursor: impl Fn(usize) -> bool,
     wrap: impl Fn(usize) -> bool,
     theme: &ColorTheme,
     area: Rect,
@@ -1960,8 +2051,8 @@ pub fn render_diff_lines<'a>(
 ) {
     let visual = wrapped_rows(
         lines.map(|(row, mut line)| {
-            if selected(row) {
-                select_diff_line(&mut line, theme);
+            if let Some(mark) = mark(row) {
+                mark_diff_line(&mut line, mark, theme);
             }
             (row, line)
         }),
@@ -1969,7 +2060,7 @@ pub fn render_diff_lines<'a>(
         wrap,
         area,
     );
-    render_visual_rows(visual, selected, theme, area, buf);
+    render_visual_rows(visual, cursor, theme, area, buf);
 }
 
 // The stripes where a side has no line beside one on the other side, in the split diff and the
@@ -1993,7 +2084,7 @@ pub fn render_split_rows(
     diff: &ParsedDiff,
     map: &WrapMap,
     screen: Range<usize>,
-    selected: impl Fn(usize) -> bool,
+    (mark, cursor): (impl Fn(usize) -> Option<RowMark>, impl Fn(usize) -> bool),
     restyle: impl Fn(&mut Line),
     theme: &ColorTheme,
     area: Rect,
@@ -2002,8 +2093,8 @@ pub fn render_split_rows(
     let (old_width, new_width) = split_widths(area.width);
     let make = |row: usize, gutter, width: u16, wrap: bool| -> Vec<Line<'static>> {
         let mut line = diff_line(diff, &diff.rows[row], gutter, theme, width);
-        if selected(row) {
-            select_diff_line(&mut line, theme);
+        if let Some(mark) = mark(row) {
+            mark_diff_line(&mut line, mark, theme);
         }
         restyle(&mut line);
         match wrap {
@@ -2085,7 +2176,7 @@ pub fn render_split_rows(
                 rows
             }
         };
-        if rows.iter().flatten().any(|&row| selected(row)) {
+        if rows.iter().flatten().any(|&row| cursor(row)) {
             mark_row_selected(area, y, theme, buf);
         }
         hits.push(rows);
@@ -2331,7 +2422,7 @@ mod tests {
         let mut cursor = DiffCursor::default();
         assert!(cursor.select_hunk(&diff, 0));
         let selected: Vec<usize> = (0..diff.rows.len())
-            .filter(|&row| cursor.is_highlighted(&diff, DiffPart::Hunk, row))
+            .filter(|&row| cursor.row_mark(&diff, DiffPart::Hunk, row).is_some())
             .collect();
         // the hunk header and the context around the change stay unselected
         assert_eq!(selected, [2, 3]);
@@ -2348,7 +2439,7 @@ mod tests {
         assert!(cursor.enter_lines(&diff));
         let highlighted = |cursor: &DiffCursor| {
             (0..diff.rows.len())
-                .filter(|&row| cursor.is_highlighted(&diff, DiffPart::Line, row))
+                .filter(|&row| cursor.row_mark(&diff, DiffPart::Line, row).is_some())
                 .count()
         };
         // from "-b" to "-c", then v again ends it, keeping them picked
@@ -2469,6 +2560,56 @@ mod tests {
     }
 
     // A diff that fits the panel still moves the line to a change: only the window stays put.
+    // ctrl-e keeps the selected line out of the `scrolloff` rows at the top, as in a list or a
+    // file's text: it used to ride on the top row.
+    #[test]
+    fn test_scroll_line_keeps_the_scrolloff() {
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,40 @@\n".to_string();
+        for i in 0..40 {
+            raw.push_str(&format!("+{i}\n"));
+        }
+        let diff = parse_diff(&raw);
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 10;
+        cursor.scroll.scrolloff = 3;
+        let theme = ColorTheme::default();
+        cursor.set_wrap_map(WrapMap::of(&diff, &theme, 80, false, DiffLayout::Unified));
+        cursor.select_line(&diff, 1);
+        cursor.scroll.offset = 0;
+        for _ in 0..5 {
+            cursor.scroll.handle_scroll(UserEvent::ScrollDown);
+            cursor.keep_in_view(&diff, DiffPart::Line);
+        }
+        assert_eq!(cursor.scroll.offset, 5);
+        assert_eq!(cursor.line, 5 + 3);
+        // and at the bottom, scrolled back up
+        cursor.select_line(&diff, 5 + 9);
+        cursor.scroll.offset = 5;
+        cursor.scroll.handle_scroll(UserEvent::ScrollUp);
+        cursor.keep_in_view(&diff, DiffPart::Line);
+        assert_eq!(cursor.line, 4 + 9 - 3);
+    }
+
+    // Lines are picked like the rows of a list (`Picks`): moving back unpicks what the visual
+    // selection went over, and v v on a picked line unpicks it. Lines only used to add up.
+    #[test]
+    fn test_lines_picked_like_the_rows_of_a_list() {
+        let diff =
+            parse_diff("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,4 @@\n+a\n+b\n+c\n+d\n");
+        let mut cursor = DiffCursor::default();
+        cursor.select_line(&diff, 1);
+        cursor.toggle_range();
+        cursor.move_line(&diff, Step::Next);
+        cursor.move_line(&diff, Step::Next);
+        cursor.move_line(&diff, Step::Prev);
+        assert_eq!(cursor.line_rows(), [1, 2]);
+        // ended, then v v on the picked b
+        cursor.toggle_range();
+        cursor.toggle_range();
+        cursor.toggle_range();
+        assert_eq!(cursor.line_rows(), [1]);
+    }
+
     #[test]
     fn test_page_moves_the_line_when_the_diff_fits() {
         let diff = parse_diff(
@@ -2650,6 +2791,65 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    // A file git names quoted, for a quote, a backslash or a tab in its name, used to make a
+    // patch without its path: "git diff header lacks filename information".
+    #[test]
+    fn test_partial_patch_of_a_file_git_quotes() {
+        use crate::git::git_command;
+        use crate::test_support::git::{git, GitRepository};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("init", "2024-01-01");
+        let apply = |patch: &str| {
+            let mut child = git_command()
+                .args(["apply", "--cached", "--reverse", "-"])
+                .current_dir(path)
+                .stdin(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(patch.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{patch}\n{output:?}");
+        };
+        let staged = |names: &[&str]| {
+            let mut args = vec!["-c", "core.quotePath=false", "diff", "--cached", "-M", "--"];
+            args.extend(names);
+            parse_diff(&git(path, &args))
+        };
+        for name in ["say \"hi\".txt", "back\\slash.txt", "tab\there.txt"] {
+            // a new file: unstaging one of its lines keeps the other staged
+            std::fs::write(path.join(name), "a\nb\n").unwrap();
+            git(path, &["add", "--", name]);
+            let diff = staged(&[name]);
+            assert_eq!(diff.hunks[0].path(), name);
+            apply(&diff.hunks[0].partial_patch(&[1], PatchDirection::Reverse));
+            assert_eq!(git(path, &["show", &format!(":{name}")]), "a\n");
+            git(path, &["commit", "-qm", "add", "--", name]);
+
+            // a renamed file: a line of it unstaged under its new name
+            let moved = format!("moved {name}");
+            git(path, &["mv", "--", name, &moved]);
+            std::fs::write(path.join(&moved), "a\nc\n").unwrap();
+            git(path, &["add", "--", &moved]);
+            let diff = staged(&[name, &moved]);
+            assert!(diff.hunks[0].file_header().contains("rename from"));
+            assert_eq!(diff.hunks[0].path(), moved);
+            apply(&diff.hunks[0].partial_patch(&[2], PatchDirection::Reverse));
+            assert_eq!(git(path, &["show", &format!(":{moved}")]), "a\n");
+            git(path, &["reset", "-q"]);
+        }
+    }
+
     // Side by side, a removed line sits beside the first added line after the last one paired
     // that is alike, like delta's: the added lines passed on their own rows before it, a removed
     // line alike to none on its own row, a note on the side of the line it follows.
@@ -2760,7 +2960,7 @@ mod tests {
                 &diff,
                 &map,
                 0..map.total(),
-                |_| false,
+                (|_| None, |_| false),
                 |_| {},
                 &theme,
                 area,
@@ -2803,7 +3003,7 @@ mod tests {
             &diff,
             &map,
             0..map.total(),
-            |_| false,
+            (|_| None, |_| false),
             |_| {},
             &theme,
             area,

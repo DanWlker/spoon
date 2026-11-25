@@ -697,7 +697,19 @@ impl<'a> LocalChangesState<'a> {
             self.edit_message();
             return Ok(());
         }
-        let picked = self.picked().clone();
+        let files = self.editable_files();
+        if files.is_empty() {
+            return Err("Select a file to edit".into());
+        }
+        let paths = self.repository.working_tree_paths(&files)?;
+        self.request = Some(Request::External(ExternalRequest::Editor(paths)));
+        Ok(())
+    }
+
+    // The picked files, or the selected one, to open in the editor, from the files or the diff;
+    // a submodule is a directory, not a file to open.
+    fn editable_files(&self) -> Vec<&str> {
+        let picked = self.picked();
         let files: Vec<&LocalChangeFile> = if picked.is_empty() {
             self.selected_row()
                 .and_then(FileTreeRow::file_index)
@@ -710,18 +722,11 @@ impl<'a> LocalChangesState<'a> {
                 .filter(|file| picked.contains(&file.path))
                 .collect()
         };
-        // a submodule is a directory, not a file to open in the editor
-        let files: Vec<&LocalChangeFile> = files
+        files
             .into_iter()
             .filter(|file| !self.repository.is_submodule(&file.path))
-            .collect();
-        if files.is_empty() {
-            return Err("Select a file to edit".into());
-        }
-        let files: Vec<&str> = files.iter().map(|file| file.path.as_ref()).collect();
-        let paths = self.repository.working_tree_paths(&files)?;
-        self.request = Some(Request::External(ExternalRequest::Editor(paths)));
-        Ok(())
+            .map(|file| file.path.as_ref())
+            .collect()
     }
 
     // Whether there is something to commit: staged changes, amending, or an operation to conclude.
@@ -743,7 +748,6 @@ impl<'a> LocalChangesState<'a> {
         let picks = |v: &Self| !v.picked().is_empty();
         // a row of the files, or a file, selected
         let row = |v: &Self| v.focus() == Focus::Files && v.selected_row().is_some();
-        let file = |v: &Self| v.focus() == Focus::Files && v.selected_file().is_some();
         // a file or directory, not the root row standing for all of them
         let path = |v: &Self| row(v) && !v.selected_row().is_some_and(FileTreeRow::is_root);
         let committable = |v: &Self| v.can_commit();
@@ -893,8 +897,12 @@ impl<'a> LocalChangesState<'a> {
             "Stash the files checked in a popup, the picked ones or else all",
         )
         .when(|v| files(v) && v.count() > 0);
-        k.add(&[Edit], "edit", "Open the file in $VISUAL or $EDITOR")
-            .when(file);
+        k.add(
+            &[Edit],
+            "edit",
+            "Open the picked files, or the selected one, in $VISUAL or $EDITOR",
+        )
+        .when(move |v| (files(v) || diff(v)) && !v.editable_files().is_empty());
         k.add(
             &[Blame],
             "blame",

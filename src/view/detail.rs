@@ -505,7 +505,7 @@ impl<'a> DetailView<'a> {
         k.add(
             &[Edit],
             "edit",
-            "Open the file as it is in the working tree in $VISUAL or $EDITOR",
+            "Open the picked files, or the selected one, in $VISUAL or $EDITOR",
         )
         .when(|v| !v.editable_files().is_empty());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
@@ -898,6 +898,9 @@ impl<'a> DetailView<'a> {
             if self.handle_list_event(event) {
                 return;
             }
+        } else if event == UserEvent::Cancel && !self.is_pane_focused() && self.clear_tree_picks() {
+            // the picked files before the filter, like on every page
+            return;
         } else if self.handle_query_event(event) {
             return;
         }
@@ -1162,7 +1165,15 @@ impl<'a> DetailView<'a> {
             .into_iter()
             .chain(tab)
             .min();
-        let notes: Vec<String> = (self.query().and_then(TreeQuery::indicator).into_iter())
+        let picked = match self.tab {
+            DetailTab::Info => 0,
+            DetailTab::Changes => self.changes_state.picked_count(),
+            DetailTab::Files => self.files_state.picked_count(),
+        };
+        // like the other panels picking rows, see `LocalChanges::render_file_section`
+        let picked = (picked > 0).then(|| format!("{picked} picked"));
+        let notes: Vec<String> = (picked.into_iter())
+            .chain(self.query().and_then(TreeQuery::indicator))
             .chain(loading_note(loading))
             .collect();
         let detail_area = panel_area;
@@ -1275,6 +1286,22 @@ impl<'a> DetailView<'a> {
             DetailTab::Info => None,
             DetailTab::Changes => self.changes_state.selected_row(),
             DetailTab::Files => self.files_state.selected_row(),
+        }
+    }
+
+    // Clears the files picked in the tree of the tab; returns whether there were any.
+    fn clear_tree_picks(&mut self) -> bool {
+        match self.tab {
+            DetailTab::Info => false,
+            DetailTab::Changes if self.changes_state.has_selection() => {
+                self.changes_state.cancel_visual();
+                true
+            }
+            DetailTab::Files if self.files_state.has_tree_selection() => {
+                self.files_state.cancel_tree_visual();
+                true
+            }
+            DetailTab::Changes | DetailTab::Files => false,
         }
     }
 
@@ -1415,10 +1442,6 @@ impl<'a> DetailView<'a> {
 
     // Returns whether the event was handled by the files of the changes tab.
     fn handle_changes_event(&mut self, event: UserEvent) -> bool {
-        if event == UserEvent::Cancel && self.changes_state.has_selection() {
-            self.changes_state.cancel_visual();
-            return true;
-        }
         if event == UserEvent::ToggleSelect {
             self.changes_state.toggle_visual();
             return true;
@@ -1503,15 +1526,9 @@ impl<'a> DetailView<'a> {
     fn handle_files_event(&mut self, event: UserEvent) -> bool {
         let state = &mut self.files_state;
         let preview_focused = state.is_preview_focused();
-        if !preview_focused {
-            if event == UserEvent::Cancel && state.has_tree_selection() {
-                state.cancel_tree_visual();
-                return true;
-            }
-            if event == UserEvent::ToggleSelect {
-                state.toggle_tree_visual();
-                return true;
-            }
+        if !preview_focused && event == UserEvent::ToggleSelect {
+            state.toggle_tree_visual();
+            return true;
         }
         match event {
             // into the preview of a file; a directory opens or closes

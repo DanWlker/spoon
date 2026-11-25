@@ -243,6 +243,10 @@ impl<'a> CommitChangesState<'a> {
         !self.picked.is_empty()
     }
 
+    pub fn picked_count(&self) -> usize {
+        self.picked.len()
+    }
+
     pub fn picked_paths(&self) -> Vec<String> {
         self.picked.paths()
     }
@@ -685,6 +689,10 @@ impl<'a> CommitFilesState<'a> {
     // Whether files are selected, while the visual selection or after it ended.
     pub fn has_tree_selection(&self) -> bool {
         !self.picked.is_empty()
+    }
+
+    pub fn picked_count(&self) -> usize {
+        self.picked.len()
     }
 
     pub fn picked_paths(&self) -> Vec<String> {

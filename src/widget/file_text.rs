@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     ops::{Range, RangeInclusive},
     sync::Arc,
 };
@@ -24,8 +23,10 @@ use crate::{
             render_visual_rows, rewrap, wrapped_rows, DiffLayout, Measuring, NearScreen, Step,
             WrapMap, ALL_ROWS,
         },
+        picks::Picks,
         style::{
-            picked_style, render_scrollbar, scroll_to, tabs_shown, ScrollState, VisualSelection,
+            page_rows, picked_style, render_scrollbar, scroll_to, scroll_with_selection,
+            tabs_shown, ScrollState, VisualSelection,
         },
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
     },
@@ -48,8 +49,9 @@ pub struct FileText {
     selected: usize,
     // where a visual selection started, the selected line having moved from there
     visual: VisualSelection,
-    // the lines selected, kept once the visual selection ends until it is cleared
-    selection: BTreeSet<usize>,
+    // the lines selected, kept once the visual selection ends until it is cleared; like the rows
+    // of a list, see `Picks`
+    selection: Picks<usize>,
     // the screen rows the lines wrap to, and the scroll among them
     wrap: WrapMap,
     scroll_state: ScrollState,
@@ -92,8 +94,12 @@ impl FileText {
     // Starts or ends a visual selection at the selected line. Ending it keeps the lines selected,
     // which `cancel_visual` clears.
     pub fn toggle_visual(&mut self) {
-        if self.visual.toggle(self.selected) {
-            self.sync_selection();
+        match self.visual.toggle(self.selected) {
+            true => {
+                self.selection.start_visual();
+                self.sync_selection();
+            }
+            false => self.selection.finish_visual(),
         }
     }
 
@@ -120,7 +126,7 @@ impl FileText {
     // before it started.
     fn sync_selection(&mut self) {
         if let Some(range) = self.visual.range(self.selected, self.lines.len()) {
-            self.selection.extend(range);
+            self.selection.sync_visual(&range.collect::<Vec<_>>());
         }
     }
 
@@ -147,14 +153,9 @@ impl FileText {
     // line staying (it may leave the window); `Ctrl-d/u` and `Ctrl-f/b` move it with the window by
     // the same screen rows, so it keeps its place on screen. Returns whether `event` was one.
     pub fn scroll(&mut self, event: UserEvent) -> bool {
-        let height = self.scroll_state.height as isize;
         let rows = match event {
             UserEvent::ScrollDown => 1,
             UserEvent::ScrollUp => -1,
-            UserEvent::HalfPageDown => height / 2,
-            UserEvent::HalfPageUp => -height / 2,
-            UserEvent::PageDown => height,
-            UserEvent::PageUp => -height,
             // the wheel scrolls the window alone, the selected line staying even off it
             UserEvent::Wheel(rows) => {
                 let last = self
@@ -165,14 +166,16 @@ impl FileText {
                 self.scroll_state.offset = offset.min(last);
                 return true;
             }
-            _ => return false,
+            _ => match page_rows(event, self.scroll_state.height) {
+                Some(rows) => {
+                    self.scroll_cursor(rows);
+                    return true;
+                }
+                None => return false,
+            },
         };
         // ctrl-e and ctrl-y scroll the window alone
-        if matches!(event, UserEvent::ScrollDown | UserEvent::ScrollUp) {
-            self.scroll_view(rows);
-        } else {
-            self.scroll_cursor(rows);
-        }
+        self.scroll_view(rows);
         true
     }
 
@@ -207,20 +210,19 @@ impl FileText {
         self.sync_selection();
     }
 
-    // Scrolls the window `rows` screen rows and moves the selected line as many, like vim's
-    // ctrl-d/u: the line keeps its screen row while the window scrolls; at the end of the file the
-    // window stops and the line keeps going to the last one.
+    // Scrolls the window `rows` screen rows and moves the selected line as many, as a list does,
+    // see `scroll_with_selection`.
     fn scroll_cursor(&mut self, rows: isize) {
-        let last = self.wrap.total().saturating_sub(self.scroll_state.height);
-        self.scroll_state.offset = self
-            .scroll_state
-            .offset
-            .saturating_add_signed(rows)
-            .min(last);
-        let screen = self
-            .wrap
-            .visual_start(self.selected)
-            .saturating_add_signed(rows);
+        let ScrollState {
+            offset,
+            height,
+            scrolloff,
+        } = self.scroll_state;
+        let selected = self.wrap.visual_start(self.selected);
+        let total = self.wrap.total();
+        let (offset, screen) =
+            scroll_with_selection(offset, selected, rows, height, total, scrolloff);
+        self.scroll_state.offset = offset;
         self.selected = self.logical_at(screen);
         self.sync_selection();
     }
@@ -248,7 +250,7 @@ impl FileText {
     // The lines selected, from the first to the last, else the selected line, from 0: what a link
     // to the file points at.
     pub fn selected_lines(&self) -> RangeInclusive<usize> {
-        match (self.selection.first(), self.selection.last()) {
+        match (self.selection.iter().min(), self.selection.iter().max()) {
             (Some(&first), Some(&last)) => first..=last,
             _ => self.selected..=self.selected,
         }
@@ -268,10 +270,11 @@ impl FileText {
         if self.selection.is_empty() {
             return self.lines.get(self.selected).cloned();
         }
-        let lines: Vec<&str> = self
-            .selection
-            .iter()
-            .filter_map(|&line| self.lines.get(line))
+        let mut picked: Vec<usize> = self.selection.iter().copied().collect();
+        picked.sort_unstable();
+        let lines: Vec<&str> = picked
+            .into_iter()
+            .filter_map(|line| self.lines.get(line))
             .map(String::as_str)
             .collect();
         Some(lines.join("\n"))
@@ -285,7 +288,9 @@ impl FileText {
         direction: SearchDirection,
         options: SearchOptions,
     ) -> bool {
+        // the lines picked stay
         self.visual.cancel();
+        self.selection.end_visual();
         let lines = &self.lines;
         let found = find_around(lines.len(), from, direction, |i| {
             match_range(&lines[i], query, options).is_some()
@@ -602,6 +607,49 @@ mod tests {
         text.scroll(UserEvent::HalfPageDown);
         assert_eq!(text.scroll_state.offset, offset + 5);
         assert_eq!(text.selected_line(), line + 5);
+    }
+
+    // ctrl-d from the top keeps the selected line out of the `scrolloff` rows at the top, as a
+    // list does: it used to land on the top row.
+    #[test]
+    fn test_half_page_keeps_the_scrolloff() {
+        let mut ui_config = crate::config::UiConfig::default();
+        ui_config.common.scrolloff = 2;
+        let ctx =
+            crate::test_support::ui::test_ctx_of(crate::color::ColorTheme::default(), ui_config);
+        let area = Rect::new(0, 0, 40, 10);
+        let mut text = FileText::default();
+        text.set_lines((1..=40).map(|i| format!("line {i}")).collect());
+        let mut buf = Buffer::empty(area);
+        text.render(
+            area,
+            Target::DetailPane,
+            &mut buf,
+            &ctx,
+            true,
+            LineCursor::Shown,
+            None,
+        );
+        text.scroll(UserEvent::HalfPageDown);
+        assert_eq!((text.scroll_state.offset, text.selected_line()), (5, 7));
+    }
+
+    // Lines are picked like the rows of a list (`Picks`): moving back unpicks what the visual
+    // selection went over, and v v on a picked line unpicks it. Lines only used to add up.
+    #[test]
+    fn test_lines_picked_like_the_rows_of_a_list() {
+        let mut text = FileText::default();
+        text.set_lines(["a", "b", "c", "d"].map(String::from).to_vec());
+        text.toggle_visual();
+        text.step(Step::Next);
+        text.step(Step::Next);
+        text.step(Step::Prev);
+        assert_eq!(text.selected_text().as_deref(), Some("a\nb"));
+        // ended, then v v on the picked b
+        text.toggle_visual();
+        text.toggle_visual();
+        text.toggle_visual();
+        assert_eq!(text.selected_text().as_deref(), Some("a"));
     }
 
     // v selects from the line it starts on to the selected one, which the movement keys move.

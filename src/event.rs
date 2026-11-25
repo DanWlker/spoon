@@ -132,7 +132,6 @@ pub enum AppEvent {
         cursor_byte_index: usize,
         metadata: String,
     },
-    UpdateStatusTransient(String),
     UpdateSearchResult {
         outcome: SearchOutcome,
         options: String,

@@ -19,9 +19,9 @@ use crate::{
     pointer::OnPicks,
     search::{SearchKind, SearchOutcome},
     view::{
-        apply_selection, commit_event, copy_selection, edit_files, file_link,
+        apply_selection, commit_event, copy_paths, copy_selection, edit_files, file_link,
         query_or_search_status, register_apply_key, register_commit_keys, revision_matches,
-        revision_spans,
+        revision_spans, CopyForm,
     },
     widget::diff_pane::register_diff_keys,
     widget::tree_query::{type_query, typing_keys},
@@ -275,6 +275,12 @@ impl TimelineView {
                         .send(copy_selection(text, self.pane.selected_name()));
                 }
             }
+            // the file as named at the commit, like the details
+            UserEvent::FullCopy => {
+                let revision = &self.history[self.cursor.selected()];
+                let paths = [revision.path.as_str()];
+                self.tx.send(copy_paths(repository, paths, CopyForm::Full));
+            }
             // the file at the commit, at the selected lines
             UserEvent::OpenInBrowser | UserEvent::CopyLink => {
                 let revision = &self.history[self.cursor.selected()];
@@ -392,6 +398,12 @@ impl TimelineView {
             |v| v.pane.is_focused().then_some(&v.pane),
             |v| v.ctx.diff_context.get(),
         );
+        k.add(
+            &[FullCopy],
+            "copy full path",
+            "Copy the absolute path of the file",
+        )
+        .when(diff);
         k.add(
             &[OpenInBrowser],
             "open in browser",

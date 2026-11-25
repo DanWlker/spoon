@@ -425,21 +425,44 @@ impl ScrollState {
     }
 }
 
-// The row ctrl-d or ctrl-u selects in a list of `total` rows shown `height` at a time: half a
-// page from `selected`, the list then scrolling only as moving there one row at a time would
-// (see `scroll_to`); None for other events.
-pub fn half_page_jump(
-    event: UserEvent,
-    selected: usize,
-    height: usize,
-    total: usize,
-) -> Option<usize> {
-    let half = (height / 2).max(1);
+// The rows the page keys scroll a window `height` rows high: a page with ctrl-f and ctrl-b, half
+// of one with ctrl-d and ctrl-u, down or up; None for other events.
+pub fn page_rows(event: UserEvent, height: usize) -> Option<isize> {
+    let page = height.max(1) as isize;
     match event {
-        UserEvent::HalfPageDown => Some((selected + half).min(total.saturating_sub(1))),
-        UserEvent::HalfPageUp => Some(selected.saturating_sub(half)),
+        UserEvent::PageDown => Some(page),
+        UserEvent::PageUp => Some(-page),
+        UserEvent::HalfPageDown => Some((page / 2).max(1)),
+        UserEvent::HalfPageUp => Some(-(page / 2).max(1)),
         _ => None,
     }
+}
+
+// Vim's ctrl-d/u and ctrl-f/b, in lists and in text alike: the window of `height` rows from
+// `offset` scrolls `rows`, and the selection at row `selected` moves as many, keeping its row on
+// screen, out of the `scrolloff` rows at an edge the window can still scroll past. At either end
+// the window stops and the selection goes on, to the first or last of the `total` rows. Returns
+// the first row shown and the row selected.
+pub fn scroll_with_selection(
+    offset: usize,
+    selected: usize,
+    rows: isize,
+    height: usize,
+    total: usize,
+    scrolloff: usize,
+) -> (usize, usize) {
+    let height = height.max(1);
+    let last_offset = total.saturating_sub(height);
+    let offset = offset.saturating_add_signed(rows).min(last_offset);
+    let margin = scrolloff.min((height - 1) / 2);
+    let mut selected = selected.saturating_add_signed(rows);
+    if offset > 0 {
+        selected = selected.max(offset + margin);
+    }
+    if offset < last_offset {
+        selected = selected.min(offset + height - 1 - margin);
+    }
+    (offset, selected.min(total.saturating_sub(1)))
 }
 
 // The first row shown of a list of `total` rows, `height` high, moved as little as can be from
@@ -583,8 +606,8 @@ impl ListCursor {
             .min(total.saturating_sub(self.height));
     }
 
-    // The row the movement keys select in `total` rows: j and k (and J and K), g and G, and ctrl-d
-    // and ctrl-u, see `half_page_jump`; None for other events.
+    // The row the movement keys select in `total` rows: j and k (and J and K), g and G; None for
+    // other events.
     pub fn moved_to(&self, event: UserEvent, total: usize) -> Option<usize> {
         let last = total.checked_sub(1)?;
         match event {
@@ -592,7 +615,7 @@ impl ListCursor {
             UserEvent::NavigateUp | UserEvent::SelectUp => Some(self.selected.saturating_sub(1)),
             UserEvent::GoToTop => Some(0),
             UserEvent::GoToBottom => Some(last),
-            _ => half_page_jump(event, self.selected, self.height, total),
+            _ => None,
         }
     }
 
@@ -603,8 +626,10 @@ impl ListCursor {
             UserEvent::ScrollDown => self.scroll_lines(1, total),
             UserEvent::ScrollUp => self.scroll_lines(-1, total),
             UserEvent::Wheel(rows) => self.wheel(rows, total),
-            UserEvent::PageDown => self.scroll_pages(1, total),
-            UserEvent::PageUp => self.scroll_pages(-1, total),
+            UserEvent::PageDown
+            | UserEvent::PageUp
+            | UserEvent::HalfPageDown
+            | UserEvent::HalfPageUp => self.scroll_pages(event, total),
             _ => {
                 let Some(index) = self.moved_to(event, total) else {
                     return false;
@@ -631,27 +656,22 @@ impl ListCursor {
             .min(total.saturating_sub(1));
     }
 
-    // Scrolls a page at a time with ctrl-f and ctrl-b, the selection moving as much; at either end
-    // of the list the rows stay and the selection goes on to the first or last row.
-    pub fn scroll_pages(&mut self, pages: isize, total: usize) {
-        if self.height == 0 || total == 0 {
+    // Scrolls a page at a time with ctrl-f and ctrl-b, half of one with ctrl-d and ctrl-u, the
+    // selection moving as much, see `scroll_with_selection`.
+    pub fn scroll_pages(&mut self, event: UserEvent, total: usize) {
+        // before the first draw the rows shown are unknown
+        let Some(rows) = page_rows(event, self.height).filter(|_| self.height > 0) else {
             return;
-        }
+        };
         self.shown = Shown::Selection;
-        let rows = pages * self.height as isize;
-        let last_offset = total.saturating_sub(self.height);
-        let offset = self.offset.saturating_add_signed(rows);
-        self.selected = self.selected.saturating_add_signed(rows).min(total - 1);
-        self.offset = offset.min(last_offset);
-        if self.offset != 0 && self.offset != last_offset {
-            self.offset = scroll_to(
-                self.offset,
-                self.row_range(),
-                self.height,
-                total,
-                self.scrolloff,
-            );
-        }
+        (self.offset, self.selected) = scroll_with_selection(
+            self.offset,
+            self.selected,
+            rows,
+            self.height,
+            total,
+            self.scrolloff,
+        );
     }
 
     // Scrolls the rows shown alone, by the wheel: the selection stays, even off them, until it
@@ -809,12 +829,37 @@ mod tests {
         }
     }
 
+    // ctrl-d and ctrl-u scroll a list with its selection, like vim's and like a file's text: the
+    // selection keeps its row on screen, out of the `scrolloff` rows at an edge the list can still
+    // scroll past; at either end the list stops and the selection goes on. Lists used to move the
+    // selection alone.
+    #[test]
+    fn test_half_page_scrolls_with_the_selection_like_vim() {
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 30, 0);
+        cursor.select(3, 30);
+        assert!(cursor.navigate(UserEvent::HalfPageDown, 30));
+        assert_eq!((cursor.offset(), cursor.selected()), (5, 8));
+        assert!(cursor.navigate(UserEvent::HalfPageUp, 30));
+        assert_eq!((cursor.offset(), cursor.selected()), (0, 3));
+        // at the end the list stops, the selection going on to the last row
+        cursor.select(29, 30);
+        assert!(cursor.navigate(UserEvent::HalfPageDown, 30));
+        assert_eq!((cursor.offset(), cursor.selected()), (20, 29));
+
+        // from the top row, out of the scrolloff rows once the list scrolled
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 30, 2);
+        assert!(cursor.navigate(UserEvent::HalfPageDown, 30));
+        assert_eq!((cursor.offset(), cursor.selected()), (5, 7));
+    }
+
     #[test]
     fn test_half_page_moves_the_list() {
         let mut cursor = ListCursor::default();
         cursor.fit(10, 30, 0);
-        // half of the rows shown
-        assert_eq!(cursor.moved_to(UserEvent::HalfPageDown, 30), Some(5));
+        // ctrl-d scrolls the list instead, see `scroll_pages`
+        assert_eq!(cursor.moved_to(UserEvent::HalfPageDown, 30), None);
         // the other movement keys move it a row
         assert_eq!(cursor.moved_to(UserEvent::NavigateDown, 30), Some(1));
     }

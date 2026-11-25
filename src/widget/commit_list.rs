@@ -394,22 +394,10 @@ impl<'a> CommitListState<'a> {
         self.sync_visual_picks();
     }
 
-    pub fn scroll_down_page(&mut self) {
-        self.cursor.scroll_pages(1, self.len());
+    // ctrl-f and ctrl-b, ctrl-d and ctrl-u, see `ListCursor::scroll_pages`.
+    fn scroll_pages(&mut self, event: UserEvent) {
+        self.cursor.scroll_pages(event, self.len());
         self.sync_visual_picks();
-    }
-
-    pub fn scroll_up_page(&mut self) {
-        self.cursor.scroll_pages(-1, self.len());
-        self.sync_visual_picks();
-    }
-
-    // Moves the selection half a page by `event`, see `half_page_jump`.
-    fn jump_half_page(&mut self, event: UserEvent) {
-        if let Some(index) = self.cursor.moved_to(event, self.len()) {
-            self.select_in_view(index);
-            self.sync_visual_picks();
-        }
     }
 
     // Selects the commit at `index`, scrolling only when it isn't in view: the movement keys, the
@@ -700,9 +688,10 @@ impl<'a> CommitListState<'a> {
             UserEvent::GoToBottom => self.select_last(),
             UserEvent::ScrollDown => self.scroll_down(),
             UserEvent::ScrollUp => self.scroll_up(),
-            UserEvent::PageDown => self.scroll_down_page(),
-            UserEvent::PageUp => self.scroll_up_page(),
-            UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.jump_half_page(event),
+            UserEvent::PageDown
+            | UserEvent::PageUp
+            | UserEvent::HalfPageDown
+            | UserEvent::HalfPageUp => self.scroll_pages(event),
             // the selection stays, so its picks do
             UserEvent::Wheel(_) => {
                 self.cursor.navigate(event, self.len());
@@ -710,27 +699,6 @@ impl<'a> CommitListState<'a> {
             _ => return false,
         }
         true
-    }
-
-    pub fn toggle_smart_case(&mut self) {
-        let mut options = self.search_options.get();
-        options.smart_case = !options.smart_case;
-        self.search_options.set(options);
-        self.search_changed();
-    }
-
-    pub fn toggle_fuzzy(&mut self) {
-        let mut options = self.search_options.get();
-        options.fuzzy = !options.fuzzy;
-        self.search_options.set(options);
-        self.search_changed();
-    }
-
-    pub fn toggle_search_target(&mut self) {
-        let mut options = self.search_options.get();
-        options.target = options.target.next();
-        self.search_options.set(options);
-        self.search_changed();
     }
 
     // How the applied search went, None without one.
@@ -1815,20 +1783,21 @@ mod tests {
             state.scrolloff = 2;
             state.reset_height(10);
 
-            state.scroll_down_page();
-            assert_eq!(status(state), (2, 8, 10));
-            state.scroll_down_page();
-            assert_eq!(status(state), (2, 18, 10));
-            state.scroll_down_page();
+            // a page each, the selection out of the 2 rows at the top, like vim's
+            state.scroll_pages(UserEvent::PageDown);
+            assert_eq!(status(state), (2, 10, 10));
+            state.scroll_pages(UserEvent::PageDown);
+            assert_eq!(status(state), (2, 20, 10));
+            state.scroll_pages(UserEvent::PageDown);
             assert_eq!(status(state), (9, 20, 10));
-            state.scroll_down_page();
+            state.scroll_pages(UserEvent::PageDown);
             assert_eq!(status(state), (9, 20, 10));
 
-            state.scroll_up_page();
-            assert_eq!(status(state), (7, 12, 10));
-            state.scroll_up_page();
-            assert_eq!(status(state), (7, 2, 10));
-            state.scroll_up_page();
+            state.scroll_pages(UserEvent::PageUp);
+            assert_eq!(status(state), (7, 10, 10));
+            state.scroll_pages(UserEvent::PageUp);
+            assert_eq!(status(state), (7, 0, 10));
+            state.scroll_pages(UserEvent::PageUp);
             assert_eq!(status(state), (0, 0, 10));
         });
     }
@@ -1841,17 +1810,17 @@ mod tests {
             state.select_in_view(12);
             assert_eq!(status(state), (7, 5, 10));
 
-            // the selection moves down the page, the list stays
-            state.jump_half_page(UserEvent::HalfPageDown);
+            // the list scrolls with the selection, which keeps its row, like vim's
+            state.scroll_pages(UserEvent::HalfPageDown);
             assert_eq!(status(state), (7, 10, 10));
-            // then scrolls, keeping 2 rows under it
-            state.jump_half_page(UserEvent::HalfPageDown);
+            state.scroll_pages(UserEvent::HalfPageDown);
             assert_eq!(status(state), (7, 15, 10));
-            // to the last commit
-            state.jump_half_page(UserEvent::HalfPageDown);
+            // at the end the list stops, the selection going on to the last commit
+            state.scroll_pages(UserEvent::HalfPageDown);
             assert_eq!(status(state), (9, 16, 10));
-            state.jump_half_page(UserEvent::HalfPageUp);
-            assert_eq!(status(state), (4, 16, 10));
+            // back up, out of the 2 rows at the bottom
+            state.scroll_pages(UserEvent::HalfPageUp);
+            assert_eq!(status(state), (7, 11, 10));
         });
     }
 
@@ -1862,9 +1831,9 @@ mod tests {
             state.reset_height(10);
             state.select_in_view(12);
 
-            state.scroll_down_page();
+            state.scroll_pages(UserEvent::PageDown);
             assert_eq!(status(state), (7, 15, 10));
-            state.scroll_down_page();
+            state.scroll_pages(UserEvent::PageDown);
             assert_eq!(status(state), (9, 15, 10));
         });
     }
@@ -1894,9 +1863,9 @@ mod tests {
             state.restore_selected_row(0);
             assert_eq!(status(state), (0, 12, 10));
 
-            state.scroll_down_page();
+            state.scroll_pages(UserEvent::PageDown);
             assert_eq!(status(state), (7, 15, 10));
-            state.scroll_down_page();
+            state.scroll_pages(UserEvent::PageDown);
             assert_eq!(status(state), (9, 15, 10));
         });
     }
@@ -1938,10 +1907,20 @@ mod tests {
     fn test_restore_search_recalculates_matches_with_applied_options() {
         let (context, options) = with_commit_list_state(&["Fix parser", "other"], |state| {
             input_search_query(state, "fx");
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
-            state.toggle_fuzzy();
+            {
+                let mut options = state.search_options.get();
+                options.fuzzy = !options.fuzzy;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             apply_search(state);
@@ -1989,7 +1968,12 @@ mod tests {
     #[test]
     fn test_restore_search_options_without_applied_search() {
         let options = with_commit_list_state(&["FIX"], |state| {
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             state.search_options()
@@ -2036,7 +2020,12 @@ mod tests {
     fn test_search_options_are_reused_for_next_search() {
         with_commit_list_state(&["FIX"], |state| {
             input_search_query(state, "fix");
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             apply_search(state);
@@ -2069,7 +2058,12 @@ mod tests {
         with_commit_list_state(&subjects, |state| {
             for fuzzy in [false, true] {
                 if state.search_options().fuzzy != fuzzy {
-                    state.toggle_fuzzy();
+                    {
+                        let mut options = state.search_options.get();
+                        options.fuzzy = !options.fuzzy;
+                        state.search_options.set(options);
+                        state.search_changed();
+                    }
                     // as a key acting on the matches waits for them
                     state.finish_search();
                 }
@@ -2101,13 +2095,28 @@ mod tests {
     fn test_resume_search_preserves_query_options_matches_and_view_position() {
         with_commit_list_state(&["other", "Fix parser", "FIX graph", "last"], |state| {
             state.reset_height(2);
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
-            state.toggle_fuzzy();
+            {
+                let mut options = state.search_options.get();
+                options.fuzzy = !options.fuzzy;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
-            state.toggle_search_target();
+            {
+                let mut options = state.search_options.get();
+                options.target = options.target.next();
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             input_search_query(state, "fx");
@@ -2224,7 +2233,12 @@ mod tests {
         for fuzzy in [false, true] {
             with_commit_list_state(&["fix", "other"], |state| {
                 if fuzzy {
-                    state.toggle_fuzzy();
+                    {
+                        let mut options = state.search_options.get();
+                        options.fuzzy = !options.fuzzy;
+                        state.search_options.set(options);
+                        state.search_changed();
+                    }
                     // as a key acting on the matches waits for them
                     state.finish_search();
                 }
@@ -2289,7 +2303,12 @@ mod tests {
     #[test]
     fn test_search_options_can_be_changed_before_search() {
         with_commit_list_state(&["FIX"], |state| {
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             input_search_query(state, "fix");
@@ -2305,7 +2324,12 @@ mod tests {
     #[test]
     fn test_search_option_string_after_toggles() {
         with_commit_list_state(&["fix"], |state| {
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             assert_eq!(
@@ -2314,7 +2338,12 @@ mod tests {
                     .status_string(crate::search::SearchKind::Commits),
                 "[all] [smart-case] [substring]"
             );
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             assert_eq!(
@@ -2323,7 +2352,12 @@ mod tests {
                     .status_string(crate::search::SearchKind::Commits),
                 "[all] [case-sensitive] [substring]"
             );
-            state.toggle_fuzzy();
+            {
+                let mut options = state.search_options.get();
+                options.fuzzy = !options.fuzzy;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             assert_eq!(
@@ -2332,7 +2366,12 @@ mod tests {
                     .status_string(crate::search::SearchKind::Commits),
                 "[all] [case-sensitive] [fuzzy]"
             );
-            state.toggle_fuzzy();
+            {
+                let mut options = state.search_options.get();
+                options.fuzzy = !options.fuzzy;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             assert_eq!(
@@ -2341,7 +2380,12 @@ mod tests {
                     .status_string(crate::search::SearchKind::Commits),
                 "[all] [case-sensitive] [substring]"
             );
-            state.toggle_search_target();
+            {
+                let mut options = state.search_options.get();
+                options.target = options.target.next();
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             assert_eq!(
@@ -2446,7 +2490,12 @@ mod tests {
             input_search_query(state, "fix");
             apply_search(state);
 
-            state.toggle_search_target();
+            {
+                let mut options = state.search_options.get();
+                options.target = options.target.next();
+                state.search_options.set(options);
+                state.search_changed();
+            }
 
             // as a key acting on the matches waits for them
 
@@ -2457,7 +2506,12 @@ mod tests {
                 Some(("Match 1 of 1 (query: \"fix\")".into(), true))
             );
 
-            state.toggle_search_target();
+            {
+                let mut options = state.search_options.get();
+                options.target = options.target.next();
+                state.search_options.set(options);
+                state.search_changed();
+            }
 
             // as a key acting on the matches waits for them
 
@@ -2511,7 +2565,12 @@ mod tests {
         with_commit_list_state(&["FIX", "fix"], |state| {
             input_search_query(state, "fix");
             apply_search(state);
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
 
@@ -2526,12 +2585,22 @@ mod tests {
     #[test]
     fn test_applied_search_options_select_next_match() {
         with_commit_list_state(&["FIX", "fix"], |state| {
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             input_search_query(state, "fix");
             apply_search(state);
-            state.toggle_smart_case();
+            {
+                let mut options = state.search_options.get();
+                options.smart_case = !options.smart_case;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
 
@@ -2546,14 +2615,24 @@ mod tests {
     #[test]
     fn test_applied_search_options_keep_selection_when_no_matches() {
         with_commit_list_state(&["fix", "other"], |state| {
-            state.toggle_fuzzy();
+            {
+                let mut options = state.search_options.get();
+                options.fuzzy = !options.fuzzy;
+                state.search_options.set(options);
+                state.search_changed();
+            }
             // as a key acting on the matches waits for them
             state.finish_search();
             input_search_query(state, "fx");
             apply_search(state);
             let selected = state.cursor.selected();
 
-            state.toggle_fuzzy();
+            {
+                let mut options = state.search_options.get();
+                options.fuzzy = !options.fuzzy;
+                state.search_options.set(options);
+                state.search_changed();
+            }
 
             // as a key acting on the matches waits for them
 
