@@ -448,39 +448,44 @@ impl Repository {
 
     // The local branches of `names` whose last commit is neither in HEAD nor on another branch,
     // local or remote, but those of `names`, which are deleted with them: their commits are lost.
+    // Two git commands whatever the number of branches: their tips, then the commits only they
+    // have; a tip among them is lost. All of them when git fails, to warn rather than not.
     pub fn unmerged_branches(&self, names: &[String]) -> Vec<String> {
-        // those merged into HEAD, in one call; the full names, a tag may have the same short one
-        let args = [
-            "for-each-ref",
-            "--merged",
-            "--format=%(refname)",
-            "refs/heads",
-        ];
-        let merged = git_output(&self.path, &args).unwrap_or_default();
-        let merged: FxHashSet<&str> = merged
-            .lines()
-            .filter_map(|r| r.strip_prefix("refs/heads/"))
-            .collect();
-        let deleted: FxHashSet<String> = names.iter().map(|n| format!("refs/heads/{n}")).collect();
-        let on_other_branch = |branch: &str| {
-            let contains = format!("--contains=refs/heads/{branch}");
-            let args = [
-                "for-each-ref",
-                &contains,
-                "--format=%(refname)",
-                "refs/heads",
-                "refs/remotes",
-            ];
-            git_output(&self.path, &args)
-                .unwrap_or_default()
-                .lines()
-                .any(|r| !deleted.contains(r))
+        if names.is_empty() {
+            return vec![];
+        }
+        // the full names, a tag may have the same short one
+        let full: Vec<String> = names.iter().map(|n| format!("refs/heads/{n}")).collect();
+        let mut args = vec!["rev-parse".to_string()];
+        args.extend(full.iter().cloned());
+        let tips = self.git_lines(&args);
+        let mut args = vec!["rev-list".to_string()];
+        args.extend(full);
+        args.push("--not".into());
+        // an unborn HEAD has no commits to keep
+        if !matches!(self.head, Head::Unborn { .. } | Head::None) {
+            args.push("HEAD".into());
+        }
+        // the other branches; a ref name can't hold a glob character, see git-check-ref-format
+        args.extend(names.iter().map(|n| format!("--exclude={n}")));
+        args.extend(["--branches".into(), "--remotes".into(), "--".into()]);
+        let (Some(tips), Some(only)) = (tips, self.git_lines(&args)) else {
+            return names.to_vec();
         };
+        let only: FxHashSet<&str> = only.iter().map(String::as_str).collect();
         names
             .iter()
-            .filter(|name| !merged.contains(name.as_str()) && !on_other_branch(name))
-            .cloned()
+            .zip(&tips)
+            .filter(|(_, tip)| only.contains(tip.as_str()))
+            .map(|(name, _)| name.clone())
             .collect()
+    }
+
+    // The lines git prints for `args`; None when it fails.
+    fn git_lines(&self, args: &[String]) -> Option<Vec<String>> {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = git_output(&self.path, &args).ok()?;
+        Some(out.lines().map(String::from).collect())
     }
 
     // The commit a revision like "HEAD~2" names.
@@ -744,6 +749,13 @@ mod tests {
         // deleted together, the other branches having them go too
         let all = ["ahead", "copy", "pushed"];
         assert_eq!(unmerged(&all), all);
+
+        // at a detached HEAD, which has its commits: `--merged` took the format for its commit,
+        // so failed, and no branch was ever merged into HEAD
+        git_output(path, &["checkout", "-q", "--detach"]).unwrap();
+        git.commit("fifth", "2024-01-05");
+        git_output(path, &["branch", "topic"]).unwrap();
+        assert_eq!(unmerged(&["topic"]), Vec::<String>::new());
     }
 
     #[test]

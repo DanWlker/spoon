@@ -619,19 +619,24 @@ pub(super) fn run_logged(
 // The output of `child`, None when `stop` says so before it is done: it is stopped then. Polled
 // as it runs, more often at first, so a quick command is back at once; `stop` is asked meanwhile.
 // It is signalled before it is waited for, never once its process ID is free for another.
+// Reads `pipe` to its end on another thread: a command filling a pipe waits for it to be read,
+// which reading only its other pipe would never do.
+pub(super) fn read_pipe(
+    pipe: Option<impl Read + Send + 'static>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = vec![];
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
 fn wait_or_stop(mut child: Child, stop: impl Fn() -> bool) -> std::io::Result<Option<Output>> {
-    // read meanwhile, a command filling a pipe would wait for it to be read
-    fn read(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
-        std::thread::spawn(move || {
-            let mut buf = vec![];
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut buf);
-            }
-            buf
-        })
-    }
-    let stdout = read(child.stdout.take());
-    let stderr = read(child.stderr.take());
+    // read meanwhile, see `read_pipe`
+    let stdout = read_pipe(child.stdout.take());
+    let stderr = read_pipe(child.stderr.take());
     let mut pause = Duration::from_millis(1);
     let status = loop {
         if let Some(status) = child.try_wait()? {

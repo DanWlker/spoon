@@ -362,6 +362,9 @@ fn load_all_commits(
         .map_err(|e| format!("failed to run git log: {e}"))?;
 
     let stdout = process.stdout.take().expect("failed to open stdout");
+    // read meanwhile: git waits once the pipe is full, like with a trace of every ref
+    // (GIT_TRACE_REFS) of a big repository, while the commits wait to be read
+    let stderr = super::task::read_pipe(process.stderr.take());
 
     let reader = BufReader::new(stdout);
 
@@ -384,12 +387,12 @@ fn load_all_commits(
         }
     }
 
-    // the errors are read once the commits are, they are only a few lines
-    let output = process
-        .wait_with_output()
+    let status = process
+        .wait()
         .map_err(|e| format!("failed to run git log: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
+        let stderr = stderr.join().unwrap_or_default();
+        let stderr = String::from_utf8_lossy(&stderr);
         let error = stderr.lines().rfind(|l| !l.is_empty()).unwrap_or_default();
         return Err(format!("git log failed: {error}"));
     }

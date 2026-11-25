@@ -1,6 +1,8 @@
 // The commands of the refs sidebar: creating, deleting and editing branches and tags, applying
 // and dropping stashes. Each opens a popup confirming it.
 
+use rustc_hash::FxHashMap;
+
 use crate::{
     git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Repository, Stash},
     keybind::{Scope, UserEvent},
@@ -193,13 +195,19 @@ fn delete_refs(
                 .collect();
             upstreams.sort();
             upstreams.dedup();
-            let branches = names
+            // the tips of the branches, looked up once for all of them
+            let tips: FxHashMap<&str, &CommitHash> = repository
+                .all_refs()
                 .into_iter()
+                .filter_map(|r| match r {
+                    Ref::Branch { name, target } => Some((name.as_str(), target)),
+                    _ => None,
+                })
+                .collect();
+            let branches = names
+                .iter()
                 .map(|name| {
-                    let tip = repository.all_refs().into_iter().find_map(|r| match r {
-                        Ref::Branch { name: n, target } if *n == name => Some(target.clone()),
-                        _ => None,
-                    });
+                    let tip = tips.get(name.as_str()).map(|&tip| tip.clone());
                     tip.map(|tip| (name.clone(), tip))
                         .ok_or_else(|| format!("{name} is gone, reload to see the branches"))
                 })

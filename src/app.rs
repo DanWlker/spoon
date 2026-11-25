@@ -183,8 +183,8 @@ struct AppStatus {
     kept: VecDeque<Kept>,
     view_area: Rect,
     pending_clear: PendingClear,
-    // where the graph images were drawn in the last frame, see `App::draw`
-    images: Vec<(u16, u16, u16)>,
+    // the graph images of the last frame, see `App::draw`
+    images: crate::protocol::DrawnImages,
 }
 
 // A key kept while what it acts on loads in the background, rather than waiting for it with the
@@ -1148,12 +1148,12 @@ impl App<'_> {
             }
         }
         self.flush_pending_graph_uploads()?;
-        let images = self.shell.app_status.images.clone();
+        let images = std::mem::take(&mut self.shell.app_status.images);
         terminal.draw(|f| self.render(f, &keys))?;
-        // a graph image covered by something drawn over it, like a popup or the help, or no longer
-        // covered: the terminal would keep showing what isn't drawn again, so the frame is drawn
-        // again on a cleared screen
-        if clear != PendingClear::Screen && self.shell.app_status.images != images {
+        // a graph image covered, like by a popup or the help, uncovered or gone: the terminal would
+        // keep showing what isn't drawn again, so the frame is drawn again on a cleared screen
+        let now = &self.shell.app_status.images;
+        if clear != PendingClear::Screen && self.ctx.image_protocol.needs_redraw(&images, now) {
             self.ctx.image_protocol.clear();
             repaint_fullscreen(terminal);
             terminal.draw(|f| self.render(f, &keys))?;

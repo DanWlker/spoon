@@ -9,6 +9,7 @@ use ratatui::{
     buffer::{Buffer, CellDiffOption},
     style::{Color, Style},
 };
+use rustc_hash::FxHashSet;
 
 // By default assume the Iterm2 is the best protocol to use for all terminals *unless* an env
 // variable is set that suggests the terminal is probably Kitty.
@@ -545,10 +546,10 @@ fn png_width(bytes: &[u8]) -> u32 {
 // escape sequence in its first cell drawing over the cells after it, which the terminal would
 // draw on top of whatever covers them. A kitty image is cut to the columns before what covers it,
 // its erase with it, an iTerm2 one, which can't be cut, is left out. The images of kitty's unicode
-// placeholders are in each cell, so what covers them replaces them already. Returns where the
-// images are drawn: their first cells, and their widths once cropped.
-pub fn crop_covered_images(buf: &mut Buffer) -> Vec<(u16, u16, u16)> {
-    let mut images = Vec::new();
+// placeholders are in each cell, so what covers them replaces them already. Returns the images
+// drawn and those covered, see `DrawnImages`.
+pub fn crop_covered_images(buf: &mut Buffer) -> DrawnImages {
+    let mut images = DrawnImages::default();
     let area = *buf.area();
     for y in area.top()..area.bottom() {
         let mut x = area.left();
@@ -561,19 +562,53 @@ pub fn crop_covered_images(buf: &mut Buffer) -> Vec<(u16, u16, u16)> {
             // the covered cells are no longer skipped, like the image's own
             let covered = (x + 1..end).find(|&c| buf[(c, y)].diff_option != CellDiffOption::Skip);
             match covered {
-                None => images.push((x, y, end - x)),
+                None => images.shown.push((x, y, end - x)),
                 Some(covered) => match kitty_crop(buf[(x, y)].symbol(), covered - x) {
                     Some(symbol) => {
                         buf[(x, y)].set_symbol(&symbol);
-                        images.push((x, y, covered - x));
+                        images.shown.push((x, y, covered - x));
+                        images.covered.push((x, y, covered - x));
                     }
-                    None => (x..covered).for_each(|c| buf[(c, y)].reset()),
+                    None => {
+                        (x..covered).for_each(|c| buf[(c, y)].reset());
+                        images.covered.push((x, y, 0));
+                    }
                 },
             }
             x = end.max(x + 1);
         }
     }
     images
+}
+
+// The graph images of a frame, see `crop_covered_images`: where each is drawn, its first cell and
+// its width once cropped; and those covered, cropped or left out (width 0).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DrawnImages {
+    pub shown: Vec<(u16, u16, u16)>,
+    pub covered: Vec<(u16, u16, u16)>,
+}
+
+impl ImageProtocol {
+    // Whether the frame drawn with `now` after `before` must be drawn again on a cleared screen,
+    // as the terminal would keep showing an image that isn't drawn again: one covered or no
+    // longer covered, like by a popup, or one gone from where it was, like under a border moved
+    // there. Kitty replaces the image of a row drawn where one was, of any width, as the rows
+    // scroll (checked in kitty); an iTerm2 image, unchecked, is drawn again whenever one changes.
+    pub fn needs_redraw(&self, before: &DrawnImages, now: &DrawnImages) -> bool {
+        match self {
+            ImageProtocol::Kitty => {
+                let starts: FxHashSet<(u16, u16)> =
+                    now.shown.iter().map(|&(x, y, _)| (x, y)).collect();
+                before.covered != now.covered
+                    || before
+                        .shown
+                        .iter()
+                        .any(|&(x, y, _)| !starts.contains(&(x, y)))
+            }
+            ImageProtocol::Iterm2 | ImageProtocol::KittyUnicode(_) => before != now,
+        }
+    }
 }
 
 // The width in cells of the image a kitty or iTerm2 escape sequence displays, from the erase in
@@ -736,8 +771,8 @@ mod tests {
     }
 
     // A row image 10 cells wide at the left of a buffer of 20; `cover` cells from x=6 drawn over it.
-    // The buffer, and where the images are drawn.
-    fn covered(protocol: ImageProtocol, cover: bool) -> (Buffer, Vec<(u16, u16, u16)>) {
+    // The buffer, and the images drawn.
+    fn covered(protocol: ImageProtocol, cover: bool) -> (Buffer, DrawnImages) {
         // a PNG header, its width (40 pixels) where a PNG has it
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
         png.extend(40u32.to_be_bytes());
@@ -760,6 +795,25 @@ mod tests {
         (buf, images)
     }
 
+    // Kitty draws a row's image over the one there, so images scrolling, of other widths, need no
+    // redraw; one gone, or covered, does. Every frame of a scroll was drawn twice.
+    #[test]
+    fn test_redraw_only_for_images_gone_or_covered() {
+        let images = |shown: &[(u16, u16, u16)], covered: &[(u16, u16, u16)]| DrawnImages {
+            shown: shown.to_vec(),
+            covered: covered.to_vec(),
+        };
+        let before = images(&[(0, 0, 2), (0, 1, 4)], &[]);
+        let kitty = ImageProtocol::Kitty;
+        assert!(!kitty.needs_redraw(&before, &images(&[(0, 0, 4), (0, 1, 2)], &[])));
+        assert!(kitty.needs_redraw(&before, &images(&[(0, 0, 4)], &[])));
+        assert!(kitty.needs_redraw(&before, &images(&[(0, 0, 2), (0, 1, 1)], &[(0, 1, 1)])));
+        // an iTerm2 image, unchecked, on any change
+        let iterm2 = ImageProtocol::Iterm2;
+        assert!(iterm2.needs_redraw(&before, &images(&[(0, 0, 4), (0, 1, 2)], &[])));
+        assert!(!iterm2.needs_redraw(&before, &before));
+    }
+
     #[test]
     fn test_crop_covered_images() {
         // the kitty image shows its first 6 cells, of the pixels in them
@@ -772,23 +826,26 @@ mod tests {
             "{symbol}"
         );
         assert_eq!(buf[(6, 0)].symbol(), "│");
-        assert_eq!(images, [(0, 0, 6)]);
+        assert_eq!(
+            (images.shown, images.covered),
+            (vec![(0, 0, 6)], vec![(0, 0, 6)])
+        );
 
         // uncovered, it stays whole, erasing its 10 cells
         let (buf, images) = covered(ImageProtocol::Kitty, false);
         let symbol = buf[(0, 0)].symbol();
         assert!(symbol.starts_with("\x1b[10X\x1b_G"), "{symbol:?}");
         assert!(symbol.contains(&kitty_display_control(10, 1, 40)));
-        assert_eq!(images, [(0, 0, 10)]);
+        assert_eq!((images.shown, images.covered), (vec![(0, 0, 10)], vec![]));
 
         // an iTerm2 image can't be cut, it is left out
         let (buf, images) = covered(ImageProtocol::Iterm2, true);
         assert_eq!(buf[(0, 0)].symbol(), " ");
         assert_eq!(buf[(5, 0)].diff_option, CellDiffOption::None);
-        assert!(images.is_empty());
+        assert_eq!((images.shown, images.covered), (vec![], vec![(0, 0, 0)]));
         let (buf, images) = covered(ImageProtocol::Iterm2, false);
         assert!(buf[(0, 0)].symbol().starts_with("\x1b[10X\x1b]1337;File="));
-        assert_eq!(images, [(0, 0, 10)]);
+        assert_eq!((images.shown, images.covered), (vec![(0, 0, 10)], vec![]));
 
         // what is written is read back, wide images too
         let symbol = format!(
