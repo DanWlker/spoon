@@ -1212,6 +1212,8 @@ impl GitDialog {
     fn pull_command(&self, info: &RemoteInfo, fields: &PullFields) -> Result<GitTask, String> {
         let remote = self.pick_value(fields.remote);
         let branch = self.pick_value(fields.branch);
+        // in full: a tag of the same name on the remote would be pulled instead
+        let branch_ref = format!("refs/heads/{branch}");
         let args = [
             // explicit, so the checkbox wins over pull.rebase
             if self.checked(fields.rebase) {
@@ -1226,7 +1228,7 @@ impl GitDialog {
                 "--no-autostash"
             },
             &remote,
-            &branch,
+            &branch_ref,
         ];
         Ok(GitTask {
             // pulling merges into the checked-out branch
@@ -1268,7 +1270,8 @@ impl GitDialog {
         }
         args.extend([
             remote.clone(),
-            format!("refs/heads/{branch}:{remote_branch}"),
+            // in full: a tag of the same name on the remote would be pushed onto
+            format!("refs/heads/{branch}:refs/heads/{remote_branch}"),
         ]);
         let pushing = if force { "Force pushing" } else { "Pushing" };
         Ok(GitTask {
@@ -1815,7 +1818,8 @@ impl GitDialog {
         if new_upstream != *upstream {
             let upstream_arg = match new_upstream {
                 None => "--unset-upstream".to_string(),
-                Some(new_upstream) => format!("--set-upstream-to={new_upstream}"),
+                // in full: a local branch named like the remote branch would be ambiguous
+                Some(new_upstream) => format!("--set-upstream-to=refs/remotes/{new_upstream}"),
             };
             commands.push(GitCommand::Branch.args([upstream_arg, new_name.clone()]));
         }
@@ -4160,7 +4164,7 @@ mod tests {
         typed(&mut dialog, "my branch");
         assert_eq!(
             args(&dialog),
-            "push --set-upstream origin refs/heads/topic:my-branch"
+            "push --set-upstream origin refs/heads/topic:refs/heads/my-branch"
         );
 
         // other text keeps its spaces, like the message of a tag
@@ -4196,7 +4200,10 @@ mod tests {
         press(&mut dialog, UserEvent::NavigateDown);
         assert!(!dialog.can_edit());
         press(&mut dialog, UserEvent::NavigateRight);
-        assert_eq!(args(&dialog), "branch --set-upstream-to=origin/main topic");
+        assert_eq!(
+            args(&dialog),
+            "branch --set-upstream-to=refs/remotes/origin/main topic"
+        );
         // renamed, an upstream gone from the remote stays, not unset
         let remote_branches = vec!["origin/main".to_string()];
         let gone = Some("origin/gone".to_string());
@@ -4270,22 +4277,34 @@ mod tests {
             ..info()
         };
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info).unwrap();
-        assert_eq!(args(&dialog), "pull --rebase --autostash origin main");
+        assert_eq!(
+            args(&dialog),
+            "pull --rebase --autostash origin refs/heads/main"
+        );
 
         // merging follows merge.autoStash, which is not set
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --no-autostash origin refs/heads/main"
+        );
 
         // once changed, the choice stays
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateUp);
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --rebase --autostash origin main");
+        assert_eq!(
+            args(&dialog),
+            "pull --rebase --autostash origin refs/heads/main"
+        );
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --no-rebase --autostash origin main");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --autostash origin refs/heads/main"
+        );
     }
 
     #[test]
@@ -4373,21 +4392,33 @@ mod tests {
         // a checkbox; else it types, like e
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --rebase --no-autostash fork topic");
+        assert_eq!(
+            args(&dialog),
+            "pull --rebase --no-autostash fork refs/heads/topic"
+        );
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash fork topic");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --no-autostash fork refs/heads/topic"
+        );
         press(&mut dialog, UserEvent::NavigateUp);
         press(&mut dialog, UserEvent::NavigateUp);
         press(&mut dialog, UserEvent::NavigateLeft);
         press(&mut dialog, UserEvent::NavigateDown);
         // origin has two branches to go through
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin dev");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --no-autostash origin refs/heads/dev"
+        );
         assert!(!dialog.editing);
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --no-rebase --no-autostash origin main");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --no-autostash origin refs/heads/main"
+        );
         // a branch to pull is chosen, not typed
         press(&mut dialog, UserEvent::DialogEdit);
         assert!(!dialog.editing);
@@ -4407,21 +4438,33 @@ mod tests {
     fn test_pull_options() {
         let mut dialog = GitDialog::remote(RemoteAction::Pull, info()).unwrap();
         // pull.rebase is set
-        assert_eq!(args(&dialog), "pull --rebase --no-autostash origin main");
+        assert_eq!(
+            args(&dialog),
+            "pull --rebase --no-autostash origin refs/heads/main"
+        );
 
         // the branch follows the remote
         press(&mut dialog, UserEvent::NavigateLeft);
-        assert_eq!(args(&dialog), "pull --rebase --no-autostash fork topic");
+        assert_eq!(
+            args(&dialog),
+            "pull --rebase --no-autostash fork refs/heads/topic"
+        );
         press(&mut dialog, UserEvent::NavigateRight);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::NavigateRight);
-        assert_eq!(args(&dialog), "pull --rebase --no-autostash origin dev");
+        assert_eq!(
+            args(&dialog),
+            "pull --rebase --no-autostash origin refs/heads/dev"
+        );
 
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Select);
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Select);
-        assert_eq!(args(&dialog), "pull --no-rebase --autostash origin dev");
+        assert_eq!(
+            args(&dialog),
+            "pull --no-rebase --autostash origin refs/heads/dev"
+        );
 
         let outcome = press(&mut dialog, UserEvent::Confirm);
         assert_eq!(run(outcome).running, "Pulling origin/dev");
@@ -4430,13 +4473,13 @@ mod tests {
     #[test]
     fn test_push_options() {
         let mut dialog = GitDialog::remote(RemoteAction::Push, info()).unwrap();
-        assert_eq!(args(&dialog), "push origin refs/heads/main:main");
+        assert_eq!(args(&dialog), "push origin refs/heads/main:refs/heads/main");
 
         // a branch without an upstream is pushed under its own name, and tracks it
         press(&mut dialog, UserEvent::NavigateRight);
         assert_eq!(
             args(&dialog),
-            "push --set-upstream origin refs/heads/topic:topic"
+            "push --set-upstream origin refs/heads/topic:refs/heads/topic"
         );
 
         // type another name for the remote branch
@@ -4454,7 +4497,7 @@ mod tests {
         press(&mut dialog, UserEvent::Select);
         assert_eq!(
             args(&dialog),
-            "push --force-with-lease --tags --set-upstream origin refs/heads/topic:topic2"
+            "push --force-with-lease --tags --set-upstream origin refs/heads/topic:refs/heads/topic2"
         );
         press(&mut dialog, UserEvent::NavigateDown);
         press(&mut dialog, UserEvent::Select);
@@ -4766,6 +4809,102 @@ mod tests {
         git(path, &["commit", "-q", "--amend", "-m", "c4 once more"]);
         assert!(force_push().is_err());
         assert_eq!(remote_head(), theirs);
+    }
+
+    // Pull, push and the upstream name the branch in full: by its short name, git took a tag of
+    // the same name on the remote (pulling the tag, pushing onto it), or a local branch named like
+    // the remote branch as the upstream.
+    #[test]
+    fn test_branch_named_in_full_beside_a_tag_of_its_name() {
+        let dir = test_repo();
+        let path = dir.path();
+        let root = tempfile::tempdir().unwrap();
+        let remote = root.path().join("remote.git");
+        let remote_arg = remote.to_str().unwrap();
+        git(
+            root.path(),
+            &["init", "-q", "--bare", "-b", "main", remote_arg],
+        );
+        git(path, &["remote", "add", "origin", remote_arg]);
+        git(path, &["push", "-q", "-u", "origin", "main"]);
+        let load = || {
+            crate::git::Repository::load(path, crate::git::SortCommit::Chronological, None, false)
+                .unwrap()
+        };
+        let rev = |dir: &std::path::Path, r: &str| git(dir, &["rev-parse", r]).trim().to_string();
+
+        // pull: branch v2 one commit ahead on the remote, a tag v2 on the commit before
+        git(
+            path,
+            &[
+                "push",
+                "-q",
+                "origin",
+                "HEAD~1:refs/heads/v2",
+                "HEAD~1:refs/tags/v2",
+            ],
+        );
+        git(path, &["fetch", "-q", "origin"]);
+        git(
+            path,
+            &["checkout", "-q", "-b", "v2", "--track", "origin/v2"],
+        );
+        let other = root.path().join("other");
+        git(
+            root.path(),
+            &[
+                "clone",
+                "-q",
+                "-b",
+                "v2",
+                remote_arg,
+                other.to_str().unwrap(),
+            ],
+        );
+        git(
+            &other,
+            &[
+                "-c",
+                "user.name=o",
+                "-c",
+                "user.email=o@o",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "theirs",
+            ],
+        );
+        git(
+            &other,
+            &["push", "-q", "origin", "refs/heads/v2:refs/heads/v2"],
+        );
+        let dialog = GitDialog::remote(RemoteAction::Pull, load().remote_info()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
+        assert_eq!(rev(path, "HEAD"), rev(&remote, "refs/heads/v2"));
+        // the remote branch moved along, as by its short name
+        assert_eq!(rev(path, "refs/remotes/origin/v2"), rev(path, "HEAD"));
+
+        // push: the remote has a tag rel only, the branch rel is created beside it
+        git(path, &["push", "-q", "origin", "main:refs/tags/rel"]);
+        git(path, &["checkout", "-q", "-b", "rel", "main"]);
+        git(path, &["commit", "-q", "--allow-empty", "-m", "rel"]);
+        let dialog = GitDialog::remote(RemoteAction::Push, load().remote_info()).unwrap();
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
+        assert_eq!(rev(&remote, "refs/heads/rel"), rev(path, "rel"));
+
+        // the upstream: a local branch named origin/main beside the remote branch
+        git(path, &["branch", "origin/main"]);
+        let mut dialog = GitDialog::edit_branch("v2", None, vec!["origin/main".into()]);
+        dialog.handle_key(None, key(KeyCode::Esc));
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::NavigateRight);
+        crate::git::run_task(path, &dialog.command().unwrap().unwrap()).unwrap();
+        assert_eq!(git(path, &["config", "branch.v2.remote"]).trim(), "origin");
+        assert_eq!(
+            git(path, &["config", "branch.v2.merge"]).trim(),
+            "refs/heads/main"
+        );
     }
 
     // Dropping a stash checks it is still the one the popup named: a stash pushed meanwhile, from
