@@ -1268,11 +1268,13 @@ impl GitDialog {
         if !info.upstreams.contains_key(&branch) {
             args.push("--set-upstream".into());
         }
-        args.extend([
-            remote.clone(),
-            // in full: a tag of the same name on the remote would be pushed onto
-            format!("refs/heads/{branch}:refs/heads/{remote_branch}"),
-        ]);
+        // a full name typed is taken as it is, as git takes it; a short one is a branch, in full,
+        // where git would push onto a tag of that name on the remote
+        let target = match remote_branch.starts_with("refs/") {
+            true => remote_branch.clone(),
+            false => format!("refs/heads/{remote_branch}"),
+        };
+        args.extend([remote.clone(), format!("refs/heads/{branch}:{target}")]);
         let pushing = if force { "Force pushing" } else { "Pushing" };
         Ok(GitTask {
             commands: vec![GitCommand::Push.args(args)],
@@ -4468,6 +4470,28 @@ mod tests {
 
         let outcome = press(&mut dialog, UserEvent::Confirm);
         assert_eq!(run(outcome).running, "Pulling origin/dev");
+    }
+
+    // A full name typed as the branch to push to is taken as it is, as git takes it; a short one
+    // is a branch. The full one used to get refs/heads/ before it again.
+    #[test]
+    fn test_push_to_a_full_name_typed() {
+        let mut dialog = GitDialog::remote(RemoteAction::Push, info()).unwrap();
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::DialogEdit);
+        dialog.handle_key(None, key(KeyCode::End));
+        for _ in 0.."main".len() {
+            dialog.handle_key(None, key(KeyCode::Backspace));
+        }
+        for c in "refs/heads/release".chars() {
+            dialog.handle_key(None, key(KeyCode::Char(c)));
+        }
+        dialog.handle_key(None, key(KeyCode::Enter));
+        assert_eq!(
+            args(&dialog),
+            "push origin refs/heads/main:refs/heads/release"
+        );
     }
 
     #[test]
