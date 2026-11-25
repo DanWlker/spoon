@@ -52,6 +52,12 @@ pub fn ref_command_applies(
         | UserEvent::DropCommit
         | UserEvent::Revert
         | UserEvent::Reset => false,
+        // the selected row's link, with refs picked too, see `App::handle_sidebar_event`
+        UserEvent::OpenInBrowser | UserEvent::CopyLink => match selection {
+            RefSelection::Ref(_) => true,
+            RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
+            _ => false,
+        },
         // the others work on the selected row alone
         _ if !picked.is_empty() => {
             !(graph
@@ -68,12 +74,7 @@ pub fn ref_command_applies(
         },
         // applying a stash; checking the others out is the graph's, see `register_graph_commands`
         UserEvent::Select => matches!(selection, RefSelection::Stash(_)),
-        UserEvent::OpenInBrowser | UserEvent::CopyLink => match selection {
-            RefSelection::Ref(_) => true,
-            RefSelection::Folder(Remotes, name) => repository.remotes().contains(name),
-            _ => false,
-        },
-        _ if graph => on_ref || (detached && event != UserEvent::Diff),
+        _ if graph => on_ref || detached,
         _ => true,
     }
 }
@@ -390,6 +391,27 @@ mod tests {
             git(path, &["remote", "-v"]).lines().next().unwrap(),
             "origin2\thttps://a.example/r.gitx (fetch)"
         );
+    }
+
+    // o and y l open the selected row alone, so with refs picked they apply on a ref as without:
+    // they applied on every row, a header too, doing nothing there.
+    #[test]
+    fn test_links_with_refs_picked_only_on_a_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.name", "t"]);
+        git(path, &["config", "user.email", "t@t"]);
+        git(path, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        git(path, &["branch", "b"]);
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let picked = RefPicks::new(RefSection::Branches, vec!["main".into(), "b".into()]);
+        let header = RefSelection::Section(RefSection::Tags);
+        let branch = RefSelection::Ref(NamedRef::Branch("b".into()));
+        for event in [UserEvent::OpenInBrowser, UserEvent::CopyLink] {
+            assert!(!ref_command_applies(&repository, event, &header, &picked));
+            assert!(ref_command_applies(&repository, event, &branch, &picked));
+        }
     }
 
     // y copies the picked refs' names, as it does, so it applies with the cursor off a ref too:

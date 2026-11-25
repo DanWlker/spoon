@@ -109,7 +109,7 @@ Config files are loaded in the following order of priority:
 - `$SPOON_CONFIG_FILE`
   - If `$SPOON_CONFIG_FILE` is set but the file does not exist, an error occurs.
 - `$XDG_CONFIG_HOME/spoon/config.toml`
-  - If `$XDG_CONFIG_HOME` is not set, `~/.config/` is used instead.
+  - If `$XDG_CONFIG_HOME` is not set, empty or a relative path, `~/.config/` is used instead.
 
 Unset items use their defaults. For the format, see [Config File Format](./docs/src/configurations/config-file-format.md).
 

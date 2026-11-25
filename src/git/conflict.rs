@@ -171,7 +171,7 @@ pub fn conflict_side(
     match mode.as_str() {
         // its short hash and subject, from the submodule when it is checked out
         "160000" => {
-            let submodule = repository.join(path);
+            let submodule = work_path(repository, path);
             let summary = submodule
                 .join(".git")
                 .exists()

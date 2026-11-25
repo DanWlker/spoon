@@ -1220,7 +1220,8 @@ impl CommitTab {
         } else {
             "No matches"
         };
-        let tree_focused = !state.pane.is_focused();
+        // the panel's focus on the tree, not on the diff beside it
+        let tree_focused = self.focused && !state.pane.is_focused();
         let cursor = if tree_focused {
             TreeCursor::Bright
         } else {
@@ -1270,7 +1271,7 @@ impl CommitTab {
 
         if let Some(tree) = state.tree.loaded() {
             // a commit always has files, they can only be filtered out
-            let focused = !state.is_preview_focused();
+            let focused = self.focused && !state.is_preview_focused();
             let cursor = if focused {
                 TreeCursor::Bright
             } else {
@@ -1405,6 +1406,51 @@ mod tests {
         test_support::git::{git, GitRepository},
         test_support::ui::test_ctx,
     };
+
+    // The trees of the changes and files tabs kept their bar bright with the focus elsewhere,
+    // unlike every list.
+    #[test]
+    fn test_tree_bars_dim_without_the_focus() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        fs::write(path.join("a.txt"), "a\n").unwrap();
+        git.add(&["a.txt"]);
+        git.commit("first", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let commit = repository.all_commits()[0].clone();
+        let theme = test_ctx().color_theme.clone();
+        let bar = |buf: &Buffer| {
+            let area = buf.area;
+            (0..area.height)
+                .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+                .find(|&xy| buf[xy].symbol() == "▌")
+                .map(|xy| buf[xy].fg)
+        };
+        for focused in [true, false] {
+            let expected = Some(match focused {
+                true => theme.highlight_fg,
+                false => theme.muted_fg,
+            });
+            let area = Rect::new(0, 0, 80, 8);
+            let mut changes = CommitChangesState::new(
+                &repository,
+                test_ctx(),
+                commit.commit_hash.clone(),
+                TreeView::Tree,
+            );
+            changes.ensure_loaded();
+            let mut buf = Buffer::empty(area);
+            CommitTab::new(test_ctx(), None, focused).render_changes(area, &mut buf, &mut changes);
+            assert_eq!(bar(&buf), expected, "changes, focused {focused}");
+            let mut files = CommitFilesState::new(&repository, &commit, TreeView::Tree);
+            files.ensure_loaded();
+            let mut buf = Buffer::empty(area);
+            CommitTab::new(test_ctx(), None, focused).render_files(area, &mut buf, &mut files);
+            assert_eq!(bar(&buf), expected, "files, focused {focused}");
+        }
+    }
 
     // A superproject with `sub` added, and a commit bumping its gitlink from the first commit to
     // the second inside it; the two gitlinks are returned.

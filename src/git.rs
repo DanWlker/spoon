@@ -357,12 +357,9 @@ impl Repository {
     }
 
     fn walk_head_history(&self) -> FxHashSet<CommitHash> {
+        // the commit checked out, as `head_commit` takes it
         let tip = match &self.head {
-            Head::Branch { name, .. } => self.ref_map.values().flatten().find_map(|r| match r {
-                Ref::Branch { name: n, target } if n == name => Some(target),
-                _ => None,
-            }),
-            Head::Detached { target } => Some(target),
+            Head::Branch { target, .. } | Head::Detached { target } => Some(target),
             Head::Unborn { .. } | Head::None => None,
         };
         let mut history = FxHashSet::default();

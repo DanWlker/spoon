@@ -248,8 +248,9 @@ pub fn ref_graph_command(
     let name = selected.name();
     let Onto { arg: onto, .. } = onto_target(repository, Rev::Ref(selected.clone()));
     let branch = repository.current_branch();
+    // the branch itself, not a tag or remote branch of its name
     let checked_out = || -> Result<(), String> {
-        if branch.as_deref() == Some(name) {
+        if matches!(selected, NamedRef::Branch(b) if branch.as_ref() == Some(b)) {
             Err(format!("{name} is checked out, choose another branch"))
         } else {
             Ok(())
@@ -1014,6 +1015,25 @@ mod tests {
         // the tag's commit, though git takes the branch for the name alone
         run(path, checkout.unwrap(), "");
         assert_eq!(git(&["rev-parse", "HEAD"]).trim(), hashes[2].as_str());
+    }
+
+    // A tag named like the branch checked out was refused as if it were the branch.
+    #[test]
+    fn test_tag_named_like_the_branch_checked_out() {
+        let (dir, git) = rewrite_repo();
+        let path = dir.path();
+        let current = git(&["branch", "--show-current"]).trim().to_string();
+        git(&["tag", &current, "HEAD~2"]);
+        let (repository, hashes) = load(path);
+        let tag = NamedRef::Tag(current.clone());
+        for event in [UserEvent::Checkout, UserEvent::Merge, UserEvent::Rebase] {
+            let command = ref_graph_command(&repository, event, &tag, hashes[2].clone());
+            assert!(matches!(command, Some(Ok(_))), "{event:?}");
+        }
+        // the branch itself still is
+        let branch = NamedRef::Branch(current);
+        let command = ref_graph_command(&repository, UserEvent::Merge, &branch, hashes[0].clone());
+        assert!(matches!(command, Some(Err(_))));
     }
 
     #[test]

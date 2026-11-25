@@ -278,14 +278,20 @@ fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, PathBuf)> {
         .stderr(Stdio::null())
         .output()
         .map_err(|_| not_a_repository())?;
-    let output = String::from_utf8_lossy(&output.stdout);
-    let mut lines = output.lines();
-    let (inside_work_tree, bare) = (lines.next() == Some("true"), lines.next() == Some("true"));
+    // the paths as bytes, which may not be UTF-8
+    use std::os::unix::ffi::OsStrExt;
+    let path_of = |line: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(line));
+    let mut lines = output.stdout.split(|&b| b == b'\n');
+    let mut flag = || lines.next() == Some(b"true".as_slice());
+    let (inside_work_tree, bare) = (flag(), flag());
     let git_dir = match (inside_work_tree || bare, lines.next()) {
-        (true, Some(git_dir)) => PathBuf::from(git_dir),
+        (true, Some(git_dir)) if !git_dir.is_empty() => path_of(git_dir),
         _ => return Err(not_a_repository()),
     };
-    let toplevel = lines.next().filter(|_| inside_work_tree).map(PathBuf::from);
+    let toplevel = lines
+        .next()
+        .filter(|line| inside_work_tree && !line.is_empty())
+        .map(path_of);
     Ok((toplevel, git_dir))
 }
 
@@ -644,7 +650,7 @@ fn get_current_branch(path: &Path) -> Option<String> {
     Some(out.trim().to_string()).filter(|branch| !branch.is_empty())
 }
 
-// How far each local branch is ahead and behind its upstream, those in sync left out.
+// How far each local branch with an upstream is ahead and behind it; one in sync at (0, 0).
 pub(super) fn load_branch_tracking(path: &Path) -> FxHashMap<String, Tracking> {
     // the full name: the short one is "heads/v2" when a tag is named v2 too
     let format = "--format=%(refname)%00%(upstream:short)%00%(upstream:track,nobracket)";
@@ -831,6 +837,25 @@ mod tests {
         };
         assert_eq!(name, "stash@{0}");
         assert!(repository.commit(target).is_some());
+    }
+
+    // A repository in a folder whose name isn't UTF-8 couldn't be opened: its paths were read
+    // with the bytes replaced.
+    #[test]
+    fn test_load_a_repository_in_a_folder_not_in_utf8() {
+        use crate::test_support::git::GitRepository;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        std::fs::create_dir(&path).unwrap();
+        let repo = GitRepository::new(&path);
+        repo.init();
+        std::fs::write(path.join("a.txt"), "a\n").unwrap();
+        repo.add(&["a.txt"]);
+        repo.commit("first", "2024-01-01");
+        let repository = Repository::load(&path, SortCommit::Chronological, None, false).unwrap();
+        assert!(repository.head_commit().is_some());
     }
 
     // A stash with no parent, which another tool can leave in refs/stash, stopped the app loading.

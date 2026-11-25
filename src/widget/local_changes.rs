@@ -64,7 +64,8 @@ pub enum LocalChangesSection {
 enum Beside<'a> {
     Diff,
     // loading on another thread, see `load_conflict`
-    ConflictLoading(Job<ConflictView>),
+    // with the choice to show once loaded
+    ConflictLoading(Job<ConflictView>, ConflictItem),
     Conflict(ConflictPanel),
     // what it compares read on another thread, see `prepare_diff`
     SubmoduleReading(Job<Option<SubmoduleGitlinks>>),
@@ -1502,8 +1503,15 @@ impl<'a> LocalChangesState<'a> {
         self.offer_resolved_commit();
         let files = [&self.changes.unstaged, &self.changes.staged];
         for ((section, files), tree) in self.sections.iter_mut().zip(files).zip(trees) {
+            // a visual selection goes on over the same rows; it counts them from where it started
+            let rows = |tree: &FileTreeState| -> Vec<Arc<str>> {
+                tree.rows().iter().map(|row| row.path.clone()).collect()
+            };
+            let visual = section.tree.is_visual().then(|| rows(&section.tree));
             section.tree.set_tree(tree);
-            section.tree.cancel_visual();
+            if visual.is_some_and(|before| before != rows(&section.tree)) {
+                section.tree.cancel_visual();
+            }
             // the picks with no changes left, discarded or stashed, go: those that are no file nor
             // directory of one, see `path_contains`; with none, there is nothing to look for
             if section.picked.is_empty() {
@@ -1524,10 +1532,26 @@ impl<'a> LocalChangesState<'a> {
 
         let in_diff = self.is_diff_focused();
         let selection = self.pane.selection();
+        let (chosen, item) = (self.chosen, self.conflict().map(|c| c.item));
         self.load_diff();
+        let same = self.selected_path() == selected_path;
         // stay in the diff while the same path still has hunks left
-        if in_diff && self.selected_path() == selected_path && self.conflict().is_none() {
+        if in_diff && same && self.conflict().is_none() {
             self.pane.restore(selection);
+        }
+        // and in the conflict or submodule panel of the same path, as it was
+        match (chosen, item, &mut self.beside) {
+            (Focus::Side, Some(item), Beside::Conflict(ConflictPanel { item: shown, .. }))
+            | (Focus::Side, Some(item), Beside::ConflictLoading(_, shown))
+                if same =>
+            {
+                *shown = item;
+                self.chosen = chosen;
+            }
+            (Focus::Submodule, _, Beside::Submodule(_) | Beside::SubmoduleReading(_)) if same => {
+                self.chosen = chosen;
+            }
+            _ => {}
         }
     }
 
@@ -1882,7 +1906,7 @@ impl<'a> LocalChangesState<'a> {
             .is_some();
         let reading = matches!(
             self.beside,
-            Beside::ConflictLoading(_) | Beside::SubmoduleReading(_)
+            Beside::ConflictLoading(..) | Beside::SubmoduleReading(_)
         );
         self.pane.loading_since().is_some() || submodule || reading
     }
@@ -2141,7 +2165,7 @@ impl<'a> StatefulWidget for LocalChangesPanel<'a> {
         let areas = local_changes_areas(&self.ctx, area);
         self.render_file_section(state, LocalChangesSection::Unstaged, areas.unstaged, buf);
         self.render_file_section(state, LocalChangesSection::Staged, areas.staged, buf);
-        if let Beside::Conflict(_) | Beside::ConflictLoading(_) = state.beside {
+        if let Beside::Conflict(_) | Beside::ConflictLoading(..) = state.beside {
             self.render_conflict(state, areas.diff, buf);
         } else if state.shows_submodule() {
             self.render_submodule(state, areas.diff, buf);
@@ -2424,6 +2448,11 @@ mod tests {
         state.enter()?;
         assert!(state.is_submodule_focused());
         assert!(!state.is_files_focused());
+        // a file changed outside the app leaves the focus in the panel
+        fs::write(superproject.join("other.txt"), "x\n")?;
+        let files = FilesSnapshot::load(&superproject, repository.git_dir(), IndexRefresh::Skipped);
+        assert!(state.reload_if_changed(files));
+        assert!(state.is_submodule_focused());
         state.back();
         assert!(state.is_files_focused());
         assert!(state.request_edit().is_err(), "a submodule is a directory");
@@ -5386,6 +5415,66 @@ mod tests {
         Ok(())
     }
 
+    // A file changed outside the app, not the one shown, threw the focus out of the conflict panel
+    // and set its choice back to the first.
+    #[test]
+    fn test_conflict_panel_stays_as_it_is_on_a_change_outside(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        state.enter()?;
+        state.move_conflict_item(Direction::Right);
+        assert!(state.is_conflict_focused());
+        fs::write(repo_path.join("other.txt"), "x\n")?;
+        let files = FilesSnapshot::load(repo_path, repository.git_dir(), IndexRefresh::Skipped);
+        assert!(state.reload_if_changed(files));
+        assert!(state.is_conflict_focused());
+        assert_eq!(
+            state.conflict().map(|c| c.item),
+            Some(ConflictItem::Incoming)
+        );
+        Ok(())
+    }
+
+    // A file changed outside the app ended a visual selection of the files, though they were the
+    // same rows.
+    #[test]
+    fn test_visual_selection_stays_on_a_change_outside() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        for file in ["a.txt", "b.txt"] {
+            fs::write(repo_path.join(file), "1\n")?;
+        }
+        git.add(&["a.txt", "b.txt"]);
+        git.commit("init", "2024-01-01");
+        for file in ["a.txt", "b.txt"] {
+            fs::write(repo_path.join(file), "2\n")?;
+        }
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        state.toggle_visual();
+        let files = || FilesSnapshot::load(repo_path, repository.git_dir(), IndexRefresh::Skipped);
+        // the same files, one changed again
+        fs::write(repo_path.join("b.txt"), "3\n")?;
+        assert!(state.reload_if_changed(files()));
+        assert!(state.is_visual());
+        // another file: the rows move, the selection ends
+        fs::write(repo_path.join("c.txt"), "new\n")?;
+        assert!(state.reload_if_changed(files()));
+        assert!(!state.is_visual());
+        Ok(())
+    }
+
     #[test]
     fn test_conflict_panel() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -5642,7 +5731,7 @@ mod tests {
         state.move_cursor(pos);
         // as drawing does, before it polls what loads
         state.prepare_diff(Some(&ec.sender()));
-        assert!(matches!(state.beside, Beside::ConflictLoading(_)));
+        assert!(matches!(state.beside, Beside::ConflictLoading(..)));
         let area = Rect::new(0, 0, 120, 30);
         let mut buf = Buffer::empty(area);
         LocalChangesPanel::new(test_ctx(), true).render(area, &mut buf, &mut state);

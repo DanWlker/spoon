@@ -16,21 +16,17 @@ impl Point {
             return false;
         }
 
-        let mut signs = vertices
+        // on the same side of every edge, or on one; `signum` would give ±1 for ±0
+        let crosses = vertices
             .iter()
             .zip(vertices.iter().cycle().skip(1))
-            .map(|(&a, &b)| {
-                let edge_vector = b - a;
-                let point_vector = *self - a;
-                edge_vector.cross(point_vector).signum()
-            });
-
-        let first_sign = signs.next().unwrap();
-        if first_sign == 0.0 {
-            return true;
+            .map(|(&a, &b)| (b - a).cross(*self - a));
+        let (mut left, mut right) = (false, false);
+        for cross in crosses {
+            left |= cross > 0.0;
+            right |= cross < 0.0;
         }
-
-        signs.all(|s| s == 0.0 || s == first_sign)
+        !(left && right)
     }
 }
 
@@ -194,4 +190,25 @@ pub fn bounding_box_u32(points: &[Point]) -> (u32, u32, u32, u32) {
     }
 
     (min_x as u32, min_y as u32, max_x as u32, max_y as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A point on an edge is inside, whichever way the polygon winds: `signum` of 0.0 is 1.0, not
+    // 0.0, so it depended on the winding; and a point on the line of the first edge, past it, was
+    // inside.
+    #[test]
+    fn test_inside_polygon_on_its_edges() {
+        let ccw = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)].map(|(x, y)| Point::new(x, y));
+        let mut cw = ccw;
+        cw.reverse();
+        for square in [ccw, cw] {
+            assert!(Point::new(2.0, 0.0).is_inside_polygon(&square));
+            assert!(Point::new(2.0, 2.0).is_inside_polygon(&square));
+            assert!(!Point::new(6.0, 0.0).is_inside_polygon(&square));
+            assert!(!Point::new(5.0, 2.0).is_inside_polygon(&square));
+        }
+    }
 }

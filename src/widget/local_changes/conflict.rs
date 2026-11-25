@@ -21,11 +21,8 @@ pub(super) struct ConflictPanel {
 }
 
 impl ConflictPanel {
-    fn new(view: ConflictView) -> Self {
-        ConflictPanel {
-            view,
-            item: ConflictItem::Existing,
-        }
+    fn new(view: ConflictView, item: ConflictItem) -> Self {
+        ConflictPanel { view, item }
     }
 }
 
@@ -81,8 +78,13 @@ impl<'a> LocalChangesState<'a> {
         let work = ConflictView::load_work(self.repository, &file.path);
         Some(match tx {
             // stopped once moved past, see `Job::read`
-            Some(tx) => Beside::ConflictLoading(Job::read(tx.clone(), work)),
-            None => Beside::Conflict(ConflictPanel::new(work(&Cancel::default()))),
+            Some(tx) => {
+                Beside::ConflictLoading(Job::read(tx.clone(), work), ConflictItem::Existing)
+            }
+            None => Beside::Conflict(ConflictPanel::new(
+                work(&Cancel::default()),
+                ConflictItem::Existing,
+            )),
         })
     }
 
@@ -97,16 +99,18 @@ impl<'a> LocalChangesState<'a> {
     // Shows the conflict loading, waiting for it: before a key acts on it.
     pub(super) fn wait_conflict(&mut self) {
         self.beside = match std::mem::replace(&mut self.beside, Beside::Diff) {
-            Beside::ConflictLoading(job) => Beside::Conflict(ConflictPanel::new(job.wait())),
+            Beside::ConflictLoading(job, item) => {
+                Beside::Conflict(ConflictPanel::new(job.wait(), item))
+            }
             beside => beside,
         };
     }
 
     // Shows the conflict loading once loaded.
     pub(super) fn poll_conflict(&mut self) {
-        if let Beside::ConflictLoading(job) = &self.beside {
+        if let Beside::ConflictLoading(job, item) = &self.beside {
             if let Some(view) = job.try_take() {
-                self.beside = Beside::Conflict(ConflictPanel::new(view));
+                self.beside = Beside::Conflict(ConflictPanel::new(view, *item));
             }
         }
     }
@@ -137,7 +141,7 @@ impl LocalChangesPanel<'_> {
         let theme = &self.ctx.color_theme;
         let path = state.selected_path().unwrap_or_default();
         let loading = match &state.beside {
-            Beside::ConflictLoading(job) => loading_note(Some(job.started())),
+            Beside::ConflictLoading(job, _) => loading_note(Some(job.started())),
             _ => None,
         };
         let focused = self.focused && state.is_conflict_focused();

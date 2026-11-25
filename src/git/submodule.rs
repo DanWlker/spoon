@@ -6,8 +6,8 @@ use std::{path::Path, sync::Arc};
 use crate::background::Cancel;
 
 use super::{
-    git_output, git_output_bytes_until, load_local_changes, pathspecs, text_from_git, IndexRefresh,
-    Repository,
+    git_output, git_output_bytes_until, load_local_changes, pathspecs, text_from_git, work_path,
+    IndexRefresh, Repository,
 };
 
 // The paths among `paths` that are gitlinks (submodules) in the tree of `commit` (a commit or a
@@ -95,7 +95,7 @@ impl Repository {
         to: &str,
     ) -> impl FnOnce(&Cancel) -> std::result::Result<Option<Repository>, String> + Send + 'static
     {
-        let submodule = self.path.join(path);
+        let submodule = work_path(&self.path, path);
         let range = format!("{from}..{to}");
         move |cancel| {
             // without a `.git` of its own git would load the superproject above
@@ -161,7 +161,7 @@ pub struct SubmoduleInfo {
 // so the pages beside the files show the submodule's own commits in place of the gitlink diff.
 pub fn submodule_info(root: &Path, path: &str) -> Option<SubmoduleInfo> {
     let index = index_submodule_commit(root, path)?;
-    let submodule = root.join(path);
+    let submodule = work_path(root, path);
     // a checked-out submodule has a `.git` file (or directory) of its own; without it git
     // falls back to the superproject above, which would read the wrong HEAD
     let head = submodule

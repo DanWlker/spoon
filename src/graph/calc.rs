@@ -389,11 +389,7 @@ fn calc_commit_positions<'a>(
             // the state line to column 0 if vacant to keep commit_line_state and commit_pos_map synchronized.
             if is_primary && pos_x != 0 && commit_line_state.first().is_none_or(|c| c.is_none()) {
                 commit_line_state[pos_x] = None;
-                if commit_line_state.is_empty() {
-                    commit_line_state.push(Some(&commit.commit_hash));
-                } else {
-                    commit_line_state[0] = Some(&commit.commit_hash);
-                }
+                commit_line_state[0] = Some(&commit.commit_hash);
                 pos_x = 0;
             }
 

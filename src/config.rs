@@ -34,7 +34,7 @@ pub fn load() -> Result<(
     ColorTheme,
     Option<KeyBind>,
 )> {
-    let config = match config_file_path_from_env() {
+    let config = match config_file_path_from_env(env::var_os(CONFIG_FILE_ENV_NAME)) {
         Some(user_path) => {
             if !user_path.exists() {
                 let msg = format!(
@@ -46,7 +46,9 @@ pub fn load() -> Result<(
             read_config_from_path(&user_path)
         }
         None => {
-            if let Some(default_path) = config_file_path() {
+            if let Some(default_path) =
+                config_file_path(env::var_os(XDG_CONFIG_HOME_ENV_NAME), env::home_dir())
+            {
                 if default_path.exists() {
                     read_config_from_path(&default_path)
                 } else {
@@ -69,15 +71,17 @@ pub fn load() -> Result<(
     ))
 }
 
-fn config_file_path_from_env() -> Option<PathBuf> {
-    env::var(CONFIG_FILE_ENV_NAME).ok().map(PathBuf::from)
+// The file `$SPOON_CONFIG_FILE` names, as `var` is set, any bytes.
+fn config_file_path_from_env(var: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    var.map(PathBuf::from)
 }
 
-fn config_file_path() -> Option<PathBuf> {
-    env::var(XDG_CONFIG_HOME_ENV_NAME)
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| env::home_dir().map(|home| home.join(DEFAULT_CONFIG_DIR)))
+// The file in the config directory: `$XDG_CONFIG_HOME` as `xdg` is set, unless empty or relative,
+// which the XDG spec says to ignore, else ~/.config.
+fn config_file_path(xdg: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| home.map(|home| home.join(DEFAULT_CONFIG_DIR)))
         .map(|config_dir| config_dir.join(APP_DIR_NAME).join(CONFIG_FILE_NAME))
 }
 
@@ -332,6 +336,27 @@ pub enum InitialSelection {
 mod tests {
     use super::*;
     use crate::browse::Links;
+
+    // A path that isn't UTF-8 was ignored, the default config loading in its place, and an empty
+    // $XDG_CONFIG_HOME was taken as a relative directory.
+    #[test]
+    fn test_config_paths_from_the_environment() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"/c/caf\xe9.toml").to_owned();
+        assert_eq!(
+            config_file_path_from_env(Some(name.clone())),
+            Some(PathBuf::from(name))
+        );
+        let home = || Some(PathBuf::from("/home/u"));
+        let in_home = Some(PathBuf::from("/home/u/.config/spoon/config.toml"));
+        assert_eq!(config_file_path(Some("".into()), home()), in_home);
+        assert_eq!(config_file_path(Some("rel".into()), home()), in_home);
+        assert_eq!(config_file_path(None, home()), in_home);
+        assert_eq!(
+            config_file_path(Some("/x".into()), home()),
+            Some(PathBuf::from("/x/spoon/config.toml"))
+        );
+    }
 
     #[test]
     fn test_config_default() {
