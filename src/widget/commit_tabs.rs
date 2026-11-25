@@ -22,7 +22,9 @@ use crate::{
     layout::{fit_size, Edge, Panel, RowMap, Target},
     pointer::OnPicks,
     search::{SearchOptions, SearchOutcome},
-    widget::style::{focused_title, panel_title, placeholder, render_scrollbar, tree_panel_width},
+    widget::style::{
+        focused_title, panel_title, placeholder, render_scrollbar, title_notes, tree_panel_width,
+    },
     widget::{
         diff::Step,
         diff_pane::DiffPane,
@@ -93,9 +95,7 @@ pub fn render_tab_titles(
             }
         })
         .collect();
-    if !notes.is_empty() {
-        spans.push(Span::raw(format!(" {} ", notes.join(" · "))).fg(theme.highlight_fg));
-    }
+    spans.extend(title_notes(&[], notes, theme));
     let area = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     let mut x = area.x;
     let titles = DetailTab::ALL.iter().zip(&spans).map(|(tab, span)| {

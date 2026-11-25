@@ -40,7 +40,7 @@ use crate::{
         diff::{Step, CONVERTED_DIFF},
         file_tree::{Entry, FileTreeState, TreeView},
         git_dialog::GitDialog,
-        style::{loading_note, panel_block, render_close_button, ScrollState},
+        style::{loading_note, panel_block, picked_note, render_close_button, ScrollState},
         tree_query::{QueryKind, SearchDirection, TreeQuery},
     },
 };
@@ -1171,9 +1171,7 @@ impl<'a> DetailView<'a> {
             DetailTab::Changes => self.changes_state.picked_count(),
             DetailTab::Files => self.files_state.picked_count(),
         };
-        // like the other panels picking rows, see `LocalChanges::render_file_section`
-        let picked = (picked > 0).then(|| format!("{picked} picked"));
-        let notes: Vec<String> = (picked.into_iter())
+        let notes: Vec<String> = (picked_note(picked).into_iter())
             .chain(self.query().and_then(TreeQuery::indicator))
             .chain(loading_note(loading))
             .collect();

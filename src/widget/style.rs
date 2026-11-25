@@ -50,6 +50,18 @@ pub fn panel_title(
     focused: bool,
     theme: &ColorTheme,
 ) -> Line<'static> {
+    warned_panel_title(label, &[], notes, focused, theme)
+}
+
+// A title with `warnings`, states to mind like "amending" or "rebasing", in the warning color: the
+// first of its notes, being about what the panel shows, see `panel_title`.
+pub fn warned_panel_title(
+    label: &str,
+    warnings: &[&str],
+    notes: impl IntoIterator<Item = String>,
+    focused: bool,
+    theme: &ColorTheme,
+) -> Line<'static> {
     // a title can name a file, or a branch git put on conflict markers
     let label = tabs_shown(label);
     let mut spans = vec![if focused {
@@ -57,12 +69,35 @@ pub fn panel_title(
     } else {
         Span::raw(format!(" {label} ")).fg(theme.fg)
     }];
-    let notes: Vec<String> = notes.into_iter().collect();
-    if !notes.is_empty() {
-        let notes = tabs_shown(&notes.join(" · ")).into_owned();
-        spans.push(Span::raw(format!(" {notes} ")).fg(theme.highlight_fg));
-    }
+    spans.extend(title_notes(warnings, notes, theme));
     Line::from(spans)
+}
+
+// The note of a panel picking rows, how many are picked; None with none.
+pub fn picked_note(count: usize) -> Option<String> {
+    (count > 0).then(|| format!("{count} picked"))
+}
+
+// The notes after a panel's title, see `warned_panel_title`: shared with the titles of the tabs of
+// the details, which have no single label.
+pub fn title_notes(
+    warnings: &[&str],
+    notes: impl IntoIterator<Item = String>,
+    theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    let warn = |text: &str| Span::raw(text.to_string()).fg(theme.status_warn_fg);
+    let note = |text: String| Span::raw(text).fg(theme.highlight_fg);
+    let notes = (warnings.iter().map(|w| warn(w)))
+        .chain(notes.into_iter().map(|n| note(tabs_shown(&n).into_owned())));
+    let mut spans = vec![];
+    for span in notes {
+        spans.push(note(if spans.is_empty() { " " } else { " · " }.into()));
+        spans.push(span);
+    }
+    if !spans.is_empty() {
+        spans.push(note(" ".into()));
+    }
+    spans
 }
 
 // A panel after lazygit's: a rounded border all around, in the accent color while it has the

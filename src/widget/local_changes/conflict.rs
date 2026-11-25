@@ -140,18 +140,12 @@ impl LocalChangesPanel<'_> {
             Beside::ConflictLoading(job) => loading_note(Some(job.started())),
             _ => None,
         };
-        let title = [
-            Span::raw(format!(" {path} ")).fg(theme.fg),
-            badge(" conflicted ", theme.status_error_fg, theme),
-        ];
-        let loading = loading.map(|note| Span::raw(format!(" {note} ")).fg(theme.highlight_fg));
-        let inner = render_panel(
-            buf,
-            area,
-            Line::from_iter(title.into_iter().chain(loading)),
-            self.focused && state.is_conflict_focused(),
-            theme,
-        );
+        let focused = self.focused && state.is_conflict_focused();
+        // like every panel's, the badge after the name
+        let mut title = panel_title(&path, loading, focused, theme);
+        let conflicted = badge(" conflicted ", theme.status_error_fg, theme);
+        title.spans.insert(1, conflicted);
+        let inner = render_panel(buf, area, title, focused, theme);
         // its sides once loaded
         let Beside::Conflict(conflict) = &state.beside else {
             return;

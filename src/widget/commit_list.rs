@@ -30,8 +30,8 @@ use crate::{
     widget::{
         picks::Picks,
         style::{
-            mark_selected_bar, panel_block, panel_title, picked_style, render_close_button,
-            render_panel_scrollbar, shown_width, ListCursor,
+            mark_selected_bar, panel_block, panel_title, picked_note, picked_style,
+            render_close_button, render_panel_scrollbar, shown_width, ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, Toward,
@@ -792,10 +792,7 @@ pub fn render_commit_list_panel<'a>(
     focused: bool,
 ) {
     let theme = &ctx.color_theme;
-    let picked = match state.picked_commit_hashes().len() {
-        0 => None,
-        n => Some(format!("{n} picked")),
-    };
+    let picked = picked_note(state.picked_commit_hashes().len());
     let note = state
         .filter_note
         .as_ref()

@@ -24,7 +24,7 @@ use crate::{
         picks::Picks,
         style::{
             fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
-            render_panel, render_panel_scrollbar, spinner, tabs_shown, ListCursor,
+            picked_note, render_panel, render_panel_scrollbar, spinner, tabs_shown, ListCursor,
         },
         tree_query::{
             find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
@@ -758,10 +758,10 @@ impl StatefulWidget for RefList {
         // only the title is shown
         let collapsed = self.mode == SidebarMode::Collapsed;
         let label = if collapsed { "[1]" } else { "[1] Refs" };
-        let picked = match state.picked.len() {
-            0 => None,
-            n if collapsed => Some(n.to_string()),
-            n => Some(format!("{n} picked")),
+        // only the count while collapsed, the title being as narrow
+        let picked = match collapsed {
+            true => (!state.picked.is_empty()).then(|| state.picked.len().to_string()),
+            false => picked_note(state.picked.len()),
         };
         let inner = render_panel(
             buf,

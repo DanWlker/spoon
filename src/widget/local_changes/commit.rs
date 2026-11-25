@@ -446,20 +446,19 @@ impl LocalChangesPanel<'_> {
         let theme = &self.ctx.color_theme;
         let focused = self.focused && state.is_commit_focused();
         // amending and rebasing have no controls of their own, the title shows them
-        let mut title = panel_title("[3] Commit", [], focused, theme).spans;
-        if state.draft.amend.is_some() {
-            title.push(warn_note("amending", theme));
-        }
-        if let Some(operation) = state.repository.operation_in_progress() {
-            let doing = match operation {
+        let amending = state.draft.amend.is_some().then_some("amending");
+        let doing = state
+            .repository
+            .operation_in_progress()
+            .map(|operation| match operation {
                 Operation::Rebase => "rebasing",
                 Operation::Merge => "merging",
                 Operation::CherryPick => "cherry-picking",
                 Operation::Revert => "reverting",
-            };
-            title.push(warn_note(doing, theme));
-        }
-        let text_area = render_panel(buf, area, Line::from(title), focused, theme);
+            });
+        let warnings: Vec<&str> = amending.into_iter().chain(doing).collect();
+        let title = warned_panel_title("[3] Commit", &warnings, [], focused, theme);
+        let text_area = render_panel(buf, area, title, focused, theme);
         let summary = Target::Commit(CommitField::Summary);
         self.ctx.layout.borrow_mut().frame(summary, area);
         self.render_message(state, text_area, buf);

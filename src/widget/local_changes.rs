@@ -18,7 +18,6 @@ use rustc_hash::FxHashSet;
 
 use crate::{
     background::{Cancel, Job, Loads},
-    color::ColorTheme,
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
@@ -42,8 +41,9 @@ use crate::{
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog, StashFile},
         style::{
-            badge, check_mark, divider, loading_note, mark_selected_bar, panel_title, placeholder,
-            render_border_buttons, render_panel, render_panel_scrollbar, tree_panel_width,
+            badge, check_mark, divider, loading_note, mark_selected_bar, panel_title, picked_note,
+            placeholder, render_border_buttons, render_panel, render_panel_scrollbar,
+            tree_panel_width, warned_panel_title,
         },
         submodule::{submodule_key, SubmodulePanel},
         text_area::{Caret, Lines, TextArea},
@@ -2088,11 +2088,6 @@ impl<'a> LocalChangesState<'a> {
     }
 }
 
-// A state shown after a title in the warning color, like amending or rebasing.
-fn warn_note(text: &str, theme: &ColorTheme) -> Span<'static> {
-    Span::raw(format!(" · {text} ")).fg(theme.status_warn_fg)
-}
-
 fn picked_files_label(count: usize) -> String {
     if count == 1 {
         "1 picked file".into()
@@ -2205,17 +2200,14 @@ impl LocalChangesPanel<'_> {
         };
         let active = state.section == section;
         let focused = active && self.focused && state.focus_on_files();
-        let mut extras = vec![];
-        if !picked.is_empty() {
-            extras.push(format!("{} picked", picked.len()));
-        }
-        extras.extend(state.query_of(section).indicator());
+        let extras = picked_note(picked.len())
+            .into_iter()
+            .chain(state.query_of(section).indicator());
         let label = format!("[{number}] {name} ({})", files.len());
         let theme = &self.ctx.color_theme;
-        let mut title = panel_title(&label, extras, focused, theme);
-        if section == LocalChangesSection::Staged && state.draft.amend.is_some() {
-            title.push_span(warn_note("amending", theme));
-        }
+        let amending = section == LocalChangesSection::Staged && state.draft.amend.is_some();
+        let warnings: &[&str] = if amending { &["amending"] } else { &[] };
+        let title = warned_panel_title(&label, warnings, extras, focused, theme);
         let inner = render_panel(buf, area, title, focused, theme);
         let target = match section {
             LocalChangesSection::Unstaged => Target::Unstaged,
@@ -2288,15 +2280,16 @@ impl LocalChangesPanel<'_> {
     fn render_submodule(&self, state: &mut LocalChangesState, area: Rect, buf: &mut Buffer) {
         let path = state.selected_path().unwrap_or_default();
         let theme = &self.ctx.color_theme;
-        let title = Line::from(vec![
-            Span::raw(format!(" {path} ")).fg(theme.fg),
-            badge(" submodule changed ", theme.status_warn_fg, theme),
-        ]);
         let focused = self.focused && state.is_submodule_focused();
-        if let Beside::SubmoduleReading(job) = &state.beside {
-            let note = loading_note(Some(job.started()));
-            let note = note.map(|note| Span::raw(format!(" {note} ")).fg(theme.highlight_fg));
-            let title = Line::from_iter(title.spans.into_iter().chain(note));
+        let loading = match &state.beside {
+            Beside::SubmoduleReading(job) => loading_note(Some(job.started())),
+            _ => None,
+        };
+        // like every panel's, the badge after the name
+        let mut title = panel_title(&path, loading, focused, theme);
+        let changed = badge(" submodule changed ", theme.status_warn_fg, theme);
+        title.spans.insert(1, changed);
+        if let Beside::SubmoduleReading(_) = &state.beside {
             render_panel(buf, area, title, focused, theme);
             return;
         }
@@ -2418,6 +2411,94 @@ mod tests {
         state.back();
         assert!(state.is_files_focused());
         assert!(state.request_edit().is_err(), "a submodule is a directory");
+        Ok(())
+    }
+
+    // The conflict and submodule panels are titled like every panel (`panel_title`): the focused
+    // one's name in the focused badge, a tab in it as spaces. Their titles were built apart, the
+    // name always plain, a tab dropped.
+    #[test]
+    fn test_conflict_and_submodule_titles_like_every_panel(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let theme = crate::test_support::ui::test_ctx().color_theme.clone();
+        // the style of `label` in the title drawn, and whether it is there at all
+        let title_style = |state: &mut LocalChangesState, label: &str| {
+            let area = Rect::new(0, 0, 120, 30);
+            let mut buf = Buffer::empty(area);
+            // a submodule's commits draw their graph as the app's do
+            state.prepare_graph_uploads();
+            LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+                .render(area, &mut buf, state);
+            (0..area.height).find_map(|y| {
+                let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+                let i = row.find(&format!(" {label} "))?;
+                let x = row[..i].chars().count() as u16;
+                Some(buf[(x + 1, y)].style())
+            })
+        };
+        let focused =
+            |style: Option<Style>| style.and_then(|s| s.fg) == Some(theme.panel_title_focused_fg);
+
+        // a conflicted file with a tab in its name
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let branches = diverged_branches(repo_path);
+        let name = "t\tx.txt";
+        branches.checkout("feature");
+        fs::write(repo_path.join(name), "feature\n")?;
+        branches.add(&[name]);
+        branches.commit("feature tab", "2024-01-05");
+        branches.checkout("master");
+        fs::write(repo_path.join(name), "master\n")?;
+        branches.add(&[name]);
+        branches.commit("master tab", "2024-01-06");
+        let _ = crate::git::git_command()
+            .args(["merge", "feature"])
+            .current_dir(repo_path)
+            .output()?;
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, name);
+        state.enter()?;
+        assert!(state.is_conflict_focused());
+        assert!(
+            focused(title_style(&mut state, "t    x.txt")),
+            "the conflict's title"
+        );
+
+        // a submodule focused
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().join("base");
+        fs::create_dir(&base)?;
+        let base_repo = GitRepository::new(&base);
+        base_repo.init();
+        fs::write(base.join("a.txt"), "one\n")?;
+        base_repo.add(&["a.txt"]);
+        base_repo.commit("init", "2024-01-01");
+        let superproject = dir.path().join("super");
+        fs::create_dir(&superproject)?;
+        let repo = GitRepository::new(&superproject);
+        repo.init();
+        let add = ["-c", "protocol.file.allow=always", "submodule", "add"];
+        git(
+            &superproject,
+            &[&add[..], &[base.to_str().unwrap(), "sub"]].concat(),
+        );
+        repo.commit("add sub", "2024-01-02");
+        let sub = superproject.join("sub");
+        let sub_repo = GitRepository::new(&sub);
+        fs::write(superproject.join("sub/a.txt"), "two\n")?;
+        sub_repo.add(&["a.txt"]);
+        sub_repo.commit("second", "2024-01-03");
+        let repository = Repository::load(&superproject, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "sub");
+        state.enter()?;
+        assert!(state.is_submodule_focused());
+        assert!(
+            focused(title_style(&mut state, "sub")),
+            "the submodule's title"
+        );
         Ok(())
     }
 
@@ -3653,13 +3734,28 @@ mod tests {
         let mut notes = vec![];
         for y in 0..area.height {
             let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
-            for (i, _) in row.match_indices("· amending") {
+            for (i, _) in row.match_indices("amending") {
                 let x = row[..i].chars().count() as u16;
                 notes.push(buf[(x, y)].style());
             }
         }
         assert_eq!(notes.len(), 2, "{notes:?}");
         assert_eq!(notes[0], notes[1]);
+        // what the section shows first, then what is picked, as on every panel
+        select_row(&mut state, "a.txt");
+        state.toggle_visual();
+        state.toggle_visual();
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+            .render(area, &mut buf, &mut state);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let staged = rows.iter().find(|row| row.contains("[2] Staged")).unwrap();
+        assert!(
+            staged.contains("Staged (2)  amending · 1 picked"),
+            "{staged}"
+        );
 
         // an operation starting meanwhile leaves A to stop amending, not to start it
         let merging = || -> Result<Repository, Box<dyn std::error::Error>> {
