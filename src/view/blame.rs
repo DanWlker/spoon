@@ -23,7 +23,7 @@ use crate::{
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
         commit_event, copy_paths, copy_selection, edit_files, file_link, query_or_search_status,
-        register_commit_keys, revision_spans, CopyForm, SHORT_HASH_WIDTH,
+        register_commit_keys, register_file_text_keys, revision_spans, CopyForm, SHORT_HASH_WIDTH,
     },
     widget::tree_query::{type_query, typing_keys},
     widget::{
@@ -517,24 +517,7 @@ impl BlameView {
             }
             .into()
         });
-        k.add(
-            &[FullCopy],
-            "copy full path",
-            "Copy the absolute path of the file",
-        )
-        .when(on(Text));
-        k.add(
-            &[OpenInBrowser],
-            "open in browser",
-            "Open the file at the line, or the lines selected, on the web host, on its text",
-        )
-        .when(on(Text));
-        k.add(
-            &[CopyLink],
-            "copy link",
-            "Copy the link of the file at the line, or the lines selected, on its text",
-        )
-        .when(on(Text));
+        register_file_text_keys(k, on(Text), on(Text));
         k.add(
             &[NavigateLeft],
             "to the commits",

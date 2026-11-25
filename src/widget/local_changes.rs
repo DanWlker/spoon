@@ -927,9 +927,15 @@ impl<'a> LocalChangesState<'a> {
         k.add(
             &[FullCopy],
             "copy full path",
-            "Copy the absolute path of the file",
+            "Copy the absolute paths of the picked files, or of the selected one",
         )
-        .when(move |v| row(v) || (diff(v) && v.selected_file().is_some()));
+        .when(row);
+        // in the working tree, without a link
+        crate::view::register_file_text_keys(
+            k,
+            move |v| diff(v) && v.selected_file().is_some(),
+            |_| false,
+        );
         k.add(
             &[Ignore],
             "ignore",

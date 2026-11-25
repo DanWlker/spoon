@@ -6734,7 +6734,8 @@ fn test_full_path_copied_in_every_diff_and_text() {
         ("5 enter", StartPage::Graph),
         ("shift-g enter", StartPage::LocalChanges),
         ("5 shift-t l", StartPage::Graph),
-        ("5 shift-b", StartPage::Graph),
+        // into the text, the blame opening on the commits
+        ("5 shift-b l", StartPage::Graph),
     ];
     for (to, page) in pages {
         let dir = tempfile::tempdir().unwrap();
@@ -6747,6 +6748,16 @@ fn test_full_path_copied_in_every_diff_and_text() {
             check(move |app| {
                 let keys = app.keys_popup_keys();
                 assert!(keys.iter().any(|k| k.keys == "yf"), "{to:?}");
+                // and said alike, from the one registration of them, see `register_file_text_keys`
+                let help = app.focused_keys().working().help();
+                let long = help
+                    .iter()
+                    .find(|(events, _)| events.contains(&UserEvent::FullCopy));
+                assert_eq!(
+                    long.map(|(_, long)| *long),
+                    Some("Copy the absolute path of the file"),
+                    "{to:?}"
+                );
             }),
         ]);
     }
@@ -6776,4 +6787,67 @@ fn test_search_options_toggle_only_while_typing() {
         keys("/ ctrl-g"),
         toggled(true),
     ]);
+}
+
+// The notes of a panel's title come in one order everywhere: what it shows or has picked, then
+// the search or filter. The stash popup put its filter first.
+#[test]
+fn test_title_notes_in_one_order_on_every_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for name in ["keep1", "keep2", "other"] {
+        std::fs::write(path.join(name), "x\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let shown = |text: &'static str| {
+        screen(move |screen| assert!(screen.contains(text), "{text:?} not in\n{screen}"))
+    };
+    harness.run(vec![
+        // the local changes
+        keys("1 /"),
+        typing("keep"),
+        keys("enter shift-g v v"),
+        draw(),
+        shown("1 picked · filter: keep"),
+        // the stash popup
+        keys("esc esc s esc j /"),
+        typing("keep"),
+        keys("enter"),
+        draw(),
+        shown("checked · filter: keep"),
+    ]);
+}
+
+// y f in a diff copies the path of the file it shows, on every page: the local changes' copied
+// the picked files instead, the details' the file of the diff.
+#[test]
+fn test_full_path_in_a_diff_is_its_file_even_with_files_picked() {
+    for (page, to) in [
+        (StartPage::LocalChanges, "1 shift-g k v v j enter"),
+        (StartPage::Graph, "4 v v enter"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = repository(dir.path());
+        std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+        std::fs::write(path.join("g.txt"), "new\n").unwrap();
+        let copied = dir.path().join("copied");
+        let mut harness = Harness::new(&path, Launch { page, ..launch() });
+        let ctx = Rc::get_mut(&mut harness.ctx).unwrap();
+        let command = format!("cat > '{}'", copied.display());
+        ctx.core_config.external.clipboard = crate::config::ClipboardConfig::Custom {
+            commands: vec!["sh".into(), "-c".into(), command],
+        };
+        let shown = match page {
+            StartPage::LocalChanges => "g.txt",
+            _ => "f.txt",
+        };
+        harness.run(vec![keys(to), keys("y f")]);
+        let copied = std::fs::read_to_string(&copied).unwrap();
+        let expected = path.join(shown).canonicalize().unwrap();
+        assert_eq!(std::path::Path::new(&copied), expected, "{to:?}");
+    }
 }

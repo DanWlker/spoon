@@ -214,6 +214,35 @@ pub fn register_commit_keys<T: ?Sized>(k: &mut Keys<T>, applies: impl Fn(&T) -> 
     register_commit_link_keys(k, applies, applies);
 }
 
+// The keys on the file of a diff or of a file's text, alike on every page: y f its absolute path,
+// where `file` says one is shown; o and y l its link on the web host at the lines selected, where
+// `linked` says it has one too (at a commit, not in the working tree).
+pub fn register_file_text_keys<T: ?Sized>(
+    k: &mut Keys<T>,
+    file: impl Fn(&T) -> bool + Copy,
+    linked: impl Fn(&T) -> bool + Copy,
+) {
+    use UserEvent::*;
+    k.add(
+        &[FullCopy],
+        "copy full path",
+        "Copy the absolute path of the file",
+    )
+    .when(file);
+    k.add(
+        &[OpenInBrowser],
+        "open in browser",
+        "Open the file on the web host, at the selected lines",
+    )
+    .when(move |v| file(v) && linked(v));
+    k.add(
+        &[CopyLink],
+        "copy link",
+        "Copy the link of the file on the web host, at the selected lines",
+    )
+    .when(move |v| file(v) && linked(v));
+}
+
 // o, O and y on a commit, where `applies`: its page on the web host and its link, where `linked`
 // too, and its hash.
 pub fn register_commit_link_keys<T: ?Sized>(

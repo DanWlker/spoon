@@ -20,8 +20,8 @@ use crate::{
     search::{SearchKind, SearchOutcome},
     view::{
         apply_selection, commit_event, copy_paths, copy_selection, edit_files, file_link,
-        query_or_search_status, register_apply_key, register_commit_keys, revision_matches,
-        revision_spans, CopyForm,
+        query_or_search_status, register_apply_key, register_commit_keys, register_file_text_keys,
+        revision_matches, revision_spans, CopyForm,
     },
     widget::diff_pane::register_diff_keys,
     widget::tree_query::{type_query, typing_keys},
@@ -398,24 +398,7 @@ impl TimelineView {
             |v| v.pane.is_focused().then_some(&v.pane),
             |v| v.ctx.diff_context.get(),
         );
-        k.add(
-            &[FullCopy],
-            "copy full path",
-            "Copy the absolute path of the file",
-        )
-        .when(diff);
-        k.add(
-            &[OpenInBrowser],
-            "open in browser",
-            "Open the file at the selected lines on the web host, in the diff",
-        )
-        .when(diff);
-        k.add(
-            &[CopyLink],
-            "copy link",
-            "Copy the link of the file at the selected lines, in the diff",
-        )
-        .when(diff);
+        register_file_text_keys(k, diff, diff);
         k.add(&[NavigateLeft], "back", "Into the diff/back out of it")
             .when(move |v| diff(v) && !v.pane.can_switch_side(NavigateLeft));
         k.add(

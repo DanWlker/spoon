@@ -168,7 +168,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>Esc</kbd>  | Clear the picked commits, then the picked files, then the search or filter, then close commit details | `cancel` |
 | <kbd>Down/Up</kbd> <kbd>j/k</kbd>    | Scroll down/up                  | `navigate_down` `navigate_up`   |
 | <kbd>Ctrl-f/b</kbd>                  | Select the files page down/up; scroll the diff or preview page down/up while it has the focus; jump a page while selecting hunks or lines | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll the files half a page down/up, the selection moving as much, like vim; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll half a page down/up, the selection moving as much, like vim: the files, or the hunks or lines of the diff | `half_page_down` `half_page_up` |
 | <kbd>g/G</kbd>                       | Go to top/bottom                | `go_to_top` `go_to_bottom`      |
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                         | `refresh`                       |
@@ -356,11 +356,11 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>J/K</kbd> <kbd>Shift-Down/Up</kbd>                       | Select next/previous file, hunk or line                      | `select_down` `select_up`       |
 | <kbd>g/G</kbd>                       | Select first/last file, hunk or line                         | `go_to_top` `go_to_bottom`      |
 | <kbd>Ctrl-f/b</kbd>                  | Scroll page down/up; jump a page while selecting hunks or lines | `page_down` `page_up`           |
-| <kbd>Ctrl-d/u</kbd>                  | Scroll the files half a page down/up, the selection moving as much, like vim; jump half a page while selecting hunks or lines | `half_page_down` `half_page_up` |
+| <kbd>Ctrl-d/u</kbd>                  | Scroll half a page down/up, the selection moving as much, like vim: the files, or the hunks or lines of the diff | `half_page_down` `half_page_up` |
 | <kbd>Ctrl-e/y</kbd>                  | Scroll down/up, the selection coming along once it would leave the view, like vim | `scroll_down` `scroll_up`       |
 | <kbd>Ctrl-r</kbd>                    | Refresh                                                      | `refresh`                       |
 
-While selecting hunks or lines the page keys move the selection to the next or previous hunk or changed line from the row half a page (or a page) on; a hunk taller than the page is read a page at a time and hands over once the page passes its end. From the files, every scroll key moves the files, like the other lists; the diff, the commit message or a submodule panel is scrolled with them only while it has the focus.
+While selecting hunks or lines the page keys page like vim, as in every list: the diff scrolls half a page (or a page) and the selection moves as much, to the hunk or changed line at the row it lands on, else the next one on, the diff going on to show it; a hunk taller than the page is read a page at a time. At either end the diff stops and the selection goes on. From the files, every scroll key moves the files, like the other lists; the diff, the commit message or a submodule panel is scrolled with them only while it has the focus.
 
 Selecting a submodule shows the panel beside the files in place of the gitlink diff: how many files are uncommitted inside it, and the commits between the two gitlinks the section compares — the index and the working tree when unstaged, the base commit and the index when staged — drawn with the graph like the commit list. Above them it says whether the gitlink moved forward, the commits added, or back, the commits removed (a rewind, like `git diff --submodule=log` calls it), as when the submodule is checked out before the commit the parent records. <kbd>Enter</kbd> focuses it, so the scroll keys move its commits; <kbd>Esc</kbd> goes back to the files. A commit that moves a submodule's gitlink shows the same list, between the gitlink it recorded and the previous one, on the changes tab of the commit details. The parent repository can only stage the gitlink, so those commits and files are made in the submodule itself. A submodule that isn't checked out says so.
 

@@ -280,11 +280,16 @@ impl<'a> LocalChangesView<'a> {
             | UserEvent::Wheel(_) => {
                 self.local_changes_state.scroll(event);
             }
-            // y and Y copy the path of the selected file
+            // y y and y f copy the paths of the picked files, else of the selected one; in the
+            // diff, y f the path of its file, as in every diff
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 let form = CopyForm::of(event);
-                let picked = self.local_changes_state.picked_paths();
-                let repository = self.local_changes_state.repository();
+                let state = &self.local_changes_state;
+                let picked = match state.is_diff_focused() {
+                    true => vec![],
+                    false => state.picked_paths(),
+                };
+                let repository = state.repository();
                 if !picked.is_empty() {
                     self.tx.send(copy_paths(
                         repository,

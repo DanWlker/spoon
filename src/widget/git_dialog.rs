@@ -1275,6 +1275,8 @@ impl GitDialog {
             false => format!("refs/heads/{remote_branch}"),
         };
         args.extend([remote.clone(), format!("refs/heads/{branch}:{target}")]);
+        // the messages name a branch by its short name, typed in full or not
+        let remote_branch = target.strip_prefix("refs/heads/").unwrap_or(&target);
         let pushing = if force { "Force pushing" } else { "Pushing" };
         Ok(GitTask {
             commands: vec![GitCommand::Push.args(args)],
@@ -3361,7 +3363,7 @@ impl Widget for GitDialogWidget<'_> {
             let query = typed
                 .map(|(text, _)| text)
                 .or_else(|| files.query.indicator());
-            let title = panel_title(label, query.into_iter().chain([note]), focused, theme);
+            let title = panel_title(label, [note].into_iter().chain(query), focused, theme);
             let rows = render_panel(buf, at, title, focused, theme);
             // hidden otherwise, like a local changes section's
             let cursor = if focused {
@@ -4492,6 +4494,9 @@ mod tests {
             args(&dialog),
             "push origin refs/heads/main:refs/heads/release"
         );
+        // said by the branch's name, as a short one typed is
+        let outcome = press(&mut dialog, UserEvent::Confirm);
+        assert_eq!(run(outcome).running, "Pushing main to origin/release");
     }
 
     #[test]

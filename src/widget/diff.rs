@@ -262,6 +262,12 @@ fn header_path(file_header: &str, marker: &str, prefix: &str) -> Option<String> 
         let rest = rest.strip_suffix('\t').unwrap_or(rest);
         return rest.strip_prefix(prefix).map(str::to_string);
     };
+    unquote(quoted)?.strip_prefix(prefix).map(str::to_string)
+}
+
+// A name git quoted C style, from after its opening quote: up to the closing one, if any, with
+// its escapes read. None when an escape is cut short.
+fn unquote(quoted: &str) -> Option<String> {
     let bytes = git_bytes(quoted);
     let mut name = Vec::with_capacity(bytes.len());
     let mut it = bytes.iter().copied();
@@ -286,9 +292,7 @@ fn header_path(file_header: &str, marker: &str, prefix: &str) -> Option<String> 
             b => name.push(b),
         }
     }
-    text_from_git(&name)
-        .strip_prefix(prefix)
-        .map(str::to_string)
+    Some(text_from_git(&name))
 }
 
 // `prefix` and `path` as git names them in a file header, quoted as `header_path` reads them.
@@ -974,10 +978,11 @@ impl DiffCursor {
         }
     }
 
-    // The page keys on the selected hunk or line: the window moves half a page or a page, and the
-    // selection moves with it. A line only comes to rest on a changed line, the next one from the
-    // screen row the page reached, else the last. A hunk taller than the page is read a page at a
-    // time; else the next or previous hunk is selected. False for other events.
+    // The page keys on the selected hunk or line, like vim's and a list's: the window moves half a
+    // page or a page, and the selection moves as much, to the changed line or the hunk at the
+    // screen row it lands on, else the next one on (the window going on to show it), else the
+    // last. A hunk taller than the page is read a page at a time. At either end the window stops
+    // and the selection goes on. False for other events.
     pub fn jump_page(&mut self, diff: &ParsedDiff, event: UserEvent, part: DiffPart) -> bool {
         let down = matches!(event, UserEvent::HalfPageDown | UserEvent::PageDown);
         let rows = match event {
@@ -1014,8 +1019,16 @@ impl DiffCursor {
             self.scroll.offset = self.scroll.offset.saturating_add_signed(moved);
             return true;
         }
-        // past its end: the next or previous unit from the screen row the page reached, or the
-        // edge of the diff when there is none further and the selection is already on it
+        // past its end: the window moves, then the unit at the screen row the page reached, else
+        // the next or previous one, or the edge of the diff when there is none further and the
+        // selection is already on it
+        let last_offset = self.wrap.total().saturating_sub(self.scroll.height);
+        let moved = if down {
+            self.scroll.offset.saturating_add(rows)
+        } else {
+            self.scroll.offset.saturating_sub(rows)
+        };
+        self.scroll.offset = moved.min(last_offset);
         let row = self.wrap.logical_at(target);
         match part {
             DiffPart::Line => {
@@ -1043,8 +1056,9 @@ impl DiffCursor {
                 }
             }
             DiffPart::Hunk => {
+                // the hunk the row is in, else the next or previous one
                 let found = if down {
-                    diff.hunks.iter().position(|h| h.rows.start >= row)
+                    diff.hunks.iter().position(|h| h.rows.end > row)
                 } else {
                     diff.hunks.iter().rposition(|h| h.rows.start <= row)
                 };
@@ -1057,7 +1071,14 @@ impl DiffCursor {
                 });
                 match found {
                     Some(index) if index != self.hunk => {
+                        // the window stays where it moved while the hunk shows in it
+                        let offset = self.scroll.offset;
                         self.select_hunk(diff, index);
+                        let screen = self.wrap.visual_range(diff.hunks[index].rows.clone());
+                        let height = self.scroll.height;
+                        if screen.start < offset + height && offset < screen.end {
+                            self.scroll.offset = offset;
+                        }
                     }
                     _ => self.scroll_to_edge(down),
                 }
@@ -1419,7 +1440,14 @@ impl DiffRow {
 impl ParsedDiff {
     // The text of `row` as shown, its tabs as four spaces.
     pub fn row_text(&self, row: &DiffRow) -> std::borrow::Cow<'_, str> {
-        shown(&self.raw[row.text.clone()])
+        let text = &self.raw[row.text.clone()];
+        // a file's name git quoted, see `new_path_start`
+        if row.kind == DiffRowKind::File && self.raw[..row.text.start].ends_with("\"b/") {
+            if let Some(name) = unquote(text) {
+                return shown(&name).into_owned().into();
+            }
+        }
+        shown(text)
     }
 
     // The bytes of the text of `row`, as shown, that differ from the line it replaces, or that
@@ -1571,7 +1599,12 @@ pub fn parse_diff_until(diff: &str, cancel: &Cancel) -> ParsedDiff {
             file_start = start;
             if multiple_files {
                 let path = new_path_start(line);
-                rows.push(DiffRow::without_numbers(DiffRowKind::File, bytes(path)));
+                // a quoted name without its closing quote
+                let end = start + line.len() - usize::from(line.ends_with('"'));
+                rows.push(DiffRow::without_numbers(
+                    DiffRowKind::File,
+                    start + path..end,
+                ));
             }
             continue;
         }
@@ -1884,6 +1917,13 @@ fn words(line: &str) -> Vec<&str> {
 // Where the new path starts in "diff --git a/<old> b/<new>": after the middle " b/" when both are
 // alike, which a path holding " b/" itself needs, else after the last " b/", a rename's.
 fn new_path_start(line: &str) -> usize {
+    // quoted by git, for a quote, a backslash or a control character: after the last ` "b/`,
+    // which can't be inside a quoted name, its quotes escaped, nor in one not quoted
+    if line.ends_with('"') {
+        if let Some(i) = line.rfind(" \"b/") {
+            return i + 4;
+        }
+    }
     let prefix = "diff --git a/".len();
     let rest = line.get(prefix..).unwrap_or_default();
     let half = rest.len().saturating_sub(3) / 2;
@@ -2343,6 +2383,27 @@ mod tests {
         }
     }
 
+    // A file git names quoted, for a quote, a backslash or a tab in its name, is shown by its
+    // name as it is: its separator used to show the whole "diff --git" line.
+    #[test]
+    fn test_file_separator_of_a_file_git_quotes() {
+        let file = |header: &str| format!("{header}\n@@ -1 +1 @@\n-a\n+b\n");
+        let raw = [
+            file("diff --git \"a/say \\\"hi\\\".txt\" \"b/say \\\"hi\\\".txt\""),
+            file("diff --git a/plain \"b/tab\\there\""),
+            file("diff --git a/x.rs b/x.rs"),
+        ]
+        .concat();
+        let diff = parse_diff(&raw);
+        let names: Vec<String> = diff
+            .rows
+            .iter()
+            .filter(|r| r.kind == DiffRowKind::File)
+            .map(|r| diff.row_text(r).into_owned())
+            .collect();
+        assert_eq!(names, ["say \"hi\".txt", "tab    here", "x.rs"]);
+    }
+
     // A path holding " b/" used to be shown from its last " b/" on.
     #[test]
     fn test_new_path_start() {
@@ -2608,6 +2669,51 @@ mod tests {
         cursor.toggle_range();
         cursor.toggle_range();
         assert_eq!(cursor.line_rows(), [1]);
+    }
+
+    // ctrl-d in a diff pages like vim and like a list: the view moves half a page, and the
+    // selection takes the changed line, or the hunk, at the row it lands on (else the next one).
+    // The diff used to pick the next one first, the view following only as far as it had to.
+    #[test]
+    fn test_half_page_in_a_diff_like_vim() {
+        let theme = ColorTheme::default();
+        let cursor_of = |diff: &ParsedDiff, height: usize| {
+            let mut cursor = DiffCursor::default();
+            cursor.scroll.height = height;
+            cursor.set_wrap_map(WrapMap::of(diff, &theme, 80, false, DiffLayout::Unified));
+            cursor
+        };
+        // every line changed: the line keeps its row on screen, as in a list
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,40 @@\n".to_string();
+        for i in 0..40 {
+            raw.push_str(&format!("+{i}\n"));
+        }
+        let diff = parse_diff(&raw);
+        let mut cursor = cursor_of(&diff, 10);
+        cursor.select_line(&diff, 3);
+        cursor.scroll.offset = 0;
+        let mut pages = vec![];
+        for _ in 0..3 {
+            cursor.jump_page(&diff, UserEvent::HalfPageDown, DiffPart::Line);
+            pages.push((cursor.scroll.offset, cursor.line));
+        }
+        assert_eq!(pages, [(5, 8), (10, 13), (15, 18)]);
+
+        // small hunks: the one at the row landed on, the view moving half a page, then stopping
+        // at the end while the selection goes on
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n".to_string();
+        for at in [1, 20, 40, 60, 80, 100] {
+            raw.push_str(&format!("@@ -{at},5 +{at},5 @@\n a\n-b\n+B\n c\n d\n"));
+        }
+        let diff = parse_diff(&raw);
+        let mut cursor = cursor_of(&diff, 20);
+        cursor.select_hunk(&diff, 0);
+        let mut pages = vec![];
+        for _ in 0..4 {
+            cursor.jump_page(&diff, UserEvent::HalfPageDown, DiffPart::Hunk);
+            pages.push((cursor.scroll.offset, cursor.hunk));
+        }
+        assert_eq!(pages, [(10, 1), (16, 3), (16, 4), (16, 5)]);
     }
 
     #[test]

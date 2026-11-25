@@ -25,8 +25,8 @@ use crate::{
         apply_selection, commit_branches, commit_event, copy_hashes, copy_path, copy_paths,
         copy_selection, edit_files, file_link, graph_availability, handle_search_event,
         poll_commit_search, query_or_search_status, register_apply_key, register_commit_link_keys,
-        register_commit_list_keys, searching_waits, type_commit_search, CopyForm, ListFacts,
-        ListRefreshViewContext, RefreshViewContext,
+        register_commit_list_keys, register_file_text_keys, searching_waits, type_commit_search,
+        CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
     },
     widget::diff_pane::register_diff_keys,
     widget::tree_query::{type_query, typing_keys},
@@ -469,9 +469,9 @@ impl<'a> DetailView<'a> {
         k.add(
             &[FullCopy],
             "copy full path",
-            "Copy the absolute path of the file",
+            "Copy the absolute paths of the picked files, or of the selected one",
         )
-        .when(move |v| entry(v) || (pane(v) && path(v)));
+        .when(entry);
         k.add(
             &[Ignore],
             "ignore",
@@ -481,15 +481,16 @@ impl<'a> DetailView<'a> {
         k.add(
             &[OpenInBrowser],
             "open in browser",
-            "Open the selected file at the commit on the web host, at the selected lines",
+            "Open the picked files, or the selected one, at the commit on the web host",
         )
-        .when(move |v| (files(v) || pane(v)) && path(v));
+        .when(move |v| files(v) && path(v));
         k.add(
             &[CopyLink],
             "copy link",
-            "Copy the link of the selected file, at the selected lines",
+            "Copy the links of the picked files, or of the selected one, at the commit",
         )
-        .when(move |v| (files(v) || pane(v)) && path(v));
+        .when(move |v| files(v) && path(v));
+        register_file_text_keys(k, move |v| pane(v) && path(v), |_| true);
         k.add(
             &[Blame],
             "blame",

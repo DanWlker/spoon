@@ -42,7 +42,8 @@ pub fn loading_note(since: Option<Instant>) -> Option<String> {
 }
 
 // The title of a panel, like "[1] Unstaged (3)": a badge while it has the focus.
-// `notes`, like "2 picked" and the search, follow it.
+// `notes` follow it, in this order on every panel: what it shows (a count, a path, "main only"),
+// what is picked or checked, the search or filter, then whether it loads.
 pub fn panel_title(
     label: &str,
     notes: impl IntoIterator<Item = String>,
