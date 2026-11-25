@@ -1751,7 +1751,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn expand(&mut self) {
-        if self.focus_on_files() {
+        if self.is_files_focused() {
             self.update_tree(FileTreeState::expand);
         }
     }
@@ -1765,18 +1765,13 @@ impl<'a> LocalChangesState<'a> {
 
     // Collapses the selected directory, or moves to the parent directory when it is not open.
     pub fn collapse(&mut self) {
-        if self.focus_on_files() {
+        if self.is_files_focused() {
             self.update_tree(FileTreeState::collapse);
         }
     }
 
     pub fn is_files_focused(&self) -> bool {
         self.focus() == Focus::Files
-    }
-
-    // Whether the keys moving in the files apply to them: the conflict panel is beside them.
-    fn focus_on_files(&self) -> bool {
-        self.focus() == Focus::Files || self.is_conflict_focused()
     }
 
     fn current(&self) -> &Section {
@@ -2240,7 +2235,8 @@ impl LocalChangesPanel<'_> {
             LocalChangesSection::Staged => (2, "Staged", &state.changes.staged),
         };
         let active = state.section == section;
-        let focused = active && self.focused && state.focus_on_files();
+        // like every panel: with the focus, not the diff, conflict or commit section beside them
+        let focused = active && self.focused && state.is_files_focused();
         let extras = picked_note(picked.len())
             .into_iter()
             .chain(state.query_of(section).indicator());
@@ -2264,7 +2260,7 @@ impl LocalChangesPanel<'_> {
         // the filter typed, and the one the tree applies, are set together, see `apply_query_change`
         debug_assert_eq!(state.query_of(section).filter(), tree.filter());
         // only the section whose diff is displayed shows its cursor, quieter while another panel,
-        // like the refs sidebar, has the focus
+        // like the diff or the refs sidebar, has the focus, as the details' trees
         let offset = render_tree(
             buf,
             inner,
@@ -2272,7 +2268,7 @@ impl LocalChangesPanel<'_> {
             tree,
             |i| Some(files[i].status.symbol()),
             |path| picked.contains(path),
-            match (active, self.focused) {
+            match (active, focused) {
                 (false, _) => TreeCursor::Hidden,
                 (true, false) => TreeCursor::Dim,
                 (true, true) => TreeCursor::Bright,
@@ -5472,6 +5468,71 @@ mod tests {
         fs::write(repo_path.join("c.txt"), "new\n")?;
         assert!(state.reload_if_changed(files()));
         assert!(!state.is_visual());
+        Ok(())
+    }
+
+    // The files look focused only while they have the focus, as every panel: their title stayed
+    // lit with the conflict panel focused, and their bar bright with the conflict panel or the
+    // diff focused, which the details dim.
+    #[test]
+    fn test_files_look_focused_only_with_the_focus() -> Result<(), Box<dyn std::error::Error>> {
+        let theme = crate::test_support::ui::test_ctx().color_theme.clone();
+        // the style of the files' title and of their bar, at the row of `file`
+        let looks = |state: &mut LocalChangesState, file: &str| {
+            let area = Rect::new(0, 0, 120, 30);
+            let mut buf = Buffer::empty(area);
+            LocalChangesPanel::new(crate::test_support::ui::test_ctx(), true)
+                .render(area, &mut buf, state);
+            let row =
+                |y: u16| -> String { (0..area.width).map(|x| buf[(x, y)].symbol()).collect() };
+            // in a panel's row, `│` first, or in a title
+            let at = |text: &str, in_row: bool| {
+                (0..area.height).find_map(|y| {
+                    let line = row(y);
+                    let i = line
+                        .find(text)
+                        .filter(|_| line.starts_with('│') == in_row)?;
+                    Some((line[..i].chars().count() as u16, y))
+                })
+            };
+            let (x, y) = at("[1] Unstaged", false).unwrap();
+            let title = buf[(x, y)].fg == theme.panel_title_focused_fg;
+            let (x, y) = at(file, true).unwrap();
+            let bar = (0..x)
+                .find(|&b| buf[(b, y)].symbol() == "▌")
+                .map(|b| buf[(b, y)].fg);
+            (title, bar == Some(theme.highlight_fg))
+        };
+
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let _git = diverged_branches(repo_path);
+        git_stdout(repo_path, &["merge", "feature"]);
+        fs::write(repo_path.join("new.txt"), "new\n")?;
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "a.txt");
+        assert_eq!(
+            looks(&mut state, "a.txt"),
+            (true, true),
+            "the files focused"
+        );
+        state.enter()?;
+        assert!(state.is_conflict_focused());
+        assert_eq!(
+            looks(&mut state, "a.txt"),
+            (false, false),
+            "the conflict focused"
+        );
+        state.back();
+        select_row(&mut state, "new.txt");
+        state.enter()?;
+        assert!(state.is_diff_focused());
+        assert_eq!(
+            looks(&mut state, "new.txt"),
+            (false, false),
+            "the diff focused"
+        );
         Ok(())
     }
 

@@ -1254,13 +1254,15 @@ impl CommitTab {
 
         let search = self.pane_search.as_deref();
         let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
+        // lit with the focus on it, not on the tree beside it, like every panel
+        let pane_focused = self.focused && state.pane.is_focused();
         state.pane.render(
             diff_area,
             Target::DetailPane,
             scrollbar,
             buf,
             &self.ctx,
-            self.focused,
+            pane_focused,
             search,
         );
     }
@@ -1313,7 +1315,7 @@ impl CommitTab {
                     Target::DetailPane,
                     buf,
                     ctx,
-                    self.focused,
+                    self.focused && state.is_preview_focused(),
                     cursor,
                     search,
                 );
@@ -1408,14 +1410,16 @@ mod tests {
     };
 
     // The trees of the changes and files tabs kept their bar bright with the focus elsewhere,
-    // unlike every list.
+    // unlike every list; and the diff or preview beside them their scrollbar, with the tree
+    // focused, unlike the local changes' and the timeline's.
     #[test]
     fn test_tree_bars_dim_without_the_focus() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path();
         let git = GitRepository::new(path);
         git.init();
-        fs::write(path.join("a.txt"), "a\n").unwrap();
+        let long: String = (0..40).map(|i| format!("{i}\n")).collect();
+        fs::write(path.join("a.txt"), long).unwrap();
         git.add(&["a.txt"]);
         git.commit("first", "2024-01-01");
         let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
@@ -1426,6 +1430,15 @@ mod tests {
             (0..area.height)
                 .flat_map(|y| (0..area.width).map(move |x| (x, y)))
                 .find(|&xy| buf[xy].symbol() == "▌")
+                .map(|xy| buf[xy].fg)
+        };
+        // the scrollbar of the diff or preview, in the right half, on the border right of `area`
+        // as the details draw it
+        let thumb = |buf: &Buffer| {
+            let area = buf.area;
+            (0..area.height)
+                .flat_map(|y| (area.width / 2..area.width).map(move |x| (x, y)))
+                .find(|&xy| buf[xy].symbol() == "█")
                 .map(|xy| buf[xy].fg)
         };
         for focused in [true, false] {
@@ -1441,14 +1454,20 @@ mod tests {
                 TreeView::Tree,
             );
             changes.ensure_loaded();
-            let mut buf = Buffer::empty(area);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 82, 8));
             CommitTab::new(test_ctx(), None, focused).render_changes(area, &mut buf, &mut changes);
             assert_eq!(bar(&buf), expected, "changes, focused {focused}");
+            assert_eq!(thumb(&buf), Some(theme.divider_fg), "the diff's scrollbar");
             let mut files = CommitFilesState::new(&repository, &commit, TreeView::Tree);
             files.ensure_loaded();
-            let mut buf = Buffer::empty(area);
+            let mut buf = Buffer::empty(Rect::new(0, 0, 82, 8));
             CommitTab::new(test_ctx(), None, focused).render_files(area, &mut buf, &mut files);
             assert_eq!(bar(&buf), expected, "files, focused {focused}");
+            assert_eq!(
+                thumb(&buf),
+                Some(theme.divider_fg),
+                "the preview's scrollbar"
+            );
         }
     }
 
