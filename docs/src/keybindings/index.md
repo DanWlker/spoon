@@ -187,7 +187,7 @@ These keys are bound for the commit graph only: the local changes page uses <kbd
 | <kbd>n/N</kbd>                       | Go to next/previous search match, in the diff or preview | `go_to_next` `go_to_previous` |
 | <kbd>B</kbd>                         | Blame the selected file (see below), from the selected line of its diff or preview; only with one file selected | `blame` |
 | <kbd>T</kbd>                         | Show the commits changing the selected file (see below); only with one file selected | `timeline` |
-| <kbd>e</kbd>                         | Open the selected files as they are in the working tree in `$VISUAL` or `$EDITOR`, in the changes and files tabs, from the diff or preview too | `edit` |
+| <kbd>e</kbd>                         | Open the picked files, or the selected one, as they are in the working tree in `$VISUAL` or `$EDITOR`, in the changes and files tabs; from the diff or preview, its file at the selected lines | `edit` |
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
 | <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
@@ -205,6 +205,7 @@ In the changes tab (and a diff of two commits), <kbd>Enter</kbd> moves the focus
 - <kbd>/</kbd> searches its text (ignoring case unless the query has an uppercase letter), selecting the changed line matched, else its hunk; <kbd>n/N</kbd> go to the next/previous match.
 - <kbd>v</kbd>, while selecting lines, selects the lines from the selected one, like in the file preview: moving extends the selection, <kbd>v</kbd> again ends it keeping them selected, another selection adds to them, and <kbd>Esc</kbd> clears them. While lines are selected, the selection stays in their hunk.
 - <kbd>y</kbd> <kbd>y</kbd> copies the selected line or lines as in the file (without their `+`/`-`), or the selected hunk as a diff; <kbd>y</kbd> <kbd>f</kbd> copies the file's absolute path, and <kbd>y</kbd> <kbd>l</kbd> the link of the file at those lines, as everywhere.
+- In the file tree, <kbd>e</kbd>, <kbd>y</kbd> <kbd>f</kbd>, <kbd>o</kbd> and <kbd>y</kbd> <kbd>l</kbd> act on the picked files, or the selected one. In a diff, they act on the file of the selected hunk (one of several in a folder's diff), at the picked lines or the hunk: <kbd>e</kbd> opens it at their first line, as the editor's name says to pass it (`+N` for vi, vim, nvim, nano, emacs, micro and kak; `--goto file:N` for VS Code and Cursor; `file:N` for helix, zed and subl; another editor opens the file at its start). The line is of the file at the commit, which the working tree may have moved.
 - <kbd>Space</kbd> applies the selected hunk, line or lines to the working tree (`git apply`), when it applies there; the count of the local changes in the page bar follows.
 - <kbd>+</kbd> and <kbd>-</kbd> show more or fewer lines around the changes, when the diff is of one file; at least one, which git needs to stage or apply a hunk.
 
@@ -330,7 +331,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>3</kbd>                         | Focus the commit message, typing it when it is empty          | `focus_panel_3`                 |
 | <kbd>Enter</kbd>                     | Select hunks in the diff<br>Select lines in the hunk<br>Commit, like <kbd>c</kbd>, in the commit section or on an empty unstaged section<br>Go to the unstaged section from an empty staged one | `confirm`    |
 | <kbd>c</kbd>                         | Commit (or amend), finishing a merge, cherry-pick or revert, after confirming, optionally skipping the commit hooks (`--no-verify`) | `commit` |
-| <kbd>e</kbd>                         | Open the picked files, or the selected one, in `$VISUAL` or `$EDITOR`, from the diff too<br>Type the message, in the commit section | `edit`  |
+| <kbd>e</kbd>                         | Open the picked files, or the selected one, in `$VISUAL` or `$EDITOR`; from the diff, its file at the selected lines<br>Type the message, in the commit section | `edit`  |
 | <kbd>A</kbd>                         | Toggle amending the last commit                              | `toggle_amend`                  |
 | <kbd>m</kbd> <kbd>c</kbd>            | Continue the rebase in progress                              | `continue`                      |
 | <kbd>m</kbd> <kbd>a</kbd>            | Abort the rebase, merge, cherry-pick or revert in progress (asks first) | `abort`              |
@@ -391,7 +392,7 @@ Unstaging while amending removes changes from the commit being amended. Turning 
 | <kbd>y</kbd><kbd>y</kbd> <kbd>y</kbd><kbd>f</kbd> | Copy the commit short/full hash<br>Copy the line, or the selected lines, or the file's absolute path, on its text | `short_copy` `full_copy` |
 | <kbd>v</kbd>                         | Select the lines from the first to the selected one, on the text; another selection adds to them, <kbd>Esc</kbd> clears them | `toggle_select` |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd> | Open the commit, or the file at the line or the lines selected, on the web host; copy its link (on the text, of the file at the lines) | `open_in_browser` `copy_link` |
-| <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR` | `edit` |
+| <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR`; from the text, at the selected line | `edit` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the lines' commits (by hash, author or date, from one run of lines to the next) or the text, whichever has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
 
@@ -415,7 +416,7 @@ The commit keys act on the commit at the top while it has the focus, and on the 
 | <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
 | <kbd>o</kbd> <kbd>y</kbd><kbd>l</kbd> | Open the commit, or from the diff the file at the selected lines, on the web host; copy its link | `open_in_browser` `copy_link` |
-| <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR` | `edit` |
+| <kbd>e</kbd>                         | Open the file under its newest name, as it is in the working tree, in `$VISUAL` or `$EDITOR`; from the diff, at the selected lines | `edit` |
 | <kbd>/</kbd> <kbd>n/N</kbd>          | Search the commits (by hash, date or subject), or the diff while it has the focus; go to next/previous match | `search` `go_to_next` `go_to_previous` |
 | <kbd>H</kbd>                         | Show/hide all the keys working where the focus is            | `keys_toggle`                   |
 

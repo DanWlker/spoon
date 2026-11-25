@@ -1,7 +1,7 @@
 mod commit;
 mod conflict;
 
-use std::{collections::BTreeMap, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::BTreeMap, path::PathBuf, rc::Rc, sync::Arc, time::Instant};
 
 pub use commit::CommitDraft;
 pub use conflict::ConflictItem;
@@ -41,9 +41,9 @@ use crate::{
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog, StashFile},
         style::{
-            badge, check_mark, divider, loading_note, mark_selected_bar, panel_title, picked_note,
-            placeholder, render_border_buttons, render_panel, render_panel_scrollbar,
-            tree_panel_width, warned_panel_title,
+            badge, badged_panel_title, check_mark, divider, loading_note, mark_selected_bar,
+            panel_title, picked_note, placeholder, render_border_buttons, render_panel,
+            render_panel_scrollbar, tree_panel_width, warned_panel_title,
         },
         submodule::{submodule_key, SubmodulePanel},
         text_area::{Caret, Lines, TextArea},
@@ -92,8 +92,8 @@ pub enum Request {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalRequest {
-    // absolute paths
-    Editor(Vec<PathBuf>),
+    // absolute paths, one at a line, from 1, from the diff
+    Editor(Vec<PathBuf>, Option<usize>),
     // a path relative to the top of the working tree
     MergeTool(String),
 }
@@ -697,36 +697,57 @@ impl<'a> LocalChangesState<'a> {
             self.edit_message();
             return Ok(());
         }
-        let files = self.editable_files();
+        let files: Vec<Cow<str>> = self.editable_files().collect();
         if files.is_empty() {
             return Err("Select a file to edit".into());
         }
+        let files: Vec<&str> = files.iter().map(AsRef::as_ref).collect();
         let paths = self.repository.working_tree_paths(&files)?;
-        self.request = Some(Request::External(ExternalRequest::Editor(paths)));
+        // from the diff, at the first line of the picked lines or the hunk
+        let line = self.pane.selected_lines().map(|lines| *lines.start());
+        self.request = Some(Request::External(ExternalRequest::Editor(paths, line)));
         Ok(())
     }
 
-    // The picked files, or the selected one, to open in the editor, from the files or the diff;
-    // a submodule is a directory, not a file to open.
-    fn editable_files(&self) -> Vec<&str> {
+    // The file of the diff the keys on a file act on, while it has the focus: of the hunk
+    // selected, else the selected file of a diff without hunks.
+    pub fn diff_file(&self) -> Option<Cow<'_, str>> {
+        if !self.is_diff_focused() {
+            return None;
+        }
+        self.pane
+            .cursor_file()
+            .or_else(|| self.selected_file().map(Cow::Borrowed))
+    }
+
+    // The files to open in the editor: the picked files, or the selected one; from the diff, its
+    // file. A submodule is a directory, not a file to open.
+    // Lazily: whether there is one is asked on each draw, see `register_keys`.
+    // shortcut: with files picked, the check walks the files up to the first picked one; look
+    // the picks up by path instead if it shows in a profile of 100k+ changed files.
+    fn editable_files(&self) -> impl Iterator<Item = Cow<'_, str>> {
+        let in_diff = self.is_diff_focused();
         let picked = self.picked();
-        let files: Vec<&LocalChangeFile> = if picked.is_empty() {
-            self.selected_row()
-                .and_then(FileTreeRow::file_index)
-                .and_then(|i| self.files().get(i))
-                .into_iter()
-                .collect()
-        } else {
-            self.files()
-                .iter()
-                .filter(|file| picked.contains(&file.path))
-                .collect()
-        };
-        files
+        let selected = (!in_diff && picked.is_empty())
+            .then(|| self.selected_row().and_then(FileTreeRow::file_index))
+            .flatten()
+            .and_then(|i| self.files().get(i));
+        let picks = (!in_diff && !picked.is_empty())
+            .then(|| {
+                self.files()
+                    .iter()
+                    .filter(|file| picked.contains(&file.path))
+            })
             .into_iter()
-            .filter(|file| !self.repository.is_submodule(&file.path))
-            .map(|file| file.path.as_ref())
-            .collect()
+            .flatten();
+        let files = selected
+            .into_iter()
+            .chain(picks)
+            .map(|file| Cow::Borrowed(file.path.as_ref()));
+        self.diff_file()
+            .into_iter()
+            .chain(files)
+            .filter(|path| !self.repository.is_submodule(path))
     }
 
     // Whether there is something to commit: staged changes, amending, or an operation to conclude.
@@ -900,9 +921,9 @@ impl<'a> LocalChangesState<'a> {
         k.add(
             &[Edit],
             "edit",
-            "Open the picked files, or the selected one, in $VISUAL or $EDITOR",
+            "Open the picked files, or the selected one, in $VISUAL or $EDITOR; from the diff, its file at the selected lines",
         )
-        .when(move |v| (files(v) || diff(v)) && !v.editable_files().is_empty());
+        .when(move |v| (files(v) || diff(v)) && v.editable_files().next().is_some());
         k.add(
             &[Blame],
             "blame",
@@ -931,11 +952,7 @@ impl<'a> LocalChangesState<'a> {
         )
         .when(row);
         // in the working tree, without a link
-        crate::view::register_file_text_keys(
-            k,
-            move |v| diff(v) && v.selected_file().is_some(),
-            |_| false,
-        );
+        crate::view::register_file_text_keys(k, move |v| v.diff_file().is_some(), |_| false);
         k.add(
             &[Ignore],
             "ignore",
@@ -2286,9 +2303,8 @@ impl LocalChangesPanel<'_> {
             _ => None,
         };
         // like every panel's, the badge after the name
-        let mut title = panel_title(&path, loading, focused, theme);
         let changed = badge(" submodule changed ", theme.status_warn_fg, theme);
-        title.spans.insert(1, changed);
+        let title = badged_panel_title(&path, changed, loading, focused, theme);
         if let Beside::SubmoduleReading(_) = &state.beside {
             render_panel(buf, area, title, focused, theme);
             return;
@@ -4562,6 +4578,53 @@ mod tests {
         Ok(())
     }
 
+    // From the files, e opens the picked files; from the diff, the file of the hunk selected at
+    // its first line, in a folder's diff too. From the diff it opened the picked files.
+    #[test]
+    fn test_edit_from_the_diff_opens_its_file_at_the_line() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        let git = GitRepository::new(repo_path);
+        git.init();
+        fs::create_dir(repo_path.join("d"))?;
+        for file in ["d/a.txt", "d/b.txt", "x.txt"] {
+            fs::write(repo_path.join(file), "1\n2\n3\n")?;
+        }
+        git.add(&["d/a.txt", "d/b.txt", "x.txt"]);
+        git.commit("init", "2024-01-01");
+        for file in ["d/a.txt", "d/b.txt", "x.txt"] {
+            fs::write(repo_path.join(file), "1\n2\nthree\n")?;
+        }
+
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        select_row(&mut state, "x.txt");
+        state.toggle_visual();
+        state.toggle_visual();
+        select_row(&mut state, "d");
+        state.request_edit()?;
+        let request = state.take_external_request();
+        assert_eq!(
+            request,
+            Some(ExternalRequest::Editor(vec![repo_path.join("x.txt")], None))
+        );
+        // into the folder's diff, on the hunk of b.txt
+        state.enter()?;
+        state.select_last();
+        assert_eq!(state.diff_file().as_deref(), Some("d/b.txt"));
+        state.request_edit()?;
+        let request = state.take_external_request();
+        assert_eq!(
+            request,
+            Some(ExternalRequest::Editor(
+                vec![repo_path.join("d/b.txt")],
+                Some(1)
+            ))
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_edit_opens_only_the_exact_picked_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -4584,7 +4647,7 @@ mod tests {
         state.request_edit()?;
         assert_eq!(
             state.take_external_request(),
-            Some(ExternalRequest::Editor(vec![repo_path.join("b.txt")])),
+            Some(ExternalRequest::Editor(vec![repo_path.join("b.txt")], None)),
             "the directory was expanded"
         );
         Ok(())
@@ -4669,10 +4732,10 @@ mod tests {
         state.request_edit()?;
         assert_eq!(
             state.take_external_request(),
-            Some(ExternalRequest::Editor(vec![
-                repo_path.join("b.txt"),
-                repo_path.join("c.txt"),
-            ]))
+            Some(ExternalRequest::Editor(
+                vec![repo_path.join("b.txt"), repo_path.join("c.txt"),],
+                None
+            ))
         );
         state.clear_picks();
 
@@ -5389,7 +5452,7 @@ mod tests {
         let toplevel = state.toplevel().to_path_buf();
         assert_eq!(
             state.take_external_request(),
-            Some(ExternalRequest::Editor(vec![toplevel.join("a.txt")]))
+            Some(ExternalRequest::Editor(vec![toplevel.join("a.txt")], None))
         );
 
         // esc goes back to the files
@@ -5400,7 +5463,7 @@ mod tests {
         state.request_edit()?;
         assert_eq!(
             state.take_external_request(),
-            Some(ExternalRequest::Editor(vec![toplevel.join("a.txt")]))
+            Some(ExternalRequest::Editor(vec![toplevel.join("a.txt")], None))
         );
         select_row(&mut state, ROOT_PATH);
         assert!(state.request_edit().is_err());

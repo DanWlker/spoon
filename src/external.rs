@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    ffi::OsString,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -70,41 +71,73 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-// Opens `paths` in the user's editor: $VISUAL, then $EDITOR, then vi.
+// Opens `paths` in the user's editor: $VISUAL, then $EDITOR, then vi; one path at `line`, from
+// 1, when given, see `line_args`.
 // The variables are expanded by the shell, so they may include arguments, like "code --wait".
-pub fn editor_command(paths: &[PathBuf]) -> Vec<String> {
-    let mut command = vec![
+pub fn editor_command(paths: &[PathBuf], line: Option<usize>) -> Vec<OsString> {
+    let mut command: Vec<OsString> = vec![
         "sh".into(),
         "-c".into(),
         r#"exec ${VISUAL:-${EDITOR:-vi}} "$@""#.into(),
         "sh".into(),
     ];
-    command.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+    match (paths, line) {
+        ([path], Some(line)) => command.extend(line_args(&editor(), path, line)),
+        _ => command.extend(paths.iter().map(|path| path.into())),
+    }
     command
 }
 
+// The arguments opening `path` at `line` in `editor`, as its name takes them, like lazygit's
+// editor presets; an editor not known here opens the file at its start.
+fn line_args(editor: &str, path: &Path, line: usize) -> Vec<OsString> {
+    let first = editor.split_whitespace().next().unwrap_or_default();
+    let name = first.rsplit('/').next().unwrap_or_default();
+    let at_line = || {
+        let mut arg = path.as_os_str().to_owned();
+        arg.push(format!(":{line}"));
+        arg
+    };
+    match name {
+        "vi" | "vim" | "nvim" | "gvim" | "nano" | "emacs" | "emacsclient" | "micro" | "kak" => {
+            vec![format!("+{line}").into(), path.into()]
+        }
+        "code" | "code-insiders" | "codium" | "cursor" => vec!["--goto".into(), at_line()],
+        "hx" | "helix" | "zed" | "subl" => vec![at_line()],
+        _ => vec![path.into()],
+    }
+}
+
+// The editor `editor_command` runs, as the variables name it.
+fn editor() -> String {
+    let set = |var| std::env::var(var).ok().filter(|v| !v.is_empty());
+    set("VISUAL")
+        .or_else(|| set("EDITOR"))
+        .unwrap_or_else(|| "vi".into())
+}
+
 // Resolves the conflicts of `path` (relative to `toplevel`) in a merge tool, git's merge.tool unless given.
-pub fn merge_tool_command(toplevel: &Path, path: &str, tool: Option<&str>) -> Vec<String> {
-    let mut command: Vec<String> = vec![
+pub fn merge_tool_command(toplevel: &Path, path: &str, tool: Option<&str>) -> Vec<OsString> {
+    let mut command: Vec<OsString> = vec![
         "git".into(),
         "-C".into(),
-        toplevel.to_string_lossy().into_owned(),
+        toplevel.into(),
         "mergetool".into(),
         "--no-prompt".into(),
     ];
     if let Some(tool) = tool {
         command.extend(["--tool".into(), tool.into()]);
     }
-    command.extend(["--".into(), path.into()]);
+    command.extend(["--".into(), crate::git::git_arg(path)]);
     command
 }
 
 // Runs an interactive command in the terminal, which the app gives up meanwhile, see App::run_external.
-pub fn exec_interactive(command: &[String]) -> Result<(), String> {
+pub fn exec_interactive(command: &[OsString]) -> Result<(), String> {
     let status = Command::new(&command[0])
         .args(&command[1..])
         .status()
-        .map_err(|e| format!("Failed to execute {}: {e}", command[0]))?;
+        .map_err(|e| format!("Failed to execute {}: {e}", command[0].display()))?;
     if status.success() {
         return Ok(());
     }
@@ -118,14 +151,11 @@ pub fn exec_interactive(command: &[String]) -> Result<(), String> {
 }
 
 // What the user knows the command by: the editor of `editor_command`, not the shell running it.
-fn command_name(command: &[String]) -> String {
+fn command_name(command: &[OsString]) -> String {
     if command[0] != "sh" {
-        return command[0].clone();
+        return command[0].to_string_lossy().into_owned();
     }
-    let set = |var| std::env::var(var).ok().filter(|v| !v.is_empty());
-    set("VISUAL")
-        .or_else(|| set("EDITOR"))
-        .unwrap_or_else(|| "vi".into())
+    editor()
 }
 
 #[cfg(test)]
@@ -134,11 +164,11 @@ mod tests {
 
     #[test]
     fn test_command_not_found() {
-        let missing = ["nosuchcommand-spoon".to_string()];
+        let missing = [OsString::from("nosuchcommand-spoon")];
         assert!(exec_interactive(&missing)
             .unwrap_err()
             .starts_with("Failed to execute"));
-        let sh = |script: &str| ["sh", "-c", script].map(String::from).to_vec();
+        let sh = |script: &str| ["sh", "-c", script].map(OsString::from).to_vec();
         let err = exec_interactive(&sh("exit 127")).unwrap_err();
         assert!(err.ends_with(": command not found"), "{err}");
         let err = exec_interactive(&sh("exit 3")).unwrap_err();
@@ -171,10 +201,13 @@ mod tests {
 
     #[test]
     fn test_editor_and_merge_tool_commands() {
-        let editor = editor_command(&[
-            PathBuf::from("/repo/a b.txt"),
-            PathBuf::from("/repo/b c.txt"),
-        ]);
+        let editor = editor_command(
+            &[
+                PathBuf::from("/repo/a b.txt"),
+                PathBuf::from("/repo/b c.txt"),
+            ],
+            Some(3),
+        );
         assert_eq!(editor[0], "sh");
         assert_eq!(editor[4], "/repo/a b.txt");
         assert_eq!(editor[5], "/repo/b c.txt");
@@ -193,6 +226,30 @@ mod tests {
         ];
         assert_eq!(tool, expected);
         let tool = merge_tool_command(Path::new("/repo"), "a.txt", None);
-        assert!(!tool.contains(&"--tool".to_string()));
+        assert!(!tool.contains(&"--tool".into()));
+    }
+
+    // The line goes as the editor takes it; to one it doesn't know, the file alone.
+    #[test]
+    fn test_editor_at_a_line() {
+        let path = Path::new("/repo/a.txt");
+        let args = |editor| line_args(editor, path, 7);
+        assert_eq!(args("nvim"), ["+7", "/repo/a.txt"]);
+        assert_eq!(args("/usr/bin/vim -p"), ["+7", "/repo/a.txt"]);
+        assert_eq!(args("code --wait"), ["--goto", "/repo/a.txt:7"]);
+        assert_eq!(args("hx"), ["/repo/a.txt:7"]);
+        assert_eq!(args("ed"), ["/repo/a.txt"]);
+    }
+
+    // A file name that isn't UTF-8 reached the editor and the merge tool as U+FFFD.
+    #[test]
+    fn test_editor_and_merge_tool_get_the_bytes_of_the_name() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = crate::git::text_from_git(b"caf\xe9.txt");
+        let path = crate::git::work_path(Path::new("/repo"), &name);
+        let editor = editor_command(std::slice::from_ref(&path), None);
+        assert_eq!(editor[4].as_bytes(), b"/repo/caf\xe9.txt");
+        let tool = merge_tool_command(Path::new("/repo"), &name, None);
+        assert_eq!(tool.last().unwrap().as_bytes(), b"caf\xe9.txt");
     }
 }

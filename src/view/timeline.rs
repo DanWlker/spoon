@@ -220,10 +220,13 @@ impl TimelineView {
             }
             UserEvent::GoToNext => self.search(SearchDirection::Next),
             UserEvent::GoToPrevious => self.search(SearchDirection::Previous),
-            // the file under its newest name, as it is in the working tree
-            UserEvent::Edit => self
-                .tx
-                .send(edit_files(repository, &[&self.history[0].path])),
+            // the file under its newest name, as it is in the working tree; from the diff, at the
+            // first line of the picked lines or the hunk
+            UserEvent::Edit => {
+                let line = self.pane.selected_lines().map(|lines| *lines.start());
+                let path = [self.history[0].path.as_str()];
+                self.tx.send(edit_files(repository, &path, line));
+            }
             _ if in_diff => self.handle_diff_event(event, repository),
             _ => self.handle_commits_event(event),
         }
@@ -427,7 +430,7 @@ impl TimelineView {
         k.add(
             &[Edit],
             "edit",
-            "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR",
+            "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR; from the diff, at the selected lines",
         );
         k.quiet(&[FocusPanel(1)], "Focus the commits").when(diff);
         k.quiet(&[FocusPanel(2)], "Focus the diff").when(enterable);

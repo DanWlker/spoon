@@ -53,6 +53,21 @@ pub fn panel_title(
     warned_panel_title(label, &[], notes, focused, theme)
 }
 
+// A title with `badge`, the state of what it shows like "conflicted", after the label and before
+// the notes, see `panel_title`.
+pub fn badged_panel_title(
+    label: &str,
+    badge: Span<'static>,
+    notes: impl IntoIterator<Item = String>,
+    focused: bool,
+    theme: &ColorTheme,
+) -> Line<'static> {
+    let mut title = panel_title(label, notes, focused, theme);
+    // the label is the first span
+    title.spans.insert(1, badge);
+    title
+}
+
 // A title with `warnings`, states to mind like "amending" or "rebasing", in the warning color: the
 // first of its notes, being about what the panel shows, see `panel_title`.
 pub fn warned_panel_title(
@@ -487,18 +502,35 @@ pub fn scroll_with_selection(
     total: usize,
     scrolloff: usize,
 ) -> (usize, usize) {
+    let offset = offset
+        .saturating_add_signed(rows)
+        .min(total.saturating_sub(height.max(1)));
+    let selected = selected.saturating_add_signed(rows);
+    let rows = selection_rows(offset, height, total, scrolloff);
+    (offset, selected.max(rows.start).min(rows.end - 1))
+}
+
+// The rows of a window of `height` rows from `offset`, of `total`, the selection may be on, as
+// vim's: out of the `scrolloff` rows at an edge the window can still scroll past, and in the
+// list. Never empty.
+pub fn selection_rows(
+    offset: usize,
+    height: usize,
+    total: usize,
+    scrolloff: usize,
+) -> Range<usize> {
     let height = height.max(1);
     let last_offset = total.saturating_sub(height);
-    let offset = offset.saturating_add_signed(rows).min(last_offset);
     let margin = scrolloff.min((height - 1) / 2);
-    let mut selected = selected.saturating_add_signed(rows);
-    if offset > 0 {
-        selected = selected.max(offset + margin);
-    }
-    if offset < last_offset {
-        selected = selected.min(offset + height - 1 - margin);
-    }
-    (offset, selected.min(total.saturating_sub(1)))
+    let start = match offset > 0 {
+        true => offset + margin,
+        false => offset,
+    };
+    let end = match offset < last_offset {
+        true => offset + height - margin,
+        false => offset + height,
+    };
+    start.min(total.saturating_sub(1))..end.min(total).max(start + 1)
 }
 
 // The first row shown of a list of `total` rows, `height` high, moved as little as can be from
@@ -680,16 +712,11 @@ impl ListCursor {
     // leave the `scrolloff` rows at the edge, then moving along.
     pub fn scroll_lines(&mut self, rows: isize, total: usize) {
         self.shown = Shown::Selection;
-        let margin = self.margin();
         // before the first draw too, the selected row stays at or below the first shown
         let last_offset = total.saturating_sub(self.height.max(1));
         self.offset = self.offset.saturating_add_signed(rows).min(last_offset);
-        let top = self.offset + margin;
-        let bottom = (self.offset + self.height).saturating_sub(1 + margin);
-        self.selected = self
-            .selected
-            .clamp(top, bottom.max(top))
-            .min(total.saturating_sub(1));
+        let rows = selection_rows(self.offset, self.height, total, self.scrolloff);
+        self.selected = self.selected.max(rows.start).min(rows.end - 1);
     }
 
     // Scrolls a page at a time with ctrl-f and ctrl-b, half of one with ctrl-d and ctrl-u, the
@@ -738,10 +765,6 @@ impl ListCursor {
 
     fn row_range(&self) -> Range<usize> {
         self.selected..self.selected + 1
-    }
-
-    pub fn margin(&self) -> usize {
-        self.scrolloff.min(self.height.saturating_sub(1) / 2)
     }
 }
 
@@ -909,6 +932,25 @@ mod tests {
             cursor.scroll_lines(1, 3);
         }
         assert_eq!(cursor.row(), Some(0));
+    }
+
+    // ctrl-e and ctrl-y moved the selection out of the scrolloff rows at an edge the list can't
+    // scroll past, though nothing scrolled. vim leaves it.
+    #[test]
+    fn test_scroll_lines_at_an_edge_leaves_the_selection() {
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 30, 3);
+        cursor.scroll_lines(-1, 30);
+        assert_eq!((cursor.offset(), cursor.selected()), (0, 0));
+        // a list shorter than its window
+        let mut cursor = ListCursor::default();
+        cursor.fit(10, 5, 3);
+        cursor.scroll_lines(1, 5);
+        assert_eq!((cursor.offset(), cursor.selected()), (0, 0));
+        // at the bottom
+        cursor.select(4, 5);
+        cursor.scroll_lines(-1, 5);
+        assert_eq!(cursor.selected(), 4);
     }
 
     // The wheel scrolls the rows shown alone: the selection stays, even off them, until it moves,

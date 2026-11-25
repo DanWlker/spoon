@@ -5652,7 +5652,7 @@ fn test_another_key_shows_the_popup_right_away() {
 // chosen by the environment, which the tests running at once share
 
 fn run_in_terminal(command: &[&str]) -> Vec<Step> {
-    let command = command.iter().map(|a| a.to_string()).collect();
+    let command = command.iter().map(|a| a.into()).collect();
     vec![Step::Event(Box::new(AppEvent::RunExternal(command)))]
 }
 
@@ -6674,12 +6674,23 @@ fn test_esc_clears_the_picked_files_before_the_filter_of_the_details() {
     let picked = |shown: bool| {
         screen(move |screen| assert_eq!(screen.contains("1 picked"), shown, "{screen}"))
     };
+    // and the hint of esc says so, as on local changes; it said "close"
+    let esc_hint = |expected: &'static str| {
+        check(move |app| {
+            let hints = app.view.keys().hints();
+            let esc = hints
+                .iter()
+                .find(|(events, _)| events.contains(&UserEvent::Cancel));
+            assert_eq!(esc.map(|(_, hint)| hint.as_str()), Some(expected));
+        })
+    };
     harness.run(vec![
         keys("4 /"),
         typing("f"),
         keys("enter v v"),
         draw(),
         picked(true),
+        esc_hint("clear picks"),
         keys("esc"),
         draw(),
         picked(false),
@@ -6761,6 +6772,32 @@ fn test_full_path_copied_in_every_diff_and_text() {
             }),
         ]);
     }
+}
+
+// In the diff of a folder in the details, y f copies the file of the hunk selected; it copied the
+// folder. From the files, the picked files.
+#[test]
+fn test_full_path_in_a_folder_diff_is_the_file_of_its_hunk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::create_dir(path.join("d")).unwrap();
+    for file in ["d/a.txt", "d/b.txt"] {
+        std::fs::write(path.join(file), "x\n").unwrap();
+    }
+    git(&path, &["add", "d"]);
+    git(&path, &["commit", "-q", "-m", "folder"]);
+    let copied = dir.path().join("copied");
+    let mut harness = Harness::new(&path, launch());
+    let ctx = Rc::get_mut(&mut harness.ctx).unwrap();
+    let command = format!("cat > '{}'", copied.display());
+    ctx.core_config.external.clipboard = crate::config::ClipboardConfig::Custom {
+        commands: vec!["sh".into(), "-c".into(), command],
+    };
+    let read = |copied: &std::path::Path| std::fs::read_to_string(copied).unwrap();
+    // the folder, above its first file the details open on
+    harness.run(vec![keys("4 k enter shift-g y f")]);
+    let expected = path.join("d/b.txt").canonicalize().unwrap();
+    assert_eq!(std::path::Path::new(&read(&copied)), expected);
 }
 
 // The options of a search toggle only while it is typed, on every panel: the commit list's

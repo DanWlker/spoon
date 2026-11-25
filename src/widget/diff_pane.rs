@@ -269,6 +269,13 @@ impl DiffPane {
         self.focused_part().unwrap_or(DiffPart::Hunk)
     }
 
+    // The file of the selected hunk, while the diff has the focus: the one the keys on a file act
+    // on, of the several a folder's diff shows. None for a diff without hunks, like a binary file.
+    pub fn cursor_file(&self) -> Option<std::borrow::Cow<'_, str>> {
+        let diff = self.diff().filter(|_| self.is_focused())?;
+        diff.hunks.get(self.cursor.hunk).map(|hunk| hunk.path())
+    }
+
     // The lines of the selected hunk or line in the file at the commit; None outside the diff, or
     // for lines only removed.
     pub fn selected_lines(&self) -> Option<RangeInclusive<usize>> {

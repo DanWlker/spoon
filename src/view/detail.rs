@@ -1,4 +1,4 @@
-use std::{rc::Rc, sync::Arc};
+use std::{borrow::Cow, ops::RangeInclusive, rc::Rc, sync::Arc};
 
 use ratatui::{
     crossterm::event::KeyEvent,
@@ -419,28 +419,22 @@ impl<'a> DetailView<'a> {
             }
             .into()
         });
+        // either picks are cleared before the details close, see `handle_event`
+        let picks =
+            |v: &Self| v.has_tree_picks() || !v.as_list_state().picked_commit_hashes().is_empty();
+        let closes = |v: &Self| !v.list_focused && v.focus() != Pane && !v.is_comparing();
         k.add(
             &[Cancel],
             "clear picks",
-            "Clear the picked commits, then close the details",
+            "Clear the picked commits, then the picked files, then the filter, then close the details",
         )
-        .when(|v| {
-            !v.list_focused
-                && v.focus() != Pane
-                && !v.is_comparing()
-                && !v.as_list_state().picked_commit_hashes().is_empty()
-        });
+        .when(move |v| closes(v) && picks(v));
         k.add(
             &[Cancel],
             "close",
-            "Clear the picked commits, then close the details",
+            "Clear the picked commits, then the picked files, then the filter, then close the details",
         )
-        .when(|v| {
-            !v.list_focused
-                && v.focus() != Pane
-                && !v.is_comparing()
-                && v.as_list_state().picked_commit_hashes().is_empty()
-        });
+        .when(move |v| closes(v) && !picks(v));
         k.add(
             &[Cancel],
             "back",
@@ -490,7 +484,7 @@ impl<'a> DetailView<'a> {
             "Copy the links of the picked files, or of the selected one, at the commit",
         )
         .when(move |v| files(v) && path(v));
-        register_file_text_keys(k, move |v| pane(v) && path(v), |_| true);
+        register_file_text_keys(k, |v| v.pane_file().is_some(), |_| true);
         k.add(
             &[Blame],
             "blame",
@@ -506,7 +500,7 @@ impl<'a> DetailView<'a> {
         k.add(
             &[Edit],
             "edit",
-            "Open the picked files, or the selected one, in $VISUAL or $EDITOR",
+            "Open the picked files, or the selected one, in $VISUAL or $EDITOR; from the diff or preview, its file at the selected lines",
         )
         .when(|v| !v.editable_files().is_empty());
         k.quiet(&[GoToNext, GoToPrevious], "Go to the next/previous match")
@@ -950,24 +944,27 @@ impl<'a> DetailView<'a> {
             });
             return;
         }
-        // e opens the picked files, or the selected one, as they are in the working tree, from the
-        // diff or preview too
+        // e opens the picked files, or the selected one, as they are in the working tree; from the
+        // diff or preview, its file at the first line selected
         if let (UserEvent::Edit, false) = (event, self.list_focused) {
             let files = self.editable_files();
             if files.is_empty() {
                 return;
             }
-            self.tx.send(edit_files(self.repository, &files));
+            let files: Vec<&str> = files.iter().map(AsRef::as_ref).collect();
+            let line = self.pane_lines().map(|lines| *lines.start());
+            self.tx.send(edit_files(self.repository, &files, line));
             return;
         }
         // the diff or preview beside the files gets only its own keys and those of the whole app
         // (see `Scope::DetailsPane`), which go on below
         if self.is_pane_focused() {
-            // the file beside it, as from the files
+            // the file it shows, of the hunk selected in a diff of several
             if event == UserEvent::FullCopy {
-                if let Some(row) = self.selected_row() {
+                if let Some(file) = self.pane_file() {
+                    let paths = [file.as_ref()];
                     self.tx
-                        .send(copy_path(self.repository, row, CopyForm::Full));
+                        .send(copy_paths(self.repository, paths, CopyForm::Full));
                 }
                 return;
             }
@@ -1290,17 +1287,23 @@ impl<'a> DetailView<'a> {
 
     // Clears the files picked in the tree of the tab; returns whether there were any.
     fn clear_tree_picks(&mut self) -> bool {
+        if !self.has_tree_picks() {
+            return false;
+        }
+        match self.tab {
+            DetailTab::Info => {}
+            DetailTab::Changes => self.changes_state.cancel_visual(),
+            DetailTab::Files => self.files_state.cancel_tree_visual(),
+        }
+        true
+    }
+
+    // Whether files are picked in the tree of the tab shown.
+    fn has_tree_picks(&self) -> bool {
         match self.tab {
             DetailTab::Info => false,
-            DetailTab::Changes if self.changes_state.has_selection() => {
-                self.changes_state.cancel_visual();
-                true
-            }
-            DetailTab::Files if self.files_state.has_tree_selection() => {
-                self.files_state.cancel_tree_visual();
-                true
-            }
-            DetailTab::Changes | DetailTab::Files => false,
+            DetailTab::Changes => self.changes_state.has_selection(),
+            DetailTab::Files => self.files_state.has_tree_selection(),
         }
     }
 
@@ -1326,9 +1329,16 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    // The picked files, or the selected one, to open in the editor; like the local changes, a
-    // submodule isn't a file to edit.
-    fn editable_files(&self) -> Vec<&str> {
+    // The picked files, or the selected one, to open in the editor; from the diff or preview, its
+    // file. Like the local changes, a submodule isn't a file to edit.
+    fn editable_files(&self) -> Vec<Cow<'_, str>> {
+        if self.is_pane_focused() {
+            return self
+                .pane_file()
+                .filter(|path| !self.repository.is_submodule(path))
+                .into_iter()
+                .collect();
+        }
         let entries = match self.tab {
             _ if self.list_focused => vec![],
             DetailTab::Info => vec![],
@@ -1338,10 +1348,35 @@ impl<'a> DetailView<'a> {
         entries
             .into_iter()
             .filter_map(|entry| match entry {
-                Entry::File(path) if !self.repository.is_submodule(path) => Some(path),
+                Entry::File(path) if !self.repository.is_submodule(path) => {
+                    Some(Cow::Borrowed(path))
+                }
                 _ => None,
             })
             .collect()
+    }
+
+    // The file of the diff or preview having the focus, the keys on a file act on: of the hunk
+    // selected in a diff of several, else the selected file.
+    fn pane_file(&self) -> Option<Cow<'_, str>> {
+        if !self.is_pane_focused() {
+            return None;
+        }
+        let hunk = match self.tab {
+            DetailTab::Changes => self.changes_state.pane.cursor_file(),
+            DetailTab::Files | DetailTab::Info => None,
+        };
+        hunk.or_else(|| self.selected_file().map(Cow::Borrowed))
+    }
+
+    // The lines selected in the diff or preview having the focus, from 1, see `pane_file`.
+    fn pane_lines(&self) -> Option<RangeInclusive<usize>> {
+        match self.tab {
+            _ if !self.is_pane_focused() => None,
+            DetailTab::Changes => self.changes_state.pane.selected_lines(),
+            DetailTab::Files => self.files_state.selected_lines(),
+            DetailTab::Info => None,
+        }
     }
 
     // The path of the selected file, to blame, show the timeline of or reset.
@@ -1357,13 +1392,9 @@ impl<'a> DetailView<'a> {
     fn handle_pane_event(&mut self, event: UserEvent) {
         // o opens the file at this commit on the web host, at the selected lines; O copies the link
         if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-            let lines = match self.tab {
-                DetailTab::Changes => self.changes_state.pane.selected_lines(),
-                DetailTab::Files => self.files_state.selected_lines(),
-                DetailTab::Info => None,
-            };
-            if let Some(entry) = self.selected_row().and_then(FileTreeRow::entry) {
-                let link = file_link(event, &self.commit.commit_hash, entry.path(), lines);
+            if let Some(file) = self.pane_file() {
+                let lines = self.pane_lines();
+                let link = file_link(event, &self.commit.commit_hash, &file, lines);
                 self.tx.send(link);
             }
             return;

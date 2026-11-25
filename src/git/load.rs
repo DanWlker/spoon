@@ -330,9 +330,12 @@ fn load_all_commits(
             cmd.arg("--branches").arg("--remotes").arg("--tags");
 
             // commits that are reachable from the stashes
-            stashes.iter().for_each(|stash| {
-                cmd.arg(stash.parent_commit_hashes[0].as_str());
-            });
+            for parent in stashes
+                .iter()
+                .filter_map(|s| s.parent_commit_hashes.first())
+            {
+                cmd.arg(parent.as_str());
+            }
 
             // only a detached HEAD is left out of --branches; on a branch, HEAD would add nothing
             if matches!(head, Head::Detached { .. }) {
@@ -499,16 +502,14 @@ fn build_commits_maps(commits: &Vec<Commit>) -> (CommitsMap, CommitsMap) {
 
 fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<Commit> {
     // Stash commit has multiple parent commits, but the first parent commit is the commit that the stash was created from.
-    // If the first parent commit is not found, the stash commit is ignored.
+    // If the first parent commit is not found, or there is none, the stash commit is ignored.
     let mut ret = Vec::new();
-    let mut statsh_map: FxHashMap<CommitHash, Vec<Commit>> =
-        stashes
-            .into_iter()
-            .fold(FxHashMap::default(), |mut acc, commit| {
-                let parent = commit.parent_commit_hashes[0].clone();
-                acc.entry(parent).or_default().push(commit);
-                acc
-            });
+    let mut statsh_map: FxHashMap<CommitHash, Vec<Commit>> = FxHashMap::default();
+    for stash in stashes {
+        if let Some(parent) = stash.parent_commit_hashes.first() {
+            statsh_map.entry(parent.clone()).or_default().push(stash);
+        }
+    }
     for commit in commits {
         if let Some(stashes) = statsh_map.remove(&commit.commit_hash) {
             for stash in stashes {
@@ -830,6 +831,27 @@ mod tests {
         };
         assert_eq!(name, "stash@{0}");
         assert!(repository.commit(target).is_some());
+    }
+
+    // A stash with no parent, which another tool can leave in refs/stash, stopped the app loading.
+    #[test]
+    fn test_load_a_stash_without_parent() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("a.txt"), "a\n").unwrap();
+        repo.add(&["a.txt"]);
+        repo.commit("first", "2024-01-01");
+        let root = git(path, &["commit-tree", "-m", "x", "HEAD^{tree}"]);
+        git(
+            path,
+            &["update-ref", "--create-reflog", "refs/stash", root.trim()],
+        );
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert!(repository.head_commit().is_some());
     }
 
     #[test]

@@ -245,10 +245,13 @@ impl BlameView {
             }
             UserEvent::GoToNext if body => self.search(SearchDirection::Next),
             UserEvent::GoToPrevious if body => self.search(SearchDirection::Previous),
-            // the file under its newest name, as it is in the working tree
-            UserEvent::Edit => self
-                .tx
-                .send(edit_files(repository, &[&self.history[0].path])),
+            // the file under its newest name, as it is in the working tree; from the text, at the
+            // first line selected
+            UserEvent::Edit => {
+                let line = body.then(|| self.text.selected_lines().start() + 1);
+                let path = [self.history[0].path.as_str()];
+                self.tx.send(edit_files(repository, &path, line));
+            }
             _ if body => self.handle_line_event(event, repository),
             _ => {
                 let commit = &self.history[self.index].commit;
@@ -540,7 +543,7 @@ impl BlameView {
         k.add(
             &[Edit],
             "edit",
-            "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR",
+            "Open the file, under its newest name, as it is in the working tree in $VISUAL or $EDITOR; from the text, at the selected line",
         );
         k.quiet(
             &[FocusPanel(1)],
@@ -835,7 +838,7 @@ mod tests {
         press(&mut view, UserEvent::Edit);
         match ec.try_recv() {
             Some(AppEvent::RunExternal(command)) => {
-                assert_eq!(command.last(), Some(&path.join("b").display().to_string()))
+                assert_eq!(command.last(), Some(&path.join("b").into_os_string()))
             }
             event => panic!("no editor run: {event:?}"),
         }

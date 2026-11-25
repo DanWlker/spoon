@@ -39,7 +39,7 @@ pub enum AppEvent {
     // the graph shows all the commits again after showing a branch's only, see `UserEvent::ActiveBranchOnly`
     ShowAllCommits,
     // runs an interactive command, like an editor, in place of the app, then refreshes
-    RunExternal(Vec<String>),
+    RunExternal(Vec<std::ffi::OsString>),
     // the working tree changed, the count of the local changes in the sidebar is updated
     LocalChangesChanged,
     // the local changes, loaded every few seconds in the background, for those made outside the app

@@ -65,7 +65,7 @@ impl<'a> LocalChangesState<'a> {
             }
             ConflictItem::Editor => {
                 let path = crate::git::work_path(self.repository.path(), &path);
-                self.request = Some(Request::External(ExternalRequest::Editor(vec![path])));
+                self.request = Some(Request::External(ExternalRequest::Editor(vec![path], None)));
                 return Ok(());
             }
         };
@@ -142,9 +142,8 @@ impl LocalChangesPanel<'_> {
         };
         let focused = self.focused && state.is_conflict_focused();
         // like every panel's, the badge after the name
-        let mut title = panel_title(&path, loading, focused, theme);
         let conflicted = badge(" conflicted ", theme.status_error_fg, theme);
-        title.spans.insert(1, conflicted);
+        let title = badged_panel_title(&path, conflicted, loading, focused, theme);
         let inner = render_panel(buf, area, title, focused, theme);
         // its sides once loaded
         let Beside::Conflict(conflict) = &state.beside else {

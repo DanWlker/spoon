@@ -291,11 +291,11 @@ pub fn file_link(
     }
 }
 
-// e on files of the repository: opens them as they are in the working tree in the editor, or says
-// which is gone from it.
-pub fn edit_files(repository: &Repository, files: &[&str]) -> AppEvent {
+// e on files of the repository: opens them as they are in the working tree in the editor, one at
+// `line` from a diff or text, or says which is gone from it.
+pub fn edit_files(repository: &Repository, files: &[&str], line: Option<usize>) -> AppEvent {
     match repository.working_tree_paths(files) {
-        Ok(paths) => AppEvent::RunExternal(editor_command(&paths)),
+        Ok(paths) => AppEvent::RunExternal(editor_command(&paths, line)),
         Err(err) => AppEvent::NotifyError(err),
     }
 }

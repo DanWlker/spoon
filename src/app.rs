@@ -1520,7 +1520,7 @@ impl App<'_> {
         result
     }
 
-    fn run_external(&mut self, command: &[String]) {
+    fn run_external(&mut self, command: &[std::ffi::OsString]) {
         let result = self.suspended(|| exec_interactive(command));
         self.shell.app_status.pending_clear = PendingClear::Screen;
         // the command may have changed files, or resolved conflicts

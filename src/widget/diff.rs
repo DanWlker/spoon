@@ -22,8 +22,8 @@ use crate::{
     widget::{
         picks::Picks,
         style::{
-            divider, mark_selected_bar, picked_style, placeholder, scroll_to, tabs_shown,
-            ScrollState, VisualSelection,
+            divider, mark_selected_bar, page_rows, picked_style, placeholder, scroll_to,
+            selection_rows, tabs_shown, ScrollState, VisualSelection,
         },
         tree_query::{match_range, patch_range, SearchDirection},
     },
@@ -62,13 +62,14 @@ impl ParsedDiff {
     // textconv driver: the text isn't in the file, so they can't be staged or applied. Bytes that
     // aren't UTF-8 are kept, see `text_from_git`.
     pub fn drop_converted(&mut self, converted: &ConvertedPaths) {
-        let mut paths: Vec<String> = self.hunks.iter().map(DiffHunk::path).collect();
+        let mut paths: Vec<Cow<str>> = self.hunks.iter().map(DiffHunk::path).collect();
         paths.dedup();
-        let converted = converted.of(&paths.iter().map(String::as_str).collect::<Vec<_>>());
+        let converted = converted.of(&paths.iter().map(AsRef::as_ref).collect::<Vec<_>>());
         if converted.is_empty() {
             return;
         }
-        self.hunks.retain(|h| !converted.contains(&h.path()));
+        self.hunks
+            .retain(|h| !converted.contains(h.path().as_ref()));
         self.converted = true;
     }
 }
@@ -108,7 +109,7 @@ impl DiffHunk {
     }
 
     // The path of its file, the old one of a deleted file.
-    fn path(&self) -> String {
+    pub fn path(&self) -> Cow<'_, str> {
         let file_header = self.file_header();
         header_path(file_header, "+++ ", "b/")
             .or_else(|| header_path(file_header, "--- ", "a/"))
@@ -256,13 +257,15 @@ fn partial_file_header(file_header: &str, old_count: usize, new_count: usize) ->
 // The path on the `marker` line of a file header ("+++ " or "--- "), without its `prefix`. Git
 // quotes a name holding a quote, a backslash or a control character, C style ("b/say \"hi\""),
 // and ends a name holding a space with a tab.
-fn header_path(file_header: &str, marker: &str, prefix: &str) -> Option<String> {
+fn header_path<'a>(file_header: &'a str, marker: &str, prefix: &str) -> Option<Cow<'a, str>> {
     let rest = file_header.lines().find_map(|l| l.strip_prefix(marker))?;
     let Some(quoted) = rest.strip_prefix('"') else {
         let rest = rest.strip_suffix('\t').unwrap_or(rest);
-        return rest.strip_prefix(prefix).map(str::to_string);
+        return rest.strip_prefix(prefix).map(Cow::Borrowed);
     };
-    unquote(quoted)?.strip_prefix(prefix).map(str::to_string)
+    let name = unquote(quoted)?;
+    name.strip_prefix(prefix)
+        .map(|path| path.to_string().into())
 }
 
 // A name git quoted C style, from after its opening quote: up to the closing one, if any, with
@@ -984,13 +987,11 @@ impl DiffCursor {
     // last. A hunk taller than the page is read a page at a time. At either end the window stops
     // and the selection goes on. False for other events.
     pub fn jump_page(&mut self, diff: &ParsedDiff, event: UserEvent, part: DiffPart) -> bool {
-        let down = matches!(event, UserEvent::HalfPageDown | UserEvent::PageDown);
-        let rows = match event {
-            UserEvent::HalfPageDown | UserEvent::HalfPageUp => self.scroll.height / 2,
-            UserEvent::PageDown | UserEvent::PageUp => self.scroll.height,
-            _ => return false,
+        let Some(rows) = page_rows(event, self.scroll.height) else {
+            return false;
         };
-        let rows = rows.max(1);
+        let down = rows > 0;
+        let rows = rows.unsigned_abs();
         let unit = match part {
             DiffPart::Line => self.line..self.line + 1,
             DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone()),
@@ -1052,6 +1053,8 @@ impl DiffCursor {
                     Some(row) if row != self.line => {
                         self.select_line(diff, row);
                     }
+                    // the picked lines stay in their hunk, the window with them
+                    _ if self.has_range() => self.scroll_to(self.line..self.line + 1),
                     _ => self.scroll_to_edge(down),
                 }
             }
@@ -1093,21 +1096,19 @@ impl DiffCursor {
     // where it scrolled to.
     pub fn keep_in_view(&mut self, diff: &ParsedDiff, part: DiffPart) {
         let height = self.scroll.height;
-        let margin = self.scroll.scrolloff.min(height.saturating_sub(1) / 2);
-        self.scroll.offset = self
-            .scroll
-            .offset
-            .min(self.wrap.total().saturating_sub(height.max(1)));
+        let total = self.wrap.total();
+        self.scroll.offset = self.scroll.offset.min(total.saturating_sub(height.max(1)));
         let offset = self.scroll.offset;
         let window = self.wrap.logical_rows(offset..offset + height);
         if window.is_empty() {
             return;
         }
         let crosses = |rows: &Range<usize>| rows.start < window.end && window.start < rows.end;
+        let allowed = selection_rows(offset, height, total, self.scroll.scrolloff);
         // while split, the window's rows can hold rows of a change scrolled out beside them
         let shows = |row: usize| {
             let rows = self.wrap.visual_range(row..row + 1);
-            rows.start < offset + height - margin && offset + margin < rows.end
+            rows.start < allowed.end && allowed.start < rows.end
         };
         match part {
             DiffPart::Line => {
@@ -1115,8 +1116,7 @@ impl DiffCursor {
                     return;
                 }
                 let mut rows = self.selectable_rows(diff).filter(|r| window.contains(r));
-                let above =
-                    self.wrap.visual_range(self.line..self.line + 1).start < offset + margin;
+                let above = self.wrap.visual_range(self.line..self.line + 1).start < allowed.start;
                 let row = match above {
                     true => rows.find(|&r| shows(r)),
                     false => rows.rfind(|&r| shows(r)),
@@ -1310,8 +1310,6 @@ impl DiffCursor {
         }
     }
 
-    // Whether `row` is drawn selected: the selected line, or the changed lines of the range of
-    // lines or of the selected hunk, whose context stays as it is.
     // How `row` is marked on its line numbers: the lines picked in the picked color, the cursor
     // line selected, like a file's text (picked too while selecting), or the changed lines of the
     // selected hunk selected.
@@ -2651,6 +2649,34 @@ mod tests {
         assert_eq!(cursor.line, 4 + 9 - 3);
     }
 
+    // ctrl-e and ctrl-y moved the selected line out of the scrolloff rows at an edge the diff
+    // can't scroll past, though nothing scrolled, like vim doesn't.
+    #[test]
+    fn test_scroll_line_at_an_edge_leaves_the_selection() {
+        for lines in [40, 4] {
+            let mut raw = format!("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,{lines} @@\n");
+            for i in 0..lines {
+                raw.push_str(&format!("+{i}\n"));
+            }
+            let diff = parse_diff(&raw);
+            let mut cursor = DiffCursor::default();
+            cursor.scroll.height = 10;
+            cursor.scroll.scrolloff = 3;
+            let theme = ColorTheme::default();
+            cursor.set_wrap_map(WrapMap::of(&diff, &theme, 80, false, DiffLayout::Unified));
+            let first = cursor.selectable_rows(&diff).next().unwrap();
+            cursor.select_line(&diff, first);
+            cursor.scroll.offset = 0;
+            for event in [UserEvent::ScrollUp, UserEvent::ScrollDown] {
+                cursor.scroll.handle_scroll(event);
+                cursor.keep_in_view(&diff, DiffPart::Line);
+                if lines == 4 || event == UserEvent::ScrollUp {
+                    assert_eq!(cursor.line, first, "{lines} lines, {event:?}");
+                }
+            }
+        }
+    }
+
     // Lines are picked like the rows of a list (`Picks`): moving back unpicks what the visual
     // selection went over, and v v on a picked line unpicks it. Lines only used to add up.
     #[test]
@@ -2674,6 +2700,36 @@ mod tests {
     // ctrl-d in a diff pages like vim and like a list: the view moves half a page, and the
     // selection takes the changed line, or the hunk, at the row it lands on (else the next one).
     // The diff used to pick the next one first, the view following only as far as it had to.
+    // While lines are picked, which stay in one hunk, ctrl-d past its last line moved the window
+    // to the end of the diff, the selection left off screen.
+    #[test]
+    fn test_page_with_lines_picked_keeps_them_shown() {
+        let mut raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n".to_string();
+        for at in [1, 21, 41, 61, 81] {
+            raw.push_str(&format!("@@ -{at},0 +{at},10 @@\n"));
+            for i in 0..10 {
+                raw.push_str(&format!("+{i}\n"));
+            }
+        }
+        let diff = parse_diff(&raw);
+        let mut cursor = DiffCursor::default();
+        cursor.scroll.height = 10;
+        let theme = ColorTheme::default();
+        cursor.set_wrap_map(WrapMap::of(&diff, &theme, 80, false, DiffLayout::Unified));
+        let first = cursor.selectable_rows(&diff).next().unwrap();
+        cursor.select_line(&diff, first);
+        cursor.toggle_range();
+        for _ in 0..4 {
+            cursor.jump_page(&diff, UserEvent::HalfPageDown, DiffPart::Line);
+            let line = cursor.wrap.visual_range(cursor.line..cursor.line + 1);
+            let offset = cursor.scroll.offset;
+            assert!(
+                offset <= line.start && line.end <= offset + 10,
+                "{offset} {line:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_half_page_in_a_diff_like_vim() {
         let theme = ColorTheme::default();

@@ -281,15 +281,19 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.scroll(event);
             }
             // y y and y f copy the paths of the picked files, else of the selected one; in the
-            // diff, y f the path of its file, as in every diff
+            // diff, y f the path of the file of its hunk, as in every diff
             UserEvent::ShortCopy | UserEvent::FullCopy => {
                 let form = CopyForm::of(event);
                 let state = &self.local_changes_state;
+                let repository = state.repository();
+                if let (Some(file), UserEvent::FullCopy) = (state.diff_file(), event) {
+                    self.tx.send(copy_paths(repository, [file.as_ref()], form));
+                    return;
+                }
                 let picked = match state.is_diff_focused() {
                     true => vec![],
                     false => state.picked_paths(),
                 };
-                let repository = state.repository();
                 if !picked.is_empty() {
                     self.tx.send(copy_paths(
                         repository,
@@ -378,7 +382,7 @@ impl<'a> LocalChangesView<'a> {
     // Runs the editor or merge tool the state asked for, in place of the app.
     fn run_external(&self, request: ExternalRequest) {
         let command = match request {
-            ExternalRequest::Editor(paths) => editor_command(&paths),
+            ExternalRequest::Editor(paths, line) => editor_command(&paths, line),
             ExternalRequest::MergeTool(path) => {
                 let tool = self.ctx.core_config.git.merge_tool.as_deref();
                 merge_tool_command(self.local_changes_state.toplevel(), &path, tool)

@@ -78,9 +78,11 @@ impl WorkTree {
             // taken, then staged, like lazygit
             Some(("160000", commit)) => {
                 let args = ["checkout", commit];
-                let submodule = self.path.join(path);
-                // without a `.git` of its own git would check out in the superproject above
-                if !submodule.join(".git").exists() {
+                let submodule = work_path(&self.path, path);
+                // without a `.git` of its own git would check out in the superproject above; a
+                // symlink in its place would have it check out in the repository it links to
+                let directory = std::fs::symlink_metadata(&submodule).is_ok_and(|m| m.is_dir());
+                if !directory || !submodule.join(".git").exists() {
                     return Err(format!("submodule {path} is not checked out"));
                 }
                 run_logged(
@@ -549,6 +551,58 @@ mod tests {
         );
         let staged = git(path, &["ls-files", "--stage", "sub"]);
         assert_eq!(staged, format!("160000 {} 0\tsub\n", hash("side")));
+    }
+
+    // A submodule replaced by a symlink to another repository: taking a side checked out in the
+    // repository it links to, never to be written through.
+    #[test]
+    fn test_resolve_conflict_of_submodule_leaves_a_symlink_alone() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let inner = &dir.path().join("inner");
+        let path = &dir.path().join("repo");
+        std::fs::create_dir_all(inner).unwrap();
+        std::fs::create_dir_all(path).unwrap();
+        let inner_repo = GitRepository::new(inner);
+        inner_repo.init();
+        inner_repo.commit("c1", "2024-01-01");
+        inner_repo.checkout_b("side");
+        inner_repo.commit("c2", "2024-01-02");
+        inner_repo.checkout("master");
+        inner_repo.commit("c3", "2024-01-03");
+        let hash = |rev: &str| git(inner, &["rev-parse", rev]).trim().to_string();
+        let gitlink = |rev: &str| {
+            let info = format!("160000,{},sub", hash(rev));
+            git(path, &["update-index", "--add", "--cacheinfo", &info]);
+        };
+        let repo = GitRepository::new(path);
+        repo.init();
+        git(path, &["clone", "-q", "../inner", "sub"]);
+        gitlink("master~1");
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        gitlink("side");
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        gitlink("master");
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+        // the submodule moved out, a symlink to it in its place
+        let other = dir.path().join("other");
+        std::fs::rename(path.join("sub"), &other).unwrap();
+        std::os::unix::fs::symlink("../other", path.join("sub")).unwrap();
+
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let err = repository
+            .work_tree()
+            .resolve_conflict("sub", ConflictSide::Theirs)
+            .unwrap_err();
+        assert!(err.contains("not checked out"), "{err}");
+        assert_eq!(
+            git(&other, &["symbolic-ref", "HEAD"]).trim(),
+            "refs/heads/master"
+        );
     }
 
     // A submodule not checked out has no `.git`: taking a side used to run its checkout in the
