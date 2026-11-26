@@ -41,19 +41,20 @@ pub struct Notice {
 }
 
 impl Notice {
-    pub fn error(message: String) -> Self {
+    // Shown from `now`, the app's time, see `AppContext::now`.
+    pub fn error(message: String, now: Instant) -> Self {
         Notice {
             severity: Severity::Error,
             message,
-            until: Instant::now() + ERROR_DURATION,
+            until: now + ERROR_DURATION,
         }
     }
 
-    pub fn warning(message: String) -> Self {
+    pub fn warning(message: String, now: Instant) -> Self {
         Notice {
             severity: Severity::Warning,
             message,
-            until: Instant::now() + WARNING_DURATION,
+            until: now + WARNING_DURATION,
         }
     }
 }
@@ -141,7 +142,7 @@ mod tests {
         let theme = theme_with_bg();
         let area = Rect::new(0, 0, 60, 10);
         let mut buf = Buffer::empty(area);
-        let notices = [Notice::error("it failed".into())];
+        let notices = [Notice::error("it failed".into(), Instant::now())];
         render_notices(&notices, "x", area, &mut buf, &theme);
         let rect = popup_rect(&buf);
         // the border in the color of an error
@@ -158,9 +159,9 @@ mod tests {
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);
         let notices = [
-            Notice::error("first".into()),
-            Notice::warning("second".into()),
-            Notice::error("third".into()),
+            Notice::error("first".into(), Instant::now()),
+            Notice::warning("second".into(), Instant::now()),
+            Notice::error("third".into(), Instant::now()),
         ];
         render_notices(&notices, "x", area, &mut buf, &theme);
         let rows: Vec<u16> = ["third", "second", "first"]
@@ -174,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_push_notice() {
-        let notice = |m: &str| Notice::error(m.into());
+        let notice = |m: &str| Notice::error(m.into(), Instant::now());
         let mut notices = vec![];
         for m in ["a", "b", "a", "c", "d", "e", "f"] {
             push_notice(&mut notices, notice(m));

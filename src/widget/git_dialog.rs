@@ -2090,13 +2090,19 @@ impl GitDialog {
             LinkAction::Copy => (" Copy link ", "copy", UserEvent::CopyLink),
             LinkAction::Open => (" Open in browser ", "open", UserEvent::OpenInBrowser),
         };
-        // the links of each remote, which has the same pages as the others, see `browse::links`
+        // the links of each remote; a remote's host may have fewer pages, like none for pull
+        // requests, see `browse::links`, so every page any has is offered
         let links: Vec<Vec<PageLink>> = links
             .chunk_by(|a, b| a.remote == b.remote)
             .map(<[PageLink]>::to_vec)
             .collect();
         let remotes: Vec<String> = links.iter().map(|pages| pages[0].remote.clone()).collect();
-        let pages: Vec<String> = links[0].iter().map(|link| link.page.clone()).collect();
+        let mut pages: Vec<String> = Vec::new();
+        for link in links.iter().flatten() {
+            if !pages.contains(&link.page) {
+                pages.push(link.page.clone());
+            }
+        }
         let mut form = Form::default();
         let remote = (remotes.len() > 1).then(|| form.pick("Remote", remotes, ""));
         let page = (pages.len() > 1).then(|| form.pick("Page", pages, ""));
@@ -2649,9 +2655,12 @@ impl GitDialog {
                 action,
                 remote,
                 page,
-            } => AppEvent::OpenUrl {
-                url: self.chosen_link(links, *remote, *page).url.clone(),
-                action: *action,
+            } => match self.chosen_link(links, *remote, *page) {
+                Ok(link) => AppEvent::OpenUrl {
+                    url: link.url.clone(),
+                    action: *action,
+                },
+                Err(err) => return DialogOutcome::Error(err),
             },
             _ => match self.command() {
                 Some(Ok(task)) => AppEvent::StartTask(task),
@@ -2668,10 +2677,16 @@ impl GitDialog {
         links: &'l [Vec<PageLink>],
         remote: Option<Pick>,
         page: Option<Pick>,
-    ) -> &'l PageLink {
+    ) -> Result<&'l PageLink, String> {
         // without a field, the only remote or page
-        let index = |pick: Option<Pick>| pick.map_or(0, |pick| self.pick_index(pick));
-        &links[index(remote)][index(page)]
+        let links = &links[remote.map_or(0, |pick| self.pick_index(pick))];
+        let Some(page) = page.map(|pick| self.pick_value(pick)) else {
+            return Ok(&links[0]);
+        };
+        links
+            .iter()
+            .find(|link| link.page == page)
+            .ok_or_else(|| format!("{} has no {page} page", links[0].remote))
     }
 
     // Changes the selected field to its next or previous option, or toggles it.
@@ -2924,7 +2939,10 @@ impl GitDialog {
             ..
         } = &self.kind
         {
-            return self.chosen_link(links, *remote, *page).url.clone();
+            return match self.chosen_link(links, *remote, *page) {
+                Ok(link) => link.url.clone(),
+                Err(err) => err,
+            };
         }
         self.with_command(|task| {
             let task = match task {
@@ -4391,6 +4409,23 @@ mod tests {
             opened(press(&mut dialog, UserEvent::Confirm)),
             ("https://h/u/r/compare/b".into(), LinkAction::Copy)
         );
+        // a remote on a host without pull requests has the branch only: the pull request
+        // chosen on the first, then that remote, panicked
+        let links = vec![
+            link("origin", "Branch", "https://h/o/r/tree/b"),
+            link("origin", "Pull request", "https://h/o/r/compare/b"),
+            link("up", "Branch", "https://g/u/r/tree/b"),
+        ];
+        let mut dialog = GitDialog::open_link(links, LinkAction::Open);
+        press(&mut dialog, UserEvent::NavigateDown);
+        press(&mut dialog, UserEvent::Select);
+        press(&mut dialog, UserEvent::NavigateUp);
+        press(&mut dialog, UserEvent::Select);
+        assert_eq!(dialog.summary(), "up has no Pull request page");
+        assert!(matches!(
+            press(&mut dialog, UserEvent::Confirm),
+            DialogOutcome::Error(_)
+        ));
         // one link, to confirm
         let mut dialog = GitDialog::open_link(
             vec![link("origin", "Commit", "https://h/x")],

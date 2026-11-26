@@ -459,6 +459,7 @@ impl Chevron {
     }
 }
 
+// The center of a commit's node, a merge's or a circle.
 fn merge_center(params: &ImageParams) -> Point {
     Point::new(
         f64::from(params.width / 2) + 0.5,
@@ -782,9 +783,7 @@ pub fn calc_graph_row_image(
             (&drawing_pixels.merge_disk, image_params.background_color),
             (&drawing_pixels.merge_marks[&chevron], color),
         ] {
-            for (x, y) in pixels {
-                img_buf.put_pixel((x + x_offset) as u32, *y as u32, color);
-            }
+            draw_pixels(&mut img_buf, pixels, x_offset, color);
         }
     }
 
@@ -807,38 +806,23 @@ fn draw_background(
 }
 
 fn draw_commit_circle(
-    img_buf: &mut image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    img_buf: &mut image::RgbaImage,
     circle_pos_x: usize,
     image_params: &ImageParams,
     drawing_pixels: &DrawingPixels,
 ) {
     let x_offset = (circle_pos_x * image_params.width as usize) as i32;
     let color = image_params.edge_color(circle_pos_x);
-
-    for (x, y) in &drawing_pixels.circle {
-        let x = (*x + x_offset) as u32;
-        let y = *y as u32;
-
-        let pixel = img_buf.get_pixel_mut(x, y);
-        *pixel = color;
-    }
-
-    if image_params.circle_edge_color[3] == 0 {
-        // If the alpha value is 0, the circle edge is transparent, so we don't need to draw it.
-        return;
-    }
-
-    for (x, y) in &drawing_pixels.circle_edge {
-        let x = (*x + x_offset) as u32;
-        let y = *y as u32;
-
-        let pixel = img_buf.get_pixel_mut(x, y);
-        *pixel = image_params.circle_edge_color;
+    draw_pixels(img_buf, &drawing_pixels.circle, x_offset, color);
+    // a transparent edge isn't drawn
+    if image_params.circle_edge_color[3] != 0 {
+        let color = image_params.circle_edge_color;
+        draw_pixels(img_buf, &drawing_pixels.circle_edge, x_offset, color);
     }
 }
 
 fn draw_edge(
-    img_buf: &mut image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    img_buf: &mut image::RgbaImage,
     edge: &Edge,
     image_params: &ImageParams,
     drawing_pixels: &DrawingPixels,
@@ -855,17 +839,9 @@ fn draw_edge(
         EdgeType::LeftTop => &drawing_pixels.left_top_edge,
         EdgeType::LeftBottom => &drawing_pixels.left_bottom_edge,
     };
-
     let x_offset = (edge.pos_x * image_params.width as usize) as i32;
     let color = image_params.edge_color(edge.associated_line_pos_x);
-
-    for (x, y) in pixels {
-        let x = (*x + x_offset) as u32;
-        let y = *y as u32;
-
-        let pixel = img_buf.get_pixel_mut(x, y);
-        *pixel = color;
-    }
+    draw_pixels(img_buf, pixels, x_offset, color);
 }
 
 fn edge_connections(edges: &[Edge]) -> impl Iterator<Item = (&Edge, &Edge)> {
@@ -901,11 +877,13 @@ fn draw_connected_edges(
             }
             GraphStyle::Rounded => unreachable!(),
         };
-        draw_connection_pixels(img_buf, pixels, x_offset, color);
+        draw_pixels(img_buf, pixels, x_offset, color);
     }
 }
 
-fn draw_connection_pixels(
+// Draws `pixels` moved right by `x_offset`, those past the image left out: a circle is taller than
+// the shortest rows, of square cells.
+fn draw_pixels(
     img_buf: &mut image::RgbaImage,
     pixels: &Pixels,
     x_offset: i32,
@@ -1170,6 +1148,40 @@ mod tests {
         // unknown, the 1:2 cells assumed
         assert_eq!(params(None).height, 50);
         assert_eq!(params(Some((0, 0))).height, 50);
+    }
+
+    // The shortest rows, of square cells, drew a commit's circle past the row and panicked, with
+    // its edge drawn.
+    #[test]
+    fn test_every_row_height_draws() {
+        let colors = GraphColorSet::new(&crate::config::GraphColorConfig {
+            edge: "#ffffff".into(),
+            ..Default::default()
+        });
+        let edges: Vec<Edge> = [
+            EdgeType::Up,
+            EdgeType::Down,
+            EdgeType::Vertical,
+            EdgeType::RightTop,
+            EdgeType::LeftBottom,
+        ]
+        .into_iter()
+        .map(|t| Edge::new(t, 1, 1))
+        .collect();
+        for cell_width_type in [CellWidthType::Double, CellWidthType::Single] {
+            for antialias in [false, true] {
+                for cell in [(10, 10), (10, 13), (9, 23), (5, 30)] {
+                    let params =
+                        ImageParams::new(&colors, cell_width_type, antialias).fit_cell(Some(cell));
+                    let mut pixels = DrawingPixels::new(&params);
+                    for style in [GraphStyle::Rounded, GraphStyle::Angular, GraphStyle::Curved] {
+                        for merge in [None, Some(Fold::Unfolded)] {
+                            calc_graph_row_image(1, 3, &edges, &params, &mut pixels, style, merge);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     const OUTPUT_DIR: &str = "./out/ut/graph/image";

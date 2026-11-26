@@ -534,10 +534,6 @@ impl AppShell {
     pub fn reset_graph_filter(&mut self) {
         self.graph_filter = GraphFilter::All;
     }
-
-    pub fn notify_error(&mut self, message: String) {
-        push_notice(&mut self.notices, Notice::error(message));
-    }
 }
 
 #[derive(Debug)]
@@ -974,7 +970,10 @@ impl App<'_> {
                 self.warn_notification(msg);
             }
             AppEvent::NotifyError(msg) => {
-                push_notice(&mut self.shell.notices, Notice::error(msg));
+                push_notice(
+                    &mut self.shell.notices,
+                    Notice::error(msg, (self.ctx.now)()),
+                );
             }
         }
         None
@@ -3603,7 +3602,8 @@ impl App<'_> {
         let Reloaded { loaded, layout } = match result {
             Ok(reloaded) => *reloaded,
             Err(failed) => {
-                self.shell.notify_error(failed.error);
+                let notice = Notice::error(failed.error, (self.ctx.now)());
+                push_notice(&mut self.shell.notices, notice);
                 self.shell.refs_snapshot = failed.refs_snapshot;
                 return None;
             }
@@ -3761,7 +3761,8 @@ impl App<'_> {
     }
 
     fn warn_notification(&mut self, message: String) {
-        push_notice(&mut self.shell.notices, Notice::warning(message));
+        let notice = Notice::warning(message, (self.ctx.now)());
+        push_notice(&mut self.shell.notices, notice);
     }
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull

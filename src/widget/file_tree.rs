@@ -310,9 +310,17 @@ impl FileTreeState {
         self.selected().map(|r| r.path.clone())
     }
 
-    fn visual_start_path(&self) -> Option<Arc<str>> {
+    // The path of the row a visual selection started on, None when it isn't visual.
+    pub fn visual_start_path(&self) -> Option<Arc<str>> {
         let start = self.cursor.get().visual_start()?;
         self.rows.get(start).map(|r| r.path.clone())
+    }
+
+    // A visual selection from the row of `path`, as kept while the page wasn't shown; none when
+    // None or the path isn't shown.
+    pub fn set_visual_start_path(&mut self, path: Option<&str>) {
+        let start = path.and_then(|path| self.rows.iter().position(|r| *r.path == *path));
+        self.cursor.get_mut().set_visual_start(start);
     }
 
     fn rebuild_rows(&mut self) {
@@ -424,6 +432,11 @@ impl TreeSelection {
 
     pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
         self.picked.retain(|path| keep(path));
+    }
+
+    // The rows changed under the visual selection, see `Picks::keep_visual`.
+    pub fn keep_visual(&mut self) {
+        self.picked.keep_visual();
     }
 
     // Before the mouse selects `row` of the tree, see `OnPicks`.

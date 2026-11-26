@@ -593,6 +593,55 @@ fn detail_path(app: &App) -> Option<String> {
 
 // The launch options
 
+// The files picked, and a visual selection of them, stay over a refresh and a visit to the graph,
+// as the commits picked do.
+#[test]
+fn test_local_changes_keep_their_picks_over_a_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for file in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(path.join(file), "new\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let files = |shown: &'static str| {
+        screen(move |screen| assert!(screen.contains(shown), "{shown:?} not in\n{screen}"))
+    };
+    harness.run(vec![
+        keys("j v j"),
+        files("2 picked"),
+        keys("ctrl-r"),
+        files("2 picked"),
+        // still selecting from where it started
+        keys("j"),
+        files("3 picked"),
+        keys("v tab tab"),
+        files("3 picked"),
+    ]);
+}
+
+// A notice goes once its time is up, on the app's clock, which the tests move on.
+#[test]
+fn test_a_notice_goes_once_its_time_is_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    harness.run(vec![
+        // shown 5 seconds from when it comes, on the clock moved on meanwhile
+        sleep(4000),
+        vec![Step::Event(Box::new(AppEvent::NotifyWarn(
+            "careful".into(),
+        )))],
+        sleep(2000),
+        check(|app| assert_eq!(notices(app), ["careful"])),
+        sleep(4000),
+        check(|app| assert!(notices(app).is_empty())),
+    ]);
+}
+
 #[test]
 fn test_launch_on_local_changes() {
     let dir = tempfile::tempdir().unwrap();
@@ -1323,7 +1372,9 @@ fn test_files_changed_outside_come_with_their_trees() {
 fn test_launch_fetch_failing_says_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = with_remote(dir.path());
-    git(&path, &["remote", "set-url", "origin", "/nowhere"]);
+    // its own, to find its fetch in the command log every test writes to
+    let nowhere = dir.path().join("nowhere").display().to_string();
+    git(&path, &["remote", "set-url", "origin", &nowhere]);
     let mut harness = Harness::new(
         &path,
         Launch {
@@ -1331,9 +1382,13 @@ fn test_launch_fetch_failing_says_nothing() {
             ..launch()
         },
     );
-    // nothing tells when it is done: given the time a failing fetch takes
+    // once it failed, which only the command log tells
+    let failed = move |_: &Path| {
+        let log = crate::git::command_log();
+        log.iter().any(|c| !c.ok && c.output.contains(&nowhere))
+    };
     harness.run(vec![
-        outside(|_| std::thread::sleep(Duration::from_secs(1))),
+        wait_for(failed),
         tick(),
         check(|app| assert!(notices(app).is_empty())),
     ]);

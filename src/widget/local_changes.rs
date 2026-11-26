@@ -134,7 +134,7 @@ enum Focus {
 }
 
 // A file section: its tree of files, search and filter, and picked rows.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Section {
     // the root row, then the directories (expanded by default) and files
     tree: FileTreeState,
@@ -172,8 +172,9 @@ pub struct LocalChangesSnapshot {
     // what had the keys, put back once the page is loaded again
     focus: Focus,
     // how each section shows its files: as a list or a tree, the folders opened or closed, the
-    // search and filter; over no files, the files loaded then go under it. Boxed like the draft
-    sections: Box<[(FileTreeState, TreeQuery); 2]>,
+    // search and filter, the rows picked; over no files, the files loaded then go under it, a
+    // visual selection going on from the path it started on. Boxed like the draft
+    sections: Box<[(Section, Option<Arc<str>>); 2]>,
 }
 
 impl LocalChangesSnapshot {
@@ -191,10 +192,7 @@ impl Default for LocalChangesSnapshot {
             selected_path: None,
             commit_draft: Box::default(),
             focus: Focus::Files,
-            sections: Box::new([(); 2].map(|()| {
-                let section = Section::new(FileTree::default());
-                (section.tree, section.query)
-            })),
+            sections: Box::new([(); 2].map(|()| (Section::new(FileTree::default()), None))),
         }
     }
 }
@@ -288,11 +286,18 @@ impl<'a> LocalChangesState<'a> {
         ) = repository.take_loaded_local_changes();
         let sections = match &snapshot {
             Some(snapshot) => std::array::from_fn(|i| {
-                let (tree, query) = &snapshot.sections[i];
+                let (section, visual_start) = &snapshot.sections[i];
+                let mut tree = section.tree.with_tree(trees[i].clone());
+                tree.set_visual_start_path(visual_start.as_deref());
+                let mut picked = section.picked.clone();
+                // the rows it covers may have changed, see `Picks::keep_visual`
+                if tree.is_visual() {
+                    picked.keep_visual();
+                }
                 Section {
-                    tree: tree.with_tree(trees[i].clone()),
-                    query: query.clone(),
-                    picked: TreeSelection::default(),
+                    tree,
+                    query: section.query.clone(),
+                    picked,
                 }
             }),
             None => trees.map(Section::new),
@@ -327,6 +332,7 @@ impl<'a> LocalChangesState<'a> {
                 state.tree_mut().select_path(&path);
             }
         }
+        state.drop_gone_picks();
         // after the draft, filling the message only when it is empty, like MERGE_MSG on conflicts
         state.prepare_message();
         state.sync_amend();
@@ -365,11 +371,14 @@ impl<'a> LocalChangesState<'a> {
             selected_path: self.selected_path(),
             commit_draft: Box::new(self.draft.clone()),
             focus: self.focus(),
-            sections: Box::new(
-                self.sections
-                    .each_ref()
-                    .map(|s| (s.tree.with_tree(FileTree::default()), s.query.applied())),
-            ),
+            sections: Box::new(self.sections.each_ref().map(|s| {
+                let section = Section {
+                    tree: s.tree.with_tree(FileTree::default()),
+                    query: s.query.applied(),
+                    picked: s.picked.clone(),
+                };
+                (section, s.tree.visual_start_path())
+            })),
         }
     }
 
@@ -1489,6 +1498,24 @@ impl<'a> LocalChangesState<'a> {
     }
 
     // The files loaded after a change, the error of the change shown.
+    // The picks with no changes left, discarded or stashed, go: those that are no file nor
+    // directory of one.
+    fn drop_gone_picks(&mut self) {
+        let files = [&self.changes.unstaged, &self.changes.staged];
+        for (section, files) in self.sections.iter_mut().zip(files) {
+            // with none, there is nothing to look for
+            if section.picked.is_empty() {
+                continue;
+            }
+            // each file, its directories and the root while there is one
+            let kept: FxHashSet<&str> = files
+                .iter()
+                .flat_map(|f| ancestors(&f.path).chain([f.path.as_str()]))
+                .collect();
+            section.picked.retain(|p| kept.contains(p));
+        }
+    }
+
     fn show_files(&mut self, reloaded: ReloadedFiles) {
         let ReloadedFiles {
             result,
@@ -1511,22 +1538,11 @@ impl<'a> LocalChangesState<'a> {
         self.prepare_message();
         self.sync_amend();
         self.offer_resolved_commit();
-        let files = [&self.changes.unstaged, &self.changes.staged];
-        for ((section, files), tree) in self.sections.iter_mut().zip(files).zip(trees) {
+        for (section, tree) in self.sections.iter_mut().zip(trees) {
             // a visual selection goes on from its start, see `FileTreeState::rebuild_rows_keeping`
             section.tree.set_tree(tree);
-            // the picks with no changes left, discarded or stashed, go: those that are no file nor
-            // directory of one, see `path_contains`; with none, there is nothing to look for
-            if section.picked.is_empty() {
-                continue;
-            }
-            // each file, its directories and the root while there is one
-            let kept: FxHashSet<&str> = files
-                .iter()
-                .flat_map(|f| ancestors(&f.path).chain([f.path.as_str()]))
-                .collect();
-            section.picked.retain(|p| kept.contains(p));
         }
+        self.drop_gone_picks();
 
         let in_diff = self.is_diff_focused();
         let selection = self.pane.selection();

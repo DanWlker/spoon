@@ -5,8 +5,8 @@ use crate::graph::{
     geometry::Point,
     image::{
         bezier_point, curved_connection_points, diagonal_connection, edge_connections,
-        merge_disk_contains, merge_mark_contains, Chevron, ConnectionKey, DrawingPixels,
-        GraphStyle, ImageParams, Pixels,
+        merge_center, merge_disk_contains, merge_mark_contains, Chevron, ConnectionKey,
+        DrawingPixels, GraphStyle, ImageParams, Pixels,
     },
     Edge, EdgeType,
 };
@@ -32,10 +32,7 @@ pub struct Masks {
 
 impl Masks {
     pub fn new(params: &ImageParams) -> Self {
-        let center = Point::new(
-            f64::from(params.width / 2) + 0.5,
-            f64::from(params.height / 2) + 0.5,
-        );
+        let center = merge_center(params);
         let bounds = [
             Point::new(0.0, 0.0),
             Point::new(f64::from(params.width), f64::from(params.height)),
@@ -168,7 +165,7 @@ pub fn render(
         u32::from(params.height),
         background,
     );
-    let masks = pixels.antialias.as_mut().unwrap();
+    let masks = (pixels.antialias.as_mut()).expect("masks made for antialiased params");
     let offset = (commit_pos_x * params.width as usize) as i32;
     if chevron.is_none() {
         image.paint(&masks.circle, offset, params.edge_color(commit_pos_x));
@@ -217,7 +214,7 @@ pub fn render(
     }
     // over the lines, which it hides under it
     if let Some(chevron) = chevron {
-        let masks = pixels.antialias.as_ref().unwrap();
+        let masks = (pixels.antialias.as_ref()).expect("masks made for antialiased params");
         let offset = (commit_pos_x * params.width as usize) as i32;
         image.paint(&masks.merge_disk, offset, background);
         image.paint(
