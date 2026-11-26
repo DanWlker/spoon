@@ -662,14 +662,14 @@ struct FilesField {
     checked: CheckedFiles,
     // the change letter of each file, by its index
     symbols: Vec<&'static str>,
-    // the filter, as in every file tree
+    // the search and the filter typed, as in every file tree; the tree keeps the filter applied
     query: TreeQuery,
 }
 
 impl FilesField {
-    // Shows the files the filter keeps, with the search options of now.
-    fn filter(&mut self, options: SearchOptions) {
-        self.tree.set_filter(self.query.filter(), options);
+    // Shows the files `filter` keeps, with the search options of now.
+    fn filter(&mut self, filter: Option<&str>, options: SearchOptions) {
+        self.tree.set_filter(filter, options);
         let tree = &self.tree;
         self.checked.show(|path| tree.keeps(path));
     }
@@ -949,7 +949,7 @@ impl GitDialog {
     // The filter of the selected files.
     fn files_filter(&self) -> Option<&str> {
         match self.fields.get(self.selected) {
-            Some((_, Field::Files(files))) => files.query.filter(),
+            Some((_, Field::Files(files))) => files.tree.filter(),
             _ => None,
         }
     }
@@ -1038,7 +1038,8 @@ impl GitDialog {
             return false;
         };
         if type_query(ctx, &mut files.query, key, SearchKind::Names) == Some(QueryKind::Filter) {
-            files.filter(ctx.search_options.get());
+            let filter = files.query.typed_filter().map(String::from);
+            files.filter(filter.as_deref(), ctx.search_options.get());
         }
         true
     }
@@ -2412,8 +2413,7 @@ impl GitDialog {
             // the filter of the files first, as in every file tree
             Some(UserEvent::Cancel) if self.files_filter().is_some() => {
                 if let Some(files) = self.selected_files() {
-                    files.query.clear();
-                    files.filter(SearchOptions::default());
+                    files.filter(None, SearchOptions::default());
                 }
                 DialogOutcome::None
             }
@@ -2421,7 +2421,7 @@ impl GitDialog {
             Some(UserEvent::Search) => {
                 if let Some(files) = self.selected_files() {
                     // a filter goes from no row, see `TreeQuery::step_from`
-                    files.query.start_filter();
+                    files.query.start_filter(files.tree.filter());
                 }
                 DialogOutcome::None
             }
@@ -3392,7 +3392,7 @@ impl Widget for GitDialogWidget<'_> {
             }
             let query = typed
                 .map(|(text, _)| text)
-                .or_else(|| files.query.indicator());
+                .or_else(|| files.query.indicator(files.tree.filter()));
             let title = panel_title(label, [note].into_iter().chain(query), focused, theme);
             let rows = render_panel(buf, at, title, focused, theme);
             // hidden otherwise, like a local changes section's
@@ -3401,8 +3401,6 @@ impl Widget for GitDialogWidget<'_> {
             } else {
                 TreeCursor::Hidden
             };
-            // the filter typed, and the one the tree applies, are set together, see `type_filter`
-            debug_assert_eq!(files.query.filter(), files.tree.filter());
             let offset = render_tree(
                 buf,
                 rows,

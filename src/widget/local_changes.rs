@@ -646,7 +646,7 @@ impl<'a> LocalChangesState<'a> {
         };
         let path = if !self.picked().is_empty() && !self.is_diff_focused() {
             picked_files_label(self.target_files().len())
-        } else if row.is_root() && self.query().filter().is_none() {
+        } else if row.is_root() && self.tree().filter().is_none() {
             "all files".to_string()
         } else if row.is_root() {
             // the files the filter leaves, see `row_files`
@@ -1410,7 +1410,7 @@ impl<'a> LocalChangesState<'a> {
         };
         // with picked rows or a filter, the files are given rather than the whole directory
         let targets = self.target_files();
-        let mut paths = if self.picked().is_empty() && self.query().filter().is_none() {
+        let mut paths = if self.picked().is_empty() && self.tree().filter().is_none() {
             vec![row.path.as_ref()]
         } else {
             file_paths(&targets)
@@ -1588,7 +1588,8 @@ impl<'a> LocalChangesState<'a> {
         self.focus_section(self.section);
         self.tree_mut().cancel_visual();
         // a filter goes from no row, see `TreeQuery::step_from`
-        self.query_mut().start_filter();
+        let section = self.current_mut();
+        section.query.start_filter(section.tree.filter());
     }
 
     pub fn is_typing_query(&self) -> bool {
@@ -1638,16 +1639,19 @@ impl<'a> LocalChangesState<'a> {
         self.apply_query_change(change, ctx.search_options.get());
     }
 
-    // Clears the search, or else the filter. Returns false when there was neither.
+    // Clears the filter of the files, the only query they have, see `start_query`. Returns false
+    // when there was none.
     pub fn clear_query(&mut self, options: SearchOptions) -> bool {
-        let change = self.query_mut().clear();
-        self.apply_query_change(change, options);
-        change.is_some()
+        let filtered = self.tree().filter().is_some();
+        if filtered {
+            self.update_tree(|tree| tree.set_filter(None, options));
+        }
+        filtered
     }
 
     // Clears the search of the diff while it has the focus. Returns false when there was none.
     pub fn clear_diff_query(&mut self) -> bool {
-        self.is_diff_focused() && self.diff_query.clear().is_some()
+        self.is_diff_focused() && self.diff_query.clear()
     }
 
     // Returns false when the search matched nothing, see `active_query`.
@@ -1674,7 +1678,7 @@ impl<'a> LocalChangesState<'a> {
     fn apply_query_change(&mut self, change: Option<QueryKind>, options: SearchOptions) {
         if change == Some(QueryKind::Filter) {
             // only the focused section is filtered
-            let filter = self.query().filter().map(String::from);
+            let filter = self.query().typed_filter().map(String::from);
             self.update_tree(|tree| tree.set_filter(filter.as_deref(), options));
         }
     }
@@ -2004,7 +2008,7 @@ impl<'a> LocalChangesState<'a> {
                     .file_index()
                     .is_some_and(|i| self.files()[i].status == LocalChangeStatus::Untracked);
                 // a directory shows only the files passing the filter
-                let paths = if row.is_dir() && self.query().filter().is_some() {
+                let paths = if row.is_dir() && self.tree().filter().is_some() {
                     file_paths(&self.row_files(row))
                 } else {
                     vec![row.path.as_ref()]
@@ -2257,7 +2261,7 @@ impl LocalChangesPanel<'_> {
         let focused = active && self.focused && state.is_files_focused();
         let extras = picked_note(picked.len())
             .into_iter()
-            .chain(state.query_of(section).indicator());
+            .chain(state.query_of(section).indicator(tree.filter()));
         let label = format!("[{number}] {name} ({})", files.len());
         let theme = &self.ctx.color_theme;
         let amending = section == LocalChangesSection::Staged && state.draft.amend.is_some();
@@ -2275,8 +2279,6 @@ impl LocalChangesPanel<'_> {
         } else {
             "No matches"
         };
-        // the filter typed, and the one the tree applies, are set together, see `apply_query_change`
-        debug_assert_eq!(state.query_of(section).filter(), tree.filter());
         // only the section whose diff is displayed shows its cursor, quieter while another panel,
         // like the diff or the refs sidebar, has the focus, as the details' trees
         let offset = render_tree(
@@ -2308,7 +2310,7 @@ impl LocalChangesPanel<'_> {
             None => String::new(),
         };
         let diff_focused = self.focused && state.is_diff_focused();
-        let notes = state.diff_query.indicator().into_iter();
+        let notes = state.diff_query.indicator(None).into_iter();
         let notes = notes.chain(loading_note(state.pane.loading_since()));
         let title = panel_title(&title, notes, diff_focused, &self.ctx.color_theme);
         let search = state.diff_query.search();
@@ -4450,10 +4452,10 @@ mod tests {
         assert_eq!(state.tree().view(), TreeView::List);
         assert_eq!(
             state
-                .query_of(LocalChangesSection::Unstaged)
-                .indicator()
-                .as_deref(),
-            Some("filter: a")
+                .section_state(LocalChangesSection::Unstaged)
+                .tree
+                .filter(),
+            Some("a")
         );
         Ok(())
     }
@@ -4481,10 +4483,10 @@ mod tests {
         type_query(&mut state, "list");
         assert_eq!(
             state
-                .query_of(LocalChangesSection::Unstaged)
-                .indicator()
-                .as_deref(),
-            Some("filter: list")
+                .section_state(LocalChangesSection::Unstaged)
+                .tree
+                .filter(),
+            Some("list")
         );
         assert_eq!(
             visible(&state),
@@ -4510,7 +4512,10 @@ mod tests {
         state.focus_section(LocalChangesSection::Staged);
         assert_eq!(visible(&state).len(), 6);
         assert_eq!(
-            state.query_of(LocalChangesSection::Staged).indicator(),
+            state
+                .section_state(LocalChangesSection::Staged)
+                .tree
+                .filter(),
             None
         );
 

@@ -2531,7 +2531,7 @@ fn test_details_keep_their_filter() {
     let path = repository(dir.path());
     let mut harness = Harness::new(&path, launch());
     let filter = |app: &App| match &app.view {
-        View::Detail(view) => view.queries().changes.filter().map(String::from),
+        View::Detail(view) => view.queries().changes_filter,
         _ => panic!("not in the commit details"),
     };
     let kept = || Some("f".to_string());
@@ -2547,6 +2547,36 @@ fn test_details_keep_their_filter() {
         check(|app| assert!(matches!(app.view, View::LocalChanges(_)))),
         keys("tab"),
         check(move |app| assert_eq!(filter(app), kept())),
+    ]);
+}
+
+// The filters of the changes and the files stay on another commit, which the trees keep.
+#[test]
+fn test_details_keep_their_filters_on_another_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let filters = |changes: Option<&'static str>, files: Option<&'static str>| {
+        check(move |app| match &app.view {
+            View::Detail(view) => {
+                let queries = view.queries();
+                assert_eq!(queries.changes_filter.as_deref(), changes);
+                assert_eq!(queries.files_filter.as_deref(), files);
+            }
+            _ => panic!("not in the commit details"),
+        })
+    };
+    harness.run(vec![
+        keys("4 / f enter"),
+        filters(Some("f"), None),
+        keys("2 j"),
+        filters(Some("f"), None),
+        keys("5 / x enter"),
+        keys("2 k"),
+        filters(Some("f"), Some("x")),
+        // esc clears the filter of the tab shown only
+        keys("5 esc"),
+        filters(Some("f"), None),
     ]);
 }
 
@@ -6390,7 +6420,7 @@ fn test_details_keep_the_filter_of_their_files() {
             let View::Detail(view) = &app.view else {
                 panic!("not in the commit details");
             };
-            assert_eq!(view.queries().files.filter(), Some("x"));
+            assert_eq!(view.queries().files_filter.as_deref(), Some("x"));
         }),
         // drawn with the files loaded, see the assert in `DetailView::render`
         keys("j"),
@@ -6821,11 +6851,11 @@ fn test_esc_clears_the_picked_files_before_the_filter_of_the_details() {
         check(move |app| match &app.view {
             View::Detail(view) => {
                 let queries = view.queries();
-                let query = match view.tab() {
-                    DetailTab::Changes => queries.changes,
-                    _ => queries.files,
+                let filter = match view.tab() {
+                    DetailTab::Changes => queries.changes_filter,
+                    _ => queries.files_filter,
                 };
-                assert_eq!(query.filter(), expected);
+                assert_eq!(filter.as_deref(), expected);
             }
             _ => panic!("not in the commit details"),
         })

@@ -41,6 +41,8 @@ pub struct HelpView {
     shown: Vec<usize>,
     cursor: ListCursor,
     query: TreeQuery,
+    // the filter applied, which the query has only while typed
+    filter: Option<String>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -72,6 +74,7 @@ impl HelpView {
             shown,
             cursor: ListCursor::default(),
             query: TreeQuery::default(),
+            filter: None,
             ctx,
             tx,
         }
@@ -84,11 +87,11 @@ impl HelpView {
             .when(|v| v.selected_event().is_some());
         k.add(&[Search], "filter", "Filter the actions by what they do");
         k.add(&[Cancel], "clear filter", "Clear the filter, then close")
-            .when(|v| v.query.filter().is_some());
+            .when(|v| v.filter.is_some());
         k.add(&[HelpToggle, Cancel], "close", "Close the keys list")
-            .when(|v| v.query.filter().is_none());
+            .when(|v| v.filter.is_none());
         k.quiet(&[HelpToggle], "Close the keys list")
-            .when(|v| v.query.filter().is_some());
+            .when(|v| v.filter.is_some());
         register_moving_keys(k, |_| true, "Select the next/previous action");
         k.quiet(&[SelectDown, SelectUp], "Select the next/previous action");
     }
@@ -109,6 +112,7 @@ impl HelpView {
     // A key typed into the filter, which applies right away.
     pub fn type_key(&mut self, key: KeyEvent) {
         if type_query(&self.ctx, &mut self.query, key, SearchKind::Names).is_some() {
+            self.filter = self.query.typed_filter().map(String::from);
             self.apply_filter();
         }
         self.tx
@@ -123,13 +127,13 @@ impl HelpView {
                 }
             }
             UserEvent::Search => {
-                self.query.start_filter();
+                self.query.start_filter(self.filter.as_deref());
                 self.tx
                     .send(query_status(&self.ctx, &self.query, SearchKind::Names));
             }
             // the filter first
-            UserEvent::Cancel if self.query.filter().is_some() => {
-                self.query.clear();
+            UserEvent::Cancel if self.filter.is_some() => {
+                self.filter = None;
                 self.apply_filter();
             }
             UserEvent::HelpToggle | UserEvent::Cancel => self.tx.send(AppEvent::CloseOverlay),
@@ -161,7 +165,7 @@ impl HelpView {
 
     fn apply_filter(&mut self) {
         let options = self.ctx.search_options.get();
-        let filter = self.query.filter();
+        let filter = self.filter.as_deref();
         self.shown = (0..self.rows.len())
             .filter(|&i| filter.is_none_or(|f| name_matches(self.rows[i].text, f, options)))
             .collect();
@@ -174,7 +178,7 @@ impl HelpView {
         let theme = &ctx.color_theme;
         let notes = [self.shown.len().to_string()]
             .into_iter()
-            .chain(self.query.indicator());
+            .chain(self.query.indicator(self.filter.as_deref()));
         let title = panel_title("Keys", notes, true, theme);
         let panel = area;
         let inner = render_panel(f.buffer_mut(), panel, title, true, theme);
@@ -206,7 +210,7 @@ impl HelpView {
             .max()
             .unwrap_or(0)
             .min(inner.width as usize / 3);
-        let filter = self.query.filter();
+        let filter = self.filter.as_deref();
         let options = ctx.search_options.get();
         for (n, &i) in self.shown.iter().enumerate().skip(offset).take(height) {
             let row = &self.rows[i];
@@ -400,7 +404,7 @@ mod tests {
 
         // esc clears the filter, then closes
         help.handle_event(UserEvent::Cancel);
-        assert!(help.query.filter().is_none());
+        assert!(help.filter.is_none());
         help.handle_event(UserEvent::Cancel);
         assert!(matches!(ec.try_recv(), Some(AppEvent::CloseOverlay)));
     }

@@ -188,7 +188,7 @@ impl TimelineView {
         match event {
             // the search, then out of the lines and hunks, then closes
             UserEvent::Cancel => {
-                if self.query.clear().is_some() {
+                if self.query.clear() {
                     self.update_query_status();
                 } else if !self.pane.back() {
                     self.tx.send(AppEvent::CloseOverlay);
@@ -503,7 +503,7 @@ impl TimelineView {
         let focused = !self.pane.is_focused();
         let count = self.history.len();
         // the search in the title of the panel it applies to, like its highlights
-        let indicator = |shown: bool| self.query.indicator().filter(|_| shown);
+        let indicator = |shown: bool| self.query.indicator(None).filter(|_| shown);
         let position = format!("{}/{count}", count - self.cursor.selected());
         let notes = [position].into_iter().chain(indicator(focused));
         let block =

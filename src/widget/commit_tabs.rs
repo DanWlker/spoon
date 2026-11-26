@@ -1024,9 +1024,11 @@ impl<'a> CommitFilesState<'a> {
         self.is_preview_focused() && self.text.scroll(event)
     }
 
-    // The filter the files are shown with once they are loaded, None before.
-    pub fn loaded_filter(&self) -> Option<Option<&str>> {
-        self.tree.loaded().map(FileTreeState::filter)
+    // The filter the files are shown with, kept by the tree before while they load.
+    pub fn filter(&self) -> Option<&str> {
+        match &self.tree {
+            FilesTree::Loaded(tree) | FilesTree::Waiting(tree) => tree.filter(),
+        }
     }
 
     // Entered once loaded too, see `enter`: the keys of the preview wait for it.

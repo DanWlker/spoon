@@ -23,12 +23,13 @@ pub enum QueryKind {
     Filter,
 }
 
+// The filter applied isn't kept here but by what it filters, like the tree, see
+// `FileTreeState::filter`: the query has it only while it is typed, see `typed_filter`.
 #[derive(Debug, Default, Clone)]
 pub struct TreeQuery {
     // the query being typed, applied live
     editing: Option<Editing>,
     search: Option<String>,
-    filter: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,11 +63,10 @@ impl TreeQuery {
         }
     }
 
-    // The search and filter applied, the one being typed kept as typed so far but no longer typed.
+    // The search applied, the one being typed kept as typed so far but no longer typed.
     pub fn applied(&self) -> Self {
         TreeQuery {
             search: self.search.clone(),
-            filter: self.filter.clone(),
             ..Default::default()
         }
     }
@@ -78,9 +78,9 @@ impl TreeQuery {
         self.editing = Some(Editing::Search { input, from });
     }
 
-    // Starts typing the filter, from its current value.
-    pub fn start_filter(&mut self) {
-        let input = Input::new(self.filter.clone().unwrap_or_default());
+    // Starts typing the filter, from the one applied now.
+    pub fn start_filter(&mut self, applied: Option<&str>) {
+        let input = Input::new(applied.unwrap_or_default().to_string());
         self.editing = Some(Editing::Filter(input));
     }
 
@@ -103,7 +103,8 @@ impl TreeQuery {
         self.editing.as_ref().map(Editing::kind)
     }
 
-    // Enter keeps the query, Esc clears it; other keys edit it, which applies it right away.
+    // Enter keeps the query, Esc clears it; other keys edit it, which applies it right away: a
+    // filter changed is applied as `typed_filter` says.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<QueryKind> {
         let editing = self.editing.as_mut()?;
         let kind = editing.kind();
@@ -113,36 +114,38 @@ impl TreeQuery {
                 self.editing = None;
                 return None;
             }
-            KeyCode::Esc => {
-                self.editing = None;
-                self.set(kind, None);
-            }
+            KeyCode::Esc => self.editing = None,
             _ => {
                 input.handle_event(&Event::Key(key));
-                let value = Some(input.value().to_string()).filter(|v| !v.is_empty());
-                self.set(kind, value);
             }
+        }
+        if kind == QueryKind::Search {
+            self.search = self.typed().map(String::from);
         }
         Some(kind)
     }
 
-    // Clears the search, or the filter when there is no search. Returns what was cleared.
-    pub fn clear(&mut self) -> Option<QueryKind> {
-        if self.search.take().is_some() {
-            Some(QueryKind::Search)
-        } else if self.filter.take().is_some() {
-            Some(QueryKind::Filter)
-        } else {
-            None
-        }
+    // The query being typed, none once cleared with Esc or while empty.
+    fn typed(&self) -> Option<&str> {
+        let value = match self.editing.as_ref()? {
+            Editing::Search { input, .. } | Editing::Filter(input) => input.value(),
+        };
+        Some(value).filter(|v| !v.is_empty())
+    }
+
+    // The filter to apply while it is typed, none once cleared with Esc.
+    pub fn typed_filter(&self) -> Option<&str> {
+        self.typed()
+            .filter(|_| matches!(self.editing, Some(Editing::Filter(_))))
+    }
+
+    // Clears the search; returns whether there was one.
+    pub fn clear(&mut self) -> bool {
+        self.search.take().is_some()
     }
 
     pub fn search(&self) -> Option<&str> {
         self.search.as_deref()
-    }
-
-    pub fn filter(&self) -> Option<&str> {
-        self.filter.as_deref()
     }
 
     // The query being typed, as shown in the status line: (text, cursor byte index).
@@ -158,27 +161,18 @@ impl TreeQuery {
         Some((format!("{prefix}{value}"), prefix.len() + cursor))
     }
 
-    // A short description of the active search and filter, for titles.
-    pub fn indicator(&self) -> Option<String> {
+    // A short description of the search and of `filter`, the one applied, for titles.
+    pub fn indicator(&self, filter: Option<&str>) -> Option<String> {
         let parts: Vec<String> = [
             self.search
                 .as_ref()
                 .map(|s| format!("{}{s}", prefix(QueryKind::Search))),
-            self.filter
-                .as_ref()
-                .map(|f| format!("{}{f}", prefix(QueryKind::Filter))),
+            filter.map(|f| format!("{}{f}", prefix(QueryKind::Filter))),
         ]
         .into_iter()
         .flatten()
         .collect();
         (!parts.is_empty()).then(|| parts.join("  "))
-    }
-
-    fn set(&mut self, kind: QueryKind, value: Option<String>) {
-        match kind {
-            QueryKind::Search => self.search = value,
-            QueryKind::Filter => self.filter = value,
-        }
     }
 }
 
@@ -550,7 +544,7 @@ mod tests {
     #[test]
     fn test_tree_query() {
         let mut query = TreeQuery::default();
-        assert_eq!(query.indicator(), None);
+        assert_eq!(query.indicator(None), None);
 
         // typing applies the search live, enter keeps it
         query.start_search(0);
@@ -560,13 +554,18 @@ mod tests {
         query.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(!query.is_editing());
 
-        // esc while typing clears that query only
-        query.start_filter();
-        type_str(&mut query, "src");
-        assert_eq!(query.filter(), Some("src"));
-        assert_eq!(query.indicator(), Some("/ma  filter: src".into()));
+        // a filter typed from the one applied, to apply; esc clears it, the search stays
+        query.start_filter(Some("sr"));
+        assert_eq!(query.typed_filter(), Some("sr"));
+        type_str(&mut query, "c");
+        assert_eq!(query.typed_filter(), Some("src"));
+        assert_eq!(query.search(), Some("ma"));
+        assert_eq!(
+            query.indicator(query.typed_filter()),
+            Some("/ma  filter: src".into())
+        );
         query.handle_key(KeyEvent::from(KeyCode::Esc));
-        assert_eq!(query.filter(), None);
+        assert_eq!(query.typed_filter(), None);
         assert_eq!(query.search(), Some("ma"));
 
         // a search goes from where it started while it is typed, else from the selection
@@ -574,17 +573,13 @@ mod tests {
         assert_eq!(query.step_from(7), 4);
         query.handle_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(query.step_from(7), 7);
-        query.start_filter();
+        query.start_filter(None);
         assert_eq!(query.step_from(7), 7);
         query.handle_key(KeyEvent::from(KeyCode::Enter));
 
-        // clearing removes the search first, then the filter
-        query.start_filter();
-        type_str(&mut query, "x");
-        query.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(query.clear(), Some(QueryKind::Search));
-        assert_eq!(query.clear(), Some(QueryKind::Filter));
-        assert_eq!(query.clear(), None);
+        // clearing removes the search
+        assert!(query.clear());
+        assert!(!query.clear());
     }
 
     #[test]

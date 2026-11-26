@@ -213,7 +213,7 @@ impl BlameView {
         match event {
             // the search, then up from the lines to the commit shown, then closes, like the timeline
             UserEvent::Cancel => {
-                if self.query.clear().is_some() {
+                if self.query.clear() {
                     self.update_query_status();
                 } else if self.text.has_selection() {
                     self.text.cancel_visual();
@@ -635,7 +635,7 @@ impl BlameView {
         // the search applies to the text or the commits, both in this panel
         let notes = [revision.path.clone()]
             .into_iter()
-            .chain(self.query.indicator())
+            .chain(self.query.indicator(None))
             .chain(loading_note(
                 self.loading
                     .as_ref()

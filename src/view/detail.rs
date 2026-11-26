@@ -74,6 +74,9 @@ pub struct DetailQueries {
     pub changes: TreeQuery,
     pub files: TreeQuery,
     pub pane: TreeQuery,
+    // the filters of the changes and the files, which their trees keep
+    pub changes_filter: Option<String>,
+    pub files_filter: Option<String>,
 }
 
 // Two commits compared: only their changes are shown, under the comparison's title; or set aside,
@@ -237,16 +240,41 @@ impl<'a> DetailView<'a> {
             changes: self.changes_query.applied(),
             files: self.files_query.applied(),
             pane: self.pane_query.applied(),
+            changes_filter: self.changes_state.filter().map(String::from),
+            files_filter: self.files_state.filter().map(String::from),
         }
     }
 
-    // Puts back the searches and filters of `queries`, the filter applied to the tab shown and,
-    // see `load_tab`, to the other once shown.
+    // Puts back the searches and filters of `queries`.
     pub fn restore_queries(&mut self, queries: DetailQueries) {
         self.changes_query = queries.changes;
         self.files_query = queries.files;
         self.pane_query = queries.pane;
-        self.apply_query_change(Some(QueryKind::Filter));
+        let options = self.ctx.search_options.get();
+        if let Some(filter) = queries.changes_filter {
+            (self.changes_state).update_tree(|t| t.set_filter(Some(&filter), options));
+        }
+        if let Some(filter) = queries.files_filter {
+            self.files_state.set_filter(Some(&filter), options);
+        }
+    }
+
+    // Puts `changes` in place of the changes shown, filtered alike; returns those before.
+    fn swap_changes(&mut self, mut changes: CommitChangesState<'a>) -> CommitChangesState<'a> {
+        if let Some(filter) = self.changes_state.filter() {
+            let options = self.ctx.search_options.get();
+            changes.update_tree(|t| t.set_filter(Some(filter), options));
+        }
+        std::mem::replace(&mut self.changes_state, changes)
+    }
+
+    // The filter of the files of the tab shown.
+    fn tab_filter(&self) -> Option<&str> {
+        match self.tab {
+            DetailTab::Info => None,
+            DetailTab::Changes => self.changes_state.filter(),
+            DetailTab::Files => self.files_state.filter(),
+        }
     }
 
     // How the changes and files tabs show their files, as a tree or a list.
@@ -261,13 +289,14 @@ impl<'a> DetailView<'a> {
     // Loads on another thread once drawn, with the commit shown, see `Load`.
     pub fn start_compare(&mut self, base: CommitHash, target: CommitHash, compare: Compare) {
         let view = self.changes_state.tree_view();
-        self.changes_state = CommitChangesState::with_files(
+        let changes = CommitChangesState::with_files(
             self.repository,
             self.ctx.clone(),
             Some(base.clone()),
             target.clone(),
             CommitFiles::none(view),
         );
+        self.swap_changes(changes).free_elsewhere();
         let shown = self.commit.commit_hash.clone();
         self.loading = None;
         self.stale = Some(Load::Compare {
@@ -296,7 +325,7 @@ impl<'a> DetailView<'a> {
         // a file or directory, not the root row standing for all of them
         let path = |v: &Self| v.selected_row().and_then(FileTreeRow::entry).is_some();
         // or a filter hiding all of them, to change
-        let queried = move |v: &Self| files(v) && v.query().is_some_and(|q| q.filter().is_some());
+        let queried = move |v: &Self| files(v) && v.tab_filter().is_some();
 
         // the commit list: back to the diff of two commits, closing it, or the list's own keys; with
         // none picked, after the search, see `handle_event`
@@ -751,16 +780,13 @@ impl<'a> DetailView<'a> {
             other => return self.compare = other,
         };
         let view = self.changes_state.tree_view();
-        let changes = std::mem::replace(
-            &mut self.changes_state,
-            CommitChangesState::with_files(
-                self.repository,
-                self.ctx.clone(),
-                None,
-                self.commit.commit_hash.clone(),
-                CommitFiles::none(view),
-            ),
-        );
+        let changes = self.swap_changes(CommitChangesState::with_files(
+            self.repository,
+            self.ctx.clone(),
+            None,
+            self.commit.commit_hash.clone(),
+            CommitFiles::none(view),
+        ));
         self.compare = Comparing::Parked(compare, Box::new(changes));
         self.update_selected_commit(|_| {});
         self.show_tab(DetailTab::Info);
@@ -772,10 +798,9 @@ impl<'a> DetailView<'a> {
             other => return self.compare = other,
         };
         self.compare = Comparing::Shown(compare);
-        self.changes_state = *changes;
+        self.swap_changes(*changes).free_elsewhere();
         self.tab = DetailTab::Changes;
         self.list_focused = true;
-        self.load_tab();
     }
 
     pub fn tab(&self) -> DetailTab {
@@ -803,7 +828,6 @@ impl<'a> DetailView<'a> {
     pub fn show_tab(&mut self, tab: DetailTab) {
         self.list_focused = false;
         self.tab = tab;
-        self.load_tab();
     }
 
     // Whether `event` moves to another commit, leaving the details of the one selected to load.
@@ -858,7 +882,6 @@ impl<'a> DetailView<'a> {
             // the comparison only has changes; the focus stays where it is
             if !self.shows_compare() {
                 self.tab = self.tab.cycle(Toward::of(event, UserEvent::NextTab));
-                self.load_tab();
             }
             return;
         }
@@ -1134,9 +1157,6 @@ impl<'a> DetailView<'a> {
                 layout.record(Target::Info, detail_area, RowMap::None);
             }
             DetailTab::Changes => {
-                // the filter typed, and the one the tree applies, are set together, see
-                // `apply_query_change`
-                debug_assert_eq!(self.changes_query.filter(), self.changes_state.filter());
                 let diff_search = self.pane_query.search();
                 CommitTab::new(self.ctx.clone(), diff_search, focused).render_changes(
                     detail_area,
@@ -1145,10 +1165,6 @@ impl<'a> DetailView<'a> {
                 );
             }
             DetailTab::Files => {
-                // as for the changes, once the files are loaded
-                if let Some(filter) = self.files_state.loaded_filter() {
-                    debug_assert_eq!(self.files_query.filter(), filter);
-                }
                 let preview_search = self.pane_query.search();
                 CommitTab::new(self.ctx.clone(), preview_search, focused).render_files(
                     detail_area,
@@ -1175,7 +1191,7 @@ impl<'a> DetailView<'a> {
             DetailTab::Files => self.files_state.picked_count(),
         };
         let notes: Vec<String> = (picked_note(picked).into_iter())
-            .chain(self.query().and_then(TreeQuery::indicator))
+            .chain(self.query().and_then(|q| q.indicator(self.tab_filter())))
             .chain(loading_note(loading))
             .collect();
         let detail_area = panel_area;
@@ -1606,13 +1622,6 @@ impl<'a> DetailView<'a> {
         true
     }
 
-    // The changes and files of a commit are only loaded once their tab is shown, in the background
-    // once drawn, see `load_in_background`.
-    fn load_tab(&mut self) {
-        // the states of another commit start without the filter
-        self.apply_query_change(Some(QueryKind::Filter));
-    }
-
     pub fn is_typing_query(&self) -> bool {
         self.query().is_some_and(TreeQuery::is_editing)
     }
@@ -1651,12 +1660,13 @@ impl<'a> DetailView<'a> {
         let in_diff = self.is_pane_focused();
         // where the query starts from, which a search goes from while it is typed
         let from = self.focus_row();
+        let applied = self.tab_filter().map(String::from);
         let Some(query) = self.query_mut() else {
             return false;
         };
         match event {
             UserEvent::Search if in_diff => query.start_search(from),
-            UserEvent::Search => query.start_filter(),
+            UserEvent::Search => query.start_filter(applied.as_deref()),
             UserEvent::GoToNext | UserEvent::GoToPrevious => {
                 let direction = if event == UserEvent::GoToNext {
                     SearchDirection::Next
@@ -1666,14 +1676,13 @@ impl<'a> DetailView<'a> {
                 self.search(direction);
                 return true;
             }
-            UserEvent::Cancel => {
-                // clear the search of the diff or preview, or the filter of the files, before
-                // closing
-                let change = query.clear();
-                if change.is_none() {
-                    return false;
-                }
-                self.apply_query_change(change);
+            // clear the search of the diff or preview, or the filter of the files, before closing
+            UserEvent::Cancel if query.clear() => {
+                self.search(SearchDirection::Current);
+                return true;
+            }
+            UserEvent::Cancel if !in_diff && applied.is_some() => {
+                self.filter_files(None);
                 return true;
             }
             _ => return false,
@@ -1683,22 +1692,26 @@ impl<'a> DetailView<'a> {
     }
 
     fn apply_query_change(&mut self, change: Option<QueryKind>) {
-        let options = self.ctx.search_options.get();
         match change {
             None => {}
             Some(QueryKind::Search) => self.search(SearchDirection::Current),
             // the files are only filtered, see `handle_query_event`
             Some(QueryKind::Filter) => {
-                let filter = self.query().and_then(TreeQuery::filter).map(String::from);
-                let filter = filter.as_deref();
-                match self.tab {
-                    DetailTab::Info => {}
-                    DetailTab::Changes => self
-                        .changes_state
-                        .update_tree(|t| t.set_filter(filter, options)),
-                    DetailTab::Files => self.files_state.set_filter(filter, options),
-                }
+                let filter = self.query().and_then(TreeQuery::typed_filter);
+                self.filter_files(filter.map(String::from).as_deref());
             }
+        }
+    }
+
+    // Filters the files of the tab shown with `filter`.
+    fn filter_files(&mut self, filter: Option<&str>) {
+        let options = self.ctx.search_options.get();
+        match self.tab {
+            DetailTab::Info => {}
+            DetailTab::Changes => {
+                (self.changes_state).update_tree(|t| t.set_filter(filter, options))
+            }
+            DetailTab::Files => self.files_state.set_filter(filter, options),
         }
     }
 
@@ -1905,7 +1918,7 @@ impl<'a> DetailView<'a> {
             ),
             _ => CommitChangesState::with_files(repository, self.ctx.clone(), None, shown, files),
         };
-        std::mem::replace(&mut self.changes_state, changes_state).free_elsewhere();
+        self.swap_changes(changes_state).free_elsewhere();
         self.files_state
             .set_commit(&commit, &changes.changes, &changes.gitlinks);
         self.commit = commit;
@@ -1914,8 +1927,6 @@ impl<'a> DetailView<'a> {
 
         self.commit_detail_state.offset = 0;
         // the diff of the changes tab and the files load in the background, see `update_layout`
-        // the states of another commit start without the filter
-        self.apply_query_change(Some(QueryKind::Filter));
         if let Some(focus) = self.focus_once_loaded.take() {
             self.restore_focus(focus);
         }
