@@ -17,7 +17,7 @@ use crate::{
     keybind::UserEvent,
     layout::{RowMap, Target},
     widget::{
-        commit_list::{mark_commit_list_bar, submodule_commit_list, CommitList, CommitListState},
+        commit_list::{mark_commit_list_bar, CommitList, CommitListState, Dimming},
         diff::Step,
         style::{placeholder, render_panel, render_panel_scrollbar, render_scrollbar, tabs_shown},
     },
@@ -390,9 +390,12 @@ fn commits<'a>(
     moved: Moved,
 ) -> Shows<'a> {
     let manager = ctx.graph_image_manager(graph);
-    let list = Box::new(submodule_commit_list(
+    // read-only: built once per selection, every commit on the submodule's HEAD and its refs shown,
+    // with the graph; its repository owned by the parent, so the borrows live as long as this list
+    let list = Box::new(CommitListState::new(
         submodule,
         manager,
+        Dimming::None,
         ctx.search_options.clone(),
         ctx.ui_config.common.scrolloff as usize,
     ));

@@ -28,7 +28,7 @@ use crate::{
     keybind::UserEvent,
     keys::{Availability, KeyList, Keys},
     layout::{fit_size, Direction, Edge, Panel, RowMap, Target},
-    path_tree::{path_contains, FileTree, FileTreeRow, ROOT_PATH},
+    path_tree::{path_contains, FileTree, FileTreeRow},
     pointer::OnPicks,
     search::{SearchKind, SearchOptions, SearchOutcome},
     widget::{
@@ -36,8 +36,8 @@ use crate::{
         diff::{filler, Step, CONVERTED_DIFF},
         diff_pane::{register_diff_keys, DiffPane},
         file_tree::{
-            find_next, render_tree, Entry, FileTreeState, Folders, Root, TreeCursor, TreeSelection,
-            TreeView,
+            ancestors, find_next, render_tree, Entry, FileTreeState, Folders, Root, TreeCursor,
+            TreeSelection, TreeView,
         },
         git_dialog::{CommitKind, CommitPreview, GitDialog, StashFile},
         style::{
@@ -1527,17 +1527,12 @@ impl<'a> LocalChangesState<'a> {
             if section.picked.is_empty() {
                 continue;
             }
+            // each file, its directories and the root while there is one
             let kept: FxHashSet<&str> = files
                 .iter()
-                .flat_map(|f| {
-                    let path = f.path.as_str();
-                    let dirs = path.match_indices('/').map(move |(i, _)| &path[..i]);
-                    std::iter::once(path).chain(dirs)
-                })
+                .flat_map(|f| ancestors(&f.path).chain([f.path.as_str()]))
                 .collect();
-            section
-                .picked
-                .retain(|p| kept.contains(p) || (p == ROOT_PATH && !files.is_empty()));
+            section.picked.retain(|p| kept.contains(p));
         }
 
         let in_diff = self.is_diff_focused();
@@ -1682,12 +1677,16 @@ impl<'a> LocalChangesState<'a> {
         if !(in_diff || self.focus() == Focus::Files) {
             return Ok(());
         }
-        let direction = SearchDirection::from(toward);
         let rows = self.tree().all_rows();
-        let current = self
+        let selected = self
             .selected_path()
-            .and_then(|path| rows.iter().position(|row| *row.path == *path))
-            .unwrap_or(0);
+            .and_then(|path| rows.iter().position(|row| *row.path == *path));
+        // the root row, above every row: the first file is the next, the last the previous
+        let (current, direction) = match (selected, toward) {
+            (Some(selected), _) => (selected, SearchDirection::from(toward)),
+            (None, Toward::Next) => (0, SearchDirection::Current),
+            (None, Toward::Previous) => (0, SearchDirection::Previous),
+        };
         let path = find_next(&rows, current, direction, |row| !row.is_dir());
         self.chosen = Focus::Files;
         self.update_tree(|tree| tree.reveal(path.as_deref()));
@@ -4660,6 +4659,29 @@ mod tests {
         Ok(())
     }
 
+    // From the root row, above every file, the next file is the first: the second was, the first
+    // only reached by going round.
+    #[test]
+    fn test_next_file_from_the_root_row_is_the_first() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let repo_path = dir.path();
+        GitRepository::new(repo_path).init();
+        for file in ["a.txt", "b.txt"] {
+            fs::write(repo_path.join(file), "x\n")?;
+        }
+        let repository = Repository::load(repo_path, SortCommit::Chronological, None, false)?;
+        let mut state = LocalChangesState::load(&repository);
+        for view in [TreeView::Tree, TreeView::List] {
+            select_row(&mut state, ROOT_PATH);
+            if view == TreeView::List {
+                state.toggle_tree_view();
+            }
+            state.select_next_file(Toward::Next)?;
+            assert_eq!(state.selected_path().as_deref(), Some("a.txt"), "{view:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_edit_opens_only_the_exact_picked_files() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -5474,6 +5496,10 @@ mod tests {
         fs::write(repo_path.join("b.txt"), "3\n")?;
         assert!(state.reload_if_changed(files()));
         assert!(state.is_visual());
+        // and still picks as it moves: the picks' half of it was cleared
+        state.select_next();
+        assert_eq!(state.picked_paths(), ["a.txt", "b.txt"]);
+        state.select_prev();
         // another file: the rows move, the selection ends
         fs::write(repo_path.join("c.txt"), "new\n")?;
         assert!(state.reload_if_changed(files()));

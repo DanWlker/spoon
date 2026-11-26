@@ -6,8 +6,8 @@ use std::{path::Path, sync::Arc};
 use crate::background::Cancel;
 
 use super::{
-    git_output, git_output_bytes_until, load_local_changes, pathspecs, text_from_git, work_path,
-    IndexRefresh, Repository,
+    fits_a_command_line, git_output, git_output_bytes_until, load_local_changes, pathspecs,
+    text_from_git, work_path, IndexRefresh, Repository,
 };
 
 // The paths among `paths` that are gitlinks (submodules) in the tree of `commit` (a commit or a
@@ -24,9 +24,9 @@ pub(super) fn gitlinks_at(
         return FxHashMap::default();
     }
     let mut args = vec!["ls-tree", "-r", "-z", commit];
-    // past this many, the whole tree is listed, the command line staying short enough
+    // past a command line, the whole tree is listed
     let pathspecs = pathspecs(paths);
-    if paths.len() <= 1000 {
+    if fits_a_command_line(paths) {
         args.push("--");
         args.extend(pathspecs.iter().map(String::as_str));
     }

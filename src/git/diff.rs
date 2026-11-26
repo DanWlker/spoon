@@ -9,8 +9,9 @@ use std::{
 use crate::background::Cancel;
 
 use super::{
-    git_output, git_output_bytes_until, git_run_until, parse_name_status, pathspecs,
-    submodule::gitlinks_at, text_from_git, CommitHash, LocalChangeStatus, Repository, WorkTree,
+    command_line_parts, git_output, git_output_bytes_until, git_run_until, parse_name_status,
+    pathspecs, submodule::gitlinks_at, text_from_git, CommitHash, LocalChangeStatus, Repository,
+    WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -27,18 +28,24 @@ impl ConvertedPaths {
         if self.textconv_drivers.is_empty() || paths.is_empty() {
             return FxHashSet::default();
         }
-        let mut args = vec!["check-attr", "-z", "diff", "--"];
-        args.extend_from_slice(paths);
-        let out = git_output(&self.repository, &args).unwrap_or_default();
-        // path, attribute, value, each ended by a NUL
-        let fields: Vec<&str> = out.split('\0').collect();
-        fields
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .filter(|[_, _, driver]| self.textconv_drivers.iter().any(|d| d == driver))
-            .map(|[path, _, _]| path.to_string())
-            .collect()
+        let paths = paths.iter().map(|p| p.to_string()).collect();
+        let mut converted = FxHashSet::default();
+        // in parts, many paths being more than a command line takes
+        for part in command_line_parts(paths) {
+            let mut args = vec!["check-attr", "-z", "diff", "--"];
+            args.extend(part.iter().map(String::as_str));
+            let out = git_output(&self.repository, &args).unwrap_or_default();
+            // path, attribute, value, each ended by a NUL
+            let fields: Vec<&str> = out.split('\0').collect();
+            let paths = fields
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .filter(|[_, _, driver]| self.textconv_drivers.iter().any(|d| d == driver))
+                .map(|[path, _, _]| path.to_string());
+            converted.extend(paths);
+        }
+        converted
     }
 }
 
@@ -493,5 +500,29 @@ mod tests {
         run_task(path, &task).unwrap();
         let content = std::fs::read_to_string(path.join("new.txt")).unwrap();
         assert_eq!(content, numbers.replace("\n5\n", "\nfive\n"));
+    }
+}
+
+#[cfg(test)]
+mod command_line_tests {
+    use super::*;
+
+    // More paths than a command line takes are told in parts: they all were told none, git failing
+    // to start, and the hunks of their converted text offered to stage.
+    #[test]
+    fn test_converted_paths_of_more_than_a_command_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        crate::test_support::git::GitRepository::new(path).init();
+        std::fs::write(path.join(".gitattributes"), "*.docx diff=word\n").unwrap();
+        let converted = ConvertedPaths {
+            repository: path.to_path_buf(),
+            textconv_drivers: vec!["word".into()],
+        };
+        let names: Vec<String> = (0..60_000)
+            .map(|i| format!("a-long-folder-name/another-one/file-{i:06}.docx"))
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert_eq!(converted.of(&names).len(), names.len());
     }
 }

@@ -46,8 +46,8 @@ use crate::{
     search::{SearchKind, SearchOptions, SearchOutcome},
     view::{
         query_or_search_status, register_graph_commands, BlameView, DetailFocus, DetailQueries,
-        HelpView, LocalChangesRefreshViewContext, RefreshViewContext, Reselect, TimelineView,
-        TreeViews, View, ViewKind,
+        HelpView, LocalChangesSnapshot, RefreshViewContext, Reselect, TimelineView, TreeViews,
+        View, ViewKind,
     },
     widget::{
         action_menu::{left_out_of_menu, ActionMenu, MenuEntry, MenuOutcome},
@@ -215,7 +215,7 @@ pub struct AppShell {
     sidebar: RefListState,
     sidebar_mode: SidebarMode,
     // the local changes page while the graph is shown, to come back to it as it was
-    parked_local_changes: Option<LocalChangesRefreshViewContext>,
+    parked_local_changes: Option<LocalChangesSnapshot>,
     // the tab of the commit details while the local changes page is shown, to reopen them with
     // their searches and filters
     parked_details: Option<(DetailTab, DetailQueries)>,
@@ -1023,7 +1023,8 @@ impl App<'_> {
                 .push_back(Kept::Paste(text.into()));
             return;
         }
-        if self.shell.dialog.is_none() && !self.is_typing() {
+        // a popup's keys would run it, see `is_typing`, which covers its text field and filter
+        if !self.is_typing() {
             return;
         }
         let message = self.view.is_typing_message();
@@ -2114,11 +2115,20 @@ impl App<'_> {
     // The commit of the ref selected in the sidebar, or of the detached HEAD.
     fn sidebar_commit(&self) -> Option<CommitHash> {
         match self.shell.sidebar.selection() {
-            RefSelection::Ref(named) => self
+            RefSelection::Stash(_) => None,
+            _ => self.sidebar_target(),
+        }
+    }
+
+    // The commit of the row selected in the sidebar: a ref's, a stash's or the detached HEAD.
+    fn sidebar_target(&self) -> Option<CommitHash> {
+        match self.shell.sidebar.selection() {
+            RefSelection::Ref(named) => self.repository.ref_target(&named).cloned(),
+            RefSelection::Stash(name) => self
                 .repository
                 .all_refs()
                 .into_iter()
-                .find(|r| r.named().as_ref() == Some(&named))
+                .find(|r| matches!(r, crate::git::Ref::Stash { name: n, .. } if *n == name))
                 .map(|r| r.target().clone()),
             RefSelection::DetachedHead => self.repository.head_commit(),
             _ => None,
@@ -2173,17 +2183,7 @@ impl App<'_> {
     // Shows the selected ref on the graph like `select_sidebar_selection`, unfolding the merges
     // hiding its commit first: the commit is selected once the graph is laid out again.
     fn reveal_sidebar_selection(&mut self) {
-        let name = self.shell.sidebar.selected_git_name();
-        let target = match name.as_deref() {
-            Some("HEAD") => self.repository.head_commit(),
-            Some(name) => self
-                .repository
-                .all_refs()
-                .into_iter()
-                .find(|r| r.git_name() == name)
-                .map(|r| r.target().clone()),
-            None => None,
-        };
+        let target = self.sidebar_target();
         let hiding = target
             .as_ref()
             .map(|target| merges_hiding(self.repository, &self.shell.folded_merges, target))
@@ -2370,17 +2370,13 @@ impl App<'_> {
     }
 
     // Opens the fetch, pull or push popup, or fetches all remotes, for the event bound to them.
-    // Returns whether the event was one of them.
-    fn handle_remote_event(&mut self, event: UserEvent) -> bool {
+    fn handle_remote_event(&mut self, event: UserEvent) {
         let action = match event {
             UserEvent::Fetch => RemoteAction::Fetch,
             UserEvent::Pull => RemoteAction::Pull,
             UserEvent::Push => RemoteAction::Push,
-            UserEvent::FetchAll => {
-                self.start_task(fetch_all_task());
-                return true;
-            }
-            _ => return false,
+            UserEvent::FetchAll => return self.start_task(fetch_all_task()),
+            _ => return,
         };
         let info = self.repository.remote_info();
         let from = self.sidebar_remote_from(action, &info);
@@ -2393,7 +2389,6 @@ impl App<'_> {
         if let Some(popup) = self.shell.dialog.as_mut() {
             popup.reveal = Some(Instant::now() + QUICK_RUN_DELAY);
         }
-        true
     }
 
     fn open_dialog(&mut self, dialog: Result<GitDialog, String>) {
@@ -2589,7 +2584,7 @@ impl App<'_> {
         // command does is measured
         let head_before_commit = task
             .commits()
-            .then(|| read_head_commit(self.repository.path()).unwrap_or_default());
+            .then(|| read_head_commit(self.repository.path()));
         let id = self
             .ctx
             .running_tasks
@@ -2635,9 +2630,8 @@ impl App<'_> {
             result = Err(failed.clone());
         }
         // the message is committed, even when going on with a rebase stopped afterwards
-        let committed = head_before_commit.is_some_and(|before| {
-            read_head_commit(self.repository.path()).unwrap_or_default() != before
-        });
+        let committed = head_before_commit
+            .is_some_and(|before| read_head_commit(self.repository.path()) != before);
         if committed {
             match &mut self.view {
                 View::LocalChanges(view) => view.clear_draft(),

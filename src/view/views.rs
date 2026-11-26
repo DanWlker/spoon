@@ -55,21 +55,11 @@ macro_rules! on_page {
 // What the page loads in the background for its keys.
 impl Loads for View<'_> {
     fn acts_on_loading(&self, event: UserEvent) -> bool {
-        match self {
-            View::List(view) => view.acts_on_loading(event),
-            View::Detail(view) => view.acts_on_loading(event),
-            View::LocalChanges(view) => view.acts_on_loading(event),
-            View::Default => false,
-        }
+        on_page!(self, view => view.acts_on_loading(event), false)
     }
 
     fn load_for(&mut self, event: UserEvent) {
-        match self {
-            View::List(view) => view.load_for(event),
-            View::Detail(view) => view.load_for(event),
-            View::LocalChanges(view) => view.load_for(event),
-            View::Default => {}
-        }
+        on_page!(self, view => view.load_for(event), {})
     }
 }
 
@@ -153,31 +143,16 @@ impl<'a> View<'a> {
     }
 
     pub fn prepare_graph_uploads(&mut self) {
-        match self {
-            View::Default => {}
-            View::List(view) => view.prepare_graph_uploads(),
-            View::Detail(view) => view.prepare_graph_uploads(),
-            View::LocalChanges(view) => view.prepare_graph_uploads(),
-        }
+        on_page!(self, view => view.prepare_graph_uploads(), {})
     }
 
     pub fn drain_pending_graph_uploads(&mut self) -> Vec<String> {
-        match self {
-            View::Default => Vec::new(),
-            View::List(view) => view.drain_pending_graph_uploads(),
-            View::Detail(view) => view.drain_pending_graph_uploads(),
-            View::LocalChanges(view) => view.drain_pending_graph_uploads(),
-        }
+        on_page!(self, view => view.drain_pending_graph_uploads(), Vec::new())
     }
 
     // The keys of what has the focus in the view, see `Keys`.
     pub fn keys(&self) -> KeyList {
-        match self {
-            View::List(view) => view.keys(),
-            View::Detail(view) => view.keys(),
-            View::LocalChanges(view) => view.keys(),
-            View::Default => KeyList::default(),
-        }
+        on_page!(self, view => view.keys(), KeyList::default())
     }
 
     // Moves the focus to the panel of the page that way; false when there is none.
@@ -247,12 +222,7 @@ impl<'a> View<'a> {
 
     // The commit list of a view showing it, to build the next view on it.
     pub fn into_list_state(self) -> Option<CommitListState<'a>> {
-        match self {
-            View::Default => None,
-            View::List(view) => Some(view.into_list_state()),
-            View::Detail(view) => Some(view.into_list_state()),
-            View::LocalChanges(view) => Some(view.into_list_state()),
-        }
+        on_page!(self, view => Some(view.into_list_state()), None)
     }
 
     // The commit list of a view showing the commit graph.

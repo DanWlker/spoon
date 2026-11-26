@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use jiff::{tz::TimeZone, ZonedDateTime};
+use jiff::ZonedDateTime;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -150,15 +150,12 @@ impl CommitDetail<'_> {
         email: &'a str,
         date: &'a ZonedDateTime,
     ) -> Vec<Line<'a>> {
-        let date_str = if self.ctx.ui_config.detail.date_local {
-            let local = date.with_time_zone(TimeZone::system());
-            local
-                .strftime(&self.ctx.ui_config.detail.date_format)
-                .to_string()
-        } else {
-            date.strftime(&self.ctx.ui_config.detail.date_format)
-                .to_string()
-        };
+        let detail = &self.ctx.ui_config.detail;
+        let date_str = crate::widget::commit_list::format_date_as(
+            date,
+            &detail.date_format,
+            detail.date_local,
+        );
         vec![
             Line::from(vec![
                 tabs_shown(name).fg(self.ctx.color_theme.detail_name_fg),

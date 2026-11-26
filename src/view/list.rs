@@ -257,7 +257,7 @@ impl<'a> ListView<'a> {
         let list_state = self.as_mut_list_state();
         list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
         list_state.restore_search_options(*search_options);
-        list_state.reset_height(cursor.height());
+        list_state.update_height(cursor.height());
         match select {
             Reselect::Newest => list_state.select_first(),
             Reselect::Commit(hash) => {

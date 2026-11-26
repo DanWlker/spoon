@@ -8,10 +8,11 @@ use std::{
 };
 
 use crate::path_tree::FileTree;
+use rustc_hash::FxHashSet;
 
 use super::{
-    git_bytes, git_command, git_output, lock, output_result, pathspec_parts, pathspecs,
-    text_from_git, work_path, GitArgs, GitCommand, Repository, WorkTree,
+    command_line_parts, git_bytes, git_command, git_output, lock, output_result, pathspec_parts,
+    pathspecs, text_from_git, work_path, GitArgs, GitCommand, Repository, WorkTree,
 };
 
 impl Repository {
@@ -20,9 +21,9 @@ impl Repository {
         load_local_changes(&self.path, IndexRefresh::Skipped)
     }
 
-    // The number of local changes, as they were last loaded.
+    // The number of local changes, as they were last loaded, counted then, see `FilesSnapshot`.
     pub fn loaded_local_change_count(&self) -> usize {
-        lock(&self.loaded_local_changes).files.changes.count()
+        lock(&self.loaded_local_changes).files.count
     }
 
     // The local changes loaded again after the working tree changed, for the page bar to count
@@ -88,10 +89,15 @@ impl Repository {
                 &["--staged", "--quiet"],
                 conflicted,
             ));
-            let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
-            args.extend_from_slice(conflicted);
-            let in_head = git_output(&self.path, &args)?;
-            let in_head: Vec<&str> = in_head.split('\0').collect();
+            // in parts too, looked up in a set
+            let mut in_head_out = String::new();
+            let paths = conflicted.iter().map(|p| p.to_string()).collect();
+            for part in command_line_parts(paths) {
+                let mut args = vec!["ls-tree", "-z", "--name-only", "HEAD", "--"];
+                args.extend(part.iter().map(String::as_str));
+                in_head_out.push_str(&git_output(&self.path, &args)?);
+            }
+            let in_head: FxHashSet<&str> = in_head_out.split('\0').collect();
             for path in conflicted {
                 if in_head.contains(path) {
                     tracked.push(path);
@@ -127,6 +133,13 @@ impl Repository {
     // there. Returns what to tell: a tracked path stays tracked, ignoring only keeps untracked
     // files out.
     pub fn ignore_path(&self, entry: Entry) -> std::result::Result<String, String> {
+        // a line of .gitignore can't hold one: it would be several patterns
+        if entry.path().contains('\n') {
+            return Err(format!(
+                "{:?} has a newline, which .gitignore can't hold",
+                entry.path()
+            ));
+        }
         let pattern = gitignore_pattern(entry);
         let file = self.path.join(".gitignore");
         // a repository may come with a .gitignore linking to a file outside of it
@@ -734,6 +747,21 @@ mod tests {
 
         assert!(repository.ignore_path(Entry::File("a.txt")).is_err());
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept\n");
+    }
+
+    // A name with a newline can't be one line of .gitignore: it was written as several patterns,
+    // ignoring other files, and said to be added.
+    #[test]
+    fn test_ignore_a_name_with_a_newline_is_refused() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        GitRepository::new(path).init();
+        std::fs::write(path.join("a\n*"), "x").unwrap();
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert!(repository.ignore_path(Entry::File("a\n*")).is_err());
+        assert!(!path.join(".gitignore").exists());
     }
 
     #[test]

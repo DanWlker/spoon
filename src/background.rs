@@ -60,7 +60,13 @@ pub fn shows_loading(since: Instant) -> bool {
 static RUNNING: Mutex<Vec<(u64, Instant)>> = Mutex::new(Vec::new());
 
 fn running() -> MutexGuard<'static, Vec<(u64, Instant)>> {
-    RUNNING.lock().unwrap_or_else(PoisonError::into_inner)
+    lock(&RUNNING)
+}
+
+// A mutex locked even when another thread panicked holding it, whose state is still whole for
+// what locks it here: the panic stops the app anyway, see the hook in `main`.
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 // When a job running is shown loading next, after the frame drawn at `drawn`: the app waits for
@@ -144,7 +150,7 @@ impl<T: Send + 'static> Job<T> {
         std::thread::spawn(move || {
             let value = work(&cancelled);
             let (slot, done) = &*shared;
-            *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
+            *lock(slot) = Some(value);
             done.notify_all();
             running().retain(|&(running, _)| running != id);
             // the app may have quit meanwhile
@@ -172,13 +178,13 @@ impl<T: Send + 'static> Job<T> {
     // The result, once the work is done.
     pub fn try_take(&self) -> Option<T> {
         let (slot, _) = &*self.result;
-        slot.lock().unwrap_or_else(PoisonError::into_inner).take()
+        lock(slot).take()
     }
 
     // The result, waiting for the work to be done.
     pub fn wait(self) -> T {
         let (slot, done) = &*self.result;
-        let mut value = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut value = lock(slot);
         loop {
             if let Some(value) = value.take() {
                 return value;

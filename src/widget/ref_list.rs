@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::widget::tree_query::Toward;
 use crate::{
     context::AppContext,
-    git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, Tracking},
+    git::{CommitHash, Head, NamedRef, Ref, RemoteBranch, Stash, TrackState, Tracking},
     keybind::UserEvent,
     layout::{RowMap, Target},
     pointer::OnPicks,
@@ -105,7 +105,8 @@ impl RefSection {
 }
 
 // The refs picked in the sidebar, all of one section so the commands on them make sense, in the
-// order they were picked; None while nothing is picked, the names never empty.
+// order they were picked; None while nothing is picked. A visual selection just started has no
+// name yet, see `section`.
 #[derive(Debug, Default, Clone)]
 pub struct RefPicks(Option<(RefSection, Picks<String>)>);
 
@@ -211,8 +212,6 @@ pub struct RefListState {
     // the row of `selected` and the rows shown, see `sync_cursor`
     cursor: ListCursor,
     picked: RefPicks,
-    // the section a visual selection started in, its refs alone picked
-    visual_section: Option<RefSection>,
     // the commits to push and to pull of the local branches with an upstream, by name
     tracking: FxHashMap<String, Tracking>,
     // the row of the checked-out branch, or of the detached HEAD, marked
@@ -235,7 +234,6 @@ impl RefListState {
             opened,
             cursor: ListCursor::default(),
             picked: RefPicks::default(),
-            visual_section: None,
             tracking: FxHashMap::default(),
             head: None,
             stash_targets: refs
@@ -296,7 +294,6 @@ impl RefListState {
     pub fn toggle_visual(&mut self) -> Result<(), String> {
         if self.cursor.is_visual() {
             self.cursor.cancel_visual();
-            self.visual_section = None;
             self.picked.finish_visual();
             return Ok(());
         }
@@ -316,7 +313,6 @@ impl RefListState {
             ));
         }
         self.cursor.toggle_visual();
-        self.visual_section = Some(section);
         self.picked.start_visual(section);
         self.sync_visual_picks();
         Ok(())
@@ -325,13 +321,12 @@ impl RefListState {
     // Stops a visual selection that left its section, keeping what it picked there; None while it
     // is still inside the section or isn't visual.
     pub fn visual_outside_section(&mut self) -> Option<String> {
-        let section = self.visual_section?;
+        let section = self.visual_section()?;
         let row = self.visible_rows.get(self.cursor.selected())?;
         if RefSection::of_root(&row.identifier[0]) == Some(section) {
             return None;
         }
         self.cursor.cancel_visual();
-        self.visual_section = None;
         self.picked.end_visual();
         Some(format!(
             "Selection stopped at the {} section",
@@ -339,11 +334,18 @@ impl RefListState {
         ))
     }
 
+    // The section of the visual selection running, the one its picks are of, see `toggle_visual`;
+    // asked of the cursor, so a selection a collapse ended has none.
+    fn visual_section(&self) -> Option<RefSection> {
+        let picked = self.picked.0.as_ref().filter(|_| self.cursor.is_visual());
+        picked.map(|(section, _)| *section)
+    }
+
     fn sync_visual_picks(&mut self) {
         let Some(range) = self.cursor.visual_range(self.visible_rows.len()) else {
             return;
         };
-        let Some(section) = self.visual_section else {
+        let Some(section) = self.visual_section() else {
             return;
         };
         // the refs of its section only, see `toggle_visual`
@@ -360,7 +362,6 @@ impl RefListState {
 
     pub fn clear_picks(&mut self) {
         self.cursor.cancel_visual();
-        self.visual_section = None;
         self.picked = RefPicks::default();
     }
 
@@ -563,7 +564,7 @@ impl RefListState {
 
     // Starts typing a search, which goes from the selected row.
     pub fn start_search(&mut self) {
-        let from = self.all_rows_index();
+        let from = self.selected_in(&self.all_rows());
         self.query.start(QueryKind::Search, from);
     }
 
@@ -573,7 +574,7 @@ impl RefListState {
             return;
         };
         let rows = self.all_rows();
-        let from = self.query.step_from(self.all_rows_index());
+        let from = self.query.step_from(self.selected_in(&rows));
         let found = find_around(rows.len(), from, direction, |i| {
             row_matches(&rows[i], query, options)
         });
@@ -593,11 +594,9 @@ impl RefListState {
     // How the search went, over every row, in closed folders too; None without one.
     pub fn search_outcome(&self, options: SearchOptions) -> Option<SearchOutcome> {
         let query = self.query.search()?;
-        let matched = self
-            .all_rows()
-            .into_iter()
-            .map(|row| row_matches(&row, query, options));
-        Some(SearchOutcome::of(query, self.all_rows_index(), matched))
+        let rows = self.all_rows();
+        let matched = rows.iter().map(|row| row_matches(row, query, options));
+        Some(SearchOutcome::of(query, self.selected_in(&rows), matched))
     }
 
     // Every row, as if every node were open.
@@ -607,10 +606,9 @@ impl RefListState {
         rows
     }
 
-    // The selected row among `all_rows`.
-    fn all_rows_index(&self) -> usize {
-        self.all_rows()
-            .iter()
+    // The selected row among `rows`, those of `all_rows`, built once a search.
+    fn selected_in(&self, rows: &[VisibleRefRow]) -> usize {
+        rows.iter()
             .position(|row| row.identifier == self.selected)
             .unwrap_or(0)
     }
@@ -860,13 +858,18 @@ impl StatefulWidget for RefList {
             // a stash's message can hold tabs
             let name = tabs_shown(&row.name);
             let mut counts = vec![];
-            if let Some(&Tracking { ahead, behind, .. }) = tracking {
-                if ahead > 0 {
-                    counts.push((format!("↑{ahead}"), theme.status_success_fg));
+            match tracking.map(|t| t.state) {
+                Some(TrackState::Counts { ahead, behind }) => {
+                    if ahead > 0 {
+                        counts.push((format!("↑{ahead}"), theme.status_success_fg));
+                    }
+                    if behind > 0 {
+                        counts.push((format!("↓{behind}"), theme.status_warn_fg));
+                    }
                 }
-                if behind > 0 {
-                    counts.push((format!("↓{behind}"), theme.status_warn_fg));
-                }
+                // like lazygit's "upstream gone"
+                Some(TrackState::Gone) => counts.push(("gone".into(), theme.status_error_fg)),
+                None => {}
             }
             if let Some(status) = running {
                 // shortened to "↑ ∙●∙" when the name leaves no room for "Pushing ∙●∙"
@@ -1082,19 +1085,15 @@ fn sort_branch_tree_nodes(nodes: &mut [RefTreeNode]) {
     }
 }
 
+// The versions newest first, then the other names in order; in every folder, each name parsed once.
 fn sort_tag_tree_nodes(nodes: &mut [RefTreeNode]) {
-    nodes.sort_by(|a, b| {
-        let a_version = parse_semantic_version_tag(&a.name);
-        let b_version = parse_semantic_version_tag(&b.name);
-        if a_version.is_none() && b_version.is_none() {
-            // if both are not semantic versions, sort by name asc
-            a.name.cmp(&b.name)
-        } else {
-            // if both are semantic versions, sort by version desc
-            // if only one is a semantic version, it will be sorted first
-            b_version.cmp(&a_version)
-        }
+    nodes.sort_by_cached_key(|node| {
+        let version = parse_semantic_version_tag(&node.name);
+        (std::cmp::Reverse(version), node.name.clone())
     });
+    for node in nodes {
+        sort_tag_tree_nodes(&mut node.children);
+    }
 }
 
 // Stashes by their index, stash@{2} before stash@{10}, those without one last.
@@ -1431,15 +1430,35 @@ mod tests {
         assert_eq!(section(&state), Some(RefSection::Branches));
     }
 
+    // Tags in a folder are sorted as those at the top, newest version first: only the top was, the
+    // others kept the order they came in.
+    #[test]
+    fn test_tags_in_folders_sorted_like_the_top() {
+        let names = [
+            "release/v1.0.0",
+            "release/v3.0.0",
+            "release/v10.0.0",
+            "release/v2.0.0",
+        ];
+        let mut nodes = refs_to_ref_tree_nodes(names.iter().map(|n| n.to_string()).collect());
+        sort_tag_tree_nodes(&mut nodes);
+        let release: Vec<&str> = nodes[0].children.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(release, ["v10.0.0", "v3.0.0", "v2.0.0", "v1.0.0"]);
+    }
+
     #[test]
     fn test_visual_selection_ends_when_a_collapse_hides_its_start() {
         let branch = |name: String| Ref::Branch {
             name,
             target: "a".repeat(40).as_str().into(),
         };
-        let refs: Vec<Ref> = (0..20)
+        let mut refs: Vec<Ref> = (0..20)
             .map(|i| branch(format!("feature/f{i:02}")))
             .collect();
+        refs.push(Ref::Tag {
+            name: "v1".into(),
+            target: "a".repeat(40).as_str().into(),
+        });
         let refs: Vec<&Ref> = refs.iter().collect();
         let mut state = RefListState::new(&refs, &[]);
         select(&mut state, "feature");
@@ -1456,5 +1475,8 @@ mod tests {
             "the selection starts past the rows left"
         );
         assert_eq!(state.picked().len(), 20);
+        // ended, it isn't said to stop again once out of the section
+        state.handle_move(UserEvent::GoToBottom);
+        assert_eq!(state.visual_outside_section(), None);
     }
 }

@@ -332,8 +332,6 @@ pub fn revision_spans(
     spans
 }
 
-// The status line showing the `query` being typed, a search of `kind`, with its cursor and its
-// options on the right; cleared when nothing is typed.
 // What the status line says of `query`, searching `kind`: the query while it is typed, else how
 // its search went, the `outcome`.
 pub fn query_or_search_status(
@@ -348,6 +346,8 @@ pub fn query_or_search_status(
     }
 }
 
+// The status line showing the `query` being typed, a search of `kind`, with its cursor and its
+// options on the right; cleared when nothing is typed.
 pub fn query_status(ctx: &AppContext, query: &TreeQuery, kind: SearchKind) -> AppEvent {
     match query.status_input() {
         Some((message, cursor_byte_index)) => AppEvent::UpdateStatusInput {
@@ -464,7 +464,7 @@ pub enum RefreshViewContext {
     },
     LocalChanges {
         list_context: ListRefreshViewContext,
-        local_changes_context: LocalChangesRefreshViewContext,
+        local_changes_context: LocalChangesSnapshot,
     },
 }
 
@@ -523,7 +523,7 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
     }
 }
 
-pub use crate::widget::local_changes::LocalChangesSnapshot as LocalChangesRefreshViewContext;
+pub use crate::widget::local_changes::LocalChangesSnapshot;
 
 #[cfg(test)]
 mod tests {

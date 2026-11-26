@@ -463,10 +463,6 @@ impl<'a> CommitListState<'a> {
         self.cursor
     }
 
-    pub fn reset_height(&mut self, height: usize) {
-        self.update_height(height);
-    }
-
     // Shows the selected commit at `row` of those shown, where it can be.
     pub fn restore_selected_row(&mut self, row: usize) {
         let index = self.cursor.selected();
@@ -772,14 +768,20 @@ pub fn commit_list_inner_height(height: u16) -> usize {
 
 // A commit's date as the commit list shows it, see `[ui.list]` in the config.
 pub fn format_date(ctx: &AppContext, date: &jiff::ZonedDateTime) -> String {
-    let format = &ctx.ui_config.list.date_format;
-    if ctx.ui_config.list.date_local {
-        date.with_time_zone(jiff::tz::TimeZone::system())
-            .strftime(format)
-            .to_string()
-    } else {
-        date.strftime(format).to_string()
+    let list = &ctx.ui_config.list;
+    format_date_as(date, &list.date_format, list.date_local)
+}
+
+// A commit's date in `format`, in the local time zone or its own: as the commit list shows it or
+// the commit info (`[ui.detail]`).
+pub fn format_date_as(date: &jiff::ZonedDateTime, format: &str, local: bool) -> String {
+    match local {
+        true => date
+            .with_time_zone(jiff::tz::TimeZone::system())
+            .strftime(format),
+        false => date.strftime(format),
     }
+    .to_string()
 }
 
 // The commit list as the first panel of the graph: under a top border titled with its number,
@@ -846,24 +848,6 @@ pub fn mark_commit_list_bar(
     }
 }
 
-// The commit list of a submodule's commits, read-only: built once per selection, every commit on
-// the submodule's HEAD and its refs shown, with the graph. The submodule's repository is owned by
-// the parent, so the borrows live as long as this list.
-pub fn submodule_commit_list<'a>(
-    repository: &'a Arc<Repository>,
-    graph_image_manager: GraphImageManager<'a>,
-    search_options: Rc<Cell<SearchOptions>>,
-    scrolloff: usize,
-) -> CommitListState<'a> {
-    CommitListState::new(
-        repository,
-        graph_image_manager,
-        Dimming::None,
-        search_options,
-        scrolloff,
-    )
-}
-
 impl<'a> CommitList<'a> {
     pub fn new(ctx: Rc<AppContext>) -> Self {
         Self {
@@ -877,7 +861,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
     type State = CommitListState<'a>;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        self.update_state(area, state);
+        state.update_height(area.height as usize);
 
         let list = &self.ctx.ui_config.list;
         let [graph_subject, name, hash, date] = Layout::horizontal(calc_cell_widths(
@@ -906,10 +890,6 @@ impl CommitList<'_> {
         } else {
             self.ctx.color_theme.list_dimmed_fg
         }
-    }
-
-    fn update_state(&self, area: Rect, state: &mut CommitListState) {
-        state.update_height(area.height as usize);
     }
 
     fn render_graph(
@@ -1374,7 +1354,7 @@ mod tests {
             Default::default(),
             0,
         );
-        state.reset_height(subjects.len());
+        state.update_height(subjects.len());
         f(&mut state)
     }
 
@@ -1422,8 +1402,10 @@ mod tests {
         ];
         let tracking = |upstream: &str| Tracking {
             upstream: upstream.into(),
-            ahead: 0,
-            behind: 0,
+            state: crate::git::TrackState::Counts {
+                ahead: 0,
+                behind: 0,
+            },
         };
         let tracking: FxHashMap<String, Tracking> = [
             ("master".to_string(), tracking("origin/master")),
@@ -1583,7 +1565,7 @@ mod tests {
             Default::default(),
             0,
         );
-        state.reset_height(3);
+        state.update_height(3);
         state.ensure_visible_graph_uploaded();
         let ctx = Rc::new(AppContext {
             keybind: KeyBind::new(None),
@@ -1696,7 +1678,7 @@ mod tests {
                 pasting: Default::default(),
             });
             let area = Rect::new(0, 0, 80, 3);
-            state.reset_height(3);
+            state.update_height(3);
             state.ensure_visible_graph_uploaded();
             let mut before = Buffer::empty(area);
             CommitList::new(ctx.clone()).render(area, &mut before, state);
@@ -1733,7 +1715,7 @@ mod tests {
     fn test_scrolloff_keeps_context_for_selection_and_single_row_scrolling() {
         with_commit_list_state(&["commit"; 12], |state| {
             state.scrolloff = 2;
-            state.reset_height(6);
+            state.update_height(6);
 
             for _ in 0..4 {
                 state.select_next();
@@ -1762,7 +1744,7 @@ mod tests {
     fn test_scrolloff_is_limited_by_list_height() {
         with_commit_list_state(&["commit"; 8], |state| {
             state.scrolloff = 10;
-            state.reset_height(2);
+            state.update_height(2);
 
             state.select_next();
             state.select_next();
@@ -1778,7 +1760,7 @@ mod tests {
     fn test_page_scrolloff_keeps_context_until_final_page() {
         with_commit_list_state(&["commit"; 30], |state| {
             state.scrolloff = 2;
-            state.reset_height(10);
+            state.update_height(10);
 
             // a page each, the selection out of the 2 rows at the top, like vim's
             state.scroll_pages(UserEvent::PageDown);
@@ -1803,7 +1785,7 @@ mod tests {
     fn test_half_page_jumps_then_scrolls() {
         with_commit_list_state(&["commit"; 26], |state| {
             state.scrolloff = 2;
-            state.reset_height(10);
+            state.update_height(10);
             state.select_in_view(12);
             assert_eq!(status(state), (7, 5, 10));
 
@@ -1825,7 +1807,7 @@ mod tests {
     fn test_full_page_scroll_reaches_last_commit_after_final_page() {
         with_commit_list_state(&["commit"; 25], |state| {
             state.scrolloff = 2;
-            state.reset_height(10);
+            state.update_height(10);
             state.select_in_view(12);
 
             state.scroll_pages(UserEvent::PageDown);
@@ -1839,7 +1821,7 @@ mod tests {
     fn test_refresh_restores_selected_row_with_scrolloff() {
         with_commit_list_state(&["commit"; 30], |state| {
             state.scrolloff = 2;
-            state.reset_height(10);
+            state.update_height(10);
             state.select_in_view(15);
             // at the row a reload restores it to
             state.restore_selected_row(2);
@@ -1854,7 +1836,7 @@ mod tests {
     #[test]
     fn test_zero_scrolloff_preserves_page_scroll_behavior() {
         with_commit_list_state(&["commit"; 25], |state| {
-            state.reset_height(10);
+            state.update_height(10);
             state.select_in_view(12);
             // at the row a reload restores it to
             state.restore_selected_row(0);
@@ -1876,7 +1858,7 @@ mod tests {
         let subjects: Vec<&str> = subjects.iter().map(String::as_str).collect();
         with_commit_list_state(&subjects, |state| {
             state.scrolloff = 2;
-            state.reset_height(10);
+            state.update_height(10);
             state.select_in_view(15);
             // at the row a reload restores it to
             state.restore_selected_row(2);
@@ -1997,7 +1979,7 @@ mod tests {
         });
 
         with_commit_list_state(&["first", "second", "fix", "last"], |state| {
-            state.reset_height(2);
+            state.update_height(2);
             state.select_in_view(2);
             assert_eq!(status(state), (1, 1, 2));
 
@@ -2091,7 +2073,7 @@ mod tests {
     #[test]
     fn test_resume_search_preserves_query_options_matches_and_view_position() {
         with_commit_list_state(&["other", "Fix parser", "FIX graph", "last"], |state| {
-            state.reset_height(2);
+            state.update_height(2);
             {
                 let mut options = state.search_options.get();
                 options.smart_case = !options.smart_case;

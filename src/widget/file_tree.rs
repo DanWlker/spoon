@@ -222,8 +222,8 @@ impl FileTreeState {
             return;
         };
         for dir in ancestors(path) {
-            if !self.is_open(&dir) {
-                self.toggled_mut(dir);
+            if !self.is_open(dir) {
+                self.toggled_mut(dir.to_string());
             }
         }
         self.rebuild_rows();
@@ -289,6 +289,11 @@ impl FileTreeState {
     }
 
     fn toggle_dir(&mut self, path: String) {
+        // every folder shows open under a filter, see `is_open`: one toggled unseen would be
+        // closed once it is cleared
+        if self.filter.is_some() {
+            return;
+        }
         self.toggled_mut(path);
         self.rebuild_rows();
     }
@@ -332,7 +337,8 @@ impl FileTreeState {
 // gone.
 #[derive(Debug, Default, Clone)]
 pub struct TreeSelection {
-    picked: Picks<String>,
+    // shared with the rows, see `FileTreeRow::path`: a visual selection syncs them on each move
+    picked: Picks<std::sync::Arc<str>>,
 }
 
 impl TreeSelection {
@@ -346,12 +352,12 @@ impl TreeSelection {
 
     // In the order they were picked.
     pub fn iter(&self) -> impl Iterator<Item = &str> {
-        self.picked.iter().map(String::as_str)
+        self.picked.iter().map(|path| &**path)
     }
 
     #[cfg(test)]
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        let mut names: Vec<&str> = self.picked.iter().map(String::as_str).collect();
+        let mut names: Vec<&str> = self.iter().collect();
         names.sort_unstable();
         names.into_iter()
     }
@@ -359,7 +365,7 @@ impl TreeSelection {
     // Sorted, like the tree: the order the paths were picked in is the tree's too, but for a
     // visual selection added to those picked before.
     pub fn paths(&self) -> Vec<String> {
-        let mut paths: Vec<String> = self.picked.iter().cloned().collect();
+        let mut paths: Vec<String> = self.iter().map(String::from).collect();
         paths.sort_unstable();
         paths
     }
@@ -378,10 +384,8 @@ impl TreeSelection {
 
     // Whether any picked row is `path` or contains it, like a picked directory or the root.
     pub fn contains_under(&self, path: &str) -> bool {
-        let dirs = path.match_indices('/').map(|(i, _)| &path[..i]);
-        [ROOT_PATH, path]
-            .into_iter()
-            .chain(dirs)
+        ancestors(path)
+            .chain([path])
             .any(|row| self.picked.contains(row))
     }
 
@@ -427,11 +431,8 @@ impl TreeSelection {
         let Some(range) = tree.visual_range() else {
             return;
         };
-        let paths: Vec<String> = tree.rows()[range]
-            .iter()
-            .map(|row| row.path.to_string())
-            .collect();
-        self.picked.sync_visual(&paths);
+        self.picked
+            .sync_visual(tree.rows()[range].iter().map(|row| &row.path));
     }
 
     // The entries to act on: those picked, shown or not (in a closed directory, or left out by
@@ -444,12 +445,7 @@ impl TreeSelection {
                 .into_iter()
                 .collect();
         }
-        let mut paths: Vec<&str> = self
-            .picked
-            .iter()
-            .map(String::as_str)
-            .filter(|path| *path != ROOT_PATH)
-            .collect();
+        let mut paths: Vec<&str> = self.iter().filter(|path| *path != ROOT_PATH).collect();
         paths.sort_unstable();
         paths
             .into_iter()
@@ -541,7 +537,7 @@ impl CheckedFiles {
         }
         for &index in &changed {
             for dir in ancestors(tree_path(&self.files[index].0)) {
-                if let Some(count) = self.counts.get_mut(&dir) {
+                if let Some(count) = self.counts.get_mut(dir) {
                     count.0 = if check { count.0 + 1 } else { count.0 - 1 };
                 }
             }
@@ -557,7 +553,11 @@ impl CheckedFiles {
             }
             let checked = self.checked.contains(&index);
             for dir in ancestors(tree_path(path)) {
-                let count = self.counts.entry(dir).or_default();
+                // a directory's name allocated once, when first counted
+                let count = match self.counts.get_mut(dir) {
+                    Some(count) => count,
+                    None => self.counts.entry(dir.to_string()).or_default(),
+                };
                 count.0 += usize::from(checked);
                 count.1 += 1;
             }
@@ -650,16 +650,11 @@ pub fn find_next(
     .map(|i| rows[i].path.to_string())
 }
 
-// The directories containing `path`, outermost first, starting with the root.
-pub fn ancestors(path: &str) -> Vec<String> {
-    let mut dirs = vec![ROOT_PATH.to_string()];
-    let mut end = 0;
-    while let Some(i) = path[end..].find('/') {
-        end += i;
-        dirs.push(path[..end].to_string());
-        end += 1;
-    }
-    dirs
+// The directories containing `path`, outermost first, starting with the root; borrowed, as asked
+// for every file of a tree.
+pub fn ancestors(path: &str) -> impl Iterator<Item = &str> {
+    let dirs = path.match_indices('/').map(|(i, _)| &path[..i]);
+    std::iter::once(ROOT_PATH).chain(dirs)
 }
 
 // `rows` under a root row, when there are any; only the root row when it is closed.
@@ -1192,8 +1187,11 @@ mod tests {
 
     #[test]
     fn test_ancestors() {
-        assert_eq!(ancestors("a/b/c.rs"), vec![":/", "a", "a/b"]);
-        assert_eq!(ancestors("c.rs"), vec![":/"]);
+        assert_eq!(
+            ancestors("a/b/c.rs").collect::<Vec<_>>(),
+            [":/", "a", "a/b"]
+        );
+        assert_eq!(ancestors("c.rs").collect::<Vec<_>>(), [":/"]);
     }
 
     #[test]
@@ -1379,5 +1377,24 @@ mod tests {
         tree.set_filter(Some("f0"), SearchOptions::default());
         assert!(!tree.is_visual(), "the selection starts past the rows left");
         assert_eq!(tree.visual_range(), None);
+    }
+
+    // Under a filter every folder shows open, so h and l there change nothing: they changed which
+    // were open once the filter was cleared, unseen.
+    #[test]
+    fn test_folders_stay_as_they_were_under_a_filter() {
+        let mut tree = FileTreeState::new(
+            FileTree::new(["src/a.rs", "src/b.rs", "z.rs"]),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree,
+        );
+        tree.set_filter(Some("rs"), SearchOptions::default());
+        tree.select_path("src");
+        tree.collapse();
+        tree.toggle();
+        tree.toggle();
+        tree.set_filter(None, SearchOptions::default());
+        assert!(tree.is_open("src"));
     }
 }

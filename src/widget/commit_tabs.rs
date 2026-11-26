@@ -37,7 +37,8 @@ use crate::{
     },
 };
 
-// The tabs of the commit detail section, switched with the panel numbers 2 to 4 (1 is the commit list).
+// The tabs of the commit detail section, switched with the panel numbers 3 to 5 (2 is the commit
+// list).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum DetailTab {
     #[default]
@@ -247,6 +248,11 @@ impl<'a> CommitChangesState<'a> {
         self.picked.len()
     }
 
+    // Whether a picked row is `path` or a folder holding it, see `TreeSelection::contains_under`.
+    pub fn picks_cover(&self, path: &str) -> bool {
+        self.picked.contains_under(path)
+    }
+
     pub fn picked_paths(&self) -> Vec<String> {
         self.picked.paths()
     }
@@ -260,12 +266,10 @@ impl<'a> CommitChangesState<'a> {
                 Entry::Dir(_) => return None,
             }
         } else {
+            // a file of the tree, looked up by path, see `FileTree::file_index`
             let path = self.picked.single_path()?;
-            self.files
-                .iter()
-                .find(|file| file.path == path)?
-                .path
-                .as_str()
+            let file = &self.files[self.tree.file_index(path)?];
+            (file.path == path).then_some(file.path.as_str())?
         };
         (!self.is_gitlink(path)).then_some(path)
     }
@@ -472,9 +476,7 @@ impl<'a> CommitChangesState<'a> {
         }
     }
 
-    // Applies a tree operation; the diff of another row selected loads once used, see
-    // `ensure_loaded`.
-    // How the files are shown, kept for the next commit, see `between`.
+    // How the files are shown, kept for the next commit.
     pub fn tree_view(&self) -> TreeView {
         self.tree.view()
     }
@@ -484,6 +486,8 @@ impl<'a> CommitChangesState<'a> {
         self.tree.filter()
     }
 
+    // Applies a tree operation; the diff of another row selected loads once used, see
+    // `ensure_loaded`.
     pub fn update_tree<R>(&mut self, f: impl FnOnce(&mut FileTreeState) -> R) -> R {
         let before = self.tree.selected().map(|r| r.path.clone());
         let result = f(&mut self.tree);
@@ -1272,8 +1276,12 @@ impl CommitTab {
         let [tree_area, preview_area] = split_tree_and_side(&self.ctx, area, buf);
 
         if let Some(tree) = state.tree.loaded() {
-            // a commit always has files, they can only be filtered out
             let focused = self.focused && !state.is_preview_focused();
+            // an empty root commit has none, else the filter hides them
+            let empty = match tree.filter() {
+                Some(_) => "No matches",
+                None => "No files",
+            };
             let cursor = if focused {
                 TreeCursor::Bright
             } else {
@@ -1287,7 +1295,7 @@ impl CommitTab {
                 |_| None,
                 |path| state.picked.contains(path),
                 cursor,
-                "No matches",
+                empty,
                 None,
                 &self.ctx,
             );
@@ -1408,6 +1416,25 @@ mod tests {
         test_support::git::{git, GitRepository},
         test_support::ui::test_ctx,
     };
+
+    // An empty root commit has no files to list: it said "No matches" with nothing filtered.
+    #[test]
+    fn test_files_of_an_empty_root_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let git = GitRepository::new(path);
+        git.init();
+        git.commit("empty", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let commit = repository.all_commits()[0].clone();
+        let mut files = CommitFilesState::new(&repository, &commit, TreeView::Tree);
+        files.ensure_loaded();
+        let area = Rect::new(0, 0, 60, 5);
+        let mut buf = Buffer::empty(area);
+        CommitTab::new(test_ctx(), None, true).render_files(area, &mut buf, &mut files);
+        let drawn = crate::test_support::ui::dump(&buf);
+        assert!(drawn.contains("No files"), "{drawn}");
+    }
 
     // The trees of the changes and files tabs kept their bar bright with the focus elsewhere,
     // unlike every list; and the diff or preview beside them their scrollbar, with the tree

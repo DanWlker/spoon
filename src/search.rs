@@ -28,31 +28,24 @@ impl SearchOutcome {
                 }
             }
         }
-        if total == 0 {
-            return SearchOutcome::NotFound {
-                query: query.to_string(),
-            };
-        }
-        SearchOutcome::Found {
-            index,
-            total,
-            query: query.to_string(),
-        }
+        Self::counted(query, index, total)
     }
-}
 
-impl SearchOutcome {
     // `of` the rows `matches`, in order.
     pub fn of_matches(query: &str, selected: usize, matches: &[usize]) -> Self {
-        if matches.is_empty() {
-            return SearchOutcome::NotFound {
-                query: query.to_string(),
-            };
-        }
-        SearchOutcome::Found {
-            index: matches.binary_search(&selected).map_or(0, |i| i + 1),
-            total: matches.len(),
-            query: query.to_string(),
+        let index = matches.binary_search(&selected).map_or(0, |i| i + 1);
+        Self::counted(query, index, matches.len())
+    }
+
+    fn counted(query: &str, index: usize, total: usize) -> Self {
+        let query = query.to_string();
+        match total {
+            0 => SearchOutcome::NotFound { query },
+            _ => SearchOutcome::Found {
+                index,
+                total,
+                query,
+            },
         }
     }
 }

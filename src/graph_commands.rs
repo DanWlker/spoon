@@ -459,7 +459,7 @@ fn checkout_targets(repository: &Repository, hash: &CommitHash) -> Vec<CheckoutT
 // The parents of a commit, asked of git when it is not loaded (with `--max-count`).
 fn parents(repository: &Repository, hash: &CommitHash) -> Result<Vec<CommitHash>, String> {
     match repository.commit(hash) {
-        Some(_) => Ok(repository.parents_hash(hash).into_iter().cloned().collect()),
+        Some(_) => Ok(repository.parents_hash(hash).to_vec()),
         None => repository.parents_of(hash.as_str()),
     }
 }
@@ -542,10 +542,8 @@ fn drop_commits(
     // never empty: the picked commits, else the selected one
     let (newest, oldest) = (&commits[0], &commits[commits.len() - 1]);
     let base = single_parent(repository, oldest, "dropped")?;
+    // every one in the commits rebased, none of which is a merge
     rebased(repository, branch, base.as_ref(), &commits)?;
-    for hash in &commits {
-        single_parent(repository, hash, "dropped")?;
-    }
     // the commit after the newest one takes its place, under a new hash
     let after = repository.count_after(newest)?;
     let behind_head = after.saturating_sub(1);
@@ -1064,6 +1062,27 @@ mod tests {
             KeyEvent::from(KeyCode::Null),
         );
         assert_eq!(shown(&dialog), "checkout feat");
+    }
+
+    // A remote branch with no local one is checked out tracked, named in full: beside a tag of its
+    // name git refused the short one as ambiguous.
+    #[test]
+    fn test_checkout_remote_branch_beside_a_tag_of_its_name() {
+        let (dir, git) = rewrite_repo();
+        git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        git(&["update-ref", "refs/remotes/origin/feat", "HEAD~1"]);
+        git(&["tag", "origin/feat", "HEAD~2"]);
+        let (repository, hashes) = load(dir.path());
+        let remote = NamedRef::RemoteBranch("origin/feat".into());
+        let checkout =
+            ref_graph_command(&repository, UserEvent::Checkout, &remote, hashes[1].clone());
+        run(dir.path(), checkout.unwrap(), "");
+        assert_eq!(git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "feat");
+        assert_eq!(git(&["rev-parse", "HEAD"]).trim(), hashes[1].as_str());
+        assert_eq!(
+            git(&["config", "branch.feat.merge"]).trim(),
+            "refs/heads/feat"
+        );
     }
 
     #[test]

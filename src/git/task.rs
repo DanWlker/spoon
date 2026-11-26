@@ -69,7 +69,7 @@ impl Repository {
     // With the files git lists as conflicted, which it comments out, under "Conflicts:".
     pub fn prepared_message(&self) -> Option<String> {
         let content = self.git_file("MERGE_MSG")?;
-        let starts = self.comment_starts();
+        let starts = self.comment_starts(&content);
         let message = without_comments(&content, &starts)?;
         fn comment<'l>(line: &'l str, starts: &[String]) -> Option<&'l str> {
             starts.iter().find_map(|s| line.strip_prefix(s.as_str()))
@@ -88,24 +88,31 @@ impl Repository {
         Some(format!("{message}\n\nConflicts:\n{}", conflicts.join("\n")))
     }
 
-    // What git starts the comment lines of the messages it prepares with: core.commentString, else
-    // core.commentChar, else "#". With "auto" it takes the first of these no line of the message
-    // starts with, so it can be any.
-    fn comment_starts(&self) -> Vec<String> {
+    // What git starts the comment lines of `content`, a message it prepared, with:
+    // core.commentString, else core.commentChar, else "#". With "auto" it takes the first of its
+    // candidates no line of the message starts with, the others starting lines of the message:
+    // the one starting its "Conflicts:" line, the only comment it writes in these, else none.
+    fn comment_starts(&self, content: &str) -> Vec<String> {
         let get = |key| {
             let value = git_output(&self.path, &["config", "--get", key]).ok()?;
             Some(value.trim_end_matches('\n').to_string()).filter(|v| !v.is_empty())
         };
         match get("core.commentString").or_else(|| get("core.commentChar")) {
             None => vec!["#".into()],
-            Some(auto) if auto == "auto" => "#;@!$%^&|:".chars().map(String::from).collect(),
+            Some(auto) if auto == "auto" => "#;@!$%^&|:"
+                .chars()
+                .find(|c| content.lines().any(|l| l == format!("{c} Conflicts:")))
+                .map(String::from)
+                .into_iter()
+                .collect(),
             Some(start) => vec![start],
         }
     }
 
     // The message `git merge --squash` prepared, until the squash is committed.
     pub fn squash_message(&self) -> Option<String> {
-        without_comments(&self.git_file("SQUASH_MSG")?, &self.comment_starts())
+        let content = self.git_file("SQUASH_MSG")?;
+        without_comments(&content, &self.comment_starts(&content))
     }
 
     // A file of the repository's git directory, like MERGE_MSG.
@@ -237,12 +244,7 @@ impl std::fmt::Display for GitArgs {
     }
 }
 
-// A lock held only while read or set; a panic while holding it left a value that is still whole.
-pub(super) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+pub(super) use crate::background::lock;
 
 // The app's git commands running in the background, each until it finishes, see
 // `App::finish_task`: like lazygit, one doesn't wait for another, nor the changes made meanwhile.
@@ -257,7 +259,7 @@ pub struct RunningTasks {
 
 impl RunningTasks {
     // Adds `task` running; returns what tells it finished, see `finish`.
-    pub fn start(&mut self, task: GitTask, head_before_commit: Option<CommitHash>) -> u64 {
+    pub fn start(&mut self, task: GitTask, head_before_commit: Option<Option<CommitHash>>) -> u64 {
         self.next_id += 1;
         self.tasks.push(RunningTask {
             id: self.next_id,
@@ -289,8 +291,9 @@ pub struct RunningTask {
     id: u64,
     pub task: GitTask,
     // HEAD before committing the message of the local changes page, which is cleared once the
-    // commit is made, see `App::finish_task`
-    pub head_before_commit: Option<CommitHash>,
+    // commit is made, see `App::finish_task`: None for a task not committing, Some(None) before
+    // the first commit
+    pub head_before_commit: Option<Option<CommitHash>>,
 }
 
 // Git commands run in the background, like fetch, merge or checkout, and what to say about them.
@@ -452,11 +455,7 @@ pub fn run_task(path: &Path, task: &GitTask) -> std::result::Result<(), String> 
     // one remote command at a time, like lazygit's sync mutex: a pull waits for the fetch on
     // launch instead of both locking the same remote refs
     static REMOTE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _remote = task.is_remote().then(|| {
-        REMOTE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    });
+    let _remote = task.is_remote().then(|| lock(&REMOTE));
     for (rev, commit) in &task.verify {
         let now = git_output(path, &["rev-parse", "--verify", "--quiet", rev]).unwrap_or_default();
         if now.trim() != commit.as_str() {
@@ -710,16 +709,30 @@ pub fn git_command() -> Command {
 const BYTE_CHARS: u32 = 0xF700;
 
 // A file name, or any text, git gave as bytes; see `BYTE_CHARS`.
+// A character among those standing for bytes, though UTF-8, is kept as its bytes too, so it goes
+// back as it came; drawn as U+FFFD like them.
 pub fn text_from_git(bytes: &[u8]) -> String {
+    let byte = |b: &u8| char::from_u32(BYTE_CHARS + u32::from(*b));
     let mut text = String::with_capacity(bytes.len());
     for chunk in bytes.utf8_chunks() {
-        text.push_str(chunk.valid());
-        text.extend(
-            chunk
-                .invalid()
-                .iter()
-                .filter_map(|&b| char::from_u32(BYTE_CHARS + u32::from(b))),
-        );
+        // such a character starts with 0xEF; most text has none
+        if !chunk.valid().as_bytes().contains(&0xEF) {
+            text.push_str(chunk.valid());
+            text.extend(chunk.invalid().iter().filter_map(byte));
+            continue;
+        }
+        for c in chunk.valid().chars() {
+            match is_kept_byte(c) {
+                true => text.extend(
+                    c.encode_utf8(&mut [0; 4])
+                        .as_bytes()
+                        .iter()
+                        .filter_map(byte),
+                ),
+                false => text.push(c),
+            }
+        }
+        text.extend(chunk.invalid().iter().filter_map(byte));
     }
     text
 }
@@ -775,9 +788,15 @@ pub fn fits_a_command_line(paths: &[&str]) -> bool {
 // command whose arguments go past its limit (2 MiB on Linux, 1 MiB on macOS, the environment
 // counted in), and git can't read the paths of every command from its input, like `clean`'s.
 pub fn pathspec_parts(paths: &[&str]) -> Vec<Vec<String>> {
+    command_line_parts(pathspecs(paths))
+}
+
+// `args` in parts, each short enough for one command line, see `pathspec_parts`: plain paths, for
+// the commands not taking pathspecs, like `check-attr`.
+pub fn command_line_parts(args: Vec<String>) -> Vec<Vec<String>> {
     let mut parts: Vec<Vec<String>> = vec![];
     let mut bytes = PART_BYTES;
-    for spec in pathspecs(paths) {
+    for spec in args {
         // with the NUL ending it
         let len = spec.len() + 1;
         if bytes + len > PART_BYTES {
@@ -911,14 +930,14 @@ fn log_command(args: &[impl AsRef<str>], output: Result<&str, &str>, started: In
         duration: started.elapsed(),
     };
     // a command run while another thread panicked holding it still gets logged
-    let mut log = COMMAND_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let mut log = lock(&COMMAND_LOG);
     log.push_front(entry);
     log.truncate(COMMAND_LOG_SIZE);
 }
 
 // The commands logged, the newest first.
 pub fn command_log() -> Vec<LoggedCommand> {
-    let log = COMMAND_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let log = lock(&COMMAND_LOG);
     log.iter().cloned().collect()
 }
 
@@ -952,6 +971,28 @@ mod tests {
     use crate::git::refs_snapshot;
     use crate::git::SortCommit;
 
+    // With core.commentChar=auto, git comments with the first of its candidates no line of the
+    // message starts with: the lines starting with the others are the message's, kept. Every
+    // candidate was taken for a comment, `$ cargo test` dropped.
+    #[test]
+    fn test_prepared_message_with_the_comment_char_auto() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        git(path, &["config", "core.commentChar", "auto"]);
+        let message = "Subject\n\n# heading\n$ cargo test\n\n; Conflicts:\n;\ta.txt\n";
+        std::fs::write(path.join(".git/MERGE_MSG"), message).unwrap();
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert_eq!(
+            repository.prepared_message().as_deref(),
+            Some("Subject\n\n# heading\n$ cargo test\n\nConflicts:\n  a.txt")
+        );
+    }
+
     // A name that isn't UTF-8 goes back to git as it came, drawn with U+FFFD for its bytes.
     #[test]
     fn test_text_from_git_round_trip() {
@@ -960,6 +1001,9 @@ mod tests {
             b"plain",
             b"\xff\xfe",
             "é漢字".as_bytes(),
+            // a character among those standing for bytes, like a Nerd Font icon, which came back
+            // as one byte
+            "icon \u{F7A9}.txt".as_bytes(),
         ] {
             let text = text_from_git(bytes);
             assert_eq!(&git_bytes(&text)[..], bytes);

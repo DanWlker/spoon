@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     git_command, git_output, load_submodules, Commit, CommitHash, CommitsMap, Head, Operation, Ref,
-    RefMap, Repository, SortCommit, Tracking, WorkTree,
+    RefMap, Repository, SortCommit, TrackState, Tracking, WorkTree,
 };
 use crate::git::{diff::empty_tree, text_from_git, FilesSnapshot, IndexRefresh, LoadedFiles, Seen};
 
@@ -277,7 +277,8 @@ fn locate_repository(path: &Path) -> Result<(Option<PathBuf>, PathBuf)> {
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .map_err(|_| not_a_repository())?;
+        // git itself missing, not the repository
+        .map_err(|e| format!("failed to run git: {e}"))?;
     // the paths as bytes, which may not be UTF-8
     use std::os::unix::ffi::OsStrExt;
     let path_of = |line: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(line));
@@ -671,10 +672,16 @@ pub(super) fn load_branch_tracking(path: &Path) -> FxHashMap<String, Tracking> {
                     .find_map(|part| part.strip_prefix(what)?.trim().parse().ok())
                     .unwrap_or(0)
             };
+            let state = match track {
+                "gone" => TrackState::Gone,
+                _ => TrackState::Counts {
+                    ahead: count("ahead "),
+                    behind: count("behind "),
+                },
+            };
             let tracking = Tracking {
                 upstream: upstream.to_string(),
-                ahead: count("ahead "),
-                behind: count("behind "),
+                state,
             };
             Some((name.to_string(), tracking))
         })
@@ -859,6 +866,36 @@ mod tests {
         repo.commit("first", "2024-01-01");
         let repository = Repository::load(&path, SortCommit::Chronological, None, false).unwrap();
         assert!(repository.head_commit().is_some());
+    }
+
+    // A branch whose upstream is gone isn't in sync with it: it was taken for one, at 0 and 0.
+    #[test]
+    fn test_branch_with_its_upstream_gone() {
+        use crate::test_support::git::{git, GitRepository};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        repo.commit("first", "2024-01-01");
+        git(path, &["update-ref", "refs/remotes/origin/x", "HEAD"]);
+        git(path, &["config", "remote.origin.url", "/nowhere"]);
+        let fetch = "+refs/heads/*:refs/remotes/origin/*";
+        git(path, &["config", "remote.origin.fetch", fetch]);
+        git(path, &["config", "branch.master.remote", "origin"]);
+        git(path, &["config", "branch.master.merge", "refs/heads/x"]);
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let state = |r: &Repository| r.branch_tracking()["master"].state;
+        assert_eq!(
+            state(&repository),
+            TrackState::Counts {
+                ahead: 0,
+                behind: 0
+            }
+        );
+        git(path, &["update-ref", "-d", "refs/remotes/origin/x"]);
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        assert_eq!(state(&repository), TrackState::Gone);
     }
 
     // A stash with no parent, which another tool can leave in refs/stash, stopped the app loading.

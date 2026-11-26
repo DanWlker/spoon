@@ -25,7 +25,7 @@ use crate::{
         },
         picks::Picks,
         style::{
-            page_rows, picked_style, render_scrollbar, scroll_to, scroll_with_selection,
+            page_rows, picked_style, render_scrollbar, scroll_with_selection, selection_rows,
             tabs_shown, ScrollState, VisualSelection,
         },
         tree_query::{find_around, highlight_match, match_range, SearchDirection},
@@ -63,7 +63,6 @@ pub struct FileText {
 }
 
 impl FileText {
-    // Other lines, from the top.
     // Measures many lines wrapped on another thread, waking the app up with `tx` once done, see
     // `rewrap`.
     pub fn measure_in_background(&mut self, tx: &Sender) {
@@ -72,6 +71,7 @@ impl FileText {
         }
     }
 
+    // Other lines, from the top.
     pub fn set_lines(&mut self, lines: Vec<String>) {
         self.lines = lines.into();
         self.measuring = None;
@@ -109,7 +109,6 @@ impl FileText {
         self.selection.clear();
     }
 
-    // Whether lines are selected, while the visual selection or after it ended.
     // What is selected, for the keys and messages: "line" or "lines", like `DiffPane`'s.
     pub fn selected_name(&self) -> &'static str {
         match self.has_selection() {
@@ -118,6 +117,7 @@ impl FileText {
         }
     }
 
+    // Whether lines are selected, while the visual selection or after it ended.
     pub fn has_selection(&self) -> bool {
         !self.selection.is_empty()
     }
@@ -187,12 +187,14 @@ impl FileText {
             height,
             scrolloff,
         } = self.scroll_state;
-        let last = self.wrap.total().saturating_sub(height.max(1));
-        let offset = offset.saturating_add_signed(rows).min(last);
+        let total = self.wrap.total();
+        let offset = offset
+            .saturating_add_signed(rows)
+            .min(total.saturating_sub(height.max(1)));
         self.scroll_state.offset = offset;
-        let margin = scrolloff.min(height.saturating_sub(1) / 2);
-        let top = offset + margin;
-        let bottom = (offset + height).saturating_sub(1 + margin).max(top);
+        // the screen rows the line may be on, as in a list, see `selection_rows`
+        let allowed = selection_rows(offset, height, total, scrolloff);
+        let (top, bottom) = (allowed.start, allowed.end - 1);
         let screen = self.wrap.visual_start(self.selected);
         let moved = if screen < top {
             // the first line starting at or below the top row
@@ -435,13 +437,7 @@ impl FileText {
     // Scrolls as little as can be to show `rows` with `scrolloff` rows around them, see
     // `style::scroll_to`; `rows` are logical, counted as screen rows while wrapping.
     fn scroll_to(&mut self, rows: Range<usize>) {
-        let ScrollState {
-            offset,
-            height,
-            scrolloff,
-        } = self.scroll_state;
-        let rows = self.wrap.visual_range(rows);
-        self.scroll_state.offset = scroll_to(offset, rows, height, usize::MAX, scrolloff);
+        self.scroll_state.show_rows(self.wrap.visual_range(rows));
     }
 
     // The first logical line of screen row `screen`, the last line past the end.
@@ -684,6 +680,37 @@ mod tests {
         text.cancel_visual();
         assert!(!text.has_selection());
         assert_eq!(text.selected_text().as_deref(), Some("four"));
+    }
+
+    // ctrl-e and ctrl-y leave the selected line where nothing scrolls, as a list and a diff do: at
+    // the top it moved past the scrolloff, at the bottom back from it.
+    #[test]
+    fn test_scroll_line_at_an_edge_leaves_the_selection() {
+        let ctx = test_ctx();
+        let area = Rect::new(0, 0, 40, 10);
+        let lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+        let mut text = FileText::default();
+        text.set_lines(lines);
+        let draw = |text: &mut FileText| {
+            text.render(
+                area,
+                Target::DetailPane,
+                &mut Buffer::empty(area),
+                &ctx,
+                true,
+                LineCursor::Shown,
+                None,
+            )
+        };
+        draw(&mut text);
+        text.scroll_state.scrolloff = 3;
+        assert!(text.scroll(UserEvent::ScrollUp));
+        assert_eq!(text.selected_line(), 0);
+        text.step(Step::Last);
+        draw(&mut text);
+        text.scroll_state.scrolloff = 3;
+        assert!(text.scroll(UserEvent::ScrollDown));
+        assert_eq!(text.selected_line(), 39);
     }
 
     // A file shorter than the panel still moves the selected line, like vim: only the window stays.

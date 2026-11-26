@@ -215,7 +215,7 @@ pub struct EventController {
     stop: Arc<AtomicBool>,
     // the pointer moving is read only while something shows where it is, see `set_hover`
     hover: Arc<AtomicBool>,
-    handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    handle: Mutex<Option<thread::JoinHandle<()>>>,
     // wakes the refresher up, see `refresh_now`
     poke: Mutex<Option<mpsc::Sender<Wake>>>,
     // the terminal is read and given to the commands run in it, but in tests
@@ -233,7 +233,7 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             hover: Arc::new(AtomicBool::new(false)),
-            handle: Arc::new(Mutex::new(None)),
+            handle: Mutex::new(None),
             poke: Mutex::new(None),
             terminal: true,
         };
@@ -251,7 +251,7 @@ impl EventController {
             rx: Receiver { rx },
             stop: Arc::new(AtomicBool::new(false)),
             hover: Arc::new(AtomicBool::new(false)),
-            handle: Arc::new(Mutex::new(None)),
+            handle: Mutex::new(None),
             poke: Mutex::new(None),
             terminal: false,
         }
@@ -269,7 +269,7 @@ impl EventController {
         let tx = self.tx.clone();
         // without the keys the app can't go on: failing to read them panics, which stops it
         let handle = thread::spawn(move || read_events(&stop, &hover, &tx));
-        *self.handle.lock().unwrap() = Some(handle);
+        *crate::background::lock(&self.handle) = Some(handle);
     }
     pub fn resume(&self) {
         if !self.terminal {
@@ -308,7 +308,7 @@ impl EventController {
 
     fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.lock().unwrap().take() {
+        if let Some(handle) = crate::background::lock(&self.handle).take() {
             handle.join().unwrap();
         }
     }

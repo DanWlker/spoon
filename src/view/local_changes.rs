@@ -80,7 +80,7 @@ impl<'a> LocalChangesView<'a> {
     pub fn update_layout(&mut self, area: Rect) {
         self.load_in_background();
         self.local_changes_state.update_submodule_height(area);
-        // the commit offered once the files loaded resolve the last conflict, see `reload_with`
+        // the commit offered once the files loaded resolve the last conflict, see `LocalChangesState::offer_resolved_commit`
         self.send_request();
     }
 

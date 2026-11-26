@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::path_tree::{path_contains, FileTreeRow};
+use crate::path_tree::FileTreeRow;
 use crate::widget::tree_query::Toward;
 use crate::{
     background::{drop_elsewhere, Cancel, Job, Loads},
@@ -197,7 +197,10 @@ impl<'a> DetailView<'a> {
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DetailView<'a> {
-        let commit = repository.commit(&shown).unwrap().clone();
+        let commit = repository
+            .commit(&shown)
+            .expect("the details open on a commit of the repository")
+            .clone();
         let refs = repository.refs(&shown).into_iter().cloned().collect();
         DetailView {
             commit_list_state,
@@ -449,7 +452,7 @@ impl<'a> DetailView<'a> {
             "reset files",
             "Reset the selected files to the commit or before it",
         )
-        .when(|v| !v.reset_file_changes().is_empty());
+        .when(|v| v.resets_files());
         k.add(&[Search], "filter", "Filter the files")
             .when(|v| entry(v) || queried(v));
         k.add(&[Search], "search", "Search the diff or preview")
@@ -477,13 +480,13 @@ impl<'a> DetailView<'a> {
             "open in browser",
             "Open the picked files, or the selected one, at the commit on the web host",
         )
-        .when(move |v| files(v) && path(v));
+        .when(move |v| files(v) && !v.tree_files().is_empty());
         k.add(
             &[CopyLink],
             "copy link",
             "Copy the links of the picked files, or of the selected one, at the commit",
         )
-        .when(move |v| files(v) && path(v));
+        .when(move |v| files(v) && !v.tree_files().is_empty());
         register_file_text_keys(k, |v| v.pane_file().is_some(), |_| true);
         k.add(
             &[Blame],
@@ -535,10 +538,24 @@ impl<'a> DetailView<'a> {
         .when(|v| !v.list_focused);
         k.quiet(&[SelectDown, SelectUp], "Select the older/newer commit")
             .when(|v| on(Info)(v) || files(v));
-        k.quiet(
-            &[FocusPanel(2), FocusPanel(3), FocusPanel(4), FocusPanel(5)],
-            "Focus the commit list, the info, changes or files",
-        );
+        // each where it moves the focus, see `focuses`
+        for n in 2..=5 {
+            k.quiet(
+                &[FocusPanel(n)],
+                "Focus the commit list, the info, changes or files",
+            )
+            .when(move |v| v.focuses(n));
+        }
+    }
+
+    // Whether the panel number `n` moves the focus: to the commit list from elsewhere, to a tab
+    // from the list or another tab, not the diff of its own; a comparison has only its changes, 3.
+    fn focuses(&self, n: usize) -> bool {
+        match DetailTab::from_number(n) {
+            None => n == 2 && !self.list_focused,
+            Some(_) if self.shows_compare() => n == 3 && self.list_focused,
+            Some(tab) => self.list_focused || self.tab != tab,
+        }
     }
 
     pub fn keys(&self) -> KeyList {
@@ -995,18 +1012,7 @@ impl<'a> DetailView<'a> {
             }
             // o opens the picked files at this commit on the web host, O copies their links
             if let UserEvent::OpenInBrowser | UserEvent::CopyLink = event {
-                let entries = match self.tab {
-                    DetailTab::Info => vec![],
-                    DetailTab::Changes => self.changes_state.picked_entries(),
-                    DetailTab::Files => self.files_state.picked_entries(),
-                };
-                let paths: Vec<String> = entries
-                    .into_iter()
-                    .filter_map(|entry| match entry {
-                        Entry::File(path) => Some(path.to_string()),
-                        Entry::Dir(_) => None,
-                    })
-                    .collect();
+                let paths: Vec<String> = self.tree_files().into_iter().map(String::from).collect();
                 match paths.as_slice() {
                     [] => {}
                     [path] => {
@@ -1257,23 +1263,29 @@ impl<'a> DetailView<'a> {
     // The changes of the files selected in the changes tab of a commit, which `u` resets; none in
     // a comparison, having no commit to reset them before or at.
     fn reset_file_changes(&self) -> Vec<FileChange> {
-        // on the files, not their diff
-        if self.focus() != DetailFocus::Files
-            || self.tab != DetailTab::Changes
-            || self.shows_compare()
-        {
+        if !self.resets_files() {
             return vec![];
         }
-        let paths: Vec<String> = if self.changes_state.has_selection() {
-            self.changes_state.picked_paths()
-        } else {
-            self.selected_file().map(String::from).into_iter().collect()
-        };
+        // each change's folders looked up among the picks, not each pick against each change
+        let picked = self.changes_state.has_selection();
+        let selected = self.selected_file();
         self.changes
             .iter()
-            .filter(|change| paths.iter().any(|path| path_contains(path, change.path())))
+            .filter(|change| match picked {
+                true => self.changes_state.picks_cover(change.path()),
+                false => selected == Some(change.path()),
+            })
             .cloned()
             .collect()
+    }
+
+    // Whether `u` has files to reset, see `reset_file_changes`, asked on each draw: on the files,
+    // not their diff, of a commit, with files picked, each covering a change, or one selected.
+    fn resets_files(&self) -> bool {
+        self.focus() == DetailFocus::Files
+            && self.tab == DetailTab::Changes
+            && !self.shows_compare()
+            && (self.changes_state.has_selection() || self.selected_file().is_some())
     }
 
     // The row selected in the file tree of the tab.
@@ -1339,6 +1351,16 @@ impl<'a> DetailView<'a> {
                 .into_iter()
                 .collect();
         }
+        self.tree_files()
+            .into_iter()
+            .filter(|path| !self.repository.is_submodule(path))
+            .map(Cow::Borrowed)
+            .collect()
+    }
+
+    // The files among the picked entries of the tree shown, or the selected one: what e, o and
+    // y l act on from the files, a folder being none.
+    fn tree_files(&self) -> Vec<&str> {
         let entries = match self.tab {
             _ if self.list_focused => vec![],
             DetailTab::Info => vec![],
@@ -1348,10 +1370,8 @@ impl<'a> DetailView<'a> {
         entries
             .into_iter()
             .filter_map(|entry| match entry {
-                Entry::File(path) if !self.repository.is_submodule(path) => {
-                    Some(Cow::Borrowed(path))
-                }
-                _ => None,
+                Entry::File(path) => Some(path),
+                Entry::Dir(_) => None,
             })
             .collect()
     }
@@ -1529,6 +1549,17 @@ impl<'a> DetailView<'a> {
             {
                 let picked = state.picked_commit_hashes().to_vec();
                 tx.send(copy_hashes(&picked, CopyForm::of(event)));
+                return true;
+            }
+            // the commit selected, as on the commit list, not the one the details show in a
+            // comparison
+            UserEvent::ShortCopy
+            | UserEvent::FullCopy
+            | UserEvent::OpenInBrowser
+            | UserEvent::CopyLink => {
+                if let Some(event) = commit_event(event, state.selected_commit_hash()) {
+                    tx.send(event);
+                }
                 return true;
             }
             // the details of the selected commit, over the comparison
@@ -1859,7 +1890,10 @@ impl<'a> DetailView<'a> {
         } = loaded;
         let repository = self.repository;
         let shown = load.shown().clone();
-        let commit = repository.commit(&shown).unwrap().clone();
+        let commit = repository
+            .commit(&shown)
+            .expect("the details open on a commit of the repository")
+            .clone();
         let refs = repository.refs(&shown).into_iter().cloned().collect();
         let changes_state = match (load, compared) {
             (Load::Compare { base, target, .. }, Some(compared)) => CommitChangesState::with_files(

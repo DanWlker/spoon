@@ -5,3 +5,4 @@ TODO:
      between the project, and its submodules
 1. Move commits (do we really need this?)...
 1. Interactive rebase, switch refresh to Ctrl-R, use shift r for interactive rebase
+1. Scrolling on [1] in the branches, remote stuff etc, it does not continue scrolling when the cursor reaches the top, this happens when i attempt to scroll with mouse

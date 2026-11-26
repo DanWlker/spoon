@@ -1,6 +1,7 @@
 // Conflicts: the sides of a conflicted file, resolving and staging them, and where a rebase
 // would stop on one.
 
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 use crate::background::Cancel;
@@ -118,24 +119,24 @@ impl WorkTree {
     // A binary file, which git leaves without markers, a side deleted, a symlink or a submodule
     // is resolved by picking a side instead.
     fn resolved_conflicts(&self, paths: &[&str]) -> Vec<String> {
-        let text_sides = |path: &str| {
-            unmerged(&self.path, path).is_ok_and(|stages| {
-                [2, 3].iter().all(|side| {
-                    stages.iter().any(|(stage, mode, _)| {
-                        stage == side && matches!(mode.as_str(), "100644" | "100755")
-                    })
-                })
-            })
-        };
+        // the stages of every conflicted file in one call: one a file took seconds for thousands
+        let out = git_output(&self.path, &["ls-files", "-u", "-z"]).unwrap_or_default();
+        let mut text: FxHashMap<&str, u8> = FxHashMap::default();
+        for (path, stage, mode, _) in unmerged_entries(&out) {
+            if matches!(stage, 2 | 3) && matches!(mode, "100644" | "100755") {
+                *text.entry(path).or_default() |= 1 << stage;
+            }
+        }
+        // both sides regular files: a bit for stage 2 and one for stage 3
+        let text_sides = |path: &str| text.get(path) == Some(&(1 << 2 | 1 << 3));
         let no_markers = |path: &str| {
             let file = work_path(&self.path, path);
-            let Ok(content) = std::fs::read(&file) else {
+            // before reading it: a FIFO, or a link to /dev/zero, would be read for good
+            let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
+            let Some(content) = regular.then(|| std::fs::read(&file).ok()).flatten() else {
                 return false;
             };
-            let binary = is_binary(&content);
-            let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
-            regular
-                && !binary
+            !is_binary(&content)
                 && !String::from_utf8_lossy(&content)
                     .lines()
                     .any(|line| is_conflict_marker(line, "<<<<<<<"))
@@ -195,17 +196,22 @@ fn unmerged(
 ) -> std::result::Result<Vec<(u8, String, String)>, String> {
     // literal, so `x*.txt` isn't `xa.txt`
     let spec = pathspecs(&[path]);
-    // "<mode> <object> <stage>\t<path>"
     let out = git_output(repository, &["ls-files", "-u", "-z", "--", &spec[0]])?;
-    Ok(out
-        .split('\0')
-        .filter_map(|entry| {
-            let mut fields = entry.split_once('\t')?.0.split(' ');
-            let (mode, object) = (fields.next()?, fields.next()?);
-            let stage = fields.next()?.parse().ok()?;
-            Some((stage, mode.to_string(), object.to_string()))
-        })
+    Ok(unmerged_entries(&out)
+        .map(|(_, stage, mode, object)| (stage, mode.to_string(), object.to_string()))
         .collect())
+}
+
+// The entries of `git ls-files -u -z`, "<mode> <object> <stage>\t<path>", as (path, stage, mode,
+// object).
+fn unmerged_entries(out: &str) -> impl Iterator<Item = (&str, u8, &str, &str)> {
+    out.split('\0').filter_map(|entry| {
+        let (meta, path) = entry.split_once('\t')?;
+        let mut fields = meta.split(' ');
+        let (mode, object) = (fields.next()?, fields.next()?);
+        let stage = fields.next()?.parse().ok()?;
+        Some((path, stage, mode, object))
+    })
 }
 
 // A side of a conflicted file, see `conflict_side`: a file's content, where a symlink
@@ -427,6 +433,22 @@ mod tests {
         assert_eq!(
             repository.work_tree().resolved_conflicts(&conflicted),
             ["text"]
+        );
+        // replaced by a FIFO, which isn't read: reading it waited for a writer for good
+        std::fs::remove_file(path.join("text")).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(path.join("text"))
+            .status();
+        assert!(made.unwrap().success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let work_tree = repository.work_tree();
+        std::thread::spawn(move || {
+            let _ = tx.send(work_tree.resolved_conflicts(&["text"]));
+        });
+        let resolved = rx.recv_timeout(std::time::Duration::from_secs(3));
+        assert_eq!(
+            resolved.expect("it hung reading the FIFO"),
+            Vec::<String>::new()
         );
     }
 

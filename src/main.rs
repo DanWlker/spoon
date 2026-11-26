@@ -196,6 +196,7 @@ fn run() -> Result<()> {
             antialias: graph_antialias,
             image_width_mode: graph_image_width_mode,
             cell_width_type: graph::CellWidthType::Double,
+            cell_pixels: protocol::cell_pixels,
         }),
         running_tasks: Default::default(),
         key_names: Default::default(),
@@ -401,14 +402,14 @@ impl Loader {
                     .0
                     .saturating_sub(app::sidebar_width(ctx, size.0))
                     .saturating_sub(2);
-                check::decide_cell_width_type(&graph, size, page, self.graph_width)?
+                check::decide_cell_width_type(&graph, page, self.graph_width)
             }
             Some(_) => ctx.graph.borrow().cell_width_type,
         };
         ctx.graph.borrow_mut().cell_width_type = cell_width_type;
         let image_params =
             graph::ImageParams::new(&self.graph_color_set, cell_width_type, self.graph_antialias)
-                .fit_cell(protocol::cell_pixels());
+                .fit_cell((ctx.graph.borrow().cell_pixels)());
         let graph_image_manager = GraphImageManager::new(
             graph,
             image_params,

@@ -73,12 +73,18 @@ impl<K: Clone + Eq + Hash> Picks<K> {
         *self = Picks::default();
     }
 
-    // Keeps those `keep` is true for, like after a reload, those still there.
+    // Keeps those `keep` is true for, like after a reload, those still there; a visual selection
+    // running goes on with them, the list's selecting kept, see `LocalChangesState::show_files`.
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
         self.order.retain(|key| keep(key));
         self.set.retain(|key| keep(key));
-        self.before_visual = None;
-        self.span = Span::None;
+        if let Some((order, set)) = &mut self.before_visual {
+            order.retain(|key| keep(key));
+            set.retain(|key| keep(key));
+        }
+        if matches!(&self.span, Span::One(key) if !keep(key)) {
+            self.span = Span::None;
+        }
     }
 
     // A visual selection starts: what it picks adds to those picked now.

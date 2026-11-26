@@ -180,6 +180,11 @@ fn path_matcher(smart_case: bool) -> &'static SkimMatcherV2 {
 // Whether a name, like a path or a field of a commit, matches `query`, see `match_ranges`.
 // Asked of every field of every commit as a search is typed, it finds no ranges.
 pub fn name_matches(name: &str, query: &str, options: SearchOptions) -> bool {
+    // yes or no: a lowercased copy alone, not the map of where each character was that
+    // `match_range` makes to say where; asked of every row of a tree as the filter is typed
+    if !options.fuzzy && !name.is_ascii() && case_insensitive(options.smart_case, query) {
+        return name.to_lowercase().contains(&query.to_lowercase());
+    }
     if !options.fuzzy || query.is_empty() {
         return match_range(name, query, options).is_some();
     }

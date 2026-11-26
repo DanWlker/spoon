@@ -19,7 +19,7 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
-        fits_a_command_line, parse_git_bool, pathspecs, stash_args, todo_action, AfterTask,
+        fits_a_command_line, parse_git_bool, pathspec_parts, stash_args, todo_action, AfterTask,
         BranchStatus, CommitHash, Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask,
         LocalChangeFile, NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
@@ -83,11 +83,21 @@ impl CheckoutTarget {
         }
     }
 
-    fn args(&self) -> Vec<&str> {
+    fn args(&self) -> Vec<String> {
         match self {
-            CheckoutTarget::Branch(name) => vec![name],
-            CheckoutTarget::Track { remote_branch, .. } => vec!["--track", remote_branch],
-            CheckoutTarget::Detach { revision, .. } => vec!["--detach", revision],
+            CheckoutTarget::Branch(name) => vec![name.clone()],
+            // in full, a tag or a local branch can have the name of the remote branch; the local
+            // branch named, as the popup does
+            CheckoutTarget::Track {
+                local,
+                remote_branch,
+            } => vec![
+                "-b".into(),
+                local.clone(),
+                "--track".into(),
+                format!("refs/remotes/{remote_branch}"),
+            ],
+            CheckoutTarget::Detach { revision, .. } => vec!["--detach".into(), revision.clone()],
         }
     }
 
@@ -1398,7 +1408,7 @@ impl GitDialog {
         let local_changes = self.chosen(local_changes);
         let mut args = vec![];
         if local_changes == LocalChanges::Discard {
-            args.push("--force");
+            args.push("--force".to_string());
         }
         args.extend(target.args());
         Ok(GitTask {
@@ -1722,7 +1732,7 @@ impl GitDialog {
         let names: Vec<String> = branches.iter().map(|(name, _)| name.clone()).collect();
         let args =
             GitCommand::Branch.args(std::iter::once("-D").chain(names.iter().map(String::as_str)));
-        let what = names_label("branch", "branches", &names);
+        let what = names_label("branches", &names);
         let verify = branches
             .iter()
             .map(|(name, tip)| (format!("refs/heads/{name}"), tip.clone()))
@@ -1757,7 +1767,7 @@ impl GitDialog {
     fn delete_remote_branches_command(&self, branches: &[RemoteBranch]) -> Result<GitTask, String> {
         let commands = delete_on_remotes(branches);
         let names: Vec<String> = branches.iter().map(ToString::to_string).collect();
-        let what = names_label("branch", "branches", &names);
+        let what = names_label("branches", &names);
         Ok(GitTask {
             commands,
             running: format!("Deleting {what}"),
@@ -1978,7 +1988,7 @@ impl GitDialog {
     ) -> Result<GitTask, String> {
         let mut args = vec!["-d".to_string()];
         args.extend(names.iter().cloned());
-        let what = names_label("tag", "tags", names);
+        let what = names_label("tags", names);
         let mut task = GitTask {
             commands: vec![GitCommand::Tag.args(args)],
             running: format!("Deleting {what}"),
@@ -2061,7 +2071,7 @@ impl GitDialog {
             .map(|s| (s.name.clone(), s.target.clone()))
             .collect();
         let names: Vec<String> = stashes.into_iter().map(|s| s.name).collect();
-        let what = names_label("stash", "stashes", &names);
+        let what = names_label("stashes", &names);
         let commands = names
             .iter()
             .map(|name| GitCommand::Stash.args(["drop", name]));
@@ -2180,30 +2190,35 @@ impl GitDialog {
             AtCommit => commit.hash.as_str().to_string(),
             BeforeCommit => format!("{}^", commit.hash.as_str()),
         };
-        let mut commands = vec![];
+        // the paths the files have then, and those they don't, removed: before the commit added
+        // one, after it deleted one, and either name of a renamed file
+        let (mut present, mut absent): (Vec<&str>, Vec<&str>) = (vec![], vec![]);
         for change in changes {
-            // the path the file has then, and the one it doesn't, removed: before the commit
-            // added it, after it deleted it, and either name of a renamed file
-            let (present, absent) = match (change, state) {
+            match (change, state) {
                 (Modify { path }, _)
                 | (Add { path }, AtCommit)
-                | (Delete { path }, BeforeCommit) => (Some(path), None),
-                (Add { path }, BeforeCommit) | (Delete { path }, AtCommit) => (None, Some(path)),
-                (Move { from, to }, AtCommit) => (Some(to), Some(from)),
-                (Move { from, to }, BeforeCommit) => (Some(from), Some(to)),
-            };
-            if let Some(path) = absent {
-                let mut args = GitCommand::Rm.args(["-q", "-f", "--ignore-unmatch", "--"]);
-                args.args.extend(pathspecs(&[path]));
-                commands.push(args);
-            }
-            if let Some(path) = present {
-                let args = ["--source", &source, "--staged", "--worktree", "--"];
-                let mut args = GitCommand::Restore.args(args);
-                args.args.extend(pathspecs(&[path]));
-                commands.push(args);
+                | (Delete { path }, BeforeCommit) => present.push(path),
+                (Add { path }, BeforeCommit) | (Delete { path }, AtCommit) => absent.push(path),
+                (Move { from, to }, AtCommit) => (present.push(to), absent.push(from)).0,
+                (Move { from, to }, BeforeCommit) => (present.push(from), absent.push(to)).0,
             }
         }
+        // all removed, then all restored, in parts as long as a command line takes: a path a
+        // rename leaves and another change brings back is there in the end
+        let in_parts = |command: GitCommand, args: &[&str], paths: &[&str]| -> Vec<GitArgs> {
+            pathspec_parts(paths)
+                .into_iter()
+                .map(|part| {
+                    let mut command = command.args(args.iter().copied());
+                    command.args.extend(part);
+                    command
+                })
+                .collect()
+        };
+        let rm = ["-q", "-f", "--ignore-unmatch", "--"];
+        let restore = ["--source", source.as_str(), "--staged", "--worktree", "--"];
+        let mut commands = in_parts(GitCommand::Rm, &rm, &absent);
+        commands.extend(in_parts(GitCommand::Restore, &restore, &present));
         let at = match state {
             AtCommit => "at",
             BeforeCommit => "before",
@@ -3001,14 +3016,11 @@ fn capped(mut items: Vec<String>, max: usize) -> Vec<String> {
 }
 
 // "main", or "3 branches".
-fn names_label(one: &str, many: &str, names: &[String]) -> String {
+// The one name, else how many: "3 branches".
+fn names_label(many: &str, names: &[String]) -> String {
     match names {
         [name] => name.clone(),
-        _ => format!(
-            "{} {}",
-            names.len(),
-            if names.len() == 1 { one } else { many }
-        ),
+        _ => format!("{} {many}", names.len()),
     }
 }
 
@@ -3752,6 +3764,29 @@ mod tests {
         assert_eq!(intro[0], "Reset 20 files to");
         assert!(intro.iter().any(|line| line.contains("… and 10 more")));
         assert!(intro.len() <= 2 + MAX_LISTED + 1, "{intro:?}");
+    }
+
+    // Many files reset in one restore and one rm, in parts as long as a command line takes: one
+    // git command ran per file, every one listed in the popup, drawn each frame.
+    #[test]
+    fn test_reset_many_files_in_few_commands() {
+        let commit = DialogCommit {
+            hash: "a".repeat(40).as_str().into(),
+            line: "commit".into(),
+        };
+        let changes: Vec<FileChange> = (0..20_000)
+            .map(|i| match i % 2 {
+                0 => FileChange::Modify {
+                    path: format!("f{i:05}"),
+                },
+                _ => FileChange::Delete {
+                    path: format!("f{i:05}"),
+                },
+            })
+            .collect();
+        let dialog = GitDialog::reset_files(commit, changes);
+        let task = dialog.command().unwrap().unwrap();
+        assert!(task.commands.len() <= 4, "{} commands", task.commands.len());
     }
 
     // Files to stash, named f00 and on, every one checked.

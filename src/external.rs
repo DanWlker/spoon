@@ -33,9 +33,12 @@ fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), St
         return Err("No clipboard command specified".to_string());
     }
 
+    // its output kept off the screen, which isn't drawn again where it would land; its error said
     let mut child = Command::new(&commands[0])
         .args(&commands[1..])
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to run {}: {e}", commands[0]))?;
 
@@ -46,11 +49,13 @@ fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), St
         .write_all(value.as_bytes())
         .map_err(|e| format!("Failed to write to {}: {e}", commands[0]))?;
 
-    let status = child
-        .wait()
+    let output = child
+        .wait_with_output()
         .map_err(|e| format!("{} failed: {e}", commands[0]))?;
-    if !status.success() {
-        return Err(format!("{} failed: {status}", commands[0]));
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        let said = said.lines().rfind(|l| !l.is_empty()).unwrap_or_default();
+        return Err(format!("{} failed: {}: {said}", commands[0], output.status));
     }
     Ok(())
 }
@@ -185,6 +190,10 @@ mod tests {
         assert!(copy_to_clipboard_custom("x".into(), &sh("cat >/dev/null")).is_ok());
         let err = copy_to_clipboard_custom("x".into(), &sh("cat >/dev/null; exit 1")).unwrap_err();
         assert!(err.contains("failed"), "{err}");
+        // what it says goes in the error, not over the screen, which isn't drawn again there
+        let failing = sh("cat >/dev/null; echo shown; echo \"Can't open display\" >&2; exit 1");
+        let err = copy_to_clipboard_custom("x".into(), &failing).unwrap_err();
+        assert!(err.ends_with("Can't open display"), "{err}");
     }
 
     // A byte that isn't UTF-8, kept from git, is copied as U+FFFD, not as the character keeping it.

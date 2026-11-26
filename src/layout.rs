@@ -116,10 +116,25 @@ impl Thumb {
     // drawn, the thumb moving along its track as the rows past the first page.
     pub fn offset_moved(&self, cells: isize) -> usize {
         let height = self.track.height as usize;
-        let thumb = (height * height / self.total).max(1);
-        let (span, last) = (height.saturating_sub(thumb).max(1), self.total - height);
+        let (span, last) = (
+            height.saturating_sub(self.length()).max(1),
+            self.total - height,
+        );
         let rows = cells * last as isize / span as isize;
         self.offset.saturating_add_signed(rows).min(last)
+    }
+
+    // Its length in cells: the share of the rows shown, one at least; for more rows than shown.
+    pub fn length(&self) -> usize {
+        let height = self.track.height as usize;
+        (height * height / self.total).max(1)
+    }
+
+    // Its first cell in the track, as far down as the rows shown are past the first.
+    pub fn top(&self) -> usize {
+        let height = self.track.height as usize;
+        let last = self.total - height;
+        self.offset.min(last) * (height - self.length()) / last
     }
 }
 

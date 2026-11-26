@@ -384,9 +384,12 @@ pub fn render_scrollbar(
     if height == 0 || total <= height {
         return None;
     }
-    let thumb = (height * height / total).max(1);
-    let max_offset = total - height;
-    let top = offset.min(max_offset) * (height - thumb) / max_offset;
+    let track = Thumb {
+        track: column,
+        total,
+        offset,
+    };
+    let (thumb, top) = (track.length(), track.top());
     let fg = if focused {
         theme.accent_fg
     } else {
@@ -398,15 +401,7 @@ pub fn render_scrollbar(
     }
     // for the mouse to drag, recorded by the caller under its panel, see `Thumb`
     let area = Rect::new(column.x, column.y + top as u16, 1, thumb as u16);
-    let track = column;
-    Some((
-        area,
-        RowMap::Thumb(Thumb {
-            track,
-            total,
-            offset,
-        }),
-    ))
+    Some((area, RowMap::Thumb(track)))
 }
 
 // The rows a notch of the mouse wheel scrolls, as lazygit's.
@@ -445,19 +440,24 @@ impl ScrollState {
         self.offset = self.offset.saturating_add_signed(rows);
     }
 
+    // Scrolls as little as can be to show the screen `rows` with `scrolloff` rows around them, see
+    // `scroll_to`; not counted here, rendering keeps the offset within them, see `fit`.
+    pub fn show_rows(&mut self, rows: Range<usize>) {
+        self.offset = scroll_to(self.offset, rows, self.height, usize::MAX, self.scrolloff);
+    }
+
     // Scrolls by the scroll keys: a line, a page of the rows shown, or half of one; returns
     // whether `event` was one of them.
     pub fn handle_scroll(&mut self, event: UserEvent) -> bool {
-        let page = self.height.max(1) as isize;
         let rows = match event {
             UserEvent::ScrollDown => 1,
             UserEvent::ScrollUp => -1,
             UserEvent::Wheel(rows) => rows,
-            UserEvent::PageDown => page,
-            UserEvent::PageUp => -page,
-            UserEvent::HalfPageDown => page / 2,
-            UserEvent::HalfPageUp => -page / 2,
-            _ => return false,
+            // as everywhere, see `page_rows`
+            _ => match page_rows(event, self.height) {
+                Some(rows) => rows,
+                None => return false,
+            },
         };
         self.scroll(rows);
         true
@@ -932,6 +932,17 @@ mod tests {
             cursor.scroll_lines(1, 3);
         }
         assert_eq!(cursor.row(), Some(0));
+    }
+
+    // Half a page is a row at least, as the lists' and the text's: at a height of 1 it was none.
+    #[test]
+    fn test_half_page_of_a_scroll_moves_a_row_at_least() {
+        let mut scroll = ScrollState {
+            height: 1,
+            ..Default::default()
+        };
+        assert!(scroll.handle_scroll(UserEvent::HalfPageDown));
+        assert_eq!(scroll.offset, 1);
     }
 
     // ctrl-e and ctrl-y moved the selection out of the scrolloff rows at an edge the list can't

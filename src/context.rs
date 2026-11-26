@@ -58,6 +58,9 @@ pub struct GraphRender {
     pub antialias: bool,
     pub image_width_mode: GraphImageWidthMode,
     pub cell_width_type: CellWidthType,
+    // the size of a cell in pixels as the terminal tells it, read each time a graph is drawn
+    // anew, so a font changed meanwhile is followed; none in the tests, which run in any terminal
+    pub cell_pixels: fn() -> Option<(u16, u16)>,
 }
 
 impl Default for GraphRender {
@@ -65,9 +68,11 @@ impl Default for GraphRender {
         Self {
             color_set: GraphColorSet::new(&GraphColorConfig::default()),
             style: GraphStyle::Rounded,
-            antialias: true,
+            // off, as the app's default, see `Args::resolve_graph_antialias`
+            antialias: false,
             image_width_mode: GraphImageWidthMode::Compact,
             cell_width_type: CellWidthType::Double,
+            cell_pixels: || None,
         }
     }
 }
@@ -98,7 +103,7 @@ impl AppContext {
             render.cell_width_type,
             render.antialias,
         )
-        .fit_cell(crate::protocol::cell_pixels());
+        .fit_cell((render.cell_pixels)());
         GraphImageManager::new(
             graph,
             image_params,

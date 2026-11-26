@@ -2241,6 +2241,80 @@ fn test_paste_is_typed() {
     ]);
 }
 
+// A popup with no text being typed takes no pasted text: its keys in it ran it, `c` in the commit
+// popup committing.
+#[test]
+fn test_paste_into_a_popup_not_typing_is_no_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::write(path.join("f.txt"), "changed\n").unwrap();
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let head = git(&path, &["rev-parse", "HEAD"]);
+    let mut harness = Harness::new(&path, launch);
+    harness.run(vec![
+        keys("space 3"),
+        typing("msg"),
+        keys("esc c"),
+        check(|app| assert!(app.visible_dialog().is_some() && !app.is_typing())),
+        vec![Step::Act(Box::new(|app: &mut App| {
+            app.ec.send(AppEvent::Paste("c".into()));
+        }))],
+        check(|app| assert!(app.visible_dialog().is_some(), "the popup ran")),
+    ]);
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
+}
+
+// In a comparison, y y on the commit list copied the commit compared, not the one selected, unlike
+// the commit list everywhere else.
+#[test]
+fn test_commit_keys_of_the_list_in_a_comparison_act_on_its_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let copied = dir.path().join("copied");
+    let mut harness = Harness::new(&path, launch());
+    let ctx = Rc::get_mut(&mut harness.ctx).unwrap();
+    let command = format!("cat > '{}'", copied.display());
+    ctx.core_config.external.clipboard = crate::config::ClipboardConfig::Custom {
+        commands: vec!["sh".into(), "-c".into(), command],
+    };
+    // feat1 compared, then c1 selected in the list
+    harness.run(vec![keys("j shift-d 2 j y y")]);
+    let c1 = git(&path, &["rev-parse", "--short=7", "master~1"]);
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), c1.trim());
+}
+
+// A panel's number is offered only where it moves the focus, as in blame and the timeline: the
+// details took 2 to 5 everywhere, the focused panel's own number and the tabs a comparison
+// doesn't have too.
+#[test]
+fn test_details_panel_numbers_only_where_they_move() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let takes = |n: usize, expected: bool| {
+        check(move |app| {
+            let taken = app.view.keys().takes(UserEvent::FocusPanel(n));
+            assert_eq!(taken, expected, "{n}");
+        })
+    };
+    harness.run(vec![
+        keys("4"),
+        takes(4, false),
+        takes(5, true),
+        takes(2, true),
+    ]);
+    harness.run(vec![
+        keys("j shift-d"),
+        takes(3, false),
+        takes(4, false),
+        takes(5, false),
+        takes(2, true),
+    ]);
+}
+
 #[test]
 fn test_half_page_jump_in_the_sidebar() {
     let dir = tempfile::tempdir().unwrap();
@@ -6794,6 +6868,15 @@ fn test_full_path_in_a_folder_diff_is_the_file_of_its_hunk() {
         commands: vec!["sh".into(), "-c".into(), command],
     };
     let read = |copied: &std::path::Path| std::fs::read_to_string(copied).unwrap();
+    // o and y l on the folder in the files open no file: they aren't offered, as e isn't; they
+    // were, doing nothing
+    harness.run(vec![
+        keys("4 k"),
+        check(|app| {
+            let keys = app.view.keys();
+            assert!(!keys.takes(UserEvent::OpenInBrowser) && !keys.takes(UserEvent::CopyLink));
+        }),
+    ]);
     // the folder, above its first file the details open on
     harness.run(vec![keys("4 k enter shift-g y f")]);
     let expected = path.join("d/b.txt").canonicalize().unwrap();

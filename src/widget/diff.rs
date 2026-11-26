@@ -22,8 +22,8 @@ use crate::{
     widget::{
         picks::Picks,
         style::{
-            divider, mark_selected_bar, page_rows, picked_style, placeholder, scroll_to,
-            selection_rows, tabs_shown, ScrollState, VisualSelection,
+            divider, mark_selected_bar, page_rows, picked_style, placeholder, selection_rows,
+            tabs_shown, ScrollState, VisualSelection,
         },
         tree_query::{match_range, patch_range, SearchDirection},
     },
@@ -816,8 +816,8 @@ pub fn matching_rows(diff: &ParsedDiff, query: &str, options: SearchOptions) -> 
     found.into_iter().flat_map(|(_, rows)| rows).collect()
 }
 
-// Whether the row of `diff` at `row` is one a search matches.
-// Whether the text of `row` matches, as it is in the file, like a file preview's lines.
+// Whether the text of the row of `diff` at `row` matches a search, as it is in the file, like a
+// file preview's lines.
 pub fn row_matches(diff: &ParsedDiff, row: usize, query: &str, options: SearchOptions) -> bool {
     match_range(&diff.raw[diff.rows[row].text.clone()], query, options).is_some()
 }
@@ -1288,14 +1288,7 @@ impl DiffCursor {
     // Scrolls as little as can be to show `rows` with `scrolloff` rows around them, see
     // `style::scroll_to`; `rows` are logical, counted as screen rows while wrapping.
     pub fn scroll_to(&mut self, rows: Range<usize>) {
-        let ScrollState {
-            offset,
-            height,
-            scrolloff,
-        } = self.scroll;
-        let rows = self.wrap.visual_range(rows);
-        // the rows aren't counted here: rendering keeps the offset within them, see `fit`
-        self.scroll.offset = scroll_to(offset, rows, height, usize::MAX, scrolloff);
+        self.scroll.show_rows(self.wrap.visual_range(rows));
     }
 
     // The rows highlighted: from the first line picked to the last, else the selected line, or
@@ -1556,10 +1549,12 @@ pub fn parse_diff(diff: &str) -> ParsedDiff {
 // far: a big diff takes a while, see `Job::read`.
 pub fn parse_diff_until(diff: &str, cancel: &Cancel) -> ParsedDiff {
     let shared: Arc<str> = Arc::from(diff);
-    // file names are only shown when the diff spans multiple files (a directory)
+    // file names are only shown when the diff spans multiple files (a directory); a conflicted one
+    // is a combined diff, named, its hunks of three sides not staged nor shown
+    const COMBINED: &str = "diff --cc ";
     let multiple_files_count = diff
         .lines()
-        .filter(|l| l.starts_with("diff --git "))
+        .filter(|l| l.starts_with("diff --git ") || l.starts_with(COMBINED))
         .count();
     let multiple_files = multiple_files_count > 1;
 
@@ -1592,6 +1587,15 @@ pub fn parse_diff_until(diff: &str, cancel: &Cancel) -> ParsedDiff {
         // the bytes of the diff of `line` from `from`
         let bytes = |from: usize| start + from..start + line.len();
 
+        if line.starts_with(COMBINED) {
+            finish_hunk(&mut current, &mut hunks, rows.len());
+            file_start = start;
+            if multiple_files {
+                let path = start + COMBINED.len()..start + line.len();
+                rows.push(DiffRow::without_numbers(DiffRowKind::File, path));
+            }
+            continue;
+        }
         if line.starts_with("diff --git ") {
             finish_hunk(&mut current, &mut hunks, rows.len());
             file_start = start;
@@ -1984,7 +1988,7 @@ pub fn diff_lines<'a>(
         return hunkless_lines(diff)
             .skip(range.start)
             .take(range.len())
-            .map(|l| Line::raw(l).fg(theme.muted_fg))
+            .map(|l| Line::raw(tabs_shown(l)).fg(theme.muted_fg))
             .collect();
     }
 
@@ -2677,6 +2681,44 @@ mod tests {
         }
     }
 
+    // The lines of a diff without hunks, like a binary file's, draw a name as every row does: a
+    // byte that isn't UTF-8 as U+FFFD, not the character keeping it, and a tab as spaces.
+    #[test]
+    fn test_hunkless_lines_drawn_like_the_rows() {
+        let raw = crate::git::text_from_git(
+            b"diff --git a/caf\xe9.bin b/caf\xe9.bin\nBinary files a/caf\xe9.bin and b/caf\xe9.bin differ\n",
+        );
+        let diff = parse_diff(&raw);
+        let theme = ColorTheme::default();
+        let text: String = diff_lines(&diff, &theme, 0..10, 80)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert!(
+            text.contains("caf\u{FFFD}.bin") && !text.contains('\u{F7E9}'),
+            "{text:?}"
+        );
+    }
+
+    // A folder's diff shows a conflicted file, which git gives as a combined diff (`diff --cc`)
+    // first, by its name, and counts it: it was left out, the next file shown as the only one,
+    // without its name.
+    #[test]
+    fn test_combined_diff_of_a_conflicted_file_is_named() {
+        let raw = "diff --cc a.txt\nindex 1,2..0\n--- a/a.txt\n+++ b/a.txt\n@@@ -1,1 -1,1 +1,5 @@@\n++<<<<<<< HEAD\n\
+diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-x\n+y\n";
+        let diff = parse_diff(raw);
+        assert!(!diff.is_single_file());
+        let files: Vec<String> = diff
+            .rows
+            .iter()
+            .filter(|row| row.kind == DiffRowKind::File)
+            .map(|row| diff.row_text(row).into_owned())
+            .collect();
+        assert_eq!(files, ["a.txt", "b.txt"]);
+        assert_eq!(diff.hunks.len(), 1);
+    }
+
     // Lines are picked like the rows of a list (`Picks`): moving back unpicks what the visual
     // selection went over, and v v on a picked line unpicks it. Lines only used to add up.
     #[test]
@@ -3012,9 +3054,6 @@ mod tests {
         }
     }
 
-    // Side by side, a removed line sits beside the first added line after the last one paired
-    // that is alike, like delta's: the added lines passed on their own rows before it, a removed
-    // line alike to none on its own row, a note on the side of the line it follows.
     // A big diff is searched on several threads, a part each, its matches in order as on one.
     #[test]
     fn test_matching_rows_of_a_big_diff_in_order() {
@@ -3040,6 +3079,9 @@ mod tests {
         assert!(parse_diff_until(&raw, &Cancel::cancelled()).rows.is_empty());
     }
 
+    // Side by side, a removed line sits beside the first added line after the last one paired
+    // that is alike, like delta's: the added lines passed on their own rows before it, a removed
+    // line alike to none on its own row, a note on the side of the line it follows.
     #[test]
     fn test_split_rows_pair_alike_lines() {
         let diff = parse_diff(concat!(

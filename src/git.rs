@@ -36,14 +36,15 @@ pub use local_changes::{
 };
 use submodule::{load_submodules, SubmoduleRepositories};
 pub use submodule::{submodule_gitlink_at, submodule_info};
+use task::{
+    command_line_parts, git_output, git_output_bytes_until, git_output_with_status, git_run_until,
+    lock, output_result, run_logged,
+};
 pub use task::{
     command_log, fits_a_command_line, git_arg, git_bytes, git_command, is_binary, is_kept_byte,
-    pathspecs, run_task, stash_args, text_from_git, todo_action, work_path, AfterTask,
-    BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask, RunningTasks, WorkTree,
-};
-use task::{
-    git_output, git_output_bytes_until, git_output_with_status, git_run_until, lock, output_result,
-    pathspec_parts, run_logged,
+    pathspec_parts, pathspecs, run_task, stash_args, text_from_git, todo_action, work_path,
+    AfterTask, BranchStatus, GitArgs, GitCommand, GitTask, LoggedCommand, RunningTask,
+    RunningTasks, WorkTree,
 };
 
 // One allocation for all the copies of a hash, which the maps of parents, children and the graph's
@@ -126,6 +127,16 @@ impl Ref {
     pub fn git_name(&self) -> String {
         self.named()
             .map_or_else(|| self.name().to_string(), |n| n.full_name())
+    }
+
+    // Whether it is `named`, without making a `NamedRef` of it.
+    pub fn is(&self, named: &NamedRef) -> bool {
+        match (self, named) {
+            (Ref::Branch { name, .. }, NamedRef::Branch(n))
+            | (Ref::RemoteBranch { name, .. }, NamedRef::RemoteBranch(n))
+            | (Ref::Tag { name, .. }, NamedRef::Tag(n)) => name == n,
+            _ => false,
+        }
     }
 
     // A branch, remote branch or tag; None for a stash.
@@ -322,18 +333,15 @@ impl Repository {
         &self.commits
     }
 
-    pub fn parents_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
-        self.parents_map
-            .get(commit_hash)
-            .map(|hs| hs.iter().collect::<Vec<&CommitHash>>())
-            .unwrap_or_default()
+    // As loaded, borrowed: the graph's layout asks for each commit, several times.
+    pub fn parents_hash(&self, commit_hash: &CommitHash) -> &[CommitHash] {
+        self.parents_map.get(commit_hash).map_or(&[], Vec::as_slice)
     }
 
-    pub fn children_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
+    pub fn children_hash(&self, commit_hash: &CommitHash) -> &[CommitHash] {
         self.children_map
             .get(commit_hash)
-            .map(|hs| hs.iter().collect::<Vec<&CommitHash>>())
-            .unwrap_or_default()
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn refs(&self, commit_hash: &CommitHash) -> Vec<&Ref> {
@@ -341,6 +349,16 @@ impl Repository {
             .get(commit_hash)
             .map(|refs| refs.iter().collect::<Vec<&Ref>>())
             .unwrap_or_default()
+    }
+
+    // The commit of the ref `named`, looked for in place: the sidebar asks on each key, with
+    // tens of thousands of tags.
+    pub fn ref_target(&self, named: &NamedRef) -> Option<&CommitHash> {
+        self.ref_map
+            .values()
+            .flatten()
+            .find(|r| r.is(named))
+            .map(Ref::target)
     }
 
     pub fn all_refs(&self) -> Vec<&Ref> {
@@ -709,8 +727,15 @@ impl RemoteInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tracking {
     pub upstream: String,
-    pub ahead: usize,
-    pub behind: usize,
+    pub state: TrackState,
+}
+
+// How a branch stands against its upstream: how far ahead and behind, or its upstream gone from
+// the remote, as git says after a fetch pruned it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackState {
+    Counts { ahead: usize, behind: usize },
+    Gone,
 }
 
 #[cfg(test)]
@@ -810,7 +835,10 @@ mod tests {
         let tracking = || {
             let tracking = &load_branch_tracking(&work)["master"];
             assert_eq!(tracking.upstream, "origin/main");
-            (tracking.ahead, tracking.behind)
+            match tracking.state {
+                TrackState::Counts { ahead, behind } => (ahead, behind),
+                TrackState::Gone => panic!("gone"),
+            }
         };
         assert_eq!(tracking(), (0, 0));
         repo.commit("second", "2024-01-02");

@@ -377,7 +377,7 @@ end
         std::fs::write(path.join("f"), b"cr\xe8me\n").unwrap();
         repo.add(&["f"]);
         repo.commit("existing", "2024-01-03");
-        let merged = std::process::Command::new("git")
+        let merged = crate::git::git_command()
             .args(["merge", "-q", "incoming"])
             .current_dir(path)
             .output()
@@ -410,7 +410,7 @@ end
         std::fs::write(path.join("f"), "ours\n").unwrap();
         repo.add(&["f"]);
         repo.commit("existing", "2024-01-03");
-        let merged = std::process::Command::new("git")
+        let merged = crate::git::git_command()
             .args(["merge", "-q", "incoming"])
             .current_dir(path)
             .output()

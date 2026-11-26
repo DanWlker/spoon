@@ -75,18 +75,23 @@ impl<'a, 'f> Links<'a, 'f> {
         self.shown.as_ref().is_none_or(|shown| shown.contains(hash))
     }
 
-    fn parents_hash(&self, hash: &CommitHash) -> Vec<&'a CommitHash> {
-        let mut parents = self.repository.parents_hash(hash);
-        if self.folded.contains(hash) {
-            parents.truncate(1);
+    // Borrowed, without allocating: asked for each commit, several times, see `Graph::of`.
+    fn parents_hash(&self, hash: &CommitHash) -> &'a [CommitHash] {
+        let parents = self.repository.parents_hash(hash);
+        match self.folded.contains(hash) {
+            true => &parents[..parents.len().min(1)],
+            false => parents,
         }
-        parents
     }
 
-    fn children_hash(&self, hash: &CommitHash) -> Vec<&'a CommitHash> {
-        let mut children = self.repository.children_hash(hash);
-        children.retain(|c| self.is_shown(c) && self.parents_hash(c).contains(&hash));
-        children
+    fn children_hash<'h>(
+        &self,
+        hash: &'h CommitHash,
+    ) -> impl Iterator<Item = &'a CommitHash> + use<'a, 'h, '_> {
+        self.repository
+            .children_hash(hash)
+            .iter()
+            .filter(move |c| self.is_shown(c) && self.parents_hash(c).contains(hash))
     }
 }
 
@@ -320,7 +325,7 @@ fn primary_branch_spine<'a>(
     while let Some(hash) = current {
         spine.insert(hash);
         let parents = links.parents_hash(hash);
-        current = parents.first().copied();
+        current = parents.first();
     }
 
     (spine, None)
@@ -348,7 +353,6 @@ fn calc_commit_positions<'a>(
         if filtered_children_hash.is_empty() {
             let merge_child_pos_y = links
                 .children_hash(&commit.commit_hash)
-                .into_iter()
                 .map(|hash| commit_pos_map[hash].1)
                 .min();
 
@@ -412,10 +416,9 @@ fn stopped(y: usize, cancel: &Cancel) -> bool {
 fn filtered_children_hash<'a>(commit: &'a Commit, links: &Links<'a, '_>) -> Vec<&'a CommitHash> {
     links
         .children_hash(&commit.commit_hash)
-        .into_iter()
         .filter(|child_hash| {
             let child_parents_hash = links.parents_hash(child_hash);
-            !child_parents_hash.is_empty() && *child_parents_hash[0] == commit.commit_hash
+            !child_parents_hash.is_empty() && child_parents_hash[0] == commit.commit_hash
         })
         .collect()
 }
