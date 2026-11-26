@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Debug, Formatter},
     hash::{Hash, Hasher},
     io::Cursor,
+    ops::Range,
     process,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -195,6 +196,25 @@ impl<'a> GraphImageManager<'a> {
         std::mem::take(&mut self.pending_uploads)
     }
 
+    // Drops the prepared images of the rows far from `shown` once there are too many. A row shown
+    // again is prepared again under the same id, replacing its image in the terminal, as a row
+    // drawn differently does; the terminal keeps the images, deleted with the manager.
+    pub fn forget_far_from(&mut self, shown: Range<usize>) {
+        if self.prepared_image_map.len() <= KEPT_IMAGES {
+            return;
+        }
+        let near =
+            shown.start.saturating_sub(KEPT_IMAGES / 4)..shown.end.saturating_add(KEPT_IMAGES / 4);
+        let rows = &self.graph.commit_pos_map;
+        self.prepared_image_map
+            .retain(|hash, _| rows.get(hash).is_some_and(|(_, y)| near.contains(y)));
+    }
+
+    #[cfg(test)]
+    pub fn prepared_count(&self) -> usize {
+        self.prepared_image_map.len()
+    }
+
     pub fn ensure_uploaded(&mut self, commit_hash: &CommitHash) {
         if self.prepared_image_map.contains_key(commit_hash) {
             return;
@@ -225,6 +245,10 @@ impl<'a> GraphImageManager<'a> {
             .insert(commit_hash.clone(), (drawn, image));
     }
 }
+
+// The prepared images kept, those of the rows far from the screen dropped beyond it: each holds its
+// cells, a few kilobytes, and scrolling through 100k commits kept them all, hundreds of megabytes.
+const KEPT_IMAGES: usize = 2000;
 
 // What tells a row image from the one drawn before it of the same commit, kept in place of its
 // PNG, a kilobyte a row: a hash of it, its length included.
@@ -526,18 +550,15 @@ pub struct DrawingPixels {
 
 impl DrawingPixels {
     pub fn new(image_params: &ImageParams) -> Self {
-        let circle = calc_commit_circle_drawing_pixels(image_params);
-        let circle_edge = calc_circle_edge_drawing_pixels(image_params);
-        let vertical_edge = calc_vertical_edge_drawing_pixels(image_params);
-        let horizontal_edge = calc_horizontal_edge_drawing_pixels(image_params);
-        let up_edge = calc_up_edge_drawing_pixels(image_params);
-        let down_edge = calc_down_edge_drawing_pixels(image_params);
-        let left_edge = calc_left_edge_drawing_pixels(image_params);
-        let right_edge = calc_right_edge_drawing_pixels(image_params);
-        let right_top_edge = calc_right_top_edge_drawing_pixels(image_params);
-        let left_top_edge = calc_left_top_edge_drawing_pixels(image_params);
-        let right_bottom_edge = calc_right_bottom_edge_drawing_pixels(image_params);
-        let left_bottom_edge = calc_left_bottom_edge_drawing_pixels(image_params);
+        let (w, h) = (image_params.width as i32, image_params.height as i32);
+        let (cx, cy) = (w / 2, h / 2);
+        let r = image_params.circle_outer_radius as i32;
+        let line_width = image_params.line_width as i32;
+        // the columns of a vertical line and the rows of a horizontal one, through the center
+        let lane_x = cx - line_width / 2..cx - line_width / 2 + line_width;
+        let lane_y = cy - line_width / 2..cy - line_width / 2 + line_width;
+        let inner = disk_pixels(cx, cy, image_params.circle_inner_radius as i32);
+        let outer = disk_pixels(cx, cy, r);
 
         Self {
             diagonal_connections: FxHashMap::default(),
@@ -545,8 +566,8 @@ impl DrawingPixels {
             antialias: image_params
                 .antialias
                 .then(|| antialias::Masks::new(image_params)),
-            circle,
-            circle_edge,
+            circle_edge: outer.difference(&inner).copied().collect(),
+            circle: inner,
             merge_disk: shape_pixels(image_params, |p| merge_disk_contains(p, image_params)),
             merge_marks: Chevron::ALL
                 .into_iter()
@@ -557,16 +578,16 @@ impl DrawingPixels {
                     (chevron, marks)
                 })
                 .collect(),
-            vertical_edge,
-            horizontal_edge,
-            up_edge,
-            down_edge,
-            left_edge,
-            right_edge,
-            right_top_edge,
-            left_top_edge,
-            right_bottom_edge,
-            left_bottom_edge,
+            vertical_edge: rect_pixels(lane_x.clone(), 0..h),
+            horizontal_edge: rect_pixels(0..w, lane_y.clone()),
+            up_edge: rect_pixels(lane_x.clone(), 0..cy - r),
+            down_edge: rect_pixels(lane_x, cy + r + 1..h),
+            left_edge: rect_pixels(0..cx - r, lane_y.clone()),
+            right_edge: rect_pixels(cx + r + 1..w, lane_y),
+            right_top_edge: corner_pixels(image_params, 0, h),
+            left_top_edge: corner_pixels(image_params, w, h),
+            right_bottom_edge: corner_pixels(image_params, 0, 0),
+            left_bottom_edge: corner_pixels(image_params, w, 0),
         }
     }
 
@@ -597,17 +618,6 @@ impl DrawingPixels {
     }
 }
 
-fn calc_commit_circle_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    calc_circle_drawing_pixels(image_params, image_params.circle_inner_radius as i32)
-}
-
-fn calc_circle_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let inner = calc_circle_drawing_pixels(image_params, image_params.circle_inner_radius as i32);
-    let outer = calc_circle_drawing_pixels(image_params, image_params.circle_outer_radius as i32);
-
-    outer.difference(&inner).cloned().collect()
-}
-
 // The pixels of a cell whose center is in a shape.
 fn shape_pixels(image_params: &ImageParams, contains: impl Fn(Point) -> bool) -> Pixels {
     let (width, height) = (image_params.width as i32, image_params.height as i32);
@@ -617,11 +627,8 @@ fn shape_pixels(image_params: &ImageParams, contains: impl Fn(Point) -> bool) ->
         .collect()
 }
 
-fn calc_circle_drawing_pixels(image_params: &ImageParams, radius: i32) -> Pixels {
-    // Bresenham's circle algorithm
-    let center_x = (image_params.width / 2) as i32;
-    let center_y = (image_params.height / 2) as i32;
-
+// The pixels of a disk of `radius` around (`cx`, `cy`), by Bresenham's circle algorithm.
+fn disk_pixels(cx: i32, cy: i32, radius: i32) -> Pixels {
     let mut x = radius;
     let mut y = 0;
     let mut p = 1 - radius;
@@ -630,12 +637,12 @@ fn calc_circle_drawing_pixels(image_params: &ImageParams, radius: i32) -> Pixels
 
     while x >= y {
         for dx in -x..=x {
-            pixels.insert((center_x + dx, center_y + y));
-            pixels.insert((center_x + dx, center_y - y));
+            pixels.insert((cx + dx, cy + y));
+            pixels.insert((cx + dx, cy - y));
         }
         for dx in -y..=y {
-            pixels.insert((center_x + dx, center_y + x));
-            pixels.insert((center_x + dx, center_y - x));
+            pixels.insert((cx + dx, cy + x));
+            pixels.insert((cx + dx, cy - x));
         }
 
         y += 1;
@@ -650,164 +657,23 @@ fn calc_circle_drawing_pixels(image_params: &ImageParams, radius: i32) -> Pixels
     pixels
 }
 
-fn calc_vertical_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let center_x = (image_params.width / 2) as i32;
-    let line_width = image_params.line_width as i32;
-    let x_start = center_x - line_width / 2;
-
-    let mut pixels = Pixels::default();
-    for y in 0..image_params.height as i32 {
-        for x in x_start..(x_start + line_width) {
-            pixels.insert((x, y));
-        }
-    }
-    pixels
+fn rect_pixels(xs: Range<i32>, ys: Range<i32>) -> Pixels {
+    ys.flat_map(|y| xs.clone().map(move |x| (x, y))).collect()
 }
 
-fn calc_horizontal_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let center_y = (image_params.height / 2) as i32;
-    let line_width = image_params.line_width as i32;
-    let y_start = center_y - line_width / 2;
-
-    let mut pixels = Pixels::default();
-    for y in y_start..(y_start + line_width) {
-        for x in 0..image_params.width as i32 {
-            pixels.insert((x, y));
-        }
-    }
-    pixels
-}
-
-fn calc_up_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let center_x = (image_params.width / 2) as i32;
-    let line_width = image_params.line_width as i32;
-    let x_start = center_x - line_width / 2;
-    let circle_center_y = (image_params.height / 2) as i32;
-    let circle_outer_radius = image_params.circle_outer_radius as i32;
-
-    let mut pixels = Pixels::default();
-    for y in 0..(circle_center_y - circle_outer_radius) {
-        for x in x_start..(x_start + line_width) {
-            pixels.insert((x, y));
-        }
-    }
-    pixels
-}
-
-fn calc_down_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let center_x = (image_params.width / 2) as i32;
-    let line_width = image_params.line_width as i32;
-    let x_start = center_x - line_width / 2;
-    let circle_center_y = (image_params.height / 2) as i32;
-    let circle_outer_radius = image_params.circle_outer_radius as i32;
-
-    let mut pixels = Pixels::default();
-    for y in (circle_center_y + circle_outer_radius + 1)..(image_params.height as i32) {
-        for x in x_start..(x_start + line_width) {
-            pixels.insert((x, y));
-        }
-    }
-    pixels
-}
-
-fn calc_left_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let center_y = (image_params.height / 2) as i32;
-    let line_width = image_params.line_width as i32;
-    let y_start = center_y - line_width / 2;
-    let circle_center_x = (image_params.width / 2) as i32;
-    let circle_outer_radius = image_params.circle_outer_radius as i32;
-
-    let mut pixels = Pixels::default();
-    for y in y_start..(y_start + line_width) {
-        for x in 0..(circle_center_x - circle_outer_radius) {
-            pixels.insert((x, y));
-        }
-    }
-    pixels
-}
-
-fn calc_right_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let center_y = (image_params.height / 2) as i32;
-    let line_width = image_params.line_width as i32;
-    let y_start = center_y - line_width / 2;
-    let circle_center_x = (image_params.width / 2) as i32;
-    let circle_outer_radius = image_params.circle_outer_radius as i32;
-
-    let mut pixels = Pixels::default();
-    for y in y_start..(y_start + line_width) {
-        for x in (circle_center_x + circle_outer_radius + 1)..(image_params.width as i32) {
-            pixels.insert((x, y));
-        }
-    }
-    pixels
-}
-
-fn calc_right_top_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let (w, h, r) = (
-        image_params.width as i32,
-        image_params.height as i32,
-        image_params.corner_radius() as i32,
-    );
-    let (x_offset, y_offset) = if w < h {
-        (0, r - (h / 2))
-    } else {
-        ((w / 2) - r, 0)
+// The rounded corner from the center of the cell to the middle of its side at `base_x`
+// (0 or the width) or of its top or bottom at `base_y` (the height or 0): a quarter ring around
+// that corner of the cell, moved to meet the line in the cell's longer direction, which a straight
+// part then joins to the center.
+fn corner_pixels(image_params: &ImageParams, base_x: i32, base_y: i32) -> Pixels {
+    let (w, h) = (image_params.width as i32, image_params.height as i32);
+    let r = image_params.corner_radius() as i32;
+    let (x_offset, y_offset) = match (w < h, base_x == 0, base_y == 0) {
+        (true, _, true) => (0, h / 2 - r),
+        (true, _, false) => (0, r - h / 2),
+        (false, true, _) => (w / 2 - r, 0),
+        (false, false, _) => (r - w / 2, 0),
     };
-    calc_corner_edge_drawing_pixels(image_params, 0, h, x_offset, y_offset)
-}
-
-fn calc_left_top_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let (w, h, r) = (
-        image_params.width as i32,
-        image_params.height as i32,
-        image_params.corner_radius() as i32,
-    );
-    let (x_offset, y_offset) = if w < h {
-        (0, r - (h / 2))
-    } else {
-        (r - (w / 2), 0)
-    };
-    calc_corner_edge_drawing_pixels(image_params, w, h, x_offset, y_offset)
-}
-
-fn calc_right_bottom_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let (w, h, r) = (
-        image_params.width as i32,
-        image_params.height as i32,
-        image_params.corner_radius() as i32,
-    );
-    let (x_offset, y_offset) = if w < h {
-        (0, (h / 2) - r)
-    } else {
-        ((w / 2) - r, 0)
-    };
-    calc_corner_edge_drawing_pixels(image_params, 0, 0, x_offset, y_offset)
-}
-
-fn calc_left_bottom_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    let (w, h, r) = (
-        image_params.width as i32,
-        image_params.height as i32,
-        image_params.corner_radius() as i32,
-    );
-    let (x_offset, y_offset) = if w < h {
-        (0, (h / 2) - r)
-    } else {
-        (r - (w / 2), 0)
-    };
-    calc_corner_edge_drawing_pixels(image_params, w, 0, x_offset, y_offset)
-}
-
-fn calc_corner_edge_drawing_pixels(
-    image_params: &ImageParams,
-    base_center_x: i32,
-    base_center_y: i32,
-    x_offset: i32,
-    y_offset: i32,
-) -> Pixels {
-    // Bresenham's circle algorithm
-    let curve_center_x = base_center_x;
-    let curve_center_y = base_center_y;
     let line_width = image_params.line_width as i32;
     let half_line_width = line_width / 2;
     let adjust = if image_params.line_width.is_multiple_of(2) {
@@ -815,98 +681,30 @@ fn calc_corner_edge_drawing_pixels(
     } else {
         1
     };
-    let radius_base_length = image_params.corner_radius() as i32;
-    let inner_radius = radius_base_length - half_line_width - adjust;
-    let outer_radius = radius_base_length + half_line_width;
+    let inner = disk_pixels(base_x, base_y, r - half_line_width - adjust);
+    let outer = disk_pixels(base_x, base_y, r + half_line_width);
 
-    let mut x = inner_radius;
-    let mut y = 0;
-    let mut p = 1 - inner_radius;
-
-    let mut inner_pixels = Pixels::default();
-
-    while x >= y {
-        for dx in -x..=x {
-            inner_pixels.insert((curve_center_x + dx, curve_center_y + y));
-            inner_pixels.insert((curve_center_x + dx, curve_center_y - y));
-        }
-        for dx in -y..=y {
-            inner_pixels.insert((curve_center_x + dx, curve_center_y + x));
-            inner_pixels.insert((curve_center_x + dx, curve_center_y - x));
-        }
-
-        y += 1;
-        if p <= 0 {
-            p += 2 * y + 1;
-        } else {
-            x -= 1;
-            p += 2 * y - 2 * x + 1;
-        }
-    }
-
-    let mut x = outer_radius;
-    let mut y = 0;
-    let mut p = 1 - outer_radius;
-
-    let mut outer_pixels = Pixels::default();
-
-    while x >= y {
-        for dx in -x..=x {
-            outer_pixels.insert((curve_center_x + dx, curve_center_y + y));
-            outer_pixels.insert((curve_center_x + dx, curve_center_y - y));
-        }
-        for dx in -y..=y {
-            outer_pixels.insert((curve_center_x + dx, curve_center_y + x));
-            outer_pixels.insert((curve_center_x + dx, curve_center_y - x));
-        }
-
-        y += 1;
-        if p <= 0 {
-            p += 2 * y + 1;
-        } else {
-            x -= 1;
-            p += 2 * y - 2 * x + 1;
-        }
-    }
-
-    let mut pixels: Pixels = outer_pixels
-        .difference(&inner_pixels)
-        .filter(|p| {
-            p.0 >= 0
-                && p.0 < image_params.width as i32
-                && p.1 >= 0
-                && p.1 < image_params.height as i32
-        })
+    let mut pixels: Pixels = outer
+        .difference(&inner)
+        .filter(|p| p.0 >= 0 && p.0 < w && p.1 >= 0 && p.1 < h)
         .map(|p| (p.0 + x_offset, p.1 + y_offset))
         .collect();
 
-    if image_params.width < image_params.height {
-        let (ys, ye) = if y_offset < 0 {
-            (base_center_y + y_offset, base_center_y)
-        } else {
-            (base_center_y, base_center_y + y_offset)
+    if w < h {
+        let ys = match y_offset < 0 {
+            true => base_y + y_offset..base_y,
+            false => base_y..base_y + y_offset,
         };
-        let center_x = (image_params.width / 2) as i32;
-        let x_start = center_x - line_width / 2;
-        for x in x_start..(x_start + line_width) {
-            for y in ys..ye {
-                pixels.insert((x, y));
-            }
-        }
+        let x_start = w / 2 - line_width / 2;
+        pixels.extend(rect_pixels(x_start..x_start + line_width, ys));
     }
-    if image_params.width > image_params.height {
-        let (xs, xe) = if x_offset < 0 {
-            (base_center_x + x_offset, base_center_x)
-        } else {
-            (base_center_x, base_center_x + x_offset)
+    if w > h {
+        let xs = match x_offset < 0 {
+            true => base_x + x_offset..base_x,
+            false => base_x..base_x + x_offset,
         };
-        let center_y = (image_params.height / 2) as i32;
-        let y_start = center_y - line_width / 2;
-        for y in y_start..(y_start + line_width) {
-            for x in xs..xe {
-                pixels.insert((x, y));
-            }
-        }
+        let y_start = h / 2 - line_width / 2;
+        pixels.extend(rect_pixels(xs, y_start..y_start + line_width));
     }
 
     pixels

@@ -249,14 +249,13 @@ impl<'a> ListView<'a> {
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
         let ListRefreshViewContext {
             select,
-            picked_commit_hashes,
+            picked,
+            visual,
             cursor,
-            search_options,
             search_context,
         } = list_context;
         let list_state = self.as_mut_list_state();
-        list_state.restore_picked_commit_hashes(picked_commit_hashes.clone());
-        list_state.restore_search_options(*search_options);
+        list_state.restore_picks(picked.clone());
         list_state.update_height(cursor.height());
         match select {
             Reselect::Newest => list_state.select_first(),
@@ -268,6 +267,9 @@ impl<'a> ListView<'a> {
                     None => list_state.restore_scroll(cursor.offset()),
                 }
             }
+        }
+        if let Some(covered) = visual {
+            list_state.restore_visual(covered);
         }
         if let Some(search_context) = search_context {
             list_state.restore_search(search_context);

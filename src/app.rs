@@ -43,7 +43,7 @@ use crate::{
     layout::{fit_size, Closes, Direction, Edge, Hit, Panel, RowMap, Size, Target, Thumb},
     pointer::{Cell, Gesture, OnPicks, Pointer},
     ref_commands::{diff_refs, ref_command, ref_command_applies},
-    search::{SearchKind, SearchOptions, SearchOutcome},
+    search::{SearchKind, SearchOutcome},
     view::{
         query_or_search_status, register_graph_commands, BlameView, DetailFocus, DetailQueries,
         HelpView, LocalChangesSnapshot, RefreshViewContext, Reselect, TimelineView, TreeViews,
@@ -368,59 +368,48 @@ enum FileWindow {
     Timeline(Box<TimelineView>),
 }
 
+// Calls the same method on whichever window is open, like `on_page!`.
+macro_rules! on_window {
+    ($window:expr_2021, $w:ident => $call:expr_2021) => {
+        match $window {
+            FileWindow::Blame($w) => $call,
+            FileWindow::Timeline($w) => $call,
+        }
+    };
+}
+
 // What the window loads in the background for its keys.
 impl Loads for FileWindow {
     fn acts_on_loading(&self, event: UserEvent) -> bool {
-        match self {
-            FileWindow::Blame(blame) => blame.acts_on_loading(event),
-            FileWindow::Timeline(timeline) => timeline.acts_on_loading(event),
-        }
+        on_window!(self, w => w.acts_on_loading(event))
     }
 
     fn load_for(&mut self, event: UserEvent) {
-        match self {
-            FileWindow::Blame(blame) => blame.load_for(event),
-            FileWindow::Timeline(timeline) => timeline.load_for(event),
-        }
+        on_window!(self, w => w.load_for(event))
     }
 }
 
 impl FileWindow {
     // While a search is typed, keys go to it as they are.
     fn is_typing(&self) -> bool {
-        match self {
-            FileWindow::Blame(blame) => blame.is_typing(),
-            FileWindow::Timeline(timeline) => timeline.is_typing(),
-        }
+        on_window!(self, w => w.is_typing())
     }
 
     fn handle_event(&mut self, event: UserEvent, key: KeyEvent, repository: &Repository) {
-        match self {
-            FileWindow::Blame(blame) => blame.handle_event(event, key, repository),
-            FileWindow::Timeline(timeline) => timeline.handle_event(event, key, repository),
-        }
+        on_window!(self, w => w.handle_event(event, key, repository))
     }
 
     fn clear_picks_off(&mut self, target: Option<Target>) {
-        match self {
-            FileWindow::Blame(blame) => blame.clear_picks_off(target),
-            FileWindow::Timeline(timeline) => timeline.clear_picks_off(target),
-        }
+        on_window!(self, w => w.clear_picks_off(target))
     }
 
     // See `View::point`.
     fn point(&mut self, target: Target, row: Option<usize>, picks: OnPicks) -> bool {
-        match self {
-            FileWindow::Blame(blame) => blame.point(target, row, picks),
-            FileWindow::Timeline(timeline) => timeline.point(target, row, picks),
-        }
+        on_window!(self, w => w.point(target, row, picks))
     }
 
     fn is_visual(&self) -> bool {
-        match self {
-            FileWindow::Blame(blame) => blame.is_visual(),
-            FileWindow::Timeline(timeline) => timeline.is_visual(),
-        }
+        on_window!(self, w => w.is_visual())
     }
 
     // The lines of the blame and the diff of the timeline have keys of their own, like y copying
@@ -438,10 +427,7 @@ impl FileWindow {
     }
 
     fn keys(&self) -> KeyList {
-        match self {
-            FileWindow::Blame(blame) => blame.keys(),
-            FileWindow::Timeline(timeline) => timeline.keys(),
-        }
+        on_window!(self, w => w.keys())
     }
 
     // See `View::resizable_panel`.
@@ -454,26 +440,17 @@ impl FileWindow {
     }
 
     fn move_focus(&mut self, direction: Direction) {
-        match self {
-            FileWindow::Blame(blame) => blame.move_focus(direction),
-            FileWindow::Timeline(timeline) => timeline.move_focus(direction),
-        }
+        on_window!(self, w => w.move_focus(direction))
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect) {
-        match self {
-            FileWindow::Blame(blame) => blame.render(f, area),
-            FileWindow::Timeline(timeline) => timeline.render(f, area),
-        }
+        on_window!(self, w => w.render(f, area))
     }
 
     // Before drawing: what loads in the background, once loaded: the blame of another commit,
     // the diff of the timeline.
     fn update(&mut self, repository: &Repository) {
-        match self {
-            FileWindow::Blame(blame) => blame.poll_loading(repository),
-            FileWindow::Timeline(timeline) => timeline.poll_loading(repository),
-        }
+        on_window!(self, w => w.poll_loading(repository))
     }
 }
 
@@ -603,12 +580,6 @@ impl<'a> App<'a> {
             }
             _ => Dimming::OffHead,
         };
-        let search_options = SearchOptions {
-            target: ctx.core_config.search.target,
-            smart_case: ctx.core_config.search.smart_case,
-            fuzzy: ctx.core_config.search.fuzzy,
-        };
-        ctx.search_options.set(search_options);
         let mut commit_list_state = CommitListState::new(
             repository,
             graph_image_manager,
@@ -758,18 +729,16 @@ impl App<'_> {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
             self.prepare_render(terminal.size()?.into());
-            let drawn = Instant::now();
+            let now = self.ctx.now;
+            let drawn = now();
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
             let event = match self.next_wake(drawn) {
-                Some(at) => match self
-                    .ec
-                    .recv_timeout(at.saturating_duration_since(Instant::now()))
-                {
+                Some(at) => match self.ec.recv_timeout(at.saturating_duration_since(now())) {
                     Some(event) => event,
                     None => {
-                        self.expire(Instant::now());
+                        self.expire(now());
                         continue;
                     }
                 },
@@ -2387,7 +2356,7 @@ impl App<'_> {
         }));
         // pressing the key again quickly runs the command without showing the popup
         if let Some(popup) = self.shell.dialog.as_mut() {
-            popup.reveal = Some(Instant::now() + QUICK_RUN_DELAY);
+            popup.reveal = Some((self.ctx.now)() + QUICK_RUN_DELAY);
         }
     }
 
@@ -2981,7 +2950,7 @@ impl App<'_> {
             }
             return;
         }
-        let Some(gesture) = self.shell.pointer.gesture(mouse, Instant::now()) else {
+        let Some(gesture) = self.shell.pointer.gesture(mouse, (self.ctx.now)()) else {
             return;
         };
         let (Gesture::Click(at) | Gesture::DoubleClick(at)) = gesture else {

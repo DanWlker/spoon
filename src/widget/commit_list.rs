@@ -34,8 +34,7 @@ use crate::{
             render_close_button, render_panel_scrollbar, shown_width, ListCursor,
         },
         tree_query::{
-            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, Toward,
-            TreeQuery,
+            find_around, highlighted_text, name_matches, SearchDirection, Toward, TreeQuery,
         },
     },
 };
@@ -281,6 +280,39 @@ impl<'a> CommitListState<'a> {
         self.picked.clear();
     }
 
+    pub fn picks(&self) -> &Picks<CommitHash> {
+        &self.picked
+    }
+
+    // The commits the visual selection covers, from where it started to the cursor; None when it
+    // isn't visual.
+    pub fn visual_rows(&self) -> Option<Vec<CommitHash>> {
+        let start = self.cursor.visual_start()?;
+        let mut covered: Vec<CommitHash> = self
+            .cursor
+            .visual_range(self.len())?
+            .map(|row| self.rows()[row].commit_hash.clone())
+            .collect();
+        if start > self.cursor.selected() {
+            covered.reverse();
+        }
+        Some(covered)
+    }
+
+    // A visual selection that `covered` these commits goes on once reloaded from where it started,
+    // and ends when that commit is no longer shown, like in a folded merge. The rows it covers
+    // changed, what it picked stays picked, see `Picks::keep_visual`.
+    pub fn restore_visual(&mut self, covered: &[CommitHash]) {
+        let start = covered.first().and_then(|hash| self.row_of(hash));
+        self.cursor.set_visual_start(start);
+        match start {
+            None => self.picked.end_visual(),
+            Some(_) if self.visual_rows().as_deref() != Some(covered) => self.picked.keep_visual(),
+            Some(_) => {}
+        }
+        self.sync_visual_picks();
+    }
+
     // Selects the commit at `row`, as the mouse does, see `OnPicks`.
     pub fn point(&mut self, row: Option<usize>, picks: OnPicks) {
         // no row, on empty space, is none picked
@@ -296,16 +328,13 @@ impl<'a> CommitListState<'a> {
         self.sync_visual_picks();
     }
 
-    pub fn restore_picked_commit_hashes(&mut self, picked_commit_hashes: Vec<CommitHash>) {
+    // The picks of before a reload, of the commits still shown; a visual selection goes on once
+    // the cursor is back, see `restore_visual`.
+    pub fn restore_picks(&mut self, mut picked: Picks<CommitHash>) {
         self.cursor.cancel_visual();
-        self.picked.clear();
         let shown = &self.graph_image_manager.graph().commit_pos_map;
-        for hash in picked_commit_hashes
-            .iter()
-            .filter(|h| shown.contains_key(*h))
-        {
-            self.picked.insert(hash);
-        }
+        picked.retain(|hash| shown.contains_key(hash));
+        self.picked = picked;
     }
 
     pub fn len(&self) -> usize {
@@ -332,7 +361,8 @@ impl<'a> CommitListState<'a> {
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
         let shown = self.cursor.offset()..(self.cursor.offset() + self.cursor.height());
-        self.ensure_graph_uploaded(shown);
+        self.ensure_graph_uploaded(shown.clone());
+        self.graph_image_manager.forget_far_from(shown);
     }
 
     // Uploads the graph images of the commits of `rows`, those past the last left out.
@@ -536,17 +566,13 @@ impl<'a> CommitListState<'a> {
         self.search_options.get()
     }
 
-    pub fn restore_search_options(&self, options: SearchOptions) {
-        self.search_options.set(options);
-    }
-
     // Starts typing the search, from the applied one, looking for matches from the selection.
     pub fn start_search(&mut self) {
         if !self.query.is_editing() {
             self.cursor.cancel_visual();
             self.picked.end_visual();
             let from = self.cursor.selected();
-            self.query.start(QueryKind::Search, from);
+            self.query.start_search(from);
         }
     }
 
@@ -1499,6 +1525,7 @@ mod tests {
                     diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
                     search_options: Default::default(),
                     pasting: Default::default(),
+                    now: std::time::Instant::now,
                 });
                 let list = CommitList::new(ctx);
                 // Width 2 clips the image cells. Its escape sequence must not skip the next row.
@@ -1582,6 +1609,7 @@ mod tests {
             diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
             search_options: Default::default(),
             pasting: Default::default(),
+            now: std::time::Instant::now,
         });
         let area = Rect::new(0, 0, 60, 3);
         let mut buf = Buffer::empty(area);
@@ -1645,14 +1673,14 @@ mod tests {
             state.toggle_visual();
             ListRefreshViewContext::from(&*state)
         });
-        assert_eq!(context.picked_commit_hashes.len(), 2);
+        assert_eq!(context.picked.len(), 2);
 
         with_commit_list_state(&["first", "second"], |state| {
-            state.restore_picked_commit_hashes(context.picked_commit_hashes.clone());
-            assert_eq!(state.picked_commit_hashes(), context.picked_commit_hashes);
+            state.restore_picks(context.picked.clone());
+            assert_eq!(state.picked_commit_hashes(), context.picked.as_slice());
         });
         with_commit_list_state(&["first"], |state| {
-            state.restore_picked_commit_hashes(context.picked_commit_hashes);
+            state.restore_picks(context.picked);
             assert_eq!(state.picked_commit_hashes().len(), 1);
         });
     }
@@ -1676,6 +1704,7 @@ mod tests {
                 diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
                 search_options: Default::default(),
                 pasting: Default::default(),
+                now: std::time::Instant::now,
             });
             let area = Rect::new(0, 0, 80, 3);
             state.update_height(3);
@@ -1921,7 +1950,8 @@ mod tests {
         );
 
         with_commit_list_state(&["unrelated", "FIX new", "fix parser"], |state| {
-            state.restore_search_options(options);
+            // the app's, which a reload keeps, see `AppContext::search_options`
+            state.search_options.set(options);
             state.restore_search(&context);
             state.finish_search();
 
@@ -1959,7 +1989,8 @@ mod tests {
         });
 
         with_commit_list_state(&["FIX"], |state| {
-            state.restore_search_options(options);
+            // the app's, which a reload keeps, see `AppContext::search_options`
+            state.search_options.set(options);
             input_search_query(state, "fix");
             apply_search(state);
 

@@ -111,6 +111,13 @@ impl<K: Clone + Eq + Hash> Picks<K> {
         self.end_visual();
     }
 
+    // The rows changed under the visual selection running: what it picked so far stays picked,
+    // and it goes on adding to it from where its start is now, see `ListCursor::set_visual_start`.
+    pub fn keep_visual(&mut self) {
+        self.start_visual();
+        self.span = Span::Range;
+    }
+
     // Those picked before the visual selection, and `keys`, those of the rows from its start to
     // the cursor; nothing without one.
     pub fn sync_visual<'k>(&mut self, keys: impl IntoIterator<Item = &'k K>)

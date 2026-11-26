@@ -239,8 +239,7 @@ impl BlameView {
             }
             UserEvent::Search if body => {
                 // from the commits of the lines, or from the text, wherever the line is
-                self.query
-                    .start(QueryKind::Search, self.text.selected_line());
+                self.query.start_search(self.text.selected_line());
                 self.update_query_status();
             }
             UserEvent::GoToNext if body => self.search(SearchDirection::Next),

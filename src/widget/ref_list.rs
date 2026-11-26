@@ -26,9 +26,7 @@ use crate::{
             fold_marker, mark_picked_row, mark_selected_bar, mark_selected_row, panel_title,
             picked_note, render_panel, render_panel_scrollbar, spinner, tabs_shown, ListCursor,
         },
-        tree_query::{
-            find_around, highlighted_text, name_matches, QueryKind, SearchDirection, TreeQuery,
-        },
+        tree_query::{find_around, highlighted_text, name_matches, SearchDirection, TreeQuery},
     },
 };
 
@@ -565,7 +563,7 @@ impl RefListState {
     // Starts typing a search, which goes from the selected row.
     pub fn start_search(&mut self) {
         let from = self.selected_in(&self.all_rows());
-        self.query.start(QueryKind::Search, from);
+        self.query.start_search(from);
     }
 
     // Selects the row matching the search in `direction`, in closed folders too, opening them.
@@ -645,18 +643,40 @@ impl RefListState {
 
     // Keeps the cursor on the row of `selected`, scrolling to it, once it moved or the rows changed.
     fn sync_cursor(&mut self) {
-        // a collapsed folder or a reload can leave the start of a selection past the rows now
-        // shown; the selection ends rather than picking rows that moved under it
-        self.cursor.keep_visual_in(self.visible_rows.len());
         if let Some(index) = self.selected_index() {
             self.cursor.select(index, self.visible_rows.len());
         }
     }
 
+    // A visual selection goes on from its start wherever its row is now, keeping what it picked,
+    // and ends when the start is no longer shown, like in a collapsed folder.
     fn rebuild_visible_rows(&mut self) {
+        let start = self.cursor.visual_start();
+        let before = start.map(|_| std::mem::take(&mut self.visible_rows));
         self.visible_rows.clear();
         collect_visible_rows(&self.roots, Some(&self.opened), &[], &mut self.visible_rows);
         self.rebuild_guides();
+        let Some(before) = before else {
+            return;
+        };
+        let start = start.and_then(|i| before.get(i)).and_then(|start| {
+            let rows = &self.visible_rows;
+            rows.iter().position(|r| r.identifier == start.identifier)
+        });
+        self.cursor.set_visual_start(start);
+        let rows = &self.visible_rows;
+        let changed = before.len() != rows.len()
+            || before
+                .iter()
+                .zip(rows)
+                .any(|(a, b)| a.identifier != b.identifier);
+        if let Some((_, picks)) = &mut self.picked.0 {
+            match start {
+                None => picks.end_visual(),
+                Some(_) if changed => picks.keep_visual(),
+                Some(_) => {}
+            }
+        }
     }
 
     // The lines of the tree, like the file trees'; a folder's fold marker and the checked-out
@@ -1444,6 +1464,44 @@ mod tests {
         sort_tag_tree_nodes(&mut nodes);
         let release: Vec<&str> = nodes[0].children.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(release, ["v10.0.0", "v3.0.0", "v2.0.0", "v1.0.0"]);
+    }
+
+    // v on zz, up to the feature folder and the folder collapsed: the selection goes on from zz,
+    // keeping what it picked, rather than from the row zz was on, now a tag's.
+    #[test]
+    fn test_visual_selection_keeps_its_start_when_a_collapse_moves_it() {
+        let target = || -> CommitHash { "a".repeat(40).as_str().into() };
+        let branch = |name: String| Ref::Branch {
+            name,
+            target: target(),
+        };
+        let mut refs: Vec<Ref> = (0..20)
+            .map(|i| branch(format!("feature/f{i:02}")))
+            .chain([branch("zz".into())])
+            .collect();
+        refs.extend((0..30).map(|i| Ref::Tag {
+            name: format!("v{i:02}"),
+            target: target(),
+        }));
+        let refs: Vec<&Ref> = refs.iter().collect();
+        let mut state = RefListState::new(&refs, &[]);
+        select(&mut state, "feature");
+        state.open_node();
+        select(&mut state, "zz");
+        state.toggle_visual().unwrap();
+        state.handle_move(UserEvent::NavigateUp);
+        state.handle_move(UserEvent::NavigateUp);
+        // to the folder, then collapsed
+        state.close_node();
+        state.close_node();
+        // the folder's branches, covered from the folder, stay picked though no longer shown
+        assert!(state.is_visual());
+        assert_eq!(state.picked().len(), 21);
+        // down onto zz, where it started: no tag below it is picked
+        state.handle_move(UserEvent::NavigateDown);
+        assert!(state.is_visual());
+        assert_eq!(state.picked().len(), 21);
+        assert_eq!(state.visual_outside_section(), None);
     }
 
     #[test]

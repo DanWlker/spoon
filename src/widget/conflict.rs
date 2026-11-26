@@ -81,13 +81,19 @@ impl ConflictView {
         }
         let side = |side| {
             let lines = match conflict_side(repository, path, side, cancel) {
-                SideContent::File(content) => content
+                Ok(SideContent::File(content)) => content
                     .lines()
                     .map(|l| tabs_shown(l).into_owned())
                     .collect(),
-                SideContent::Symlink(target) => vec![format!("Symlink to {target}")],
-                SideContent::Submodule(commit) => vec![format!("Submodule at {commit}")],
-                SideContent::Deleted => vec!["(deleted)".to_string()],
+                Ok(SideContent::Symlink(target)) => vec![format!("Symlink to {target}")],
+                Ok(SideContent::Submodule(commit)) => vec![format!("Submodule at {commit}")],
+                Ok(SideContent::Deleted) => vec!["(deleted)".to_string()],
+                // stopped, nobody waits for it
+                Err(_) if cancel.is_cancelled() => vec![],
+                Err(err) => {
+                    let err = err.lines().last().unwrap_or_default();
+                    vec![format!("Cannot show this side: {}", tabs_shown(err))]
+                }
             };
             lines
                 .into_iter()
@@ -425,6 +431,42 @@ end
         // stopped once nobody waits for it: the sides aren't read
         let stopped = ConflictView::load(repository.path(), "f", &Cancel::cancelled());
         assert!(stopped.ours.is_empty() && stopped.theirs.is_empty());
+    }
+
+    // git failing to list the sides, like with a broken index, showed both as deleted.
+    #[test]
+    fn test_a_side_git_cannot_read_is_not_shown_deleted() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("f"), "base\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        std::fs::write(path.join("f"), "theirs\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        std::fs::write(path.join("f"), "ours\n").unwrap();
+        repo.add(&["f"]);
+        repo.commit("existing", "2024-01-03");
+        let merged = crate::git::git_command()
+            .args(["merge", "-q", "incoming"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(!merged.status.success());
+        // no markers to show, so the sides are read from git
+        std::fs::remove_file(path.join("f")).unwrap();
+        std::fs::write(path.join(".git/index"), "broken").unwrap();
+
+        let view = ConflictView::load(path, "f", &Cancel::default());
+        let ours = rows(&view.ours);
+        assert_eq!(ours.len(), 1);
+        assert!(ours[0].starts_with("|Cannot show this side: "), "{ours:?}");
     }
 
     #[test]

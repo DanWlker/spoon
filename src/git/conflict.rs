@@ -7,9 +7,9 @@ use std::path::Path;
 use crate::background::Cancel;
 
 use super::{
-    git_arg, git_command, git_output, git_output_bytes_until, git_output_with_status, is_binary,
-    pathspecs, run_logged, text_from_git, work_path, CommitHash, LocalChangeStatus, LocalChanges,
-    Repository, WorkTree,
+    git_arg, git_command, git_output, git_output_bytes_until, git_output_with_status,
+    index_entries, is_binary, pathspecs, run_logged, text_from_git, work_path, CommitHash,
+    LocalChangeStatus, LocalChanges, Repository, WorkTree,
 };
 
 impl Repository {
@@ -122,7 +122,7 @@ impl WorkTree {
         // the stages of every conflicted file in one call: one a file took seconds for thousands
         let out = git_output(&self.path, &["ls-files", "-u", "-z"]).unwrap_or_default();
         let mut text: FxHashMap<&str, u8> = FxHashMap::default();
-        for (path, stage, mode, _) in unmerged_entries(&out) {
+        for (path, stage, mode, _) in index_entries(&out) {
             if matches!(stage, 2 | 3) && matches!(mode, "100644" | "100755") {
                 *text.entry(path).or_default() |= 1 << stage;
             }
@@ -149,27 +149,25 @@ impl WorkTree {
     }
 }
 
-// What a side of a conflicted file is in the index of `repository`: a file, a symlink, a submodule or nothing.
+// What a side of a conflicted file is in the index of `repository`: a file, a symlink, a submodule
+// or nothing; git's error when it can't tell.
 pub fn conflict_side(
     repository: &Path,
     path: &str,
     side: ConflictSide,
     cancel: &Cancel,
-) -> SideContent {
-    let stage = unmerged(repository, path).ok().and_then(|stages| {
-        stages
-            .into_iter()
-            .find_map(|(stage, mode, object)| (stage == side.stage()).then_some((mode, object)))
-    });
+) -> std::result::Result<SideContent, String> {
+    let stage = unmerged(repository, path)?
+        .into_iter()
+        .find_map(|(stage, mode, object)| (stage == side.stage()).then_some((mode, object)));
     let Some((mode, object)) = stage else {
-        return SideContent::Deleted;
+        return Ok(SideContent::Deleted);
     };
     let blob = || {
         git_output_bytes_until(repository, &["cat-file", "blob", &object], cancel)
             .map(|blob| text_from_git(&blob))
-            .unwrap_or_default()
     };
-    match mode.as_str() {
+    Ok(match mode.as_str() {
         // its short hash and subject, from the submodule when it is checked out
         "160000" => {
             let submodule = work_path(repository, path);
@@ -183,9 +181,9 @@ pub fn conflict_side(
                 summary.unwrap_or_else(|| object.get(..7).unwrap_or(&object).into()),
             )
         }
-        "120000" => SideContent::Symlink(blob()),
-        _ => SideContent::File(blob()),
-    }
+        "120000" => SideContent::Symlink(blob()?),
+        _ => SideContent::File(blob()?),
+    })
 }
 
 // The stage (1 the base, 2 ours, 3 theirs), mode and object of each side git has of the
@@ -197,21 +195,9 @@ fn unmerged(
     // literal, so `x*.txt` isn't `xa.txt`
     let spec = pathspecs(&[path]);
     let out = git_output(repository, &["ls-files", "-u", "-z", "--", &spec[0]])?;
-    Ok(unmerged_entries(&out)
+    Ok(index_entries(&out)
         .map(|(_, stage, mode, object)| (stage, mode.to_string(), object.to_string()))
         .collect())
-}
-
-// The entries of `git ls-files -u -z`, "<mode> <object> <stage>\t<path>", as (path, stage, mode,
-// object).
-fn unmerged_entries(out: &str) -> impl Iterator<Item = (&str, u8, &str, &str)> {
-    out.split('\0').filter_map(|entry| {
-        let (meta, path) = entry.split_once('\t')?;
-        let mut fields = meta.split(' ');
-        let (mode, object) = (fields.next()?, fields.next()?);
-        let stage = fields.next()?.parse().ok()?;
-        Some((path, stage, mode, object))
-    })
 }
 
 // A side of a conflicted file, see `conflict_side`: a file's content, where a symlink

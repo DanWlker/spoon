@@ -661,6 +661,17 @@ fn calc_edges(
         .iter()
         .map(|c| commit_pos_map[&c.commit_hash].0)
         .collect();
+    // and the rows of each lane's commits, in order, to tell one between two rows in no time
+    let mut lane_rows: Vec<Vec<usize>> = vec![Vec::new(); max_pos_x + 1];
+    for (y, &x) in commit_pos_xs.iter().enumerate() {
+        lane_rows[x].push(y);
+    }
+    let commit_in = |x: usize, rows: &Range<usize>| {
+        lane_rows.get(x).is_some_and(|ys| {
+            let first = ys.partition_point(|y| *y < rows.start);
+            ys.get(first).is_some_and(|y| *y < rows.end)
+        })
+    };
     for commit in commits {
         let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
         let hash = &commit.commit_hash;
@@ -682,7 +693,7 @@ fn calc_edges(
             // merge: straight up its lane, unless a commit or another commit's line is in the
             // way, then detouring right of them
             let between = (child_pos_y + 1)..pos_y;
-            let in_the_way = between.clone().any(|y| commit_pos_xs[y] == pos_x)
+            let in_the_way = commit_in(pos_x, &between)
                 || edges
                     .runs_crossing(between.clone())
                     .any(|run| run.pos_x == pos_x && run.parent != pos_y);
@@ -728,7 +739,7 @@ fn calc_edges(
                     }
                 }
                 // a commit on an earlier row may be in the column the line moved to after it
-                while between.clone().any(|y| commit_pos_xs[y] == new_pos_x) {
+                while commit_in(new_pos_x, &between) {
                     new_pos_x += 1;
                 }
             }

@@ -577,13 +577,6 @@ impl VisualSelection {
         self.anchor = None;
     }
 
-    // Ends a selection whose start is past the `total` rows shown, which a rebuild can leave behind.
-    pub fn keep_in(&mut self, total: usize) {
-        if self.anchor.is_some_and(|anchor| anchor >= total) {
-            self.cancel();
-        }
-    }
-
     // The rows from where the selection started to `selected`, none when it isn't visual or there
     // are no rows; the ends are kept within `total`, so a stale selection cannot index past them.
     pub fn range(&self, selected: usize, total: usize) -> Option<Range<usize>> {
@@ -641,9 +634,15 @@ impl ListCursor {
         self.visual.cancel();
     }
 
-    // Ends a visual selection whose start is past the `total` rows now shown.
-    pub fn keep_visual_in(&mut self, total: usize) {
-        self.visual.keep_in(total);
+    // The row the visual selection started on; None when it isn't visual.
+    pub fn visual_start(&self) -> Option<usize> {
+        self.visual.anchor
+    }
+
+    // Moves the start of a visual selection to `start`, the row its item is on once the rows
+    // changed, or starts one there; None ends it, like when its item is no longer shown.
+    pub fn set_visual_start(&mut self, start: Option<usize>) {
+        self.visual.anchor = start;
     }
 
     // The rows a visual selection covers, from where it started to the selection; None when it

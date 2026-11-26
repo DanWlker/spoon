@@ -1513,15 +1513,8 @@ impl<'a> LocalChangesState<'a> {
         self.offer_resolved_commit();
         let files = [&self.changes.unstaged, &self.changes.staged];
         for ((section, files), tree) in self.sections.iter_mut().zip(files).zip(trees) {
-            // a visual selection goes on over the same rows; it counts them from where it started
-            let rows = |tree: &FileTreeState| -> Vec<Arc<str>> {
-                tree.rows().iter().map(|row| row.path.clone()).collect()
-            };
-            let visual = section.tree.is_visual().then(|| rows(&section.tree));
+            // a visual selection goes on from its start, see `FileTreeState::rebuild_rows_keeping`
             section.tree.set_tree(tree);
-            if visual.is_some_and(|before| before != rows(&section.tree)) {
-                section.tree.cancel_visual();
-            }
             // the picks with no changes left, discarded or stashed, go: those that are no file nor
             // directory of one, see `path_contains`; with none, there is nothing to look for
             if section.picked.is_empty() {
@@ -1573,13 +1566,13 @@ impl<'a> LocalChangesState<'a> {
     pub fn start_query(&mut self) {
         if self.is_diff_focused() {
             let from = self.pane.selected_row();
-            self.diff_query.start(QueryKind::Search, from);
+            self.diff_query.start_search(from);
             return;
         }
         self.focus_section(self.section);
         self.tree_mut().cancel_visual();
         // a filter goes from no row, see `TreeQuery::step_from`
-        self.query_mut().start(QueryKind::Filter, 0);
+        self.query_mut().start_filter();
     }
 
     pub fn is_typing_query(&self) -> bool {
@@ -5471,7 +5464,7 @@ mod tests {
     }
 
     // A file changed outside the app ended a visual selection of the files, though they were the
-    // same rows.
+    // same rows; other rows keep it going from where it started.
     #[test]
     fn test_visual_selection_stays_on_a_change_outside() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -5500,10 +5493,14 @@ mod tests {
         state.select_next();
         assert_eq!(state.picked_paths(), ["a.txt", "b.txt"]);
         state.select_prev();
-        // another file: the rows move, the selection ends
+        assert_eq!(state.picked_paths(), ["a.txt"]);
+        // another file: the rows change, the selection goes on from a, keeping what it picked
         fs::write(repo_path.join("c.txt"), "new\n")?;
         assert!(state.reload_if_changed(files()));
-        assert!(!state.is_visual());
+        assert!(state.is_visual());
+        state.select_next();
+        state.select_next();
+        assert_eq!(state.picked_paths(), ["a.txt", "b.txt", "c.txt"]);
         Ok(())
     }
 

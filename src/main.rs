@@ -39,7 +39,6 @@ use crate::{
     app::{App, Ret},
     config::{GraphWidthType, ImageProtocolType, InitialSelection},
     error::Result,
-    graph::GraphImageManager,
 };
 
 /// Spoon - A lazygit-style git TUI with a rich commit graph
@@ -166,7 +165,6 @@ fn run() -> Result<()> {
         fetch: true,
     };
 
-    let graph_color_set = color::GraphColorSet::new(&graph_config.color);
     let loader = Loader {
         options: git::LoadOptions {
             path: args.repo,
@@ -176,14 +174,10 @@ fn run() -> Result<()> {
             primary_branch,
         },
         graph_width,
-        graph_style,
-        graph_antialias,
-        graph_image_width_mode,
-        graph_color_set: graph_color_set.clone(),
-        image_protocol,
         launch,
     };
 
+    let search_options = Rc::new(std::cell::Cell::new((&core_config.search).into()));
     let ctx = Rc::new(context::AppContext {
         keybind,
         core_config,
@@ -191,7 +185,7 @@ fn run() -> Result<()> {
         color_theme,
         image_protocol,
         graph: RefCell::new(context::GraphRender {
-            color_set: graph_color_set,
+            color_set: color::GraphColorSet::new(&graph_config.color),
             style: graph_style,
             antialias: graph_antialias,
             image_width_mode: graph_image_width_mode,
@@ -204,8 +198,9 @@ fn run() -> Result<()> {
         wrap: Default::default(),
         diff_layout: Default::default(),
         diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
-        search_options: Default::default(),
+        search_options,
         pasting: Default::default(),
+        now: std::time::Instant::now,
     });
 
     let mut terminal = ratatui::init();
@@ -302,12 +297,8 @@ struct Restart {
 // with it too, see `tests/app.rs`.
 struct Loader {
     options: git::LoadOptions,
+    // the rest of how the graph is drawn is in `AppContext::graph`
     graph_width: Option<GraphWidthType>,
-    graph_style: graph::GraphStyle,
-    graph_antialias: bool,
-    graph_image_width_mode: graph::GraphImageWidthMode,
-    graph_color_set: color::GraphColorSet,
-    image_protocol: protocol::ImageProtocol,
     launch: app::Launch,
 }
 
@@ -407,17 +398,7 @@ impl Loader {
             Some(_) => ctx.graph.borrow().cell_width_type,
         };
         ctx.graph.borrow_mut().cell_width_type = cell_width_type;
-        let image_params =
-            graph::ImageParams::new(&self.graph_color_set, cell_width_type, self.graph_antialias)
-                .fit_cell((ctx.graph.borrow().cell_pixels)());
-        let graph_image_manager = GraphImageManager::new(
-            graph,
-            image_params,
-            cell_width_type,
-            self.graph_style,
-            self.graph_image_width_mode,
-            self.image_protocol,
-        );
+        let graph_image_manager = ctx.graph_image_manager(graph);
         let graph_image_manager = match images {
             Some(images) => graph_image_manager.with_images(images),
             None => graph_image_manager,

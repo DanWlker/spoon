@@ -1,6 +1,7 @@
 // What the pages share: the key hints of the commit graph, the status line, copying,
 // and what each page keeps across a reload of the repository.
 
+use crate::widget::picks::Picks;
 use std::ops::RangeInclusive;
 
 use ratatui::{style::Style, text::Span};
@@ -497,10 +498,12 @@ pub enum Reselect {
 #[derive(Debug, Clone)]
 pub struct ListRefreshViewContext {
     pub select: Reselect,
-    pub picked_commit_hashes: Vec<CommitHash>,
+    pub picked: Picks<CommitHash>,
+    // the commits a visual selection covers, from where it started to the cursor, for it to go on
+    // from there once reloaded
+    pub visual: Option<Vec<CommitHash>>,
     // the selected commit's row and the commits shown, restored around it once reloaded
     pub cursor: ListCursor,
-    pub search_options: SearchOptions,
     pub search_context: Option<SearchRefreshContext>,
 }
 
@@ -511,13 +514,12 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             0 => Reselect::Newest,
             _ => Reselect::Commit(list_state.selected_commit_hash().clone()),
         };
-        let search_options = list_state.search_options();
         let search_context = list_state.search_refresh_context();
         ListRefreshViewContext {
             select,
-            picked_commit_hashes: list_state.picked_commit_hashes().to_vec(),
+            picked: list_state.picks().clone(),
+            visual: list_state.visual_rows(),
             cursor,
-            search_options,
             search_context,
         }
     }

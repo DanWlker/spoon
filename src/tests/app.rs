@@ -20,14 +20,11 @@ use super::{
 };
 use crate::{
     background::Loads,
-    color::GraphColorSet,
-    config::GraphColorConfig,
     event::EventController,
     git::{refs_snapshot, CommitHash, FilesSnapshot, LoadOptions, NamedRef, SortCommit},
-    graph::{CellWidthType, GraphImageWidthMode, GraphLayout, GraphStyle},
+    graph::{CellWidthType, GraphLayout},
     keybind::{parse_key_event, KeyHint, Scope, UserEvent},
     layout::Panel,
-    protocol::ImageProtocol,
     search::SearchOutcome,
     test_support::{git::git, ui::test_ctx},
     view::{DetailFocus, View},
@@ -223,11 +220,6 @@ impl Harness {
                 primary_branch: None,
             },
             graph_width: None,
-            graph_style: GraphStyle::Rounded,
-            graph_antialias: false,
-            graph_image_width_mode: GraphImageWidthMode::Compact,
-            graph_color_set: GraphColorSet::new(&GraphColorConfig::default()),
-            image_protocol: ImageProtocol::Kitty,
             launch,
         };
         Harness {
@@ -314,14 +306,15 @@ fn settle(
     // a frame drawn after the events handled, as the app draws after each batch of them
     let mut handled = false;
     loop {
-        app.expire(Instant::now());
+        let now = (ctx.now)();
+        app.expire(now);
         app.prepare_render(Rect::new(0, 0, SIZE.0, SIZE.1));
         let running = !ctx.running_tasks.borrow().is_empty();
         let busy = running || app.is_reloading() || app.is_loading();
         let event = if busy {
             // until what the app wakes up for, like the search once typing settled
-            let wake = app.next_wake(Instant::now());
-            let wait = wake.map_or(TIMEOUT, |at| at.saturating_duration_since(Instant::now()));
+            let wake = app.next_wake(now);
+            let wait = wake.map_or(TIMEOUT, |at| at.saturating_duration_since(now));
             match ec.recv_timeout(wait.min(TIMEOUT)) {
                 Some(event) => event,
                 None if wake.is_some() => continue,
@@ -398,7 +391,8 @@ fn take_step(step: Step, app: &mut App, path: &Path, ec: &EventController) {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        Step::Sleep(duration) => std::thread::sleep(duration),
+        // the app's time, see `test_support::clock`
+        Step::Sleep(duration) => crate::test_support::clock::advance(duration),
         Step::Draw(f) => {
             let backend = ratatui::backend::TestBackend::new(SIZE.0, SIZE.1);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -2534,6 +2528,42 @@ fn test_fold_merge() {
     ]);
     // the graph is drawn again, the repository isn't loaded again
     assert_eq!(harness.loads.get(), 1);
+}
+
+// v on c1, up to the merge and the merge folded: the selection goes on from c1. feat1, no longer
+// shown, is unpicked, as commits a reload no longer shows are.
+#[test]
+fn test_visual_selection_goes_on_over_a_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    git(
+        &path,
+        &["merge", "-q", "--no-ff", "--no-edit", "-s", "ours", "feat"],
+    );
+    git(&path, &["branch", "-q", "-d", "feat"]);
+    let mut harness = Harness::new(&path, launch());
+    let shown = |visual: bool, picked: usize, total: usize| {
+        check(move |app| {
+            let View::List(view) = &app.view else {
+                panic!("no commit list")
+            };
+            let state = view.as_list_state();
+            assert_eq!(state.is_visual(), visual);
+            assert_eq!(state.picked_commit_hashes().len(), picked);
+            assert_eq!(state.position().1, total);
+        })
+    };
+    harness.run(vec![
+        keys("j j j v k k k"),
+        shown(true, 4, 4),
+        keys("h"),
+        shown(true, 3, 3),
+        // from c1 to c2: nothing it picked before the fold is unpicked
+        keys("j"),
+        shown(true, 3, 3),
+        keys("v"),
+        shown(false, 3, 3),
+    ]);
 }
 
 #[test]

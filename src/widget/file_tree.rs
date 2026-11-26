@@ -1,4 +1,4 @@
-use std::{cell::Cell, collections::HashSet, ops::Range};
+use std::{cell::Cell, collections::HashSet, ops::Range, sync::Arc};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -69,6 +69,9 @@ pub struct FileTreeState {
     guides: Vec<Guide>,
     // the selected row and the rows shown, which drawing the tree moves to show it
     cursor: Cell<ListCursor>,
+    // how many times the rows changed under a visual selection, for it to keep what it picked
+    // over them, see `TreeSelection::sync_visual`
+    rebuilds: u64,
 }
 
 impl FileTreeState {
@@ -83,6 +86,7 @@ impl FileTreeState {
             rows: Vec::new(),
             guides: Vec::new(),
             cursor: Cell::default(),
+            rebuilds: 0,
         };
         state.rebuild_rows();
         state
@@ -100,11 +104,9 @@ impl FileTreeState {
             rows: Vec::new(),
             guides: Vec::new(),
             cursor: self.cursor.clone(),
+            rebuilds: self.rebuilds,
         };
-        state.rebuild_rows();
-        if let Some(path) = self.selected().map(|r| r.path.as_ref()) {
-            state.select_path(path);
-        }
+        state.rebuild_rows_keeping(self.selected_path(), self.visual_start_path());
         state
     }
 
@@ -304,10 +306,23 @@ impl FileTreeState {
         }
     }
 
-    // Keeps the selected path, or else the position of the cursor. The rows before are freed on
-    // another thread, which takes long for many.
+    fn selected_path(&self) -> Option<Arc<str>> {
+        self.selected().map(|r| r.path.clone())
+    }
+
+    fn visual_start_path(&self) -> Option<Arc<str>> {
+        let start = self.cursor.get().visual_start()?;
+        self.rows.get(start).map(|r| r.path.clone())
+    }
+
     fn rebuild_rows(&mut self) {
-        let selected = self.selected().map(|r| r.path.clone());
+        self.rebuild_rows_keeping(self.selected_path(), self.visual_start_path());
+    }
+
+    // Keeps the `selected` path, or else the position of the cursor, and a visual selection
+    // starting from `visual_start` wherever its row is now, ending it when it is no longer shown.
+    // The rows before are freed on another thread, which takes long for many.
+    fn rebuild_rows_keeping(&mut self, selected: Option<Arc<str>>, visual_start: Option<Arc<str>>) {
         let rows = match self.view {
             TreeView::Tree => self
                 .tree
@@ -319,11 +334,16 @@ impl FileTreeState {
         } else {
             rows
         };
-        crate::background::drop_elsewhere(std::mem::replace(&mut self.rows, rows));
+        let before = std::mem::replace(&mut self.rows, rows);
+        let changed = before.len() != self.rows.len()
+            || before.iter().zip(&self.rows).any(|(a, b)| a.path != b.path);
+        if visual_start.is_some() && changed {
+            self.rebuilds += 1;
+        }
+        crate::background::drop_elsewhere(before);
         self.guides = tree_guides(self.rows.iter().map(|r| (r.depth, r.is_dir())));
-        // a filter or a collapsed directory can leave the start of a selection past the rows now
-        // shown; the selection ends rather than picking rows that moved under it
-        self.cursor.get_mut().keep_visual_in(self.rows.len());
+        let start = visual_start.and_then(|path| self.rows.iter().position(|r| r.path == path));
+        self.cursor.get_mut().set_visual_start(start);
         self.select_index(self.cursor());
         if let Some(path) = selected {
             self.select_path(&path);
@@ -338,7 +358,9 @@ impl FileTreeState {
 #[derive(Debug, Default, Clone)]
 pub struct TreeSelection {
     // shared with the rows, see `FileTreeRow::path`: a visual selection syncs them on each move
-    picked: Picks<std::sync::Arc<str>>,
+    picked: Picks<Arc<str>>,
+    // the rows last synced, see `FileTreeState::rebuilds`
+    synced: u64,
 }
 
 impl TreeSelection {
@@ -419,6 +441,7 @@ impl TreeSelection {
     // one and keeping those picked before, see `Picks`.
     pub fn toggle_visual(&mut self, tree: &mut FileTreeState) {
         tree.toggle_visual();
+        self.synced = tree.rebuilds;
         match tree.visual_range().is_some() {
             true => self.picked.start_visual(),
             false => self.picked.finish_visual(),
@@ -431,6 +454,9 @@ impl TreeSelection {
         let Some(range) = tree.visual_range() else {
             return;
         };
+        if std::mem::replace(&mut self.synced, tree.rebuilds) != tree.rebuilds {
+            self.picked.keep_visual();
+        }
         self.picked
             .sync_visual(tree.rows()[range].iter().map(|row| &row.path));
     }
@@ -1359,6 +1385,39 @@ mod tests {
             tree.navigate(UserEvent::HalfPageDown);
         }
         assert_eq!(tree.cursor(), 10);
+    }
+
+    // v on y, up to src and src collapsed: what it covered stays picked, and nothing below y,
+    // which the start counted as a row number moved onto.
+    #[test]
+    fn test_visual_selection_keeps_its_start_when_rows_change_above_it() {
+        let paths = ["src/a", "src/b", "w", "x", "y", "z", "z1", "z2"];
+        let mut tree = FileTreeState::new(
+            FileTree::new(paths),
+            Folders::Open,
+            Root::Shown,
+            TreeView::Tree,
+        );
+        let mut picked = TreeSelection::default();
+        tree.select_path("y");
+        picked.toggle_visual(&mut tree);
+        while tree.selected().is_some_and(|r| &*r.path != "src") {
+            tree.navigate(UserEvent::NavigateUp);
+            picked.sync_visual(&tree);
+        }
+        tree.collapse();
+        picked.sync_visual(&tree);
+        assert_eq!(picked.paths(), ["src", "src/a", "src/b", "w", "x", "y"]);
+        // it goes on from y: down past it picks z, as a move from y does
+        for _ in 0..4 {
+            tree.navigate(UserEvent::NavigateDown);
+            picked.sync_visual(&tree);
+        }
+        assert!(tree.is_visual());
+        assert_eq!(
+            picked.paths(),
+            ["src", "src/a", "src/b", "w", "x", "y", "z"]
+        );
     }
 
     #[test]

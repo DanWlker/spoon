@@ -6,8 +6,8 @@ use std::{path::Path, sync::Arc};
 use crate::background::Cancel;
 
 use super::{
-    fits_a_command_line, git_output, git_output_bytes_until, load_local_changes, pathspecs,
-    text_from_git, work_path, IndexRefresh, Repository,
+    fits_a_command_line, git_output, git_output_bytes_until, index_entries, load_local_changes,
+    pathspecs, text_from_git, tree_entries, work_path, IndexRefresh, Repository, GITLINK,
 };
 
 // The paths among `paths` that are gitlinks (submodules) in the tree of `commit` (a commit or a
@@ -33,13 +33,9 @@ pub(super) fn gitlinks_at(
     let out = git_output_bytes_until(repository, &args, cancel)
         .map(|out| text_from_git(&out))
         .unwrap_or_default();
-    out.split('\0')
-        .filter_map(|entry| {
-            let (meta, path) = entry.split_once('\t')?;
-            // "<mode> <type> <object>"
-            let object = meta.strip_prefix("160000 commit ")?;
-            Some((path.to_string(), object.to_string()))
-        })
+    tree_entries(&out)
+        .filter(|(_, mode, _)| *mode == GITLINK)
+        .map(|(path, _, object)| (path.to_string(), object.to_string()))
         .collect()
 }
 
@@ -189,12 +185,8 @@ pub fn submodule_info(root: &Path, path: &str) -> Option<SubmoduleInfo> {
 fn index_submodule_commit(root: &Path, path: &str) -> Option<String> {
     let spec = pathspecs(&[path]);
     let out = git_output(root, &["ls-files", "--stage", "-z", "--", &spec[0]]).ok()?;
-    let entry = out.split('\0').find(|entry| !entry.is_empty())?;
-    let (meta, _) = entry.split_once('\t')?;
-    let mut fields = meta.split(' ');
-    let mode = fields.next()?;
-    let commit = fields.next()?;
-    (mode == "160000").then(|| commit.to_string())
+    let (_, _, mode, commit) = index_entries(&out).next()?;
+    (mode == GITLINK).then(|| commit.to_string())
 }
 
 // The commit `revision` records for the submodule at `path` of the repository at `root`, or None
@@ -204,24 +196,18 @@ fn index_submodule_commit(root: &Path, path: &str) -> Option<String> {
 pub fn submodule_gitlink_at(root: &Path, revision: &str, path: &str) -> Option<String> {
     let spec = pathspecs(&[path]);
     let out = git_output(root, &["ls-tree", "-z", revision, "--", &spec[0]]).ok()?;
-    out.split('\0').find_map(|entry| {
-        let (meta, file) = entry.split_once('\t')?;
-        let mut fields = meta.split(' ');
-        let mode = fields.next()?;
-        let _kind = fields.next()?;
-        let commit = fields.next()?;
-        (mode == "160000" && file == path).then(|| commit.to_string())
-    })
+    let commit = tree_entries(&out)
+        .find(|(file, mode, _)| *mode == GITLINK && *file == path)
+        .map(|(_, _, commit)| commit.to_string());
+    commit
 }
 
 // The paths of the submodules the index tracks (mode 160000), which its gitlink entries name.
 pub(super) fn load_submodules(path: &Path) -> FxHashSet<String> {
     let out = git_output(path, &["ls-files", "--stage", "-z"]).unwrap_or_default();
-    out.split('\0')
-        .filter_map(|entry| {
-            let (meta, file) = entry.split_once('\t')?;
-            meta.starts_with("160000 ").then(|| file.to_string())
-        })
+    index_entries(&out)
+        .filter(|(_, _, mode, _)| *mode == GITLINK)
+        .map(|(file, ..)| file.to_string())
         .collect()
 }
 

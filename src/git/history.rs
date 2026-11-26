@@ -11,7 +11,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::background::{joined, Cancel};
 
 use super::{
-    git_output_bytes_until, parse_iso_date, pathspecs, text_from_git, CommitHash, Repository,
+    git_output_bytes_until, parse_iso_date, pathspecs, text_from_git, tree_entries, CommitHash,
+    Repository, GITLINK,
 };
 
 impl Repository {
@@ -165,8 +166,8 @@ fn commit_tree_at(repository: &Path, commit: &str, cancel: &Cancel) -> CommitTre
         .unwrap_or_default();
     let mut paths = Vec::new();
     let mut gitlinks = FxHashSet::default();
-    for (meta, path) in out.split('\0').filter_map(|entry| entry.split_once('\t')) {
-        if meta.starts_with("160000 ") {
+    for (path, mode, _) in tree_entries(&out) {
+        if mode == GITLINK {
             gitlinks.insert(path.to_string());
         }
         paths.push(path.to_string());

@@ -777,6 +777,32 @@ pub fn work_path(root: &Path, path: &str) -> std::path::PathBuf {
 // Paths of files or directories for git, taken as they are, not as patterns: a file named
 // `*.log` is only that file. The root of the repository stays ":/".
 // The bytes of the paths one command line takes here, well under the limit, see `pathspec_parts`.
+// The entries of the index as `git ls-files --stage -z` (or `-u`) lists them, "<mode> <object>
+// <stage>\t<path>", as (path, stage, mode, object).
+pub(super) fn index_entries(out: &str) -> impl Iterator<Item = (&str, u8, &str, &str)> {
+    out.split('\0').filter_map(|entry| {
+        let (meta, path) = entry.split_once('\t')?;
+        let mut fields = meta.split(' ');
+        let (mode, object) = (fields.next()?, fields.next()?);
+        let stage = fields.next()?.parse().ok()?;
+        Some((path, stage, mode, object))
+    })
+}
+
+// The entries of a tree as `git ls-tree -z` lists them, "<mode> <type> <object>\t<path>", as
+// (path, mode, object).
+pub(super) fn tree_entries(out: &str) -> impl Iterator<Item = (&str, &str, &str)> {
+    out.split('\0').filter_map(|entry| {
+        let (meta, path) = entry.split_once('\t')?;
+        let mut fields = meta.split(' ');
+        let (mode, _kind, object) = (fields.next()?, fields.next()?, fields.next()?);
+        Some((path, mode, object))
+    })
+}
+
+// The mode of a gitlink, a submodule's commit, in the index and in trees.
+pub(super) const GITLINK: &str = "160000";
+
 const PART_BYTES: usize = 256 * 1024;
 
 // Whether the pathspecs of `paths` fit one command line, see `pathspec_parts`.

@@ -215,7 +215,7 @@ impl TimelineView {
                     true => self.pane.selected_row(),
                     false => self.cursor.selected(),
                 };
-                self.query.start(QueryKind::Search, from);
+                self.query.start_search(from);
                 self.update_query_status();
             }
             UserEvent::GoToNext => self.search(SearchDirection::Next),

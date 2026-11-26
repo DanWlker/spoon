@@ -2219,6 +2219,73 @@ fn graph_laid_out_again_keeps_the_images_of_the_rows_drawn_the_same() -> TestRes
 }
 
 // A layout told to stop, replaced by another, stops partway with nothing.
+// Scrolling through every commit kept each row's prepared image, hundreds of megabytes for 100k;
+// those far from the screen go, and come back the same, under the same id, once shown again.
+#[test]
+fn prepared_images_far_from_the_screen_are_dropped() -> TestResult {
+    use std::io::Write;
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+    GitRepository::new(repo_path).init();
+    let stream: String = (0..5000)
+        .map(|i| {
+            let from = if i == 0 { String::new() } else { format!("from :{i}\n") };
+            let mark = i + 1;
+            format!("commit refs/heads/master\nmark :{mark}\ncommitter a <b> {i} +0000\ndata 1\nc\n{from}\n")
+        })
+        .collect();
+    let mut import = git::git_command()
+        .args(["fast-import", "--quiet"])
+        .current_dir(repo_path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    import.stdin.take().unwrap().write_all(stream.as_bytes())?;
+    assert!(import.wait()?.success());
+
+    let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None, true)?;
+    let params = graph::ImageParams::new(
+        &crate::color::GraphColorSet::new(&crate::config::GraphColorConfig::default()),
+        graph::CellWidthType::Double,
+        false,
+    );
+    let mut manager = graph::GraphImageManager::new(
+        graph::calc_graph(&repository, None, &Default::default()),
+        params,
+        graph::CellWidthType::Double,
+        graph::GraphStyle::Rounded,
+        graph::GraphImageWidthMode::Compact,
+        crate::protocol::ImageProtocol::KittyUnicode(crate::protocol::Escapes::Direct),
+    );
+    let hashes: Vec<_> = (manager.graph().commits.iter())
+        .map(|c| c.commit_hash.clone())
+        .collect();
+    let show = |manager: &mut graph::GraphImageManager, rows: std::ops::Range<usize>| {
+        hashes[rows.clone()]
+            .iter()
+            .for_each(|h| manager.ensure_uploaded(h));
+        manager.forget_far_from(rows);
+        manager.drain_pending_uploads()
+    };
+    let first = show(&mut manager, 0..50);
+    let cells = |manager: &graph::GraphImageManager| -> Vec<_> {
+        let cells = manager.prepared_image(&hashes[0]).cells().iter();
+        cells.map(|c| (c.symbol().to_string(), c.style())).collect()
+    };
+    let top = cells(&manager);
+    for start in (50..5000).step_by(50) {
+        show(&mut manager, start..start + 50);
+        assert!(
+            manager.prepared_count() <= 2050,
+            "{}",
+            manager.prepared_count()
+        );
+    }
+    // the top again: uploaded again as at first, the same ids
+    assert_eq!(show(&mut manager, 0..50), first);
+    assert_eq!(cells(&manager), top);
+    Ok(())
+}
+
 #[test]
 fn layout_stops_once_cancelled() -> TestResult {
     use crate::background::Cancel;

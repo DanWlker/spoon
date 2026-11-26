@@ -47,6 +47,9 @@ pub struct AppContext {
     pub search_options: Rc<Cell<SearchOptions>>,
     // typing the keys of a paste but its last, which a search applies once, see `App::paste`
     pub pasting: Cell<bool>,
+    // the time double clicks and the popup waiting for a second press go by: the system's, and
+    // in the tests one that moves only when they say, see `test_support::clock`
+    pub now: fn() -> std::time::Instant,
 }
 
 // What a commit graph image is drawn with. The color set, style and antialias come from the

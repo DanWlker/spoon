@@ -27,9 +27,11 @@ pub fn test_ctx_with(color_theme: ColorTheme) -> Rc<AppContext> {
 }
 
 pub fn test_ctx_of(color_theme: ColorTheme, ui_config: UiConfig) -> Rc<AppContext> {
+    let core_config = CoreConfig::default();
     Rc::new(AppContext {
         keybind: KeyBind::new(None),
-        core_config: CoreConfig::default(),
+        search_options: Rc::new(std::cell::Cell::new((&core_config.search).into())),
+        core_config,
         ui_config,
         color_theme,
         image_protocol: ImageProtocol::Kitty,
@@ -40,8 +42,8 @@ pub fn test_ctx_of(color_theme: ColorTheme, ui_config: UiConfig) -> Rc<AppContex
         wrap: Default::default(),
         diff_layout: Default::default(),
         diff_context: std::cell::Cell::new(crate::git::DEFAULT_DIFF_CONTEXT),
-        search_options: Default::default(),
         pasting: Default::default(),
+        now: crate::test_support::clock::now,
     })
 }
 

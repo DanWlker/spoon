@@ -28,7 +28,7 @@ use crate::{
             key_span, mark_selected_row, panel_title, placeholder, render_panel,
             render_panel_scrollbar, ListCursor,
         },
-        tree_query::{highlighted_text, name_matches, QueryKind, TreeQuery},
+        tree_query::{highlighted_text, name_matches, TreeQuery},
     },
 };
 
@@ -123,7 +123,7 @@ impl HelpView {
                 }
             }
             UserEvent::Search => {
-                self.query.start(QueryKind::Filter, 0);
+                self.query.start_filter();
                 self.tx
                     .send(query_status(&self.ctx, &self.query, SearchKind::Names));
             }

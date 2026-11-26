@@ -1655,8 +1655,8 @@ impl<'a> DetailView<'a> {
             return false;
         };
         match event {
-            UserEvent::Search if in_diff => query.start(QueryKind::Search, from),
-            UserEvent::Search => query.start(QueryKind::Filter, from),
+            UserEvent::Search if in_diff => query.start_search(from),
+            UserEvent::Search => query.start_filter(),
             UserEvent::GoToNext | UserEvent::GoToPrevious => {
                 let direction = if event == UserEvent::GoToNext {
                     SearchDirection::Next

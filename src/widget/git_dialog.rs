@@ -2415,7 +2415,7 @@ impl GitDialog {
             Some(UserEvent::Search) => {
                 if let Some(files) = self.selected_files() {
                     // a filter goes from no row, see `TreeQuery::step_from`
-                    files.query.start(QueryKind::Filter, 0);
+                    files.query.start_filter();
                 }
                 DialogOutcome::None
             }

@@ -129,6 +129,17 @@ pub struct SearchOptions {
     pub fuzzy: bool,
 }
 
+// As configured, which the app starts with, see `AppContext::search_options`.
+impl From<&crate::config::CoreSearchConfig> for SearchOptions {
+    fn from(config: &crate::config::CoreSearchConfig) -> Self {
+        SearchOptions {
+            target: config.target,
+            smart_case: config.smart_case,
+            fuzzy: config.fuzzy,
+        }
+    }
+}
+
 impl SearchOptions {
     // The options that apply to a search of `kind`, for the status line.
     pub fn status_string(&self, kind: SearchKind) -> String {

@@ -38,7 +38,7 @@ use submodule::{load_submodules, SubmoduleRepositories};
 pub use submodule::{submodule_gitlink_at, submodule_info};
 use task::{
     command_line_parts, git_output, git_output_bytes_until, git_output_with_status, git_run_until,
-    lock, output_result, run_logged,
+    index_entries, lock, output_result, run_logged, tree_entries, GITLINK,
 };
 pub use task::{
     command_log, fits_a_command_line, git_arg, git_bytes, git_command, is_binary, is_kept_byte,
