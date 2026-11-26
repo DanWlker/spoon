@@ -116,6 +116,11 @@ impl FileTreeState {
         self.rebuild_rows();
     }
 
+    // The index of the file at `path`, see `FileTree::file_index`.
+    pub fn file_index(&self, path: &str) -> Option<usize> {
+        self.tree.file_index(path)
+    }
+
     pub fn rows(&self) -> &[FileTreeRow] {
         &self.rows
     }
@@ -337,6 +342,11 @@ impl TreeSelection {
 
     pub fn len(&self) -> usize {
         self.picked.len()
+    }
+
+    // In the order they were picked.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.picked.iter().map(String::as_str)
     }
 
     #[cfg(test)]

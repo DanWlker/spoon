@@ -127,6 +127,20 @@ impl FileTree {
         }
     }
 
+    // The index of the file at `path` in the paths the tree was built from: down its directories,
+    // then among their files, sorted by name; without going through every file.
+    pub fn file_index(&self, path: &str) -> Option<usize> {
+        let path = tree_path(path);
+        let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let mut node: &DirNode = &self.root;
+        for part in dir.split('/').filter(|_| !dir.is_empty()) {
+            node = node.dirs.get(part)?;
+        }
+        let at = node.files.partition_point(|file| &*file.name < name);
+        let file = node.files.get(at).filter(|file| &*file.name == name)?;
+        Some(file.index)
+    }
+
     // Whether `path` is a directory of the tree.
     pub fn is_dir(&self, path: &str) -> bool {
         let mut node: &DirNode = &self.root;
@@ -241,4 +255,19 @@ fn collect_rows(
         }
     }
     any_kept
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_file_index() {
+        let tree = super::FileTree::new(["b/z.rs", "a.rs", "b/c/y.rs", "b/x.rs"]);
+        assert_eq!(tree.file_index("a.rs"), Some(1));
+        assert_eq!(tree.file_index("b/x.rs"), Some(3));
+        assert_eq!(tree.file_index("b/z.rs"), Some(0));
+        assert_eq!(tree.file_index("b/c/y.rs"), Some(2));
+        assert_eq!(tree.file_index("b"), None);
+        assert_eq!(tree.file_index("b/w.rs"), None);
+        assert_eq!(tree.file_index("c/x.rs"), None);
+    }
 }

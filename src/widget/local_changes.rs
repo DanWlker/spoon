@@ -206,6 +206,8 @@ pub struct LocalChangesState<'a> {
     ctx: Rc<AppContext>,
     // the paths of local changes are relative to it
     changes: Arc<LocalChanges>,
+    // the paths in `changes`, as loaded with them, see `FilesSnapshot::count`
+    change_count: usize,
     // the unstaged and the staged section, see `LocalChangesSection`
     sections: [Section; 2],
     section: LocalChangesSection,
@@ -277,6 +279,7 @@ impl<'a> LocalChangesState<'a> {
         let (
             FilesSnapshot {
                 changes,
+                count: change_count,
                 trees,
                 stamp: files_stamp,
                 ..
@@ -301,6 +304,7 @@ impl<'a> LocalChangesState<'a> {
             repository,
             ctx,
             changes,
+            change_count,
             sections,
             section,
             chosen: Focus::Files,
@@ -370,7 +374,7 @@ impl<'a> LocalChangesState<'a> {
     }
 
     pub fn count(&self) -> usize {
-        self.changes.count()
+        self.change_count
     }
 
     pub fn focus_section(&mut self, section: LocalChangesSection) {
@@ -395,11 +399,19 @@ impl<'a> LocalChangesState<'a> {
         if self.picked().is_empty() {
             return self.selected_file();
         }
-        let path = self.picked().single_path()?;
-        self.files()
-            .iter()
-            .find(|file| file.path == path)
-            .map(|file| file.path.as_ref())
+        let _ = self.picked().single_path()?;
+        self.picked_files().next().map(|file| file.path.as_ref())
+    }
+
+    // The picked files, in the order picked: looked up by their paths, as asked on each draw with
+    // 100k+ files changed, see `FileTree::file_index`; a picked directory is none.
+    fn picked_files(&self) -> impl Iterator<Item = &LocalChangeFile> {
+        let files = self.files();
+        self.picked().iter().filter_map(move |path| {
+            let file = files.get(self.tree().file_index(path)?)?;
+            // exactly, as `nested/`, an untracked repository, is picked as `nested`
+            (file.path == path).then_some(file)
+        })
     }
 
     pub fn selected_path(&self) -> Option<String> {
@@ -702,7 +714,9 @@ impl<'a> LocalChangesState<'a> {
         if files.is_empty() {
             return Err("Select a file to edit".into());
         }
-        let files: Vec<&str> = files.iter().map(AsRef::as_ref).collect();
+        // sorted like the files, not in the order picked
+        let mut files: Vec<&str> = files.iter().map(AsRef::as_ref).collect();
+        files.sort_unstable();
         let paths = self.repository.working_tree_paths(&files)?;
         // from the diff, at the first line of the picked lines or the hunk
         let line = self.pane.selected_lines().map(|lines| *lines.start());
@@ -724,8 +738,6 @@ impl<'a> LocalChangesState<'a> {
     // The files to open in the editor: the picked files, or the selected one; from the diff, its
     // file. A submodule is a directory, not a file to open.
     // Lazily: whether there is one is asked on each draw, see `register_keys`.
-    // shortcut: with files picked, the check walks the files up to the first picked one; look
-    // the picks up by path instead if it shows in a profile of 100k+ changed files.
     fn editable_files(&self) -> impl Iterator<Item = Cow<'_, str>> {
         let in_diff = self.is_diff_focused();
         let picked = self.picked();
@@ -733,12 +745,8 @@ impl<'a> LocalChangesState<'a> {
             .then(|| self.selected_row().and_then(FileTreeRow::file_index))
             .flatten()
             .and_then(|i| self.files().get(i));
-        let picks = (!in_diff && !picked.is_empty())
-            .then(|| {
-                self.files()
-                    .iter()
-                    .filter(|file| picked.contains(&file.path))
-            })
+        let picks = (!in_diff)
+            .then(|| self.picked_files())
             .into_iter()
             .flatten();
         let files = selected
@@ -1487,6 +1495,7 @@ impl<'a> LocalChangesState<'a> {
             files:
                 FilesSnapshot {
                     changes,
+                    count,
                     trees,
                     stamp,
                     ..
@@ -1498,6 +1507,7 @@ impl<'a> LocalChangesState<'a> {
         let selected_path = self.selected_path();
         self.files_stamp = stamp;
         self.changes = changes;
+        self.change_count = count;
         self.prepare_message();
         self.sync_amend();
         self.offer_resolved_commit();

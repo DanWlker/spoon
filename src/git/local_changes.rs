@@ -476,6 +476,9 @@ impl WorkTree {
 #[derive(Debug, Clone)]
 pub struct FilesSnapshot {
     pub changes: Arc<LocalChanges>,
+    // `LocalChanges::count` of them, counted here, off the screen's thread: drawn on every frame,
+    // it sorts all their paths
+    pub count: usize,
     // of the unstaged files, then of the staged ones
     pub trees: [FileTree; 2],
     pub stamp: u64,
@@ -496,6 +499,7 @@ impl FilesSnapshot {
         let tree = |files: &[LocalChangeFile]| FileTree::new(files.iter().map(|f| f.path.as_str()));
         FilesSnapshot {
             trees: [tree(&changes.unstaged), tree(&changes.staged)],
+            count: changes.count(),
             changes: Arc::new(changes),
             stamp,
             started,
