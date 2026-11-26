@@ -700,50 +700,19 @@ fn calc_edges(
             let mut overlap = false;
             let mut new_pos_x = pos_x;
             if in_the_way {
-                // row by row, right of the commit, then of the lines of other commits there right
-                // of where it would go: the rightmost of them, the lines present on each row
-                // tracked from where they start to where they end
-                let mut changes: Vec<(usize, bool, usize)> = edges
-                    .runs_crossing(between.clone())
+                // right of the lines of other commits there, the rightmost of them, once one is
+                // at or right of its lane: walked row by row it ended there all the same
+                let rightmost = (edges.runs_crossing(between.clone()))
                     .filter(|run| run.parent != pos_y)
-                    .flat_map(|run| {
-                        [
-                            (run.rows.start.max(between.start), true, run.pos_x),
-                            (run.rows.end, false, run.pos_x),
-                        ]
-                    })
-                    .collect();
-                changes.sort_unstable();
-                let mut changes = changes.into_iter().peekable();
-                let mut present: std::collections::BTreeMap<usize, usize> = Default::default();
-                for y in between.clone() {
-                    while let Some((_, starts, x)) = changes.next_if(|(row, ..)| *row <= y) {
-                        if starts {
-                            *present.entry(x).or_default() += 1;
-                        } else if let Some(count) = present.get_mut(&x) {
-                            *count -= 1;
-                            if *count == 0 {
-                                present.remove(&x);
-                            }
-                        }
-                    }
-                    if commit_pos_xs[y] == new_pos_x {
-                        overlap = true;
-                        new_pos_x += 1;
-                    }
-                    if let Some((&x, _)) =
-                        present.last_key_value().filter(|(x, _)| **x >= new_pos_x)
-                    {
-                        overlap = true;
-                        new_pos_x = x + 1;
-                    }
-                }
-                // a commit on an earlier row may be in the column the line moved to after it
+                    .map(|run| run.pos_x)
+                    .max();
+                new_pos_x = rightmost.filter(|x| *x >= pos_x).map_or(pos_x, |x| x + 1);
+                // and of the commits in the column it moved to
                 while commit_in(new_pos_x, &between) {
                     new_pos_x += 1;
                 }
+                overlap = new_pos_x != pos_x;
             }
-
             if overlap {
                 // detour
                 edges.push(pos_y, Edge::new(EdgeType::Right, pos_x, pos_x));
