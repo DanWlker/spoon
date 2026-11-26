@@ -642,6 +642,39 @@ fn test_a_notice_goes_once_its_time_is_up() {
     ]);
 }
 
+// The diff of the root row, of every file shown, follows a filter being typed once typing settles;
+// it kept the files the filter hides until enter.
+#[test]
+fn test_root_diff_follows_a_filter_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    std::fs::create_dir(path.join("docs")).unwrap();
+    for file in ["docs/guide.md", "docs/list.md"] {
+        std::fs::write(path.join(file), "old\n").unwrap();
+    }
+    git(&path, &["add", "docs"]);
+    git(&path, &["commit", "-q", "-m", "docs"]);
+    for file in ["docs/guide.md", "docs/list.md"] {
+        std::fs::write(path.join(file), "new\n").unwrap();
+    }
+    let launch = Launch {
+        page: StartPage::LocalChanges,
+        ..launch()
+    };
+    let mut harness = Harness::new(&path, launch);
+    let guide = |shown: bool| {
+        screen(move |screen| assert_eq!(screen.contains("── docs/guide.md"), shown, "{screen}"))
+    };
+    harness.run(vec![
+        guide(true),
+        keys("/ l i s t"),
+        // not for each key
+        guide(true),
+        sleep(200),
+        guide(false),
+    ]);
+}
+
 #[test]
 fn test_launch_on_local_changes() {
     let dir = tempfile::tempdir().unwrap();
@@ -2213,10 +2246,10 @@ fn test_n_waits_for_the_search_typed_before() {
             };
             // typed and kept, it waits for typing to settle, no search running for each key
             press(app, &["/", "f", "i", "x", "enter"]);
-            assert!(app.view.search_due().is_some());
+            assert!(app.view.settles_at().is_some());
             // n starts it, waiting for its matches
             press(app, &["n"]);
-            assert!(app.view.search_due().is_none());
+            assert!(app.view.settles_at().is_none());
         }))],
         check(move |app| assert_eq!(subject(app), "fix one")),
     ]);

@@ -4,8 +4,8 @@ use rustc_hash::FxHashMap;
 use crate::graph::{
     geometry::Point,
     image::{
-        bezier_point, curved_connection_points, diagonal_connection, edge_connections,
-        merge_center, merge_disk_contains, merge_mark_contains, Chevron, ConnectionKey,
+        curve_pieces, curved_connection_points, diagonal_connection, edge_connections,
+        merge_center, merge_disk_contains, merge_mark_contains, near_piece, Chevron, ConnectionKey,
         DrawingPixels, GraphStyle, ImageParams, Pixels,
     },
     Edge, EdgeType,
@@ -263,15 +263,8 @@ fn curved_coverage(side: &Edge, corner: &Edge, params: &ImageParams) -> Coverage
     } else {
         i32::from(params.height) - 1
     };
-    let steps = ((((points[3].x - points[0].x).abs() + (points[3].y - points[0].y).abs()) * 3.0)
-        .ceil() as usize)
-        .max(32);
     let mut coverage = Coverage::default();
-    let mut start = points[0];
-    for step in 1..=steps {
-        let end = bezier_point(&points, step as f64 / steps as f64);
-        let segment = end - start;
-        let length_squared = segment.dot(segment);
+    for piece @ (start, end) in curve_pieces(points) {
         let bounds = [
             Point::new(
                 (start.x.min(end.x) - radius).max(0.0),
@@ -283,18 +276,10 @@ fn curved_coverage(side: &Edge, corner: &Edge, params: &ImageParams) -> Coverage
             ),
         ];
         sample_shape(&mut coverage, bounds, |p| {
-            if p.y.floor() as i32 == boundary_y || (p.x - points[0].x) * direction < 0.0 {
-                return false;
-            }
-            let t = if length_squared == 0.0 {
-                0.0
-            } else {
-                ((p - start).dot(segment) / length_squared).clamp(0.0, 1.0)
-            };
-            let delta = p - (start + segment * t);
-            delta.dot(delta) <= radius * radius
+            p.y.floor() as i32 != boundary_y
+                && (p.x - points[0].x) * direction >= 0.0
+                && near_piece(p, piece, radius)
         });
-        start = end;
     }
     // Preserve the straight-edge mask at the boundary shared with the next row.
     let x_start = (points[3].x - radius) as i32;

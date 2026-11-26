@@ -223,6 +223,9 @@ pub struct LocalChangesState<'a> {
     request: Option<Request>,
     // the cursor moved to another row, whose diff loads once used, see `move_cursor`
     diff_stale: bool,
+    // when the diff of the selected folder or root row loads again, once typing a filter that
+    // changes its files settles, see `apply_query_change`
+    diff_due: Option<Instant>,
     // the fingerprint of the files as loaded, see `reload_if_changed`
     files_stamp: u64,
     // the app's, set by the view, to load the files on another thread after a change, the screen
@@ -318,6 +321,7 @@ impl<'a> LocalChangesState<'a> {
             draft: CommitDraft::default(),
             request: None,
             diff_stale: false,
+            diff_due: None,
             files_stamp,
             background,
             files_loading: None,
@@ -1679,7 +1683,18 @@ impl<'a> LocalChangesState<'a> {
         if change == Some(QueryKind::Filter) {
             // only the focused section is filtered
             let filter = self.query().typed_filter().map(String::from);
+            let before = self.selected_path();
             self.update_tree(|tree| tree.set_filter(filter.as_deref(), options));
+            // the same folder or root row shows other files: its diff, of them, loads again once
+            // typing settles, rather than for each key; a file's own diff stays the same
+            let folder = self
+                .tree()
+                .selected()
+                .is_some_and(|row| row.is_root() || row.is_dir());
+            if folder && self.selected_path() == before {
+                self.diff_due =
+                    Some((self.ctx.now)() + crate::widget::commit_list::SEARCH_SETTLES_AFTER);
+            }
         }
     }
 
@@ -1877,6 +1892,12 @@ impl<'a> LocalChangesState<'a> {
         }
     }
 
+    // When the diff of the selected folder loads again once typing a filter settles, see
+    // `apply_query_change`.
+    pub fn diff_due(&self) -> Option<Instant> {
+        self.diff_due
+    }
+
     // Whether the files load again, after a change made on another thread, see `change_files`.
     pub fn is_files_loading(&self) -> bool {
         self.files_loading.is_some()
@@ -1888,7 +1909,8 @@ impl<'a> LocalChangesState<'a> {
         if let Some(job) = self.files_loading.take() {
             self.show_files(job.wait());
         }
-        if std::mem::take(&mut self.diff_stale) {
+        // a key acting on the diff doesn't wait for typing to settle
+        if std::mem::take(&mut self.diff_stale) | self.diff_due.take().is_some() {
             self.load_diff();
         }
     }
@@ -1935,6 +1957,10 @@ impl<'a> LocalChangesState<'a> {
             self.files_loading = None;
             self.show_files(loaded);
         }
+        if self.diff_due.is_some_and(|due| (self.ctx.now)() >= due) {
+            self.diff_due = None;
+            self.diff_stale = true;
+        }
         if std::mem::take(&mut self.diff_stale) && self.prepare_diff(Some(tx)) {
             let work = self.diff_work();
             self.pane
@@ -1962,6 +1988,7 @@ impl<'a> LocalChangesState<'a> {
     // screen; the one shown before is drawn meanwhile, and a key waits for it, see `load_stale_diff`.
     fn load_diff(&mut self) {
         self.diff_stale = false;
+        self.diff_due = None;
         if self.prepare_diff(self.background.clone().as_ref()) {
             self.load_pane();
         }

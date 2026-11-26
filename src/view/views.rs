@@ -122,10 +122,14 @@ impl<'a> View<'a> {
         }
     }
 
-    // When the search of the commits waiting for typing to settle starts, see
-    // `CommitListState::search_changed`.
-    pub fn search_due(&self) -> Option<std::time::Instant> {
-        self.as_list_state()?.search_due()
+    // When what waits for typing to settle starts: the search of the commits, see
+    // `CommitListState::search_changed`, or the diff of the folder a filter changed the files of,
+    // see `LocalChangesState::diff_due`.
+    pub fn settles_at(&self) -> Option<std::time::Instant> {
+        match self {
+            View::LocalChanges(view) => view.diff_due(),
+            _ => self.as_list_state()?.search_due(),
+        }
     }
 
     // Whether what the page shows loads in the background, see `Job`.

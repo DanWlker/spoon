@@ -69,6 +69,11 @@ impl<'a> LocalChangesView<'a> {
         self.local_changes_state.is_files_loading()
     }
 
+    // See `LocalChangesState::diff_due`.
+    pub fn diff_due(&self) -> Option<std::time::Instant> {
+        self.local_changes_state.diff_due()
+    }
+
     // Starts loading the diff of the row the cursor moved to on another thread, or shows it once
     // loaded.
     pub fn load_in_background(&mut self) {

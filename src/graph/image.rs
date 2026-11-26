@@ -1020,6 +1020,30 @@ fn bezier_point(points: &[Point; 4], t: f64) -> Point {
     )
 }
 
+// The curve of a connection cut into short straight pieces, (start, end), enough of them for
+// the strokes drawn along them to look smooth, see `near_piece`.
+fn curve_pieces(points: [Point; 4]) -> impl Iterator<Item = (Point, Point)> {
+    let length = (points[3].x - points[0].x).abs() + (points[3].y - points[0].y).abs();
+    let steps = ((length * 3.0).ceil() as usize).max(32);
+    (1..=steps).scan(points[0], move |start, step| {
+        let end = bezier_point(&points, step as f64 / steps as f64);
+        Some((std::mem::replace(start, end), end))
+    })
+}
+
+// Whether `p` is within `radius` of the piece of a curve from `start` to `end`.
+fn near_piece(p: Point, (start, end): (Point, Point), radius: f64) -> bool {
+    let segment = end - start;
+    let length_squared = segment.dot(segment);
+    let t = if length_squared == 0.0 {
+        0.0
+    } else {
+        ((p - start).dot(segment) / length_squared).clamp(0.0, 1.0)
+    };
+    let delta = p - (start + segment * t);
+    delta.dot(delta) <= radius * radius
+}
+
 fn calc_curved_connection_drawing_pixels(
     side: &Edge,
     corner: &Edge,
@@ -1029,20 +1053,13 @@ fn calc_curved_connection_drawing_pixels(
     let radius = f64::from(params.line_width) / 2.0;
     let mut pixels = Pixels::default();
     let direction = (points[3].x - points[0].x).signum();
-    let steps = (((points[3].x - points[0].x).abs() + (points[3].y - points[0].y).abs()) * 3.0)
-        .ceil() as usize;
     let boundary_y = if points[3].y == 0.0 {
         0
     } else {
         u32::from(params.height) - 1
     };
-    // Approximate the curve with short segments and fill pixels within the stroke.
-    let steps = steps.max(32);
-    let mut start = points[0];
-    for step in 1..=steps {
-        let end = bezier_point(&points, step as f64 / steps as f64);
-        let segment = end - start;
-        let length_squared = segment.dot(segment);
+    // the pixels whose center is within the stroke along each piece
+    for piece @ (start, end) in curve_pieces(points) {
         let bounds = [
             Point::new(
                 start.x.min(end.x) - radius - 1.0,
@@ -1061,21 +1078,13 @@ fn calc_curved_connection_drawing_pixels(
             for x in min_x..max_x {
                 let pixel_center = Point::new(x as f64 + 0.5, y as f64 + 0.5);
                 // Keep the same circle-side endpoint, with a flat stroke cap.
-                if (pixel_center.x - points[0].x) * direction < 0.0 {
-                    continue;
-                }
-                let t = if length_squared == 0.0 {
-                    0.0
-                } else {
-                    ((pixel_center - start).dot(segment) / length_squared).clamp(0.0, 1.0)
-                };
-                let distance = (pixel_center - (start + segment * t)).length();
-                if distance <= radius {
+                if (pixel_center.x - points[0].x) * direction >= 0.0
+                    && near_piece(pixel_center, piece, radius)
+                {
                     pixels.insert((x as i32, y as i32));
                 }
             }
         }
-        start = end;
     }
 
     // Match the existing vertical mask exactly at the row boundary.

@@ -38,6 +38,10 @@ pub enum Wake {
     Poke,
     // what it sent last was handled: a poke meanwhile is checked now
     Handled,
+    // answers once read, the wakes sent before it handled: a test knows then that the refresher
+    // decided what to do with them, rather than waiting a while and hoping it did
+    #[cfg(test)]
+    Answer(mpsc::Sender<()>),
 }
 
 // Checks in the background, without holding up the app, for changes made outside it like lazygit's
@@ -68,6 +72,11 @@ pub fn spawn(
                     true
                 }
                 Ok(Wake::Handled) => owed,
+                #[cfg(test)]
+                Ok(Wake::Answer(answer)) => {
+                    let _ = answer.send(());
+                    false
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => true,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
@@ -137,6 +146,13 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(10)).unwrap()
     }
 
+    // Once the refresher handled the wakes sent before, see `Wake::Answer`.
+    fn handled_before(poke: &mpsc::Sender<Wake>) {
+        let (answer, answered) = mpsc::channel();
+        poke.send(Wake::Answer(answer)).unwrap();
+        answered.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+
     #[test]
     fn test_refresher_ticks() {
         let ms = Duration::from_millis;
@@ -159,7 +175,7 @@ mod tests {
         let held = next(&rx);
         assert!(matches!(held, AppEvent::RefsSnapshot(..)));
         poke.send(Wake::Poke).unwrap();
-        std::thread::sleep(ms(200));
+        handled_before(&poke);
         assert!(rx.try_recv().is_err());
         drop(held);
         assert!(matches!(next(&rx), AppEvent::RefsSnapshot(..)));
@@ -231,7 +247,7 @@ mod tests {
         poke.send(Wake::Poke).unwrap();
         let held = (next(&rx), next(&rx));
         poke.send(Wake::Poke).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        handled_before(&poke);
         assert!(rx.try_recv().is_err());
         drop(held);
         assert!(matches!(next(&rx), AppEvent::RefsSnapshot(..)));

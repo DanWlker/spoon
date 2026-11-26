@@ -762,7 +762,7 @@ impl App<'_> {
         let expiry = self.shell.notices.iter().map(|n| n.until).min();
         let reveal = self.shell.dialog.as_ref().and_then(|popup| popup.reveal);
         let shown = background::next_shown(drawn);
-        let search = self.view.search_due();
+        let search = self.view.settles_at();
         [expiry, reveal, shown, search].into_iter().flatten().min()
     }
 
