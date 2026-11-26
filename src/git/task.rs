@@ -800,6 +800,27 @@ pub(super) fn tree_entries(out: &str) -> impl Iterator<Item = (&str, &str, &str)
     })
 }
 
+// The value git gives `attribute` for each of `paths`, as (path, value), like "unspecified" for
+// one without it; in parts, many paths being more than a command line takes.
+pub(super) fn check_attr(
+    repository: &Path,
+    attribute: &str,
+    paths: &[&str],
+) -> Vec<(String, String)> {
+    let paths = paths.iter().map(|p| p.to_string()).collect();
+    let mut values = Vec::new();
+    for part in command_line_parts(paths) {
+        let mut args = vec!["check-attr", "-z", attribute, "--"];
+        args.extend(part.iter().map(String::as_str));
+        let out = git_output(repository, &args).unwrap_or_default();
+        // path, attribute, value, each ended by a NUL
+        let fields: Vec<&str> = out.split('\0').collect();
+        let entries = fields.as_chunks::<3>().0.iter();
+        values.extend(entries.map(|[path, _, value]| (path.to_string(), value.to_string())));
+    }
+    values
+}
+
 // The mode of a gitlink, a submodule's commit, in the index and in trees.
 pub(super) const GITLINK: &str = "160000";
 

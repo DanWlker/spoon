@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::background::Cancel;
 
 use super::{
-    git_arg, git_command, git_output, git_output_bytes_until, git_output_with_status,
+    check_attr, git_arg, git_command, git_output, git_output_bytes_until, git_output_with_status,
     index_entries, is_binary, pathspecs, run_logged, text_from_git, work_path, CommitHash,
     LocalChangeStatus, LocalChanges, Repository, WorkTree,
 };
@@ -129,22 +129,31 @@ impl WorkTree {
         }
         // both sides regular files: a bit for stage 2 and one for stage 3
         let text_sides = |path: &str| text.get(path) == Some(&(1 << 2 | 1 << 3));
+        let paths: Vec<&str> = paths.iter().copied().filter(|p| text_sides(p)).collect();
+        // the size of the markers git wrote in each, in one call for all, like lazygit
+        let sizes: FxHashMap<String, usize> =
+            check_attr(&self.path, "conflict-marker-size", &paths)
+                .into_iter()
+                .map(|(path, value)| (path, marker_size(&value)))
+                .collect();
         let no_markers = |path: &str| {
+            let size = sizes.get(path).copied().unwrap_or(DEFAULT_MARKER_SIZE);
             let file = work_path(&self.path, path);
             // before reading it: a FIFO, or a link to /dev/zero, would be read for good
             let regular = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_file());
             let Some(content) = regular.then(|| std::fs::read(&file).ok()).flatten() else {
                 return false;
             };
+            // the start and end markers only, the others being more ambiguous, like lazygit
             !is_binary(&content)
-                && !String::from_utf8_lossy(&content)
-                    .lines()
-                    .any(|line| is_conflict_marker(line, "<<<<<<<"))
+                && !String::from_utf8_lossy(&content).lines().any(|line| {
+                    is_conflict_marker(line, b'<', size) || is_conflict_marker(line, b'>', size)
+                })
         };
         paths
-            .iter()
-            .filter(|path| text_sides(path) && no_markers(path))
-            .map(|path| path.to_string())
+            .into_iter()
+            .filter(|path| no_markers(path))
+            .map(String::from)
             .collect()
     }
 }
@@ -235,10 +244,38 @@ impl ConflictSide {
     }
 }
 
-// Whether `line` is the conflict marker `marker`, like "<<<<<<<", alone or followed by a label.
-pub fn is_conflict_marker(line: &str, marker: &str) -> bool {
-    line.strip_prefix(marker)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+// The size of the conflict markers git writes without a `conflict-marker-size` attribute.
+const DEFAULT_MARKER_SIZE: usize = 7;
+
+// The size of the conflict markers of a file whose `conflict-marker-size` attribute is `value`,
+// like "10", or "unspecified" for git's default.
+fn marker_size(value: &str) -> usize {
+    value
+        .parse()
+        .ok()
+        .filter(|size| *size > 0)
+        .unwrap_or(DEFAULT_MARKER_SIZE)
+}
+
+// The size of the conflict markers git writes in the file at `path`, see `marker_size`.
+pub fn conflict_marker_size(repository: &Path, path: &str) -> usize {
+    let value = check_attr(repository, "conflict-marker-size", &[path]);
+    value
+        .first()
+        .map_or(DEFAULT_MARKER_SIZE, |(_, value)| marker_size(value))
+}
+
+// Whether `line` is the conflict marker of `size` times `c`, like "<<<<<<<", alone or followed by a
+// label; the "=======" between the sides has no label.
+pub fn is_conflict_marker(line: &str, c: u8, size: usize) -> bool {
+    let bytes = line.as_bytes();
+    bytes.len() >= size
+        && bytes[..size].iter().all(|b| *b == c)
+        && match bytes.get(size) {
+            None => true,
+            Some(b' ') => c != b'=',
+            _ => false,
+        }
 }
 
 pub const MAX_CONFLICT_STEPS: usize = 100;
@@ -372,6 +409,53 @@ mod tests {
             .resolve_conflict("f", ConflictSide::Theirs)
             .is_err());
         assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), content);
+    }
+
+    // Resolved means no start or end marker left of the size git writes, like lazygit: a larger
+    // `conflict-marker-size`, or only the start marker removed, staged a file with markers in it.
+    #[test]
+    fn test_resolved_conflicts_follow_the_marker_size() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        let write = |name: &str, content: &str| std::fs::write(path.join(name), content).unwrap();
+        write(".gitattributes", "wide conflict-marker-size=10\n");
+        write("wide", "base\n");
+        write("half", "base\n");
+        repo.add(&[".gitattributes", "wide", "half"]);
+        repo.commit("base", "2024-01-01");
+        repo.checkout_b("incoming");
+        write("wide", "theirs\n");
+        write("half", "theirs\n");
+        repo.add(&["wide", "half"]);
+        repo.commit("incoming", "2024-01-02");
+        repo.checkout("master");
+        write("wide", "ours\n");
+        write("half", "ours\n");
+        repo.add(&["wide", "half"]);
+        repo.commit("existing", "2024-01-03");
+        assert!(git_output(path, &["merge", "incoming"]).is_err());
+        let wide = std::fs::read_to_string(path.join("wide")).unwrap();
+        assert!(wide.starts_with("<<<<<<<<<< "), "{wide}");
+        // the start marker removed by hand, the rest left
+        write("half", "ours\n=======\ntheirs\n>>>>>>> incoming\n");
+
+        // loading stages the conflicts resolved, not these
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let unmerged = git_output(path, &["diff", "--name-only", "--diff-filter=U"]).unwrap();
+        assert_eq!(unmerged, "half\nwide\n");
+        let work_tree = repository.work_tree();
+        assert!(work_tree.resolved_conflicts(&["wide", "half"]).is_empty());
+        // a line of 7 `<` isn't a marker of size 10, so that file is resolved
+        write("wide", "<<<<<<< not a marker\n");
+        write("half", "both\n");
+        assert_eq!(
+            work_tree.resolved_conflicts(&["wide", "half"]),
+            ["wide", "half"]
+        );
     }
 
     #[test]

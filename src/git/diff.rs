@@ -9,9 +9,8 @@ use std::{
 use crate::background::Cancel;
 
 use super::{
-    command_line_parts, git_output, git_output_bytes_until, git_run_until, parse_name_status,
-    pathspecs, submodule::gitlinks_at, text_from_git, CommitHash, LocalChangeStatus, Repository,
-    WorkTree,
+    check_attr, git_output, git_output_bytes_until, git_run_until, parse_name_status, pathspecs,
+    submodule::gitlinks_at, text_from_git, CommitHash, LocalChangeStatus, Repository, WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -28,24 +27,11 @@ impl ConvertedPaths {
         if self.textconv_drivers.is_empty() || paths.is_empty() {
             return FxHashSet::default();
         }
-        let paths = paths.iter().map(|p| p.to_string()).collect();
-        let mut converted = FxHashSet::default();
-        // in parts, many paths being more than a command line takes
-        for part in command_line_parts(paths) {
-            let mut args = vec!["check-attr", "-z", "diff", "--"];
-            args.extend(part.iter().map(String::as_str));
-            let out = git_output(&self.repository, &args).unwrap_or_default();
-            // path, attribute, value, each ended by a NUL
-            let fields: Vec<&str> = out.split('\0').collect();
-            let paths = fields
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .filter(|[_, _, driver]| self.textconv_drivers.iter().any(|d| d == driver))
-                .map(|[path, _, _]| path.to_string());
-            converted.extend(paths);
-        }
-        converted
+        check_attr(&self.repository, "diff", paths)
+            .into_iter()
+            .filter(|(_, driver)| self.textconv_drivers.contains(driver))
+            .map(|(path, _)| path)
+            .collect()
     }
 }
 

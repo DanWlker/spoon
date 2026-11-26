@@ -241,7 +241,7 @@ With the `diff3` or `zdiff3` conflict style (`git config merge.conflictStyle zdi
 - on `Edit in merge tool`, runs `git mergetool` for the file, with the tool of [`core.git.merge_tool`](../configurations/config-file-format.md) or else git's `merge.tool` config.
 - on `Open in editor`, opens the file in `$VISUAL` or `$EDITOR` (like <kbd>e</kbd>), to edit the conflict markers by hand.
 
-The app is suspended while the editor or merge tool runs, and refreshed after. Like lazygit, a file whose conflict markers are all gone is staged when the files are loaded again, unless both sides aren't text (a binary file, a symlink, a submodule or a side deleting it), which is resolved by keeping a side.
+The app is suspended while the editor or merge tool runs, and refreshed after. Like lazygit, a file with no start (`<<<<<<<`) or end (`>>>>>>>`) marker left, of the size its `conflict-marker-size` attribute gives, is staged when the files are loaded again, unless both sides aren't text (a binary file, a symlink, a submodule or a side deleting it), which is resolved by keeping a side.
 
 A conflicted file is never staged with <kbd>Space</kbd>, which would stage its markers: on the file it moves into the conflicts like <kbd>Enter</kbd>, and on a directory or picked files with a conflicted file among them it is refused.
 

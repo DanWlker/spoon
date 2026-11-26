@@ -4,7 +4,10 @@ use rustc_hash::FxHashSet;
 
 use crate::{
     background::Cancel,
-    git::{conflict_side, is_conflict_marker, ConflictSide, Operation, Repository, SideContent},
+    git::{
+        conflict_marker_size, conflict_side, is_conflict_marker, ConflictSide, Operation,
+        Repository, SideContent,
+    },
     widget::style::tabs_shown,
 };
 
@@ -75,7 +78,8 @@ impl ConflictView {
             .filter(|bytes| !crate::git::is_binary(bytes));
         if let Some(bytes) = content {
             // its bytes that aren't UTF-8 kept, like those of the sides from git
-            if let Some(view) = parse_conflict_markers(&crate::git::text_from_git(&bytes)) {
+            let size = conflict_marker_size(repository, path);
+            if let Some(view) = parse_conflict_markers(&crate::git::text_from_git(&bytes), size) {
                 return ConflictView { editable, ..view };
             }
         }
@@ -137,7 +141,7 @@ pub fn side_names(operation: Option<Operation>) -> (&'static str, &'static str) 
 // `CONTEXT` lines of the file around it; the sides are padded to keep each block level. The common
 // ancestor of the diff3 style (after |||||||) is a side of its own, and the lines of the other
 // sides it doesn't have are marked changed.
-pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
+pub fn parse_conflict_markers(content: &str, size: usize) -> Option<ConflictView> {
     #[derive(PartialEq)]
     enum Part {
         Outside,
@@ -158,17 +162,17 @@ pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
 
     for (index, line) in content.lines().enumerate() {
         let number = index + 1;
-        let marker = |m: &str| is_conflict_marker(line, m);
+        let marker = |c: u8| is_conflict_marker(line, c, size);
         let text = tabs_shown(line).into_owned();
         let context = |number: usize, text: &str| ConflictRow {
             number: Some(number),
             text: text.to_string(),
             kind: RowKind::Context,
         };
-        if part == Part::Outside && marker("<<<<<<<") {
+        if part == Part::Outside && marker(b'<') {
             view.conflicts += 1;
             if view.ours_label.is_empty() {
-                view.ours_label = tabs_shown(line.get(8..).unwrap_or_default()).into_owned();
+                view.ours_label = tabs_shown(line.get(size + 1..).unwrap_or_default()).into_owned();
             }
             let header = ConflictRow {
                 number: None,
@@ -182,14 +186,15 @@ pub fn parse_conflict_markers(content: &str) -> Option<ConflictView> {
             before.clear();
             after = 0;
             part = Part::Ours;
-        } else if part == Part::Ours && marker("|||||||") {
+        } else if part == Part::Ours && marker(b'|') {
             block_has_base = true;
             part = Part::Base;
-        } else if (part == Part::Ours || part == Part::Base) && line == "=======" {
+        } else if (part == Part::Ours || part == Part::Base) && marker(b'=') {
             part = Part::Theirs;
-        } else if part == Part::Theirs && marker(">>>>>>>") {
+        } else if part == Part::Theirs && marker(b'>') {
             if view.theirs_label.is_empty() {
-                view.theirs_label = tabs_shown(line.get(8..).unwrap_or_default()).into_owned();
+                view.theirs_label =
+                    tabs_shown(line.get(size + 1..).unwrap_or_default()).into_owned();
             }
             has_base |= block_has_base;
             let height = ours.len().max(ancestor.len()).max(theirs.len());
@@ -311,7 +316,7 @@ theirs 2
 >>>>>>> feature
 end
 ";
-        let view = parse_conflict_markers(content).unwrap();
+        let view = parse_conflict_markers(content, 7).unwrap();
         assert_eq!(
             (view.ours_label.as_str(), view.theirs_label.as_str()),
             ("HEAD", "feature")
@@ -357,7 +362,7 @@ end
         assert_eq!(base.len(), view.ours.len());
         assert_eq!(rows(&base[9..11]), ["16|base 2|k", "||p"]);
 
-        assert_eq!(parse_conflict_markers("no conflict\n"), None);
+        assert_eq!(parse_conflict_markers("no conflict\n", 7), None);
     }
 
     // A file that isn't UTF-8, like Latin-1, still shows its conflict.
@@ -469,9 +474,21 @@ end
         assert!(ours[0].starts_with("|Cannot show this side: "), "{ours:?}");
     }
 
+    // A `conflict-marker-size` of 10: its markers are the conflict's, 7 of a character aren't.
+    #[test]
+    fn test_markers_of_another_size() {
+        let content = "<<<<<<<<<< ours\n<<<<<<< x\n==========\ny\n>>>>>>>>>> theirs\n";
+        let view = parse_conflict_markers(content, 10).unwrap();
+        assert_eq!(view.conflicts, 1);
+        assert_eq!((&*view.ours_label, &*view.theirs_label), ("ours", "theirs"));
+        assert!(rows(&view.ours).iter().any(|row| row.contains("<<<<<<< x")));
+        let wide = "<<<<<<<<<< ours\nx\n==========\ny\n>>>>>>>>>> theirs\n";
+        assert_eq!(parse_conflict_markers(wide, 7), None);
+    }
+
     #[test]
     fn test_no_base_without_diff3_markers() {
-        let view = parse_conflict_markers("<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n").unwrap();
+        let view = parse_conflict_markers("<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n", 7).unwrap();
         assert_eq!(view.base, None);
         // nothing to compare to: no line is marked changed
         assert_eq!(rows(&view.ours), ["|── conflict 1 of 1 ──|h", "2|x|k"]);
