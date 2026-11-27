@@ -18,6 +18,7 @@ use crate::{
     },
     widget::{
         commit_list::CommitListState,
+        diff::Step,
         local_changes::{
             ExternalRequest, LocalChangesPanel, LocalChangesSection, LocalChangesSnapshot,
             LocalChangesState, Request,
@@ -251,16 +252,16 @@ impl<'a> LocalChangesView<'a> {
                 self.local_changes_state.focus_commit();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                self.local_changes_state.select_next();
+                self.local_changes_state.step(Step::Next);
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
-                self.local_changes_state.select_prev();
+                self.local_changes_state.step(Step::Prev);
             }
             UserEvent::GoToTop => {
-                self.local_changes_state.select_first();
+                self.local_changes_state.step(Step::First);
             }
             UserEvent::GoToBottom => {
-                self.local_changes_state.select_last();
+                self.local_changes_state.step(Step::Last);
             }
             UserEvent::NavigateRight => {
                 self.local_changes_state.expand();

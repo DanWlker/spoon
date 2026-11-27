@@ -666,7 +666,10 @@ impl<'a> LocalChangesState<'a> {
             return Ok(());
         };
         let path = if !self.picked().is_empty() && !self.is_diff_focused() {
-            picked_files_label(self.target_files().len())
+            match self.target_files().len() {
+                1 => "1 picked file".into(),
+                count => format!("{count} picked files"),
+            }
         } else if row.is_root() && self.tree().filter().is_none() {
             "all files".to_string()
         } else if row.is_root() {
@@ -1187,8 +1190,7 @@ impl<'a> LocalChangesState<'a> {
                 self.enter()?;
                 return Ok(self.focus() != Focus::Files);
             }
-            (Focus::Side, Direction::Down) => self.focus_commit(),
-            (Focus::Submodule, Direction::Down) => self.focus_commit(),
+            (Focus::Side | Focus::Submodule, Direction::Down) => self.focus_commit(),
             (
                 Focus::Submodule | Focus::Side | Focus::Commit(_) | Focus::Typing(_),
                 Direction::Left,
@@ -1275,22 +1277,6 @@ impl<'a> LocalChangesState<'a> {
         self.pane.leave();
     }
 
-    pub fn select_next(&mut self) {
-        self.step(Step::Next, |s| s.cursor() + 1);
-    }
-
-    pub fn select_prev(&mut self) {
-        self.step(Step::Prev, |s| s.cursor().saturating_sub(1));
-    }
-
-    pub fn select_first(&mut self) {
-        self.step(Step::First, |_| 0);
-    }
-
-    pub fn select_last(&mut self) {
-        self.step(Step::Last, |_| usize::MAX);
-    }
-
     // Moves the cursor of the files by every key scrolling the list; returns whether the cursor
     // moved.
     pub fn navigate_files(&mut self, event: UserEvent) -> bool {
@@ -1304,8 +1290,9 @@ impl<'a> LocalChangesState<'a> {
         moved
     }
 
-    // Moves the selected line or hunk, else the cursor of the files to `row`.
-    fn step(&mut self, step: Step, row: impl Fn(&Self) -> usize) {
+    // Moves the selected line or hunk, the commit of the submodule or the field of the message,
+    // else the cursor of the files.
+    pub fn step(&mut self, step: Step) {
         match self.focus() {
             Focus::Side if self.conflict().is_none() => self.pane.step(step),
             Focus::Submodule => {
@@ -1324,7 +1311,15 @@ impl<'a> LocalChangesState<'a> {
                     _ => Focus::Commit(field),
                 };
             }
-            _ => self.move_cursor(row(self)),
+            _ => {
+                let row = match step {
+                    Step::Next => self.cursor() + 1,
+                    Step::Prev => self.cursor().saturating_sub(1),
+                    Step::First => 0,
+                    Step::Last => usize::MAX,
+                };
+                self.move_cursor(row);
+            }
         }
     }
 
@@ -2190,14 +2185,6 @@ impl<'a> LocalChangesState<'a> {
     }
 }
 
-fn picked_files_label(count: usize) -> String {
-    if count == 1 {
-        "1 picked file".into()
-    } else {
-        format!("{count} picked files")
-    }
-}
-
 fn file_paths<'f>(files: &[&'f LocalChangeFile]) -> Vec<&'f str> {
     files.iter().map(|f| f.path.as_ref()).collect()
 }
@@ -3003,7 +2990,7 @@ mod tests {
         state.draft.set_message(&format!("subject\n\n{body}"));
         // the message is on the description box, its 3 lines shown
         state.focus_commit();
-        state.select_next();
+        state.step(Step::Next);
         let area = Rect::new(0, 0, 90, 20);
         let shown = |state: &mut LocalChangesState| {
             let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -3016,10 +3003,10 @@ mod tests {
         assert_ne!(shown(&mut state), top, "the message didn't scroll");
         // g and G pick the summary and the description, as j and k do
         assert!(state.keys().takes(UserEvent::GoToTop));
-        state.select_first();
+        state.step(Step::First);
         assert_eq!(state.commit_field(), Some(CommitField::Summary));
         assert!(state.keys().takes(UserEvent::GoToBottom));
-        state.select_last();
+        state.step(Step::Last);
         assert_eq!(state.commit_field(), Some(CommitField::Description));
         Ok(())
     }
@@ -3240,12 +3227,12 @@ mod tests {
         state.focus_files();
         state.focus_commit();
         assert!(!state.is_editing());
-        state.select_next();
+        state.step(Step::Next);
         assert_eq!(state.commit_field(), Some(CommitField::Description));
-        state.select_prev();
+        state.step(Step::Prev);
         assert_eq!(state.commit_field(), Some(CommitField::Summary));
         // leaving the section forgets the box: back in it, the summary is selected
-        state.select_next();
+        state.step(Step::Next);
         state.focus_files();
         state.focus_commit();
         assert_eq!(state.commit_field(), Some(CommitField::Summary));
@@ -3313,7 +3300,7 @@ mod tests {
         state.focus_section(LocalChangesSection::Staged);
         select_row(&mut state, "a.txt");
         state.enter()?;
-        state.select_next();
+        state.step(Step::Next);
         state.select()?;
         assert_eq!(paths(&state.changes.unstaged), vec!["a.txt"]);
         let staged_diff = repository.local_change_diff(
@@ -3584,7 +3571,7 @@ mod tests {
         state.enter()?;
         // v and down select "new A" and "new B", which y copies and space stages
         state.toggle_visual();
-        state.select_next();
+        state.step(Step::Next);
         assert_eq!(state.selected_diff_name(), "lines");
         assert_eq!(state.selected_diff_text().as_deref(), Some("new A\nnew B"));
         state.select()?;
@@ -3692,7 +3679,7 @@ mod tests {
         select_row(&mut state, "u.txt");
         state.enter()?;
         state.enter()?;
-        state.select_last();
+        state.step(Step::Last);
         state.select()?;
         let staged = staged_diff("u.txt");
         assert!(staged.contains("+u1") && staged.contains("+u2"));
@@ -4703,7 +4690,7 @@ mod tests {
         );
         // into the folder's diff, on the hunk of b.txt
         state.enter()?;
-        state.select_last();
+        state.step(Step::Last);
         assert_eq!(state.diff_file().as_deref(), Some("d/b.txt"));
         state.request_edit()?;
         let request = state.take_external_request();
@@ -5555,16 +5542,16 @@ mod tests {
         assert!(state.reload_if_changed(files()));
         assert!(state.is_visual());
         // and still picks as it moves: the picks' half of it was cleared
-        state.select_next();
+        state.step(Step::Next);
         assert_eq!(state.picked_paths(), ["a.txt", "b.txt"]);
-        state.select_prev();
+        state.step(Step::Prev);
         assert_eq!(state.picked_paths(), ["a.txt"]);
         // another file: the rows change, the selection goes on from a, keeping what it picked
         fs::write(repo_path.join("c.txt"), "new\n")?;
         assert!(state.reload_if_changed(files()));
         assert!(state.is_visual());
-        state.select_next();
-        state.select_next();
+        state.step(Step::Next);
+        state.step(Step::Next);
         assert_eq!(state.picked_paths(), ["a.txt", "b.txt", "c.txt"]);
         Ok(())
     }
