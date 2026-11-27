@@ -201,7 +201,10 @@ pub fn name_matches(name: &str, query: &str, options: SearchOptions) -> bool {
     // yes or no: a lowercased copy alone, not the map of where each character was that
     // `match_range` makes to say where; asked of every row of a tree as the filter is typed
     if !options.fuzzy && !name.is_ascii() && case_insensitive(options.smart_case, query) {
-        return name.to_lowercase().contains(&query.to_lowercase());
+        // each character on its own, as `match_range` lowers them: the whole string's makes a
+        // final Σ ς, which the highlight would have as σ
+        let lower: String = name.chars().flat_map(char::to_lowercase).collect();
+        return lower.contains(&query.to_lowercase());
     }
     if !options.fuzzy || query.is_empty() {
         return match_range(name, query, options).is_some();
@@ -503,6 +506,22 @@ pub fn type_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The filter and the highlight lower a name alike: the filter kept "ΟΔΟΣ" for "οδος" with
+    // nothing highlighted, and hid it for "οδοσ", which the highlight matched.
+    #[test]
+    fn test_filter_and_highlight_lower_a_final_sigma_alike() {
+        let options = SearchOptions {
+            fuzzy: false,
+            smart_case: true,
+            ..Default::default()
+        };
+        for query in ["οδος", "οδοσ"] {
+            let filtered = name_matches("ΟΔΟΣ", query, options);
+            let highlighted = match_range("ΟΔΟΣ", query, options).is_some();
+            assert_eq!(filtered, highlighted, "{query}");
+        }
+    }
 
     // Whether a name matches is what its ranges say, which drawing highlights, in every mode.
     #[test]

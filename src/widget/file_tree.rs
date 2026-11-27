@@ -504,7 +504,8 @@ pub struct CheckedFiles {
     checked: Picks<usize>,
     // every file, and whether the filter shows it, see `show`
     files: Vec<(String, bool)>,
-    // the files shown under each directory and the root, and how many of them are checked
+    // under each directory and the root, how many of the files shown are checked, and how many
+    // are shown
     counts: FxHashMap<String, (usize, usize)>,
 }
 
