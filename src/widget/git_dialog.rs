@@ -19,8 +19,8 @@ use crate::{
     context::AppContext,
     event::{AppEvent, Sender},
     git::{
-        fits_a_command_line, parse_git_bool, pathspec_parts, stash_args, todo_action, AfterTask,
-        BranchStatus, CommitHash, Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask,
+        fits_a_command_line, parse_git_bool, stash_args, todo_action, AfterTask, BranchStatus,
+        CommitHash, Conflict, ConflictWork, FileChange, GitArgs, GitCommand, GitTask,
         LocalChangeFile, NamedRef, Operation, RemoteBranch, RemoteInfo, Stash, MAX_CONFLICT_STEPS,
     },
     keybind::UserEvent,
@@ -2185,22 +2185,12 @@ impl GitDialog {
                 (Move { from, to }, BeforeCommit) => (present.push(from), absent.push(to)).0,
             }
         }
-        // all removed, then all restored, in parts as long as a command line takes: a path a
-        // rename leaves and another change brings back is there in the end
-        let in_parts = |command: GitCommand, args: &[&str], paths: &[&str]| -> Vec<GitArgs> {
-            pathspec_parts(paths)
-                .into_iter()
-                .map(|part| {
-                    let mut command = command.args(args.iter().copied());
-                    command.args.extend(part);
-                    command
-                })
-                .collect()
-        };
-        let rm = ["-q", "-f", "--ignore-unmatch", "--"];
-        let restore = ["--source", source.as_str(), "--staged", "--worktree", "--"];
-        let mut commands = in_parts(GitCommand::Rm, &rm, &absent);
-        commands.extend(in_parts(GitCommand::Restore, &restore, &present));
+        // all removed, then all restored: a path a rename leaves and another change brings back
+        // is there in the end
+        let rm = ["-q", "-f", "--ignore-unmatch"];
+        let restore = ["--source", source.as_str(), "--staged", "--worktree"];
+        let mut commands = GitCommand::Rm.on_paths(&rm, &absent);
+        commands.extend(GitCommand::Restore.on_paths(&restore, &present));
         let at = match state {
             AtCommit => "at",
             BeforeCommit => "before",

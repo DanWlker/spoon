@@ -219,6 +219,19 @@ impl GitCommand {
             args: args.into_iter().map(Into::into).collect(),
         }
     }
+
+    // The command with `args`, then `--` and the pathspecs of `paths`, in as many commands as
+    // their command lines take, see `pathspec_parts`.
+    pub fn on_paths(self, args: &[&str], paths: &[&str]) -> Vec<GitArgs> {
+        let parts = pathspec_parts(paths).into_iter();
+        parts
+            .map(|part| {
+                let mut command = self.args(args.iter().copied().chain(["--"]));
+                command.args.extend(part);
+                command
+            })
+            .collect()
+    }
 }
 
 // A git command and its arguments.
@@ -774,9 +787,6 @@ pub fn work_path(root: &Path, path: &str) -> std::path::PathBuf {
     root.join(git_arg(path))
 }
 
-// Paths of files or directories for git, taken as they are, not as patterns: a file named
-// `*.log` is only that file. The root of the repository stays ":/".
-// The bytes of the paths one command line takes here, well under the limit, see `pathspec_parts`.
 // The entries of the index as `git ls-files --stage -z` (or `-u`) lists them, "<mode> <object>
 // <stage>\t<path>", as (path, stage, mode, object).
 pub(super) fn index_entries(out: &str) -> impl Iterator<Item = (&str, u8, &str, &str)> {
@@ -824,6 +834,7 @@ pub(super) fn check_attr(
 // The mode of a gitlink, a submodule's commit, in the index and in trees.
 pub(super) const GITLINK: &str = "160000";
 
+// The bytes of the paths one command line takes here, well under the limit, see `pathspec_parts`.
 const PART_BYTES: usize = 256 * 1024;
 
 // Whether the pathspecs of `paths` fit one command line, see `pathspec_parts`.
@@ -856,6 +867,8 @@ pub fn command_line_parts(args: Vec<String>) -> Vec<Vec<String>> {
     parts
 }
 
+// Paths of files or directories for git, taken as they are, not as patterns: a file named
+// `*.log` is only that file. The root of the repository stays ":/".
 pub fn pathspecs(paths: &[&str]) -> Vec<String> {
     paths
         .iter()

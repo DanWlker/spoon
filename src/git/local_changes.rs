@@ -70,25 +70,9 @@ impl Repository {
         let mut tracked = tracked.to_vec();
         let mut untracked = untracked.to_vec();
         // restoring and cleaning files moves no HEAD, which an operation stopped allows
-        // in parts, many paths being more than a command line takes
-        let command = |command: GitCommand, args: &[&str], paths: &[&str]| {
-            pathspec_parts(paths)
-                .into_iter()
-                .map(|part| {
-                    let mut command = command.args(args.iter().copied());
-                    command.args.push("--".into());
-                    command.args.extend(part);
-                    command
-                })
-                .collect::<Vec<_>>()
-        };
         let mut commands = vec![];
         if !conflicted.is_empty() {
-            commands.extend(command(
-                GitCommand::Restore,
-                &["--staged", "--quiet"],
-                conflicted,
-            ));
+            commands.extend(GitCommand::Restore.on_paths(&["--staged", "--quiet"], conflicted));
             // in parts too, looked up in a set
             let mut in_head_out = String::new();
             let paths = conflicted.iter().map(|p| p.to_string()).collect();
@@ -106,16 +90,8 @@ impl Repository {
                 }
             }
         }
-        if !tracked.is_empty() {
-            commands.extend(command(GitCommand::Restore, &["--quiet"], &tracked));
-        }
-        if !untracked.is_empty() {
-            commands.extend(command(
-                GitCommand::Clean,
-                &["--force", "--quiet"],
-                &untracked,
-            ));
-        }
+        commands.extend(GitCommand::Restore.on_paths(&["--quiet"], &tracked));
+        commands.extend(GitCommand::Clean.on_paths(&["--force", "--quiet"], &untracked));
         Ok(commands)
     }
 
