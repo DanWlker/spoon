@@ -96,18 +96,14 @@ impl Masks {
         style: GraphStyle,
     ) -> &Coverage {
         let key = ConnectionKey::new(side, corner);
-        let cache = match style {
-            GraphStyle::Angular => &mut self.diagonal_connections,
-            GraphStyle::Curved => &mut self.curved_connections,
-            GraphStyle::Rounded => unreachable!(),
+        let (cache, coverage): (_, fn(&Edge, &Edge, &ImageParams) -> Coverage) = match style {
+            GraphStyle::Angular => (&mut self.diagonal_connections, diagonal_coverage),
+            GraphStyle::Curved => (&mut self.curved_connections, curved_coverage),
+            GraphStyle::Rounded => unreachable!("rounded corners are drawn as masks of their own"),
         };
         cache.entry(key).or_insert_with(|| {
             let (side, corner) = key.normalized_edges();
-            match style {
-                GraphStyle::Angular => diagonal_coverage(&side, &corner, params),
-                GraphStyle::Curved => curved_coverage(&side, &corner, params),
-                GraphStyle::Rounded => unreachable!(),
-            }
+            coverage(&side, &corner, params)
         })
     }
 }
@@ -214,8 +210,6 @@ pub fn render(
     }
     // over the lines, which it hides under it
     if let Some(chevron) = chevron {
-        let masks = (pixels.antialias.as_ref()).expect("masks made for antialiased params");
-        let offset = (commit_pos_x * params.width as usize) as i32;
         image.paint(&masks.merge_disk, offset, background);
         image.paint(
             &masks.merge_marks[&chevron],

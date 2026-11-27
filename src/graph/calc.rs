@@ -285,19 +285,10 @@ fn find_primary_branch_tip<'a>(
     repository: &'a Repository,
     primary_branch: &str,
 ) -> Option<&'a CommitHash> {
-    if primary_branch.is_empty() {
-        return None;
-    }
-
-    for r in repository.all_refs() {
-        if let Ref::Branch { name, target } = r {
-            if name == primary_branch {
-                return Some(target);
-            }
-        }
-    }
-
-    None
+    repository.all_refs().into_iter().find_map(|r| match r {
+        Ref::Branch { name, target } if name == primary_branch => Some(target),
+        _ => None,
+    })
 }
 
 fn primary_branch_spine<'a>(
@@ -356,23 +347,14 @@ fn calc_commit_positions<'a>(
                 .map(|hash| commit_pos_map[hash].1)
                 .min();
 
-            let pos_x = if is_primary {
-                // For a primary spine commit with no first-parent children (i.e. tip of primary branch),
-                // verify that column 0 is vacant and doesn't overlap an active merge line before assigning it.
-                let col_0_vacant = commit_line_state.first().is_none_or(|c| c.is_none());
-                let col_0_no_overlap = merge_child_pos_y.is_none_or(|child_y| {
-                    line_last_occupied_pos_y.first().copied().unwrap_or(0) <= child_y
-                });
-                if col_0_vacant && col_0_no_overlap {
-                    0
-                } else {
-                    get_first_vacant_line(
-                        &commit_line_state,
-                        &line_last_occupied_pos_y,
-                        merge_child_pos_y,
-                        min_col,
-                    )
-                }
+            // the tip of the primary branch takes column 0 when it is vacant and no merge line
+            // above crosses it
+            let col_0_vacant = commit_line_state.first().is_none_or(|c| c.is_none());
+            let col_0_no_overlap = merge_child_pos_y.is_none_or(|child_y| {
+                line_last_occupied_pos_y.first().copied().unwrap_or(0) <= child_y
+            });
+            let pos_x = if is_primary && col_0_vacant && col_0_no_overlap {
+                0
             } else {
                 get_first_vacant_line(
                     &commit_line_state,
@@ -697,7 +679,6 @@ fn calc_edges(
                 || edges
                     .runs_crossing(between.clone())
                     .any(|run| run.pos_x == pos_x && run.parent != pos_y);
-            let mut overlap = false;
             let mut new_pos_x = pos_x;
             if in_the_way {
                 // right of the lines of other commits there, the rightmost of them, once one is
@@ -711,9 +692,8 @@ fn calc_edges(
                 while commit_in(new_pos_x, &between) {
                     new_pos_x += 1;
                 }
-                overlap = new_pos_x != pos_x;
             }
-            if overlap {
+            if new_pos_x != pos_x {
                 // detour
                 edges.push(pos_y, Edge::new(EdgeType::Right, pos_x, pos_x));
                 for x in (pos_x + 1)..new_pos_x {
@@ -747,10 +727,6 @@ fn calc_edges(
                     edges.push(child_pos_y, Edge::new(EdgeType::Right, child_pos_x, pos_x));
                 }
             }
-        }
-
-        if max_pos_x < pos_x {
-            max_pos_x = pos_x;
         }
     }
 

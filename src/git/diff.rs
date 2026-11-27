@@ -9,8 +9,9 @@ use std::{
 use crate::background::Cancel;
 
 use super::{
-    check_attr, git_output, git_output_bytes_until, git_run_until, parse_name_status, pathspecs,
-    submodule::gitlinks_at, text_from_git, CommitHash, LocalChangeStatus, Repository, WorkTree,
+    check_attr, fits_a_command_line, git_output, git_output_bytes_until, git_run_until,
+    parse_name_status, pathspecs, submodule::gitlinks_at, text_from_git, CommitHash,
+    LocalChangeStatus, Repository, WorkTree,
 };
 
 // Tells the paths whose diff shows text converted from them (a diff driver with a `textconv`, set in
@@ -105,6 +106,9 @@ impl Repository {
         if paths.is_empty() {
             return Box::new(|_| String::new());
         }
+        if !fits_a_command_line(paths) {
+            return Box::new(|_| TOO_MANY_FILES.into());
+        }
         Box::new(local_change_diff_work(&self.path, paths, of, context))
     }
 
@@ -150,6 +154,9 @@ impl Repository {
         paths: &[&str],
         context: usize,
     ) -> DiffWork {
+        if !fits_a_command_line(paths) {
+            return Box::new(|_| TOO_MANY_FILES.into());
+        }
         let mut args: Vec<String> = PATCH_DIFF_ARGS.iter().map(|a| a.to_string()).collect();
         args.extend(["-M", base, target].map(String::from));
         args.push(format!("--unified={context}"));
@@ -278,6 +285,10 @@ const PATCH_DIFF_ARGS: [&str; 7] = [
     "--dst-prefix=b/",
 ];
 
+// Shown, as a diff without hunks, in place of a diff of more paths than a command line takes,
+// which git can't read from its input: it wouldn't start, leaving the diff empty.
+pub const TOO_MANY_FILES: &str = "Too many files to show in one diff, select fewer";
+
 // The lines git shows around a change by default.
 pub const DEFAULT_DIFF_CONTEXT: usize = 3;
 
@@ -341,6 +352,31 @@ mod tests {
     use crate::git::GitCommand;
     use crate::git::GitTask;
     use crate::git::SortCommit;
+
+    // A diff of more paths than a command line takes, like a folder of many files filtered, said
+    // so: git didn't start, and the diff was empty.
+    #[test]
+    fn test_diff_of_more_paths_than_a_command_line_takes() {
+        use crate::test_support::git::GitRepository;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let repo = GitRepository::new(path);
+        repo.init();
+        std::fs::write(path.join("a"), "a\n").unwrap();
+        repo.add(&["a"]);
+        repo.commit("c1", "2024-01-01");
+        let repository = Repository::load(path, SortCommit::Chronological, None, false).unwrap();
+        let names: Vec<String> = (0..60_000)
+            .map(|i| format!("a/directory/with/a/longer/name/f{i:05}"))
+            .collect();
+        let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+        let head = repository.head_commit().unwrap();
+        let diff = repository.diff_between("HEAD", head.as_str(), &paths, 3);
+        assert_eq!(diff, TOO_MANY_FILES);
+        let diff = repository.local_change_diff(&paths, DiffOf::Unstaged, 3);
+        assert_eq!(diff, TOO_MANY_FILES);
+    }
 
     // The changes and the files of a commit stop loading once nobody waits for them, like once
     // the details showing them close.

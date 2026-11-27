@@ -1,4 +1,4 @@
-use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
+use std::ops::{Add, Div, Mul, Sub};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
@@ -104,42 +104,6 @@ impl Vector {
     }
 }
 
-impl Add for Vector {
-    type Output = Vector;
-
-    fn add(self, rhs: Vector) -> Self::Output {
-        Vector {
-            x: self.x + rhs.x,
-            y: self.y + rhs.y,
-        }
-    }
-}
-
-impl AddAssign for Vector {
-    fn add_assign(&mut self, rhs: Self) {
-        self.x += rhs.x;
-        self.y += rhs.y;
-    }
-}
-
-impl Sub for Vector {
-    type Output = Vector;
-
-    fn sub(self, rhs: Vector) -> Self::Output {
-        Vector {
-            x: self.x - rhs.x,
-            y: self.y - rhs.y,
-        }
-    }
-}
-
-impl SubAssign for Vector {
-    fn sub_assign(&mut self, rhs: Self) {
-        self.x -= rhs.x;
-        self.y -= rhs.y;
-    }
-}
-
 impl Mul<f64> for Vector {
     type Output = Vector;
 
@@ -148,14 +112,6 @@ impl Mul<f64> for Vector {
             x: self.x * rhs,
             y: self.y * rhs,
         }
-    }
-}
-
-impl Mul<Vector> for f64 {
-    type Output = Vector;
-
-    fn mul(self, rhs: Vector) -> Self::Output {
-        rhs * self
     }
 }
 

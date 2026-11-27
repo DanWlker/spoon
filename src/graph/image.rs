@@ -184,11 +184,10 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn graph_cell_width(&self) -> u16 {
-        let cell_count = (self.graph.max_pos_x + 1) as u16;
-        match self.cell_width_type {
-            CellWidthType::Double => cell_count * 2,
-            CellWidthType::Single => cell_count,
-        }
+        let cells = self
+            .cell_width_type
+            .cells(self.graph.max_pos_x.saturating_add(1));
+        u16::try_from(cells).unwrap_or(u16::MAX)
     }
 
     pub fn drain_pending_uploads(&mut self) -> Vec<String> {
@@ -301,10 +300,7 @@ impl GraphRowImage {
         image_protocol: ImageProtocol,
         image_id: u32,
     ) -> PreparedImage {
-        let image_cell_width = match cell_width_type {
-            CellWidthType::Double => self.cell_count * 2,
-            CellWidthType::Single => self.cell_count,
-        };
+        let image_cell_width = cell_width_type.cells(self.cell_count);
         image_protocol.prepare_image(&self.bytes, image_cell_width, image_id)
     }
 }
@@ -339,6 +335,16 @@ pub struct ImageParams {
 pub enum CellWidthType {
     Double, // 2 cells
     Single,
+}
+
+impl CellWidthType {
+    // The terminal cells `count` lanes take.
+    fn cells(self, count: usize) -> usize {
+        match self {
+            CellWidthType::Double => count.saturating_mul(2),
+            CellWidthType::Single => count,
+        }
+    }
 }
 
 impl ImageParams {
@@ -393,11 +399,7 @@ impl ImageParams {
     }
 
     fn corner_radius(&self) -> u16 {
-        if self.width < self.height {
-            self.width / 2
-        } else {
-            self.height / 2
-        }
+        self.width.min(self.height) / 2
     }
 }
 
@@ -592,29 +594,29 @@ impl DrawingPixels {
         }
     }
 
-    fn diagonal_connection_pixels(
+    // The pixels joining a lane's `side` to its `corner` in `style`, made once for each shape.
+    fn connection_pixels(
         &mut self,
         side: &Edge,
         corner: &Edge,
         params: &ImageParams,
+        style: GraphStyle,
     ) -> &Pixels {
         let key = ConnectionKey::new(side, corner);
-        self.diagonal_connections.entry(key).or_insert_with(|| {
+        let (cache, pixels): (_, fn(&Edge, &Edge, &ImageParams) -> Pixels) = match style {
+            GraphStyle::Angular => (
+                &mut self.diagonal_connections,
+                calc_diagonal_connection_drawing_pixels,
+            ),
+            GraphStyle::Curved => (
+                &mut self.curved_connections,
+                calc_curved_connection_drawing_pixels,
+            ),
+            GraphStyle::Rounded => unreachable!("rounded corners are drawn as pixels of their own"),
+        };
+        cache.entry(key).or_insert_with(|| {
             let (side, corner) = key.normalized_edges();
-            calc_diagonal_connection_drawing_pixels(&side, &corner, params)
-        })
-    }
-
-    fn curved_connection_pixels(
-        &mut self,
-        side: &Edge,
-        corner: &Edge,
-        params: &ImageParams,
-    ) -> &Pixels {
-        let key = ConnectionKey::new(side, corner);
-        self.curved_connections.entry(key).or_insert_with(|| {
-            let (side, corner) = key.normalized_edges();
-            calc_curved_connection_drawing_pixels(&side, &corner, params)
+            pixels(&side, &corner, params)
         })
     }
 }
@@ -868,15 +870,7 @@ fn draw_connected_edges(
     for (side, corner) in edge_connections(edges) {
         let color = image_params.edge_color(side.associated_line_pos_x);
         let x_offset = (side.pos_x.min(corner.pos_x) * image_params.width as usize) as i32;
-        let pixels = match graph_style {
-            GraphStyle::Angular => {
-                drawing_pixels.diagonal_connection_pixels(side, corner, image_params)
-            }
-            GraphStyle::Curved => {
-                drawing_pixels.curved_connection_pixels(side, corner, image_params)
-            }
-            GraphStyle::Rounded => unreachable!(),
-        };
+        let pixels = drawing_pixels.connection_pixels(side, corner, image_params, graph_style);
         draw_pixels(img_buf, pixels, x_offset, color);
     }
 }
