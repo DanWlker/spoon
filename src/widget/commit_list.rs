@@ -1232,8 +1232,8 @@ pub fn ref_label_style(color: Color) -> Style {
     let style = Style::default().add_modifier(Modifier::BOLD);
     match color {
         Color::Rgb(r, g, b) => {
-            let [ir, ig, ib] = [0x1E_u16, 0x1E, 0x24];
-            let tint = |c: u8, base: u16| ((c as u16 * 3 + base * 7) / 10) as u8;
+            let [ir, ig, ib] = INK;
+            let tint = |c: u8, base: u8| ((u16::from(c) * 3 + u16::from(base) * 7) / 10) as u8;
             style
                 .fg(color)
                 .bg(Color::Rgb(tint(r, ir), tint(g, ig), tint(b, ib)))
@@ -1253,7 +1253,9 @@ fn drawn_graph<'s>(
     &cells[..cells.len().min(area.width.saturating_sub(1) as usize)]
 }
 
-const LABEL_INK: Color = Color::Rgb(0x1E, 0x1E, 0x24);
+// the dark text of a label on a named color, and what a label's tint is mixed with
+const INK: [u8; 3] = [0x1E, 0x1E, 0x24];
+const LABEL_INK: Color = Color::Rgb(INK[0], INK[1], INK[2]);
 
 // The widths of the graph with the subjects after it, the name, the hash and the date: the name,
 // then the date, then the hash left out when the subject would be narrower than its minimum.
