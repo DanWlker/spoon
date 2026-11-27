@@ -991,7 +991,6 @@ impl DiffCursor {
             return false;
         };
         let down = rows > 0;
-        let rows = rows.unsigned_abs();
         let unit = match part {
             DiffPart::Line => self.line..self.line + 1,
             DiffPart::Hunk => diff.hunks.get(self.hunk).map_or(0..0, |h| h.rows.clone()),
@@ -1000,11 +999,7 @@ impl DiffCursor {
         // where the unit shows in the view, the page moving from there
         let bottom = self.scroll.offset + self.scroll.height.saturating_sub(1);
         let anchor = screen.start.clamp(self.scroll.offset, bottom);
-        let target = if down {
-            anchor.saturating_add(rows)
-        } else {
-            anchor.saturating_sub(rows)
-        };
+        let target = anchor.saturating_add_signed(rows);
         // the page is still inside the unit: scroll it, keeping the selection
         let inside = if down {
             target < screen.end
@@ -1012,24 +1007,18 @@ impl DiffCursor {
             target >= screen.start
         };
         if inside {
-            let moved = if down {
-                rows as isize
-            } else {
-                -(rows as isize)
-            };
-            self.scroll.offset = self.scroll.offset.saturating_add_signed(moved);
+            self.scroll.offset = self.scroll.offset.saturating_add_signed(rows);
             return true;
         }
         // past its end: the window moves, then the unit at the screen row the page reached, else
         // the next or previous one, or the edge of the diff when there is none further and the
         // selection is already on it
         let last_offset = self.wrap.total().saturating_sub(self.scroll.height);
-        let moved = if down {
-            self.scroll.offset.saturating_add(rows)
-        } else {
-            self.scroll.offset.saturating_sub(rows)
-        };
-        self.scroll.offset = moved.min(last_offset);
+        self.scroll.offset = self
+            .scroll
+            .offset
+            .saturating_add_signed(rows)
+            .min(last_offset);
         let row = self.wrap.logical_at(target);
         match part {
             DiffPart::Line => {

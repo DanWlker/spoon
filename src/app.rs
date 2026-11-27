@@ -890,7 +890,7 @@ impl App<'_> {
             }
             AppEvent::Checkout(commit) => {
                 let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
-                self.run_graph_command(UserEvent::Checkout, command);
+                self.run_graph_command(command);
             }
             AppEvent::ShowCommit(commit) => self.show_commit(&commit),
             AppEvent::OpenDialog(dialog) => self.open_dialog(Ok(*dialog)),
@@ -1782,12 +1782,7 @@ impl App<'_> {
         // space applies a stash, and checks out the other refs, as it does on the graph
         let event = keys.meaning(event);
         match event {
-            _ if self.shell.sidebar.handle_move(event) => {
-                if let Some(message) = self.shell.sidebar.visual_outside_section() {
-                    self.ec.send(AppEvent::NotifyWarn(message));
-                }
-                self.show_sidebar_selection();
-            }
+            _ if self.shell.sidebar.handle_move(event) => self.sidebar_moved(),
             UserEvent::NavigateRight => {
                 self.shell.sidebar.open_node();
                 self.show_sidebar_selection();
@@ -1800,10 +1795,7 @@ impl App<'_> {
                 self.shell
                     .sidebar
                     .select_section(Toward::of(event, UserEvent::NextSection));
-                if let Some(message) = self.shell.sidebar.visual_outside_section() {
-                    self.ec.send(AppEvent::NotifyWarn(message));
-                }
-                self.show_sidebar_selection();
+                self.sidebar_moved();
             }
             UserEvent::Confirm => {
                 // a folder opens or closes, else back to the page showing what is selected
@@ -2037,10 +2029,7 @@ impl App<'_> {
         self.shell
             .sidebar
             .search(direction, self.ctx.search_options.get());
-        if let Some(message) = self.shell.sidebar.visual_outside_section() {
-            self.ec.send(AppEvent::NotifyWarn(message));
-        }
-        self.show_sidebar_selection();
+        self.sidebar_moved();
         self.send_sidebar_search_status();
     }
 
@@ -2125,6 +2114,15 @@ impl App<'_> {
         if self.shell.sidebar_mode == SidebarMode::Focused {
             self.shell.sidebar_mode = SidebarMode::Shown;
         }
+    }
+
+    // The sidebar's selection moved: a visual selection leaving its section stops, saying so, and
+    // the graph follows, see `show_sidebar_selection`.
+    fn sidebar_moved(&mut self) {
+        if let Some(message) = self.shell.sidebar.visual_outside_section() {
+            self.ec.send(AppEvent::NotifyWarn(message));
+        }
+        self.show_sidebar_selection();
     }
 
     // Shows the selected ref on the graph as the sidebar moves, when `ui.refs.follow` is on.
@@ -2475,7 +2473,7 @@ impl App<'_> {
         };
         if let Some(Popup { dialog, .. }) = self.shell.dialog.as_mut() {
             let rows = crate::widget::style::WHEEL_ROWS as isize;
-            dialog.wheel(field, if toward == Toward::Next { rows } else { -rows });
+            dialog.wheel(field, toward.signed(rows));
         }
     }
 
@@ -2483,11 +2481,11 @@ impl App<'_> {
     fn end_dialog(&mut self, outcome: DialogOutcome) {
         match outcome {
             DialogOutcome::None => {}
-            DialogOutcome::Close => self.close_dialog(),
+            DialogOutcome::Close => self.shell.dialog = None,
             DialogOutcome::Quit => self.ec.send(AppEvent::Quit),
             DialogOutcome::Error(err) => self.ec.send(AppEvent::NotifyError(err)),
             DialogOutcome::Send(event) => {
-                self.close_dialog();
+                self.shell.dialog = None;
                 self.ec.send(*event);
             }
         }
@@ -2509,10 +2507,6 @@ impl App<'_> {
             popup.reveal = popup.reveal.filter(|at| *at > now);
         }
         self.shell.notices.retain(|n| n.until > now);
-    }
-
-    fn close_dialog(&mut self) {
-        self.shell.dialog = None;
     }
 
     // The popup, once it shows.
@@ -2559,10 +2553,10 @@ impl App<'_> {
         let path = self.repository.path().to_path_buf();
         // signing may ask for a passphrase in the terminal, which the app gives back meanwhile
         if task.may_sign() && self.repository.signs() {
-            self.ec.suspend();
-            println!("{}…", task.running);
-            let result = run_task(&path, &task);
-            self.ec.resume();
+            let result = self.suspended(|| {
+                println!("{}…", task.running);
+                run_task(&path, &task)
+            });
             self.shell.app_status.pending_clear = PendingClear::Screen;
             self.ec.send(AppEvent::TaskFinished { id, result });
             return;
@@ -2721,7 +2715,7 @@ impl App<'_> {
         let selected = state.selected_commit_hash().clone();
         let picked = state.picked_commit_hashes().to_vec();
         let command = graph_command(self.repository, event, selected, picked);
-        self.run_graph_command(event, command);
+        self.run_graph_command(command);
     }
 
     // The commands of the commit graph on the branch, remote branch or tag selected in the
@@ -2760,7 +2754,7 @@ impl App<'_> {
             RefSelection::DetachedHead => {
                 if let Head::Detached { target } = self.repository.head() {
                     let command = graph_command(self.repository, event, target.clone(), vec![]);
-                    self.run_graph_command(event, command);
+                    self.run_graph_command(command);
                 }
                 return;
             }
@@ -2770,7 +2764,7 @@ impl App<'_> {
             return;
         };
         let command = ref_graph_command(self.repository, event, &selected, target);
-        self.run_graph_command(event, command);
+        self.run_graph_command(command);
     }
 
     // Moves the border beside the focused panel with alt-left and alt-right (the sidebar, or the
@@ -3136,9 +3130,8 @@ impl App<'_> {
                 let hit = hit.filter(|hit| !bar(hit.target));
                 let hit = hit.map(|hit| Hit { row: None, ..hit });
                 if hit.is_some_and(|hit| self.point_hit(hit, OnPicks::Keep)) {
-                    let next = toward == Toward::Next;
                     let rows = crate::widget::style::WHEEL_ROWS as isize;
-                    self.run_event(Wheel(if next { rows } else { -rows }));
+                    self.run_event(Wheel(toward.signed(rows)));
                 }
             }
             Gesture::Hover(_) => {}
@@ -3339,10 +3332,7 @@ impl App<'_> {
         self.focus_sidebar();
         self.shell.sidebar.point(hit.row, picks);
         if hit.row.is_some() {
-            if let Some(message) = self.shell.sidebar.visual_outside_section() {
-                self.ec.send(AppEvent::NotifyWarn(message));
-            }
-            self.show_sidebar_selection();
+            self.sidebar_moved();
         }
         true
     }
@@ -3420,10 +3410,11 @@ impl App<'_> {
         }
         // a key acting on the search's matches finds them without waiting for typing to settle;
         // those typed into it don't
-        if self.view.waits_for(event) {
+        let waits = self.view.waits_for(event);
+        if waits {
             self.view.search_now();
         }
-        self.view.waits_for(event)
+        waits
     }
 
     // Runs the keys kept, see `Kept`, while what they act on is loaded; returns whether it ran one.
@@ -3448,17 +3439,12 @@ impl App<'_> {
         ran
     }
 
-    fn run_graph_command(
-        &mut self,
-        event: UserEvent,
-        command: Option<Result<GraphCommand, String>>,
-    ) {
+    fn run_graph_command(&mut self, command: Option<Result<GraphCommand, String>>) {
         match command {
             None => {}
             Some(Ok(GraphCommand::Dialog(dialog))) => self.open_dialog(Ok(*dialog)),
             Some(Ok(GraphCommand::AmendHead)) => self.amend_on_local_changes(),
             Some(Ok(GraphCommand::Compare(compare))) => self.open_compare(compare),
-            Some(Err(err)) if event != UserEvent::Diff => self.open_dialog(Err(err)),
             Some(Err(err)) => self.ec.send(AppEvent::NotifyError(err)),
         }
     }
@@ -3718,21 +3704,16 @@ impl App<'_> {
         match context {
             RefreshViewContext::List { .. } => {}
             RefreshViewContext::Detail {
-                compare: Some(compare),
-                focus,
-                queries,
-                ..
-            } => {
-                self.open_compare(compare);
-                self.restore_details(*queries, focus);
-            }
-            RefreshViewContext::Detail {
                 tab,
+                compare,
                 focus,
                 queries,
                 ..
             } => {
-                self.open_detail(tab);
+                match compare {
+                    Some(compare) => self.open_compare(compare),
+                    None => self.open_detail(tab),
+                }
                 self.restore_details(*queries, focus);
             }
             RefreshViewContext::LocalChanges {

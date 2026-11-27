@@ -267,6 +267,14 @@ impl Toward {
         }
     }
 
+    // `n` this way: as it is going next, negated going back.
+    pub fn signed(self, n: isize) -> isize {
+        match self {
+            Toward::Next => n,
+            Toward::Previous => -n,
+        }
+    }
+
     // The index of `len` after or before `index`, round; from none, the first or the last.
     pub fn around(self, index: Option<usize>, len: usize) -> usize {
         match (index, self) {

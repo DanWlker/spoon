@@ -3235,6 +3235,18 @@ impl Widget for GitDialogWidget<'_> {
             } else {
                 Style::default().fg(theme.fg)
             };
+            // the bar, the label, then the value between its arrows, and a note after them
+            let value_line =
+                |[left, right]: [Span<'static>; 2], value: String, note: Span<'static>| {
+                    Line::from(vec![
+                        bar.clone(),
+                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
+                        left,
+                        Span::raw(value).fg(theme.fg).bold(),
+                        right,
+                        note,
+                    ])
+                };
             let line = match field {
                 Field::Choice { options, index } => {
                     // the options go around
@@ -3245,16 +3257,8 @@ impl Widget for GitDialogWidget<'_> {
                     } else {
                         String::new()
                     };
-                    Line::from(vec![
-                        bar,
-                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
-                        left,
-                        Span::raw(options.get(*index).cloned().unwrap_or_default())
-                            .fg(theme.fg)
-                            .bold(),
-                        right,
-                        Span::styled(more, dim),
-                    ])
+                    let value = options.get(*index).cloned().unwrap_or_default();
+                    value_line([left, right], value, Span::styled(more, dim))
                 }
                 Field::Text { input, options, .. } => {
                     let value = input.value();
@@ -3272,26 +3276,11 @@ impl Widget for GitDialogWidget<'_> {
                         let x = prefix_width + 2 + input.visual_cursor();
                         cursor = Some((x as u16, lines.len() as u16));
                     }
-                    Line::from(vec![
-                        bar,
-                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
-                        left,
-                        Span::raw(value.to_string()).fg(theme.fg).bold(),
-                        right,
-                        Span::raw(note).fg(theme.highlight_fg),
-                    ])
+                    let note = Span::raw(note).fg(theme.highlight_fg);
+                    value_line([left, right], value.to_string(), note)
                 }
                 // no arrows, there is nothing to choose
-                Field::Fixed(value) => {
-                    let [left, right] = no_choice_arrows();
-                    Line::from(vec![
-                        bar,
-                        Span::styled(format!("{label:<LABEL_WIDTH$}  "), label_style),
-                        left,
-                        Span::raw(value.clone()).fg(theme.fg).bold(),
-                        right,
-                    ])
-                }
+                Field::Fixed(value) => value_line(no_choice_arrows(), value.clone(), Span::raw("")),
                 Field::Check(checked) => {
                     if !checks_started && i > 0 {
                         lines.push(Line::raw(""));
@@ -3396,7 +3385,7 @@ impl Widget for GitDialogWidget<'_> {
             let title = panel_title(label, [note].into_iter().chain(query), focused, theme);
             let rows = render_panel(buf, at, title, focused, theme);
             // hidden otherwise, like a local changes section's
-            let cursor = if focused {
+            let tree_cursor = if focused {
                 TreeCursor::Bright
             } else {
                 TreeCursor::Hidden
@@ -3408,7 +3397,7 @@ impl Widget for GitDialogWidget<'_> {
                 &files.tree,
                 |file| files.symbols.get(file).copied(),
                 |_| false,
-                cursor,
+                tree_cursor,
                 "No files",
                 Some(&files.checked),
                 self.ctx,
