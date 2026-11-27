@@ -490,7 +490,7 @@ fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
     s.split(' ').map(|s| s.into()).collect()
 }
 
-fn build_commits_maps(commits: &Vec<Commit>) -> (CommitsMap, CommitsMap) {
+fn build_commits_maps(commits: &[Commit]) -> (CommitsMap, CommitsMap) {
     let mut parents_map: CommitsMap = FxHashMap::default();
     let mut children_map: CommitsMap = FxHashMap::default();
     for commit in commits {
@@ -514,14 +514,14 @@ fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<C
     // Stash commit has multiple parent commits, but the first parent commit is the commit that the stash was created from.
     // If the first parent commit is not found, or there is none, the stash commit is ignored.
     let mut ret = Vec::new();
-    let mut statsh_map: FxHashMap<CommitHash, Vec<Commit>> = FxHashMap::default();
+    let mut stash_map: FxHashMap<CommitHash, Vec<Commit>> = FxHashMap::default();
     for stash in stashes {
         if let Some(parent) = stash.parent_commit_hashes.first() {
-            statsh_map.entry(parent.clone()).or_default().push(stash);
+            stash_map.entry(parent.clone()).or_default().push(stash);
         }
     }
     for commit in commits {
-        if let Some(stashes) = statsh_map.remove(&commit.commit_hash) {
+        if let Some(stashes) = stash_map.remove(&commit.commit_hash) {
             for stash in stashes {
                 ret.push(stash);
             }
@@ -540,13 +540,10 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
     let mut head: Head = Head::None;
 
     for line in out.lines() {
-        let parts: Vec<&str> = line.split(' ').collect();
-        if parts.len() != 2 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), line);
-        }
-
-        let hash = parts[0];
-        let refs = parts[1];
+        // "<hash> <ref>": git refuses to list a ref named with a space
+        let Some((hash, refs)) = line.split_once(' ') else {
+            continue;
+        };
 
         if refs == "HEAD" {
             head = if let Some(branch) = get_current_branch(path) {

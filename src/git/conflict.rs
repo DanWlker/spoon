@@ -9,7 +9,7 @@ use crate::background::Cancel;
 use super::{
     check_attr, git_arg, git_command, git_output, git_output_bytes_until, git_output_with_status,
     index_entries, is_binary, pathspecs, run_logged, text_from_git, work_path, CommitHash,
-    LocalChangeStatus, LocalChanges, Repository, WorkTree,
+    LocalChangeStatus, LocalChanges, Repository, WorkTree, GITLINK,
 };
 
 impl Repository {
@@ -77,7 +77,7 @@ impl WorkTree {
             None => return self.run(&["rm", "--quiet", "--", spec], None),
             // `checkout --ours` leaves a submodule as it is, so it is checked out at the commit
             // taken, then staged, like lazygit
-            Some(("160000", commit)) => {
+            Some((GITLINK, commit)) => {
                 let args = ["checkout", commit];
                 let submodule = work_path(&self.path, path);
                 // without a `.git` of its own git would check out in the superproject above; a
@@ -178,7 +178,7 @@ pub fn conflict_side(
     };
     Ok(match mode.as_str() {
         // its short hash and subject, from the submodule when it is checked out
-        "160000" => {
+        GITLINK => {
             let submodule = work_path(repository, path);
             let summary = submodule
                 .join(".git")

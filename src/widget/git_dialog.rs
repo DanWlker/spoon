@@ -1059,13 +1059,11 @@ impl GitDialog {
     // Starts looking for the conflicts on another thread, said in the popup meanwhile; `tx` wakes
     // the app up to show them, see `poll_conflicts`.
     pub fn check_conflicts(&mut self, tx: Sender) {
-        if let Conflicts::Unchecked(_) = self.conflicts {
-            let Conflicts::Unchecked(work) = std::mem::take(&mut self.conflicts) else {
-                unreachable!("checked above")
-            };
+        self.conflicts = match std::mem::take(&mut self.conflicts) {
             // stopped once the popup closes, see `Job::read`
-            self.conflicts = Conflicts::Checking(Job::read(tx, work));
-        }
+            Conflicts::Unchecked(work) => Conflicts::Checking(Job::read(tx, work)),
+            conflicts => conflicts,
+        };
     }
 
     // Shows the conflicts once found; returns whether some were found now.

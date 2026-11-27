@@ -199,6 +199,7 @@ pub fn submodule_gitlink_at(root: &Path, revision: &str, path: &str) -> Option<S
     let commit = tree_entries(&out)
         .find(|(file, mode, _)| *mode == GITLINK && *file == path)
         .map(|(_, _, commit)| commit.to_string());
+    // bound, as the iterator borrows `out`, which is dropped before a returned temporary
     commit
 }
 
