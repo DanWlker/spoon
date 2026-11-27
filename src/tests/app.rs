@@ -700,6 +700,22 @@ fn test_wheel_scrolls_the_sidebar_past_its_selection() {
     harness.run(steps);
 }
 
+// i ignores the picked files of the details with the cursor on the root row too: it took the key
+// only on a file or directory, though it acts on the picks.
+#[test]
+fn test_ignore_picked_files_of_the_details_from_the_root_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    let mut harness = Harness::new(&path, launch());
+    let ignored =
+        |path: &Path| std::fs::read_to_string(path.join(".gitignore")).unwrap_or_default();
+    harness.run(vec![
+        // c2 changed f.txt: picked, then back on the root row
+        keys("4 j v v g g i"),
+        check(move |app| assert_eq!(ignored(app.repository.path()), "/f.txt\n")),
+    ]);
+}
+
 #[test]
 fn test_launch_on_local_changes() {
     let dir = tempfile::tempdir().unwrap();

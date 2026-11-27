@@ -349,7 +349,7 @@ While the details are open, <kbd>2</kbd> moves the focus to the commit list abov
 | <kbd>+</kbd> <kbd>-</kbd>            | Show more/fewer lines around the changes, in the diff of one file | `increase_diff_context` `decrease_diff_context` |
 | <kbd>`</kbd>                         | In the diff: show the diffs side by side, the old lines left and the new right, a removed line beside the added line replacing it when they are alike, as delta pairs them, and the side without a line beside an added or removed one striped; or in one column (one setting for every diff) | `toggle_tree_view` |
 | <kbd>h</kbd> <kbd>l</kbd>            | Side by side, while selecting lines: the nearest line of the hunk on the old/new side; <kbd>j</kbd>/<kbd>k</kbd> move along the side, and the lines picked with <kbd>v</kbd> are those of the side | `navigate_left` `navigate_right` |
-| <kbd>i</kbd>                         | Add the file or directory to `.gitignore` (see below) | `ignore`         |
+| <kbd>i</kbd>                         | Add the picked files and directories, or the selected one, to `.gitignore` (see below) | `ignore`         |
 | <kbd>B</kbd>                         | Blame the file as of the last commit (see below); the local changes aren't blamed, and only one file may be picked | `blame`     |
 | <kbd>T</kbd>                         | Show the commits changing the file (see below); only one file may be picked | `timeline`                      |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                             | `go_to_next` `go_to_previous`   |

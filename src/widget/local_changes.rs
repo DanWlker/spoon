@@ -984,7 +984,7 @@ impl<'a> LocalChangesState<'a> {
         k.add(
             &[ShortCopy],
             "copy path",
-            "Copy the path of the file, from the top of the repository",
+            "Copy the paths of the picked files, or of the selected one, from the top of the repository",
         )
         .when(row);
         k.add(
@@ -998,9 +998,10 @@ impl<'a> LocalChangesState<'a> {
         k.add(
             &[Ignore],
             "ignore",
-            "Add the file or directory to .gitignore",
+            "Add the picked files and directories, or the selected one, to .gitignore",
         )
-        .when(path);
+        // the picks, wherever the cursor is, like on the root row
+        .when(move |v| path(v) || (files(v) && !v.picked().is_empty()));
         k.add(
             &[Cancel],
             "back",
@@ -4582,6 +4583,9 @@ mod tests {
         state.toggle_visual();
         select_row(&mut state, "b.txt");
         state.toggle_visual();
+        // it acts on the picks wherever the cursor is, on the root row too, as its key says
+        select_row(&mut state, ROOT_PATH);
+        assert!(state.keys().takes(UserEvent::Ignore));
         let message = state.ignore_selected()?;
         assert!(message.contains("a.txt") && message.contains("b.txt"));
         assert_eq!(
@@ -5668,6 +5672,23 @@ mod tests {
         assert!(
             rows.iter()
                 .any(|r| r.contains("Enter to keep a side for the whole file")),
+            "{rows:#?}"
+        );
+        // named as it is bound, like the hints on the sides and tools
+        let mut ctx = crate::test_support::ui::test_ctx();
+        let custom: crate::keybind::KeyBind = toml::from_str("confirm = [\"z\"]").unwrap();
+        Rc::get_mut(&mut ctx).unwrap().keybind = crate::keybind::KeyBind::new(Some(custom));
+        let mut buf = Buffer::empty(area);
+        LocalChangesPanel::new(ctx, true).render(area, &mut buf, &mut state);
+        let rebound = (0..area.height).map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        });
+        assert!(
+            rebound
+                .into_iter()
+                .any(|r| r.contains("Z to keep a side for the whole file")),
             "{rows:#?}"
         );
 

@@ -235,18 +235,15 @@ impl LocalChangesPanel<'_> {
         }
         state.pane.scroll_state().height = height;
 
-        // what the select key, space, does on the item selected, named as it is bound
-        let select = self
-            .ctx
-            .keybind
-            .short_keys(crate::keybind::Scope::LocalChanges, &[UserEvent::Select]);
-        let mut chars = select.chars();
-        let select: String = chars
-            .next()
-            .map(|c| c.to_ascii_uppercase())
-            .into_iter()
-            .chain(chars)
-            .collect();
+        // what the select key, space, does on the item selected, and enter on none, named as they
+        // are bound, at the start of the hint
+        let key = |event| {
+            let keys = (self.ctx.keybind).short_keys(crate::keybind::Scope::LocalChanges, &[event]);
+            let mut chars = keys.chars();
+            let first = chars.next().map(|c| c.to_ascii_uppercase());
+            first.into_iter().chain(chars).collect::<String>()
+        };
+        let select = key(UserEvent::Select);
         let hint = match selected_item {
             Some(ConflictItem::Existing) => {
                 format!("{select} keeps {ours_name} for the whole file, and stages it")
@@ -260,7 +257,10 @@ impl LocalChangesPanel<'_> {
             Some(ConflictItem::Editor) => {
                 format!("{select} opens the file to edit the markers, staged once none is left")
             }
-            None => "Enter to keep a side for the whole file, or to resolve it in a tool".into(),
+            None => format!(
+                "{} to keep a side for the whole file, or to resolve it in a tool",
+                key(UserEvent::Confirm)
+            ),
         };
         Paragraph::new(Line::raw(hint).fg(theme.muted_fg))
             .centered()

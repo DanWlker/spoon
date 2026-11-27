@@ -394,19 +394,13 @@ impl<'a> DetailView<'a> {
         )
         .when(|v| entry(v) && tab(DetailTab::Files)(v))
         .moves(|_| true);
-        // the main action in the diff
-        register_apply_key(k, |v| {
+        // the main action in the diff, and its own keys
+        fn diff<'v>(v: &'v DetailView<'_>) -> Option<&'v crate::widget::diff_pane::DiffPane> {
             let diff = v.focus() == Pane && v.tab == DetailTab::Changes;
             diff.then_some(&v.changes_state.pane)
-        });
-        register_diff_keys(
-            k,
-            |v| {
-                let diff = v.focus() == Pane && v.tab == DetailTab::Changes;
-                diff.then_some(&v.changes_state.pane)
-            },
-            |v| v.ctx.diff_context.get(),
-        );
+        }
+        register_apply_key(k, diff);
+        register_diff_keys(k, diff, |v| v.ctx.diff_context.get());
         k.quiet(&[Confirm], "Close the details").when(on(Info));
         k.add(
             &[ShortCopy],
@@ -488,7 +482,7 @@ impl<'a> DetailView<'a> {
         k.add(
             &[ShortCopy],
             "copy path",
-            "Copy the path of the file, from the top of the repository",
+            "Copy the paths of the picked files, or of the selected one, from the top of the repository",
         )
         .when(entry);
         k.add(
@@ -500,9 +494,10 @@ impl<'a> DetailView<'a> {
         k.add(
             &[Ignore],
             "ignore",
-            "Add the file or directory to .gitignore",
+            "Add the picked files and directories, or the selected one, to .gitignore",
         )
-        .when(move |v| files(v) && path(v));
+        // the picks, wherever the cursor is, like on the root row
+        .when(move |v| files(v) && (path(v) || v.has_tree_picks()));
         k.add(
             &[OpenInBrowser],
             "open in browser",
@@ -652,7 +647,7 @@ impl<'a> DetailView<'a> {
                 let before = self.as_list_state().selected_commit_hash().clone();
                 self.as_mut_list_state().point(row, picks);
                 if *self.as_list_state().selected_commit_hash() != before {
-                    self.update_selected_commit(|_| {});
+                    self.update_selected_commit();
                 }
                 true
             }
@@ -783,7 +778,7 @@ impl<'a> DetailView<'a> {
             CommitFiles::none(view),
         ));
         self.compare = Comparing::Parked(compare, Box::new(changes));
-        self.update_selected_commit(|_| {});
+        self.update_selected_commit();
         self.show_tab(DetailTab::Info);
     }
 
@@ -808,7 +803,7 @@ impl<'a> DetailView<'a> {
         if !self.as_mut_list_state().select_commit_hash(commit) {
             return false;
         }
-        self.update_selected_commit(|_| {});
+        self.update_selected_commit();
         true
     }
 
@@ -816,7 +811,7 @@ impl<'a> DetailView<'a> {
         let before = self.as_list_state().selected_commit_hash().clone();
         self.as_mut_list_state().select_ref(name);
         if *self.as_list_state().selected_commit_hash() != before {
-            self.update_selected_commit(|_| {});
+            self.update_selected_commit();
         }
     }
 
@@ -868,7 +863,7 @@ impl<'a> DetailView<'a> {
             };
             if handled {
                 if *self.as_list_state().selected_commit_hash() != before {
-                    self.update_selected_commit(|_| {});
+                    self.update_selected_commit();
                 }
                 return;
             }
@@ -1537,7 +1532,7 @@ impl<'a> DetailView<'a> {
             _ => return false,
         }
         if *self.as_list_state().selected_commit_hash() != before {
-            self.update_selected_commit(|_| {});
+            self.update_selected_commit();
         }
         true
     }
@@ -1764,19 +1759,18 @@ impl<'a> DetailView<'a> {
     }
 
     fn select_older_commit(&mut self) {
-        self.update_selected_commit(|state| state.select_next());
+        self.as_mut_list_state().select_next();
+        self.update_selected_commit();
     }
 
     fn select_newer_commit(&mut self) {
-        self.update_selected_commit(|state| state.select_prev());
+        self.as_mut_list_state().select_prev();
+        self.update_selected_commit();
     }
 
-    fn update_selected_commit<F>(&mut self, update_commit_list_state: F)
-    where
-        F: FnOnce(&mut CommitListState<'a>),
-    {
-        let commit_list_state = self.as_mut_list_state();
-        update_commit_list_state(commit_list_state);
+    // The selection of the commit list moved: the details of the commit selected load, see
+    // `load_selected`, but over a comparison, which stays.
+    fn update_selected_commit(&mut self) {
         if self.shows_compare() {
             // the comparison stays, the selection only moves in the list
             return;
