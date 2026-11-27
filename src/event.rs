@@ -279,6 +279,7 @@ impl EventController {
         let handle = thread::spawn(move || read_events(&stop, &hover, &tx));
         *crate::background::lock(&self.handle) = Some(handle);
     }
+
     pub fn resume(&self) {
         if !self.terminal {
             return;
@@ -329,12 +330,12 @@ impl EventController {
 
     // Wakes the refresher returned by `refresher::spawn` up for `refresh_now`.
     pub fn set_refresher(&self, poke: mpsc::Sender<Wake>) {
-        *self.poke.lock().unwrap() = Some(poke);
+        *crate::background::lock(&self.poke) = Some(poke);
     }
 
     // Checks right away, like when the terminal gets the focus back.
     pub fn refresh_now(&self) {
-        if let Some(poke) = self.poke.lock().unwrap().as_ref() {
+        if let Some(poke) = crate::background::lock(&self.poke).as_ref() {
             let _ = poke.send(Wake::Poke);
         }
     }

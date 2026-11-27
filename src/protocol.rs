@@ -504,34 +504,30 @@ fn iterm2_encode(bytes: &[u8], cell_width: usize, cell_height: usize) -> String 
 
 // https://sw.kovidgoyal.net/kitty/graphics-protocol/
 fn kitty_encode(bytes: &[u8], cell_width: usize, cell_height: usize) -> String {
+    // the whole width of the image, to crop it when something covers its end
+    let control = kitty_display_control(cell_width as u16, cell_height as u16, png_width(bytes));
+    format!(
+        "\x1b_Ga=d,d=C;\x1b\\{}",
+        kitty_chunks(bytes, &control, Escapes::Direct)
+    )
+}
+
+// The PNG `bytes` as kitty takes them, in chunks of 4096 base64 characters, the first with the
+// `control` data, each passed on through `escapes`.
+fn kitty_chunks(bytes: &[u8], control: &str, escapes: Escapes) -> String {
     let base64_str = to_base64_str(bytes);
-    let chunk_size = 4096;
-
+    let chunks = base64_str.as_bytes().chunks(4096);
+    let last = chunks.len().saturating_sub(1);
+    let (start, esc, end) = passthrough_escapes(escapes);
     let mut s = String::new();
-
-    let chunks = base64_str.as_bytes().chunks(chunk_size);
-    let total_chunks = chunks.len();
-
-    s.push_str("\x1b_Ga=d,d=C;\x1b\\");
     for (i, chunk) in chunks.enumerate() {
-        s.push_str("\x1b_G");
-        if i == 0 {
-            // the whole width of the image, to crop it when something covers its end
-            s.push_str(&kitty_display_control(
-                cell_width as u16,
-                cell_height as u16,
-                png_width(bytes),
-            ));
-        }
-        if i < total_chunks - 1 {
-            s.push_str("m=1;");
-        } else {
-            s.push_str("m=0;");
-        }
-        s.push_str(std::str::from_utf8(chunk).unwrap());
-        s.push_str("\x1b\\");
+        let control = if i == 0 { control } else { "" };
+        let more = usize::from(i < last);
+        let chunk = std::str::from_utf8(chunk).expect("base64 is ASCII");
+        s.push_str(&format!(
+            "{start}{esc}_G{control}m={more};{chunk}{esc}\\{end}"
+        ));
     }
-
     s
 }
 
@@ -699,37 +695,8 @@ fn kitty_unicode_encode(
     image_id: u32,
     escapes: Escapes,
 ) -> String {
-    let base64_str = to_base64_str(bytes);
-    let chunk_size = 4096;
-
-    let mut s = String::new();
-
-    let chunks = base64_str.as_bytes().chunks(chunk_size);
-    let total_chunks = chunks.len();
-
-    let (start, esc, end) = passthrough_escapes(escapes);
-
-    for (i, chunk) in chunks.enumerate() {
-        s.push_str(start);
-        s.push_str(esc);
-        s.push_str("_G");
-        if i == 0 {
-            s.push_str(&format!(
-                "a=T,f=100,U=1,q=2,i={image_id},c={cell_width},r={cell_height},"
-            ));
-        }
-        if i < total_chunks - 1 {
-            s.push_str("m=1;");
-        } else {
-            s.push_str("m=0;");
-        }
-        s.push_str(std::str::from_utf8(chunk).unwrap());
-        s.push_str(esc);
-        s.push('\\');
-        s.push_str(end);
-    }
-
-    s
+    let control = format!("a=T,f=100,U=1,q=2,i={image_id},c={cell_width},r={cell_height},");
+    kitty_chunks(bytes, &control, escapes)
 }
 
 fn row_column_diacritic(index: usize) -> char {
