@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use crokey::{KeyCombinationFormat, OneToThree};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{de::Deserializer, Deserialize};
 
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
@@ -98,6 +98,9 @@ impl Scope {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeyBind {
     bindings: FxHashMap<(Scope, Vec<KeyEvent>), UserEvent>,
+    // the events given keys, in the scope they were given in, `[]` included: a config's replace
+    // the default keys of the event there, see `merge`
+    set: FxHashSet<(Scope, UserEvent)>,
 }
 
 // How the keys pressed so far match the bindings.
@@ -122,10 +125,14 @@ impl KeyBind {
         keybind
     }
 
-    // Overrides with the keys and sequences of `patch`: a key bound in a scope replaces what that
-    // key did in it and in the scopes inside it, sequences starting with it included; a sequence
-    // replaces the key it starts with in its scope.
+    // Overrides with the keys and sequences of `patch`: an event it sets the keys of loses its
+    // keys in that scope and the scopes inside it, none disabling it; a key bound in a scope
+    // replaces what that key did in it and in the scopes inside it, sequences starting with it
+    // included; a sequence replaces the key it starts with in its scope.
     fn merge(&mut self, patch: KeyBind) {
+        for (scope, event) in &patch.set {
+            (self.bindings).retain(|(s, _), bound| !(bound == event && s.within(*scope)));
+        }
         for (scope, keys) in patch.bindings.keys() {
             match keys.as_slice() {
                 [key] => self
@@ -308,6 +315,7 @@ impl<'de> Deserialize<'de> for KeyBind {
                 }
             };
             for (scope, user_event, keys) in bindings {
+                keybind.set.insert((scope, user_event));
                 keybind.bind(scope, user_event, &keys).map_err(error)?;
             }
         }
@@ -622,6 +630,16 @@ mod tests {
             .into_iter()
             .map(|((scope, key), event)| ((scope, vec![key]), event))
             .collect(),
+            set: [
+                UserEvent::NavigateUp,
+                UserEvent::NavigateDown,
+                UserEvent::NavigateLeft,
+                UserEvent::NavigateRight,
+                UserEvent::Quit,
+            ]
+            .map(|event| (Scope::Global, event))
+            .into_iter()
+            .collect(),
         };
 
         let actual: KeyBind = toml::from_str(toml).unwrap();
@@ -863,6 +881,24 @@ mod tests {
             defaults.resolve(Scope::Global, &[key('g'), key('g')]),
             SequenceMatch::Complete(UserEvent::GoToTop)
         );
+    }
+
+    // Keys set for an action replace its default keys, and none disables it, as the docs say:
+    // they were added to the defaults, and `[]` changed nothing.
+    #[test]
+    fn test_custom_keys_replace_the_defaults_of_the_action() {
+        let keys = |patch: &str, scope| {
+            let keybind = KeyBind::new(Some(toml::from_str(patch).unwrap()));
+            keybind.keys_for_event(scope, UserEvent::Confirm)
+        };
+        assert_eq!(keys("", Scope::Global), ["Enter"]);
+        assert_eq!(keys(r#"confirm = ["z"]"#, Scope::Global), ["z"]);
+        assert_eq!(keys(r#"confirm = ["z"]"#, Scope::Dialog), ["z"]);
+        assert!(keys("confirm = []", Scope::Global).is_empty());
+        // a scope's own keys add to those it inherits, which it can't unbind
+        let scoped = "[details_pane]\nconfirm = [\"z\"]";
+        assert_eq!(keys(scoped, Scope::Global), ["Enter"]);
+        assert_eq!(keys(scoped, Scope::DetailsPane), ["Enter", "z"]);
     }
 
     #[test]

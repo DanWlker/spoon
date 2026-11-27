@@ -232,7 +232,7 @@ impl Border {
     // The size putting the border at `pos`, along the axis it moves on.
     fn size_at(&self, pos: u16) -> u16 {
         if self.forward() {
-            (pos + 1).saturating_sub(self.anchor)
+            pos.saturating_add(1).saturating_sub(self.anchor)
         } else {
             self.anchor.saturating_sub(pos)
         }
@@ -391,7 +391,7 @@ impl PanelLayout {
         };
         let step = if border.forward() { step } else { -step };
         // kept for the keys pressed before the next frame
-        *size = (*size as i32 + step).max(1) as u16;
+        *size = (i32::from(*size) + step).clamp(1, i32::from(u16::MAX)) as u16;
         let size = *size;
         self.set_size(panel, size);
         true

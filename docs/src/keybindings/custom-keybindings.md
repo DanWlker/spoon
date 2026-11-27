@@ -8,8 +8,9 @@ The default key binding settings are described in [`./assets/default-keybind.tom
 You can set key bindings for each action in the same format.
 
 - It is possible to set multiple key bindings for one action.
-- If you do not set key bindings for an action, the default key bindings will be assigned.
+- If you do not set key bindings for an action, the default key bindings will be assigned. If you do, they replace its default keys: with `confirm = ["z"]`, <kbd>Enter</kbd> no longer confirms.
 - You can disable an action by setting `[]` as the key bindings.
+- Keys set in a scope's table, like `[keybind.details_pane]`, replace the action's keys of that scope and the scopes inside it; the keys it has from the scopes around it, like <kbd>Enter</kbd> from the global ones, still work there.
 - Some actions have no default key (`checkout`, which <kbd>Space</kbd> does, and `ignore`); run them from the keys list (<kbd>?</kbd>), or bind a key to them.
 
 ## Key Formats
@@ -91,7 +92,7 @@ those of the local changes page (`stash`, `commit`, `next_file`, `previous_file`
 and the others in `global`, working everywhere.
 So <kbd>d</kbd> is `drop_commit` on the commit list, `delete_ref` on the sidebar (which overrides the graph's key) and `discard` on the local changes page.
 
-`select` (<kbd>Space</kbd>) is the main action on what is selected, like lazygit's: it stages a file, hunk or line on the local changes page, applies a hunk or line of a commit's diff to the working tree, checks out a commit, branch or tag (like `checkout`), applies a stash, keeps a side of a conflict, and toggles a field of a popup. Rebinding it changes all of them; a table of a scope rebinds it there only.
+`select` (<kbd>Space</kbd>) is the main action on what is selected, like lazygit's: it stages a file, hunk or line on the local changes page, applies a hunk or line of a commit's diff to the working tree, checks out a commit, branch or tag (like `checkout`), applies a stash, keeps a side of a conflict, and toggles a field of a popup. Rebinding it changes all of them; a table of a scope adds keys for it there, <kbd>Space</kbd> still working.
 
 A table of a scope binds keys in that scope only, overriding those around it:
 
