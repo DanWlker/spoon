@@ -1444,28 +1444,9 @@ impl GitDialog {
         commit: Check,
         append_origin: Check,
     ) -> Result<GitTask, String> {
-        let commit = self.checked(commit);
-        let mut args = vec![];
-        if !commit {
-            args.push("--no-commit".into());
-        }
-        if self.checked(append_origin) {
-            args.push("-x".into());
-        }
-        args.extend(commits.iter().map(|c| c.hash.as_str().to_string()));
-        let n = count_commits(commits.len());
-        Ok(GitTask {
-            commands: vec![GitCommand::CherryPick.args(args)],
-            running: format!("Cherry-picking {n}"),
-            done: format!("Cherry-picked {n}"),
-            uses_picks: true,
-            after: if commit {
-                AfterTask::Reload
-            } else {
-                AfterTask::LocalChanges
-            },
-            ..Default::default()
-        })
+        let args = self.checked(append_origin).then_some("-x");
+        let words = ("Cherry-picking", "Cherry-picked");
+        Ok(self.apply_commits(GitCommand::CherryPick, args, commits, commit, words))
     }
 
     // `base` is the commit the rebase starts after, None to rebase from the root.
@@ -1501,10 +1482,7 @@ impl GitDialog {
             SquashMessages::Combine => "squash",
             SquashMessages::Fixup => "fixup",
         };
-        let todo: Vec<String> = commits
-            .iter()
-            .map(|c| todo_action(c.hash.as_str(), action))
-            .collect();
+        let todo = todo_of(commits, action);
         let n = count_commits(commits.len());
         Ok(GitTask {
             running: format!("Squashing {n}"),
@@ -1524,17 +1502,35 @@ impl GitDialog {
     }
 
     fn revert_command(&self, commits: &[DialogCommit], commit: Check) -> Result<GitTask, String> {
+        let words = ("Reverting", "Reverted");
+        Ok(self.apply_commits(
+            GitCommand::Revert,
+            Some("--no-edit"),
+            commits,
+            commit,
+            words,
+        ))
+    }
+
+    // Cherry-picks or reverts `commits` with `option`, committing each when `commit` is checked,
+    // else leaving the changes to commit on the local changes page.
+    fn apply_commits(
+        &self,
+        command: GitCommand,
+        option: Option<&str>,
+        commits: &[DialogCommit],
+        commit: Check,
+        (running, done): (&str, &str),
+    ) -> GitTask {
         let commit = self.checked(commit);
-        let mut args = vec!["--no-edit".to_string()];
-        if !commit {
-            args.push("--no-commit".into());
-        }
-        args.extend(commits.iter().map(|c| c.hash.as_str().to_string()));
+        let no_commit = (!commit).then_some("--no-commit");
+        let hashes = commits.iter().map(|c| c.hash.as_str());
+        let args = option.into_iter().chain(no_commit).chain(hashes);
         let n = count_commits(commits.len());
-        Ok(GitTask {
-            commands: vec![GitCommand::Revert.args(args)],
-            running: format!("Reverting {n}"),
-            done: format!("Reverted {n}"),
+        GitTask {
+            commands: vec![command.args(args)],
+            running: format!("{running} {n}"),
+            done: format!("{done} {n}"),
             uses_picks: true,
             after: if commit {
                 AfterTask::Reload
@@ -1542,7 +1538,7 @@ impl GitDialog {
                 AfterTask::LocalChanges
             },
             ..Default::default()
-        })
+        }
     }
 
     // Edits `commit`: a rebase stopping at it, to amend it on the local changes page.
@@ -1613,10 +1609,7 @@ impl GitDialog {
         behind_head: usize,
     ) -> Result<GitTask, String> {
         let auto_stash = self.checked(auto_stash);
-        let todo: Vec<String> = commits
-            .iter()
-            .map(|c| todo_action(c.hash.as_str(), "drop"))
-            .collect();
+        let todo = todo_of(commits, "drop");
         let n = count_commits(commits.len());
         Ok(GitTask {
             running: format!("Dropping {n}"),
@@ -1671,16 +1664,10 @@ impl GitDialog {
         from: Pick,
         checkout: Check,
     ) -> Result<GitTask, String> {
-        let name = self.text(name);
+        // `-D` would delete the branch it starts from
+        let name = self.typed_name(name, "branch")?;
         let start = &starts[self.pick_index(from)];
         let from = start.revision();
-        if name.is_empty() {
-            return Err("Type a name for the branch".into());
-        }
-        // git would read it as an option, `-D` deleting the branch it starts from
-        if name.starts_with('-') {
-            return Err("A branch name can't start with -".into());
-        }
         // tracking `from` when it is a remote branch, either way
         let (command, args): (_, &[&str]) = if self.checked(checkout) {
             (GitCommand::Checkout, &["-b", &name, &from])
@@ -1818,14 +1805,8 @@ impl GitDialog {
             .pick_index(new_upstream)
             .checked_sub(1)
             .map(|i| upstreams[i].clone());
-        let new_name = self.text(new_name);
-        if new_name.is_empty() {
-            return Err("Type a name for the branch".into());
-        }
-        // git would read it as an option, `-f` overwriting the branch with the current one
-        if new_name.starts_with('-') {
-            return Err("A branch name can't start with -".into());
-        }
+        // `-f` would overwrite the branch with the current one
+        let new_name = self.typed_name(new_name, "branch")?;
         let mut commands = vec![];
         if new_name != *name {
             commands.push(GitCommand::Branch.args(["-m", name, &new_name]));
@@ -1937,16 +1918,10 @@ impl GitDialog {
         name: Text,
         message: Text,
     ) -> Result<GitTask, String> {
-        let name = self.text(name);
+        // `-d` would delete the tag it is made at
+        let name = self.typed_name(name, "tag")?;
         let message = self.text(message);
         let (label, at) = (at.label(), at.revision());
-        if name.is_empty() {
-            return Err("Type a name for the tag".into());
-        }
-        // git would read it as an option, `-d` deleting the tag it is made at
-        if name.starts_with('-') {
-            return Err("A tag name can't start with -".into());
-        }
         let mut args = vec![];
         if !message.is_empty() {
             args.extend(["-a", "-m", &message]);
@@ -2253,6 +2228,18 @@ impl GitDialog {
         })
     }
 
+    // The name typed for a `what`, like a branch: there is one, which git won't read as an option.
+    fn typed_name(&self, name: Text, what: &str) -> Result<String, String> {
+        let name = self.text(name);
+        if name.is_empty() {
+            return Err(format!("Type a name for the {what}"));
+        }
+        if name.starts_with('-') {
+            return Err(format!("A {what} name can't start with -"));
+        }
+        Ok(name)
+    }
+
     fn checked(&self, check: Check) -> bool {
         matches!(self.fields[check.0].1, Field::Check(true))
     }
@@ -2426,22 +2413,21 @@ impl GitDialog {
                 DialogOutcome::None
             }
             Some(UserEvent::Quit) => DialogOutcome::Quit,
-            Some(UserEvent::NavigateDown | UserEvent::SelectDown) => {
-                self.selected = (self.selected + 1) % len;
-                self.enter_files(Toward::Next);
+            // the fields go around
+            Some(
+                event @ (UserEvent::NavigateDown
+                | UserEvent::SelectDown
+                | UserEvent::NavigateUp
+                | UserEvent::SelectUp),
+            ) => {
+                let down = matches!(event, UserEvent::NavigateDown | UserEvent::SelectDown);
+                let toward = if down { Toward::Next } else { Toward::Previous };
+                self.selected = toward.around(Some(self.selected), len);
+                self.enter_files(toward);
                 DialogOutcome::None
             }
-            Some(UserEvent::NavigateUp | UserEvent::SelectUp) => {
-                self.selected = (self.selected + len - 1) % len;
-                self.enter_files(Toward::Previous);
-                DialogOutcome::None
-            }
-            Some(UserEvent::NavigateRight) => {
-                self.change(Toward::Next);
-                DialogOutcome::None
-            }
-            Some(UserEvent::NavigateLeft) => {
-                self.change(Toward::Previous);
+            Some(event @ (UserEvent::NavigateRight | UserEvent::NavigateLeft)) => {
+                self.change(Toward::of(event, UserEvent::NavigateRight));
                 DialogOutcome::None
             }
             Some(UserEvent::DialogEdit) => {
@@ -3035,6 +3021,12 @@ fn capped(mut items: Vec<String>, max: usize) -> Vec<String> {
 
 // "main", or "3 branches".
 // The one name, else how many: "3 branches".
+// The lines of a rebase's todo list doing `action` to each of `commits`.
+fn todo_of(commits: &[DialogCommit], action: &str) -> Vec<String> {
+    let todo = commits.iter().map(|c| todo_action(c.hash.as_str(), action));
+    todo.collect()
+}
+
 fn names_label(many: &str, names: &[String]) -> String {
     match names {
         [name] => name.clone(),
@@ -4626,10 +4618,10 @@ mod tests {
         press(&mut dialog, UserEvent::Select);
         let a = "a".repeat(40);
         let b = "b".repeat(40);
-        assert_eq!(args(&dialog), format!("cherry-pick --no-commit -x {a} {b}"));
+        assert_eq!(args(&dialog), format!("cherry-pick -x --no-commit {a} {b}"));
         assert_eq!(
             dialog.summary(),
-            "git cherry-pick --no-commit -x aaaaaaa bbbbbbb"
+            "git cherry-pick -x --no-commit aaaaaaa bbbbbbb"
         );
 
         let dialog = GitDialog::revert("main", vec![commit('b')]);
