@@ -207,7 +207,8 @@ pub fn render_popup(
     // text plus padding and borders
     let text_width = lines.iter().map(Line::width).max().unwrap_or(0);
     let width = (text_width.clamp(widths.0, widths.1) as u16 + 4).min(area.width);
-    let height = (lines.len() as u16 + 2).min(area.height);
+    let height = u16::try_from(lines.len()).map_or(u16::MAX, |n| n.saturating_add(2));
+    let height = height.min(area.height);
     let popup = area.centered(Constraint::Length(width), Constraint::Length(height));
     Clear.render(popup, buf);
     let block = Block::bordered()

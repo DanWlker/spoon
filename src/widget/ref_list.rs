@@ -7,7 +7,7 @@ use ratatui::{
     text::Line,
     widgets::StatefulWidget,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use semver::Version;
 use unicode_width::UnicodeWidthStr;
 
@@ -541,18 +541,20 @@ impl RefListState {
         // the rows shown stay, around the selection kept
         self.cursor = cursor;
         self.reset_tree_status(selected, opened);
-        picked.retain(|section, name| {
-            refs.iter().any(|r| {
-                r.name() == name
-                    && matches!(
-                        (r, section),
-                        (Ref::Branch { .. }, RefSection::Branches)
-                            | (Ref::RemoteBranch { .. }, RefSection::Remotes)
-                            | (Ref::Tag { .. }, RefSection::Tags)
-                            | (Ref::Stash { .. }, RefSection::Stashes)
-                    )
+        // in a set: looked up for each of thousands of tags picked, it took a quarter of a second
+        let listed: FxHashSet<(RefSection, &str)> = refs
+            .iter()
+            .map(|r| {
+                let section = match r {
+                    Ref::Branch { .. } => RefSection::Branches,
+                    Ref::RemoteBranch { .. } => RefSection::Remotes,
+                    Ref::Tag { .. } => RefSection::Tags,
+                    Ref::Stash { .. } => RefSection::Stashes,
+                };
+                (section, r.name())
             })
-        });
+            .collect();
+        picked.retain(|section, name| listed.contains(&(section, name)));
         self.picked = picked;
         self.query = query;
     }
