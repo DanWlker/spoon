@@ -406,7 +406,7 @@ pub fn apply_selection(pane: &DiffPane) -> Option<AppEvent> {
     Some(AppEvent::StartTask(task))
 }
 
-// The value `copy_path` and `copy_paths` copy: relative to the top of the repository, or absolute
+// The value `copy_paths` and `copy_tree_paths` copy: relative to the top of the repository, or absolute
 // in full.
 fn path_value(repository: &Repository, relative: &str, form: CopyForm) -> String {
     let relative = if relative == ROOT_PATH { "." } else { relative };
@@ -421,10 +421,28 @@ fn path_value(repository: &Repository, relative: &str, form: CopyForm) -> String
     }
 }
 
-// Copies the path of a file in the repository: relative to its top, or absolute in full.
-pub fn copy_path(repository: &Repository, row: &FileTreeRow, form: CopyForm) -> AppEvent {
+// Copies the paths of the `picked` files of a tree, else of its selected `row`, relative to the top
+// of the repository or absolute in full; None with neither.
+pub fn copy_tree_paths(
+    repository: &Repository,
+    picked: &[String],
+    row: Option<&FileTreeRow>,
+    form: CopyForm,
+) -> Option<AppEvent> {
+    if !picked.is_empty() {
+        return Some(copy_paths(
+            repository,
+            picked.iter().map(String::as_str),
+            form,
+        ));
+    }
     // the root row stands for the whole repository
-    copy_paths(repository, [row.entry().map_or(".", Entry::path)], form)
+    let row = row?;
+    Some(copy_paths(
+        repository,
+        [row.entry().map_or(".", Entry::path)],
+        form,
+    ))
 }
 
 // Copies the paths of several files, one per line: relative to the top, or absolute in full.

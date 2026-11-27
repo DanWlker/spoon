@@ -199,6 +199,17 @@ enum Kept {
     Paste(String),
 }
 
+// What the left button pressed is on, until it is released.
+#[derive(Debug, Clone, Copy)]
+enum Press {
+    // a border, not dragged yet: released there, it was a click focusing its panel
+    Border(Cell),
+    // a scrollbar's thumb, dragged, see `App::drag_thumb`
+    Thumb(ThumbDrag),
+    // the rows of a panel, picked as the pointer moves over them, see `App::handle_gesture`
+    Rows(Target),
+}
+
 // A scrollbar's thumb being dragged from the line `from`, its panel showing from `shown` since.
 #[derive(Debug, Clone, Copy)]
 struct ThumbDrag {
@@ -253,12 +264,8 @@ pub struct AppShell {
     reveal: Option<CommitHash>,
     // what the mouse does, from its events, see `Pointer`
     pointer: Pointer,
-    // the panel a drag picks rows in, see `App::handle_gesture`
-    drag: Option<Target>,
-    // a border pressed, not dragged yet: released there, it was a click focusing its panel
-    border_press: Option<Cell>,
-    // a scrollbar's thumb dragged, see `App::drag_thumb`
-    thumb_drag: Option<ThumbDrag>,
+    // what the left button pressed is on
+    press: Option<Press>,
     // the actions a right click shows, over everything but the notices
     menu: Option<ActionMenu>,
 }
@@ -642,9 +649,7 @@ impl<'a> App<'a> {
                 regraph: None,
                 reveal: None,
                 pointer: Pointer::default(),
-                drag: None,
-                border_press: None,
-                thumb_drag: None,
+                press: None,
                 menu: None,
             },
         };
@@ -666,7 +671,7 @@ impl<'a> App<'a> {
         };
 
         if let Some(warning) = &warning {
-            app.warn_notification(warning.clone());
+            app.notify(Notice::warning, warning.clone());
         }
 
         match refresh_view_context {
@@ -876,19 +881,12 @@ impl App<'_> {
             AppEvent::OpenBlame { commit, path, line } => {
                 let work = self.repository.file_blame_work(&commit, &path);
                 let job = Job::read(self.ec.sender(), work);
-                self.shell.opening = Some(Opening {
-                    window: OpeningWindow::Blame { job, line },
-                    path,
-                    _spinning: spin(self.ec.sender()),
-                });
+                self.start_opening(OpeningWindow::Blame { job, line }, path);
             }
             AppEvent::OpenTimeline { commit, path } => {
                 let work = self.repository.file_history_work(&commit, &path);
-                self.shell.opening = Some(Opening {
-                    window: OpeningWindow::Timeline(Job::read(self.ec.sender(), work)),
-                    path,
-                    _spinning: spin(self.ec.sender()),
-                });
+                let job = Job::read(self.ec.sender(), work);
+                self.start_opening(OpeningWindow::Timeline(job), path);
             }
             AppEvent::Checkout(commit) => {
                 let command = graph_command(self.repository, UserEvent::Checkout, commit, vec![]);
@@ -967,13 +965,10 @@ impl App<'_> {
                 self.shell.app_status.status_line = StatusLine::NotificationSuccess(msg);
             }
             AppEvent::NotifyWarn(msg) => {
-                self.warn_notification(msg);
+                self.notify(Notice::warning, msg);
             }
             AppEvent::NotifyError(msg) => {
-                push_notice(
-                    &mut self.shell.notices,
-                    Notice::error(msg, (self.ctx.now)()),
-                );
+                self.notify(Notice::error, msg);
             }
         }
         None
@@ -1026,7 +1021,7 @@ impl App<'_> {
         let [sidebar_area, view_area] = self.split_sidebar(view_area);
         let scrolloff = self.ctx.ui_config.common.scrolloff as usize;
         self.shell.sidebar.fit(sidebar_area, scrolloff);
-        self.update_state(view_area);
+        self.shell.app_status.view_area = view_area;
         self.view.update_layout(view_area);
         self.view.prepare_graph_uploads();
         self.open_window();
@@ -1046,6 +1041,16 @@ impl App<'_> {
         if self.run_kept() {
             self.prepare_render(area);
         }
+    }
+
+    // The blame or timeline of `path` loading, a spinner going meanwhile, see `open_window`.
+    fn start_opening(&mut self, window: OpeningWindow, path: String) {
+        let _spinning = spin(self.ec.sender());
+        self.shell.opening = Some(Opening {
+            window,
+            path,
+            _spinning,
+        });
     }
 
     // Opens the blame or timeline once its file history is loaded, see `AppEvent::OpenBlame`.
@@ -1304,7 +1309,7 @@ impl App<'_> {
                 .place(Panel::Sidebar, sidebar_area, Edge::Right);
         }
 
-        self.update_state(view_area);
+        self.shell.app_status.view_area = view_area;
 
         // views are replaced while switching pages, they take the focus as they are drawn
         if self.sidebar_shown() {
@@ -1446,10 +1451,6 @@ fn repaint_fullscreen<B: Backend>(terminal: &mut Terminal<B>) {
 }
 
 impl App<'_> {
-    fn update_state(&mut self, view_area: Rect) {
-        self.shell.app_status.view_area = view_area;
-    }
-
     fn clear_view_image_area(&self, terminal: &DefaultTerminal) -> Result<(), std::io::Error> {
         if let Some(area) = self.view.image_clear_area(self.shell.app_status.view_area) {
             let area = area.intersection(terminal.size()?.into());
@@ -1515,14 +1516,11 @@ impl App<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        match self.shell.app_status.status_line {
-            StatusLine::None | StatusLine::Input { .. } => {
-                // do nothing
-            }
-            StatusLine::SearchResult { .. } | StatusLine::NotificationSuccess(_) => {
-                // Clear message and pass key input as is
-                self.clear_status_line();
-            }
+        // a message shown goes with the next key, which acts as usual
+        if let StatusLine::SearchResult { .. } | StatusLine::NotificationSuccess(_) =
+            self.shell.app_status.status_line
+        {
+            self.clear_status_line();
         }
 
         // typed text, in a popup, a window or the page, takes the keys as they are
@@ -2613,10 +2611,7 @@ impl App<'_> {
         // only the working tree changed, the page stays as it is
         if task.after == AfterTask::KeepView {
             self.ec.send(AppEvent::LocalChangesChanged);
-            match result {
-                Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
-                Err(err) => self.ec.send(AppEvent::NotifyError(err)),
-            }
+            self.ec.send(AppEvent::outcome(result.map(|()| task.done)));
             return quit;
         }
         let typing = self.is_typing();
@@ -2661,10 +2656,7 @@ impl App<'_> {
             }
             self.ec.send(AppEvent::Refresh(context));
         }
-        match result {
-            Ok(_) => self.ec.send(AppEvent::NotifySuccess(task.done)),
-            Err(err) => self.ec.send(AppEvent::NotifyError(err)),
-        }
+        self.ec.send(AppEvent::outcome(result.map(|()| task.done)));
         quit
     }
 
@@ -2937,15 +2929,15 @@ impl App<'_> {
         if border {
             // a click on a border focuses its panel, as on any border; a drag only resizes
             match mouse.kind {
-                MouseEventKind::Down(_) => self.shell.border_press = Some(Cell { x, y }),
+                MouseEventKind::Down(_) => self.shell.press = Some(Press::Border(Cell { x, y })),
                 MouseEventKind::Up(_) => {
-                    if let Some(at) = self.shell.border_press.take() {
+                    if let Some(Press::Border(at)) = self.shell.press.take() {
                         if self.end_typing() {
                             self.point(at, OnPicks::Keep);
                         }
                     }
                 }
-                _ => self.shell.border_press = None,
+                _ => self.shell.press = None,
             }
             return;
         }
@@ -2979,9 +2971,11 @@ impl App<'_> {
     // or the menu opening during the drag ends it, as it does a border's.
     fn drag_thumb(&mut self, mouse: MouseEvent, over: bool) -> bool {
         let (x, y) = (mouse.column, mouse.row);
-        if matches!(mouse.kind, MouseEventKind::Down(_)) || over {
-            self.shell.thumb_drag = None;
+        let thumb = |press: Option<Press>| matches!(press, Some(Press::Thumb(_)));
+        if matches!(mouse.kind, MouseEventKind::Down(_)) || (over && thumb(self.shell.press)) {
+            self.shell.press = None;
         }
+        let thumb = thumb(self.shell.press);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if !over => {
                 let Some(thumb) = self.ctx.layout.borrow().thumb(x, y) else {
@@ -2992,15 +2986,15 @@ impl App<'_> {
                 }
                 self.point(Cell { x, y }, OnPicks::Keep);
                 let shown = thumb.offset;
-                self.shell.thumb_drag = Some(ThumbDrag {
+                self.shell.press = Some(Press::Thumb(ThumbDrag {
                     thumb,
                     from: y,
                     shown,
-                });
+                }));
                 true
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                let Some(drag) = self.shell.thumb_drag.as_mut() else {
+                let Some(Press::Thumb(drag)) = self.shell.press.as_mut() else {
                     return false;
                 };
                 let offset = drag.thumb.offset_moved(y as isize - drag.from as isize);
@@ -3011,7 +3005,11 @@ impl App<'_> {
                 }
                 true
             }
-            MouseEventKind::Up(MouseButton::Left) => self.shell.thumb_drag.take().is_some(),
+            // a drag of rows ends in `handle_gesture`
+            MouseEventKind::Up(MouseButton::Left) if thumb => {
+                self.shell.press = None;
+                true
+            }
             _ => false,
         }
     }
@@ -3112,8 +3110,9 @@ impl App<'_> {
             // v where pressed, moving with the pointer, v where released
             Gesture::DragStart { from, to } => {
                 let hit = self.point(from, OnPicks::StartRange);
-                self.shell.drag = hit.filter(|hit| hit.row.is_some()).map(|hit| hit.target);
-                if self.shell.drag.is_some() && !self.picking() {
+                let rows = hit.filter(|hit| hit.row.is_some()).map(|hit| hit.target);
+                self.shell.press = rows.map(Press::Rows);
+                if rows.is_some() && !self.picking() {
                     self.run_event(ToggleSelect);
                 }
                 self.drag_to(to);
@@ -3121,7 +3120,7 @@ impl App<'_> {
             Gesture::DragTo(at) => self.drag_to(at),
             Gesture::DragEnd(at) => {
                 self.drag_to(at);
-                if self.shell.drag.take().is_some() && self.picking() {
+                if matches!(self.shell.press.take(), Some(Press::Rows(_))) && self.picking() {
                     self.run_event(ToggleSelect);
                 }
             }
@@ -3350,7 +3349,7 @@ impl App<'_> {
 
     // The row of the panel being dragged in at `at`; elsewhere the drag picks nothing more.
     fn drag_to(&mut self, at: Cell) {
-        let Some(target) = self.shell.drag else {
+        let Some(Press::Rows(target)) = self.shell.press else {
             return;
         };
         let hit = self.ctx.layout.borrow().hit(at.x, at.y);
@@ -3602,8 +3601,7 @@ impl App<'_> {
         let Reloaded { loaded, layout } = match result {
             Ok(reloaded) => *reloaded,
             Err(failed) => {
-                let notice = Notice::error(failed.error, (self.ctx.now)());
-                push_notice(&mut self.shell.notices, notice);
+                self.notify(Notice::error, failed.error);
                 self.shell.refs_snapshot = failed.refs_snapshot;
                 return None;
             }
@@ -3760,9 +3758,9 @@ impl App<'_> {
         self.shell.app_status.status_line = StatusLine::None;
     }
 
-    fn warn_notification(&mut self, message: String) {
-        let notice = Notice::warning(message, (self.ctx.now)());
-        push_notice(&mut self.shell.notices, notice);
+    // Shows `message` in a notice made by `notice`, like `Notice::error`, from now.
+    fn notify(&mut self, notice: fn(String, Instant) -> Notice, message: String) {
+        push_notice(&mut self.shell.notices, notice(message, (self.ctx.now)()));
     }
 
     // Asks to open the page of `target` in the browser, choosing between a branch's page and a pull
@@ -3819,24 +3817,18 @@ impl App<'_> {
     fn open_url(&self, url: String, action: LinkAction) {
         let event = match action {
             LinkAction::Copy => AppEvent::copy("Link", url),
-            LinkAction::Open => match open::that_detached(&url) {
-                Ok(()) => AppEvent::NotifySuccess(format!("Opened {url}")),
-                Err(err) => AppEvent::NotifyError(format!("Failed to open {url}: {err}")),
-            },
+            LinkAction::Open => AppEvent::outcome(match open::that_detached(&url) {
+                Ok(()) => Ok(format!("Opened {url}")),
+                Err(err) => Err(format!("Failed to open {url}: {err}")),
+            }),
         };
         self.ec.send(event);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {
-        match copy_to_clipboard(value, &self.ctx.core_config.external.clipboard) {
-            Ok(_) => {
-                let msg = format!("Copied {name} to clipboard successfully");
-                self.ec.send(AppEvent::NotifySuccess(msg));
-            }
-            Err(msg) => {
-                self.ec.send(AppEvent::NotifyError(msg));
-            }
-        }
+        let copied = copy_to_clipboard(value, &self.ctx.core_config.external.clipboard);
+        let done = copied.map(|_| format!("Copied {name} to clipboard successfully"));
+        self.ec.send(AppEvent::outcome(done));
     }
 }
 

@@ -149,6 +149,14 @@ impl AppEvent {
             value: value.into(),
         }
     }
+
+    // Says how something went: its message once done, else what failed.
+    pub fn outcome(result: Result<String, String>) -> Self {
+        match result {
+            Ok(message) => AppEvent::NotifySuccess(message),
+            Err(err) => AppEvent::NotifyError(err),
+        }
+    }
 }
 
 #[derive(Clone)]

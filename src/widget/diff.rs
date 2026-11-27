@@ -1642,34 +1642,20 @@ pub fn parse_diff_until(diff: &str, cancel: &Cancel) -> ParsedDiff {
         // a line number beyond u32 shows none, a file of billions of lines being no text
         let number = |n: usize| u32::try_from(n).ok().and_then(NonZeroU32::new);
         let row = match line.as_bytes().first() {
-            Some(b'+') => {
-                new += 1;
-                DiffRow {
-                    kind: DiffRowKind::Added,
-                    old: None,
-                    new: number(new - 1),
-                    text,
-                    emphasis: 0..0,
-                }
-            }
-            Some(b'-') => {
-                old += 1;
-                DiffRow {
-                    kind: DiffRowKind::Removed,
-                    old: number(old - 1),
-                    new: None,
-                    text,
-                    emphasis: 0..0,
-                }
-            }
             Some(b'\\') => DiffRow::without_numbers(DiffRowKind::Meta, bytes(0)),
-            _ => {
-                old += 1;
-                new += 1;
+            first => {
+                // the line numbers the row has, each side going on past it
+                let (kind, old_line, new_line) = match first {
+                    Some(b'+') => (DiffRowKind::Added, None, Some(new)),
+                    Some(b'-') => (DiffRowKind::Removed, Some(old), None),
+                    _ => (DiffRowKind::Context, Some(old), Some(new)),
+                };
+                old += usize::from(old_line.is_some());
+                new += usize::from(new_line.is_some());
                 DiffRow {
-                    kind: DiffRowKind::Context,
-                    old: number(old - 1),
-                    new: number(new - 1),
+                    kind,
+                    old: old_line.and_then(number),
+                    new: new_line.and_then(number),
                     text,
                     emphasis: 0..0,
                 }

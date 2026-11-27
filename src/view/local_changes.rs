@@ -13,7 +13,7 @@ use crate::{
     layout::{Direction, Panel, Target},
     pointer::OnPicks,
     view::{
-        copy_path, copy_paths, copy_selection, query_or_search_status, CopyForm,
+        copy_paths, copy_selection, copy_tree_paths, query_or_search_status, CopyForm,
         ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
@@ -299,20 +299,14 @@ impl<'a> LocalChangesView<'a> {
                     true => vec![],
                     false => state.picked_paths(),
                 };
-                if !picked.is_empty() {
-                    self.tx.send(copy_paths(
-                        repository,
-                        picked.iter().map(String::as_str),
-                        form,
-                    ));
-                } else if let Some(row) = self.local_changes_state.selected_row() {
-                    self.tx.send(copy_path(repository, row, form));
+                if let Some(copy) = copy_tree_paths(repository, &picked, state.selected_row(), form)
+                {
+                    self.tx.send(copy);
                 }
             }
             UserEvent::Ignore => match self.local_changes_state.ignore_selected() {
                 Ok(message) if message.is_empty() => {}
-                Ok(message) => self.tx.send(AppEvent::NotifySuccess(message)),
-                Err(err) => self.tx.send(AppEvent::NotifyError(err)),
+                result => self.tx.send(AppEvent::outcome(result)),
             },
             _ => {}
         }

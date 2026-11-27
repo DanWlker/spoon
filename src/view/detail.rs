@@ -22,8 +22,8 @@ use crate::{
     ref_commands::lone_stash,
     search::{SearchKind, SearchOutcome},
     view::{
-        apply_selection, commit_branches, commit_event, copy_hashes, copy_path, copy_paths,
-        copy_selection, edit_files, file_link, graph_availability, handle_search_event,
+        apply_selection, commit_branches, commit_event, copy_hashes, copy_paths, copy_selection,
+        copy_tree_paths, edit_files, file_link, graph_availability, handle_search_event,
         poll_commit_search, query_or_search_status, register_apply_key, register_commit_link_keys,
         register_commit_list_keys, register_file_text_keys, searching_waits, type_commit_search,
         CopyForm, ListFacts, ListRefreshViewContext, RefreshViewContext,
@@ -67,12 +67,23 @@ pub struct TreeViews {
     pub files: TreeView,
 }
 
-// The searches and filters of the changes and files tabs and of the pane beside them, kept across
-// a refresh and while the local changes page shows.
+// Calls `method` on the state of the tab shown, the changes' or the files', which both have it;
+// `default` on the info tab.
+macro_rules! on_tab {
+    ($view:expr_2021, $method:ident($($arg:expr_2021),*), $default:expr_2021) => {
+        match $view.tab {
+            DetailTab::Info => $default,
+            DetailTab::Changes => $view.changes_state.$method($($arg),*),
+            DetailTab::Files => $view.files_state.$method($($arg),*),
+        }
+    };
+}
+
+// The search of the pane beside the files and the filters of the changes and files tabs, kept
+// across a refresh and while the local changes page shows; the tabs' own queries only type their
+// filters, see `handle_query_event`.
 #[derive(Debug, Default, Clone)]
 pub struct DetailQueries {
-    pub changes: TreeQuery,
-    pub files: TreeQuery,
     pub pane: TreeQuery,
     // the filters of the changes and the files, which their trees keep
     pub changes_filter: Option<String>,
@@ -157,11 +168,7 @@ pub struct DetailView<'a> {
 // too; the diff or preview for the keys on it, see `needs_pane`.
 impl Loads for DetailView<'_> {
     fn acts_on_loading(&self, event: UserEvent) -> bool {
-        let pane = match self.tab {
-            DetailTab::Info => None,
-            DetailTab::Changes => self.changes_state.loading_since(),
-            DetailTab::Files => self.files_state.loading_since(),
-        };
+        let pane = on_tab!(self, loading_since(), None);
         // not loaded yet counts too: a key moving the commit or the tab leaves them to load once
         // drawn, see `update_layout`, which a key acting before that waits for
         let tree = self.tab == DetailTab::Files && !self.files_state.is_tree_loaded();
@@ -237,8 +244,6 @@ impl<'a> DetailView<'a> {
     // The searches and filters applied, not the one being typed.
     pub fn queries(&self) -> DetailQueries {
         DetailQueries {
-            changes: self.changes_query.applied(),
-            files: self.files_query.applied(),
             pane: self.pane_query.applied(),
             changes_filter: self.changes_state.filter().map(String::from),
             files_filter: self.files_state.filter().map(String::from),
@@ -247,8 +252,6 @@ impl<'a> DetailView<'a> {
 
     // Puts back the searches and filters of `queries`.
     pub fn restore_queries(&mut self, queries: DetailQueries) {
-        self.changes_query = queries.changes;
-        self.files_query = queries.files;
         self.pane_query = queries.pane;
         let options = self.ctx.search_options.get();
         if let Some(filter) = queries.changes_filter {
@@ -270,11 +273,7 @@ impl<'a> DetailView<'a> {
 
     // The filter of the files of the tab shown.
     fn tab_filter(&self) -> Option<&str> {
-        match self.tab {
-            DetailTab::Info => None,
-            DetailTab::Changes => self.changes_state.filter(),
-            DetailTab::Files => self.files_state.filter(),
-        }
+        on_tab!(self, filter(), None)
     }
 
     // How the changes and files tabs show their files, as a tree or a list.
@@ -671,11 +670,7 @@ impl<'a> DetailView<'a> {
                     self.changes_state.pane.leave();
                     self.files_state.back();
                 }
-                match self.tab {
-                    DetailTab::Changes => self.changes_state.point(row, picks),
-                    DetailTab::Files => self.files_state.point(row, picks),
-                    DetailTab::Info => {}
-                }
+                on_tab!(self, point(row, picks), {});
                 true
             }
             Target::DetailPane => {
@@ -1015,21 +1010,10 @@ impl<'a> DetailView<'a> {
         if !self.list_focused {
             if let UserEvent::ShortCopy | UserEvent::FullCopy = event {
                 let form = CopyForm::of(event);
-                let picked = match self.tab {
-                    DetailTab::Info => vec![],
-                    DetailTab::Changes => self.changes_state.picked_paths(),
-                    DetailTab::Files => self.files_state.picked_paths(),
-                };
-                if !picked.is_empty() {
-                    self.tx.send(copy_paths(
-                        self.repository,
-                        picked.iter().map(String::as_str),
-                        form,
-                    ));
-                    return;
-                }
-                if let Some(row) = self.selected_row() {
-                    self.tx.send(copy_path(self.repository, row, form));
+                let picked = on_tab!(self, picked_paths(), vec![]);
+                let row = self.selected_row();
+                if let Some(copy) = copy_tree_paths(self.repository, &picked, row, form) {
+                    self.tx.send(copy);
                     return;
                 }
             }
@@ -1061,21 +1045,14 @@ impl<'a> DetailView<'a> {
             }
             // i adds the picked files and directories, or the selected one, to .gitignore
             if event == UserEvent::Ignore {
-                let entries = match self.tab {
-                    DetailTab::Info => vec![],
-                    DetailTab::Changes => self.changes_state.picked_entries(),
-                    DetailTab::Files => self.files_state.picked_entries(),
-                };
+                let entries = on_tab!(self, picked_entries(), vec![]);
                 if entries.is_empty() {
                     return;
                 }
                 // those added before a failure are shown too
                 let result = self.repository.ignore_entries(&entries);
                 self.tx.send(AppEvent::LocalChangesChanged);
-                self.tx.send(match result {
-                    Ok(message) => AppEvent::NotifySuccess(message),
-                    Err(err) => AppEvent::NotifyError(err),
-                });
+                self.tx.send(AppEvent::outcome(result));
                 return;
             }
         }
@@ -1173,11 +1150,7 @@ impl<'a> DetailView<'a> {
                 );
             }
         }
-        let tab = match self.tab {
-            DetailTab::Info => None,
-            DetailTab::Changes => self.changes_state.loading_since(),
-            DetailTab::Files => self.files_state.loading_since(),
-        };
+        let tab = on_tab!(self, loading_since(), None);
         let loading = self
             .loading
             .as_ref()
@@ -1185,11 +1158,7 @@ impl<'a> DetailView<'a> {
             .into_iter()
             .chain(tab)
             .min();
-        let picked = match self.tab {
-            DetailTab::Info => 0,
-            DetailTab::Changes => self.changes_state.picked_count(),
-            DetailTab::Files => self.files_state.picked_count(),
-        };
+        let picked = on_tab!(self, picked_count(), 0);
         let notes: Vec<String> = (picked_note(picked).into_iter())
             .chain(self.query().and_then(|q| q.indicator(self.tab_filter())))
             .chain(loading_note(loading))
@@ -1233,11 +1202,8 @@ impl<'a> DetailView<'a> {
     // thread, or shows them once loaded.
     pub fn load_in_background(&mut self) {
         self.load_selected_in_background();
-        match self.tab {
-            _ if self.loading.is_some() => {}
-            DetailTab::Info => {}
-            DetailTab::Changes => self.changes_state.ensure_loaded_in_background(&self.tx),
-            DetailTab::Files => self.files_state.ensure_loaded_in_background(&self.tx),
+        if self.loading.is_none() {
+            on_tab!(self, ensure_loaded_in_background(&self.tx), {});
         }
     }
 
@@ -1283,7 +1249,7 @@ impl<'a> DetailView<'a> {
             return vec![];
         }
         // each change's folders looked up among the picks, not each pick against each change
-        let picked = self.changes_state.has_selection();
+        let picked = self.changes_state.has_tree_selection();
         let selected = self.selected_file();
         self.changes
             .iter()
@@ -1301,16 +1267,12 @@ impl<'a> DetailView<'a> {
         self.focus() == DetailFocus::Files
             && self.tab == DetailTab::Changes
             && !self.shows_compare()
-            && (self.changes_state.has_selection() || self.selected_file().is_some())
+            && (self.changes_state.has_tree_selection() || self.selected_file().is_some())
     }
 
     // The row selected in the file tree of the tab.
     fn selected_row(&self) -> Option<&FileTreeRow> {
-        match self.tab {
-            DetailTab::Info => None,
-            DetailTab::Changes => self.changes_state.selected_row(),
-            DetailTab::Files => self.files_state.selected_row(),
-        }
+        on_tab!(self, selected_row(), None)
     }
 
     // Clears the files picked in the tree of the tab; returns whether there were any.
@@ -1318,30 +1280,18 @@ impl<'a> DetailView<'a> {
         if !self.has_tree_picks() {
             return false;
         }
-        match self.tab {
-            DetailTab::Info => {}
-            DetailTab::Changes => self.changes_state.cancel_visual(),
-            DetailTab::Files => self.files_state.cancel_tree_visual(),
-        }
+        on_tab!(self, cancel_tree_visual(), {});
         true
     }
 
     // Whether files are picked in the tree of the tab shown.
     fn has_tree_picks(&self) -> bool {
-        match self.tab {
-            DetailTab::Info => false,
-            DetailTab::Changes => self.changes_state.has_selection(),
-            DetailTab::Files => self.files_state.has_tree_selection(),
-        }
+        on_tab!(self, has_tree_selection(), false)
     }
 
     // Whether the file tree of the tab is being selected from where the visual selection started.
     fn tree_is_visual(&self) -> bool {
-        match self.tab {
-            DetailTab::Info => false,
-            DetailTab::Changes => self.changes_state.is_visual(),
-            DetailTab::Files => self.files_state.is_tree_visual(),
-        }
+        on_tab!(self, is_tree_visual(), false)
     }
 
     // The one file the views of a single file work on: the picked file (or the file under a picked
@@ -1350,11 +1300,7 @@ impl<'a> DetailView<'a> {
         if self.list_focused {
             return None;
         }
-        match self.tab {
-            DetailTab::Info => self.selected_file(),
-            DetailTab::Changes => self.changes_state.single_picked_file(),
-            DetailTab::Files => self.files_state.single_picked_file(),
-        }
+        on_tab!(self, single_picked_file(), self.selected_file())
     }
 
     // The picked files, or the selected one, to open in the editor; from the diff or preview, its
@@ -1377,11 +1323,9 @@ impl<'a> DetailView<'a> {
     // The files among the picked entries of the tree shown, or the selected one: what e, o and
     // y l act on from the files, a folder being none.
     fn tree_files(&self) -> Vec<&str> {
-        let entries = match self.tab {
-            _ if self.list_focused => vec![],
-            DetailTab::Info => vec![],
-            DetailTab::Changes => self.changes_state.picked_entries(),
-            DetailTab::Files => self.files_state.picked_entries(),
+        let entries = match self.list_focused {
+            true => vec![],
+            false => on_tab!(self, picked_entries(), vec![]),
         };
         entries
             .into_iter()

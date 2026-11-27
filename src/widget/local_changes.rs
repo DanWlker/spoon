@@ -134,7 +134,7 @@ enum Focus {
 }
 
 // A file section: its tree of files, search and filter, and picked rows.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Section {
     // the root row, then the directories (expanded by default) and files
     tree: FileTreeState,
@@ -172,9 +172,18 @@ pub struct LocalChangesSnapshot {
     // what had the keys, put back once the page is loaded again
     focus: Focus,
     // how each section shows its files: as a list or a tree, the folders opened or closed, the
-    // search and filter, the rows picked; over no files, the files loaded then go under it, a
-    // visual selection going on from the path it started on. Boxed like the draft
-    sections: Box<[(Section, Option<Arc<str>>); 2]>,
+    // filter, the rows picked; over no files, the files loaded then go under it, a visual
+    // selection going on from the path it started on. Boxed like the draft
+    sections: Box<[SectionSnapshot; 2]>,
+}
+
+// What a section keeps while the page isn't shown, see `LocalChangesSnapshot::sections`.
+#[derive(Debug, Clone)]
+struct SectionSnapshot {
+    tree: FileTreeState,
+    picked: TreeSelection,
+    // the path a visual selection started on
+    visual_start: Option<Arc<str>>,
 }
 
 impl LocalChangesSnapshot {
@@ -192,7 +201,14 @@ impl Default for LocalChangesSnapshot {
             selected_path: None,
             commit_draft: Box::default(),
             focus: Focus::Files,
-            sections: Box::new([(); 2].map(|()| (Section::new(FileTree::default()), None))),
+            sections: Box::new([(); 2].map(|()| {
+                let section = Section::new(FileTree::default());
+                SectionSnapshot {
+                    tree: section.tree,
+                    picked: section.picked,
+                    visual_start: None,
+                }
+            })),
         }
     }
 }
@@ -289,17 +305,21 @@ impl<'a> LocalChangesState<'a> {
         ) = repository.take_loaded_local_changes();
         let sections = match &snapshot {
             Some(snapshot) => std::array::from_fn(|i| {
-                let (section, visual_start) = &snapshot.sections[i];
-                let mut tree = section.tree.with_tree(trees[i].clone());
+                let SectionSnapshot {
+                    tree,
+                    picked,
+                    visual_start,
+                } = &snapshot.sections[i];
+                let mut tree = tree.with_tree(trees[i].clone());
                 tree.set_visual_start_path(visual_start.as_deref());
-                let mut picked = section.picked.clone();
+                let mut picked = picked.clone();
                 // the rows it covers may have changed, see `Picks::keep_visual`
                 if tree.is_visual() {
                     picked.keep_visual();
                 }
                 Section {
                     tree,
-                    query: section.query.clone(),
+                    query: TreeQuery::default(),
                     picked,
                 }
             }),
@@ -375,13 +395,10 @@ impl<'a> LocalChangesState<'a> {
             selected_path: self.selected_path(),
             commit_draft: Box::new(self.draft.clone()),
             focus: self.focus(),
-            sections: Box::new(self.sections.each_ref().map(|s| {
-                let section = Section {
-                    tree: s.tree.with_tree(FileTree::default()),
-                    query: s.query.applied(),
-                    picked: s.picked.clone(),
-                };
-                (section, s.tree.visual_start_path())
+            sections: Box::new(self.sections.each_ref().map(|s| SectionSnapshot {
+                tree: s.tree.with_tree(FileTree::default()),
+                picked: s.picked.clone(),
+                visual_start: s.tree.visual_start_path(),
             })),
         }
     }

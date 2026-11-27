@@ -15,8 +15,8 @@ use ratatui::{
 };
 
 use super::{
-    App, AppContext, AppEvent, GraphFilter, InitialSelection, Kept, Launch, PendingClear, Ret,
-    StartPage, StatusLine,
+    App, AppContext, AppEvent, GraphFilter, InitialSelection, Kept, Launch, PendingClear, Press,
+    Ret, StartPage, StatusLine,
 };
 use crate::{
     background::Loads,
@@ -6338,10 +6338,10 @@ fn test_a_press_ends_a_thumb_drag_never_released() {
     harness.run(vec![
         vec![Step::Locate("█", (0, 0))],
         mouse_now(MouseEventKind::Down(left)),
-        check(|app| assert!(app.shell.thumb_drag.is_some())),
+        check(|app| assert!(matches!(app.shell.press, Some(Press::Thumb(_))))),
         vec![Step::Locate("commit-110", (0, 0))],
         mouse_now(MouseEventKind::Down(left)),
-        check(|app| assert!(app.shell.thumb_drag.is_none())),
+        check(|app| assert!(!matches!(app.shell.press, Some(Press::Thumb(_))))),
     ]);
 }
 

@@ -234,13 +234,8 @@ impl<'a> CommitChangesState<'a> {
         self.pane.search_outcome(query, options)
     }
 
-    // Whether the files are being selected from where the visual selection started.
-    pub fn is_visual(&self) -> bool {
-        self.tree.is_visual()
-    }
-
     // Whether files are selected, while the visual selection or after it ended.
-    pub fn has_selection(&self) -> bool {
+    pub fn has_tree_selection(&self) -> bool {
         !self.picked.is_empty()
     }
 
@@ -289,7 +284,7 @@ impl<'a> CommitChangesState<'a> {
         self.picked.toggle_visual(&mut self.tree);
     }
 
-    pub fn cancel_visual(&mut self) {
+    pub fn cancel_tree_visual(&mut self) {
         self.picked.clear(&mut self.tree);
     }
 
@@ -1800,15 +1795,15 @@ mod tests {
             state.picked
         );
         state.toggle_visual();
-        assert!(!state.is_visual() && state.has_selection());
-        state.cancel_visual();
-        assert!(!state.has_selection());
+        assert!(!state.is_tree_visual() && state.has_tree_selection());
+        state.cancel_tree_visual();
+        assert!(!state.has_tree_selection());
 
         // a picked directory is not expanded for the one-file views
         state.update_tree(|tree| tree.select_path("src"));
         state.toggle_visual();
         assert_eq!(state.single_picked_file(), None);
-        state.cancel_visual();
+        state.cancel_tree_visual();
 
         // changes: folders collapse, and the diff follows the selection
         state.update_tree(|tree| tree.select_path("src"));
