@@ -387,35 +387,35 @@ impl FileText {
                 None
             }
         };
-        let width = self.lines.len().to_string().len();
-        let lines = rows.map(|row| {
-            let mut line = Line::from(vec![
-                Span::raw(format!("{:>width$} ", row + 1)).fg(theme.muted_fg),
-                Span::raw(tabs_shown(&self.lines[row]).into_owned()),
-            ]);
-            if let Some(query) = search {
-                highlight_match(&mut line, query, ctx.search_options.get(), theme);
-            }
-            if let Some(style) = selected_style(row) {
-                if style.fg.is_some() {
-                    // a search match keeps its own colors, so a selected line still shows where
-                    // the match is
-                    line.spans = line
-                        .spans
-                        .into_iter()
-                        .map(|span| {
-                            if span.style.bg == Some(theme.list_match_bg) {
-                                span
-                            } else {
-                                span.patch_style(style)
-                            }
-                        })
-                        .collect();
+        // as they were measured, the numbers muted
+        let lines = plain_lines(&self.lines, rows.clone())
+            .zip(rows)
+            .map(|(mut line, row)| {
+                let number = std::mem::take(&mut line.spans[0]);
+                line.spans[0] = number.fg(theme.muted_fg);
+                if let Some(query) = search {
+                    highlight_match(&mut line, query, ctx.search_options.get(), theme);
                 }
-                line.style = line.style.patch(style);
-            }
-            (row, line)
-        });
+                if let Some(style) = selected_style(row) {
+                    if style.fg.is_some() {
+                        // a search match keeps its own colors, so a selected line still shows where
+                        // the match is
+                        line.spans = line
+                            .spans
+                            .into_iter()
+                            .map(|span| {
+                                if span.style.bg == Some(theme.list_match_bg) {
+                                    span
+                                } else {
+                                    span.patch_style(style)
+                                }
+                            })
+                            .collect();
+                    }
+                    line.style = line.style.patch(style);
+                }
+                (row, line)
+            });
         let visual = wrapped_rows(
             lines,
             skip..skip + screen.len(),

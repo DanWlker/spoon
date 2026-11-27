@@ -149,18 +149,13 @@ impl CommitFiles {
     pub fn of(changes: &[FileChange], gitlinks: &ChangedGitlinks, view: TreeView) -> Self {
         let files: Vec<ChangedFile> = changes
             .iter()
-            .map(|change| {
-                let (path, from) = match change {
-                    FileChange::Add { path }
-                    | FileChange::Modify { path }
-                    | FileChange::Delete { path } => (path, None),
-                    FileChange::Move { from, to } => (to, Some(from.clone())),
-                };
-                ChangedFile {
-                    path: path.clone(),
-                    from,
-                    symbol: change.symbol(),
-                }
+            .map(|change| ChangedFile {
+                path: change.path().to_string(),
+                from: match change {
+                    FileChange::Move { from, .. } => Some(from.clone()),
+                    _ => None,
+                },
+                symbol: change.symbol(),
             })
             .collect();
         let mut tree = FileTreeState::new(
@@ -1246,15 +1241,14 @@ impl CommitTab {
             .borrow_mut()
             .record_thumb(Target::DetailFiles, thumb);
 
+        let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
         // a submodule shows its own commits, with the graph, instead of the gitlink diff
         if let Some(submodule) = state.submodule.as_mut() {
-            let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
             submodule.render_bare(&self.ctx, diff_area, scrollbar, buf, self.focused);
             return;
         }
 
         let search = self.pane_search.as_deref();
-        let scrollbar = Rect::new(diff_area.right(), diff_area.y, 1, diff_area.height);
         // lit with the focus on it, not on the tree beside it, like every panel
         let pane_focused = self.focused && state.pane.is_focused();
         state.pane.render(
