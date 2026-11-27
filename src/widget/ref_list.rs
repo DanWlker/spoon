@@ -405,8 +405,13 @@ impl RefListState {
         if !cursor.navigate(event, total) {
             return false;
         }
+        let moved = cursor.selected() != self.cursor.selected();
         self.cursor = cursor;
-        self.select_visible_index(self.cursor.selected());
+        // the wheel scrolls the rows alone, as in every list: selecting the row again would scroll
+        // back to it
+        if moved {
+            self.select_visible_index(self.cursor.selected());
+        }
         self.sync_visual_picks();
         true
     }
@@ -1464,6 +1469,36 @@ mod tests {
         sort_tag_tree_nodes(&mut nodes);
         let release: Vec<&str> = nodes[0].children.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(release, ["v10.0.0", "v3.0.0", "v2.0.0", "v1.0.0"]);
+    }
+
+    // The wheel scrolls the rows alone, the selection staying, even off them, as in every list:
+    // the sidebar scrolled back to its selection, so it couldn't scroll past it.
+    #[test]
+    fn test_wheel_scrolls_past_the_selection() {
+        let target = || -> CommitHash { "a".repeat(40).as_str().into() };
+        let refs: Vec<Ref> = (0..40)
+            .map(|i| Ref::Branch {
+                name: format!("b{i:02}"),
+                target: target(),
+            })
+            .collect();
+        let refs: Vec<&Ref> = refs.iter().collect();
+        let mut state = RefListState::new(&refs, &[]);
+        select(&mut state, "b00");
+        state.fit(Rect::new(0, 0, 20, 12), 0);
+        let selected = state.selected.clone();
+        for _ in 0..4 {
+            state.handle_move(UserEvent::Wheel(3));
+            state.fit(Rect::new(0, 0, 20, 12), 0);
+        }
+        assert_eq!(state.cursor.offset(), 12, "scrolled 4 times 3 rows");
+        assert_eq!(state.selected, selected, "the selection stays");
+        // and back up past it, to the top
+        for _ in 0..5 {
+            state.handle_move(UserEvent::Wheel(-3));
+            state.fit(Rect::new(0, 0, 20, 12), 0);
+        }
+        assert_eq!(state.cursor.offset(), 0);
     }
 
     // v on zz, up to the feature folder and the folder collapsed: the selection goes on from zz,

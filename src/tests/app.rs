@@ -675,6 +675,31 @@ fn test_root_diff_follows_a_filter_typed() {
     ]);
 }
 
+// The wheel over the sidebar scrolls its rows alone, as over every list: it scrolled back to the
+// selected ref, so it stopped once that reached the edge.
+#[test]
+fn test_wheel_scrolls_the_sidebar_past_its_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = repository(dir.path());
+    for i in 0..60 {
+        git(&path, &["branch", &format!("b{i:02}")]);
+    }
+    let mut harness = Harness::new(&path, launch());
+    // the row of the branch in the sidebar, not a hash containing it
+    let shown = |branch: &'static str, expected: bool| {
+        screen(move |screen| {
+            let row = format!("│ {branch} ");
+            assert_eq!(screen.contains(&row), expected, "{branch}\n{screen}");
+        })
+    };
+    let mut steps = vec![keys("1"), shown("b00", true), shown("b59", false)];
+    for _ in 0..30 {
+        steps.push(mouse_at("[1] Refs", (2, 5), TestGesture::WheelDown));
+    }
+    steps.extend([shown("b59", true), shown("b00", false)]);
+    harness.run(steps);
+}
+
 #[test]
 fn test_launch_on_local_changes() {
     let dir = tempfile::tempdir().unwrap();

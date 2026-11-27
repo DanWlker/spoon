@@ -85,8 +85,11 @@ impl CommandLogState {
         if !cursor.navigate(event, total) {
             return false;
         }
+        // the output of another command shows from its start; the wheel leaves the selection
+        if cursor.selected() != self.cursor.selected() {
+            self.output.offset = 0;
+        }
         self.cursor = cursor;
-        self.output.offset = 0;
         true
     }
 
@@ -451,8 +454,15 @@ mod tests {
         assert!(state.scroll_output(UserEvent::NavigateDown));
         assert_eq!(state.output.offset, scrolled + 1);
 
-        // the commands again: [1] moves the list
+        // the wheel over the commands scrolls them alone: the selection, and its output's scroll,
+        // stay
+        let scrolled = state.output.offset;
         state.focus_panel(1);
+        assert!(state.move_selection(UserEvent::Wheel(3)));
+        assert_eq!(state.cursor.selected(), selected);
+        assert_eq!(state.output.offset, scrolled);
+
+        // the commands again: [1] moves the list
         assert!(state.move_selection(UserEvent::HalfPageDown));
     }
 }
